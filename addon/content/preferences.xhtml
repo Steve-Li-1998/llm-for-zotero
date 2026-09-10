@@ -20,19 +20,20 @@
     #__addonRef__-prefs option, #__addonRef__-prefs summary, #__addonRef__-prefs
     input[type="checkbox"], #__addonRef__-prefs input[type="radio"] {
     -moz-user-select: none; user-select: none; } /* ── Agent tab
-    ──────────────────────────────────────────────────────── One collapsible row
+    ────────────────────────────────────────────────────── One collapsible row
     per subject, one switch idiom for every on/off, and a fixed label column so
     fields line up down the whole tab. Detail that only matters when something
-    is wrong lives in a per-row advanced drawer. */
-    #__addonRef__-pref-panel-agent { gap: 14px; } #__addonRef__-pref-panel-agent
-    .llm-pref-intro { margin: 0; font-size: 11.5px; line-height: 1.5; color:
-    var(--fill-secondary, #888); } #__addonRef__-pref-panel-agent
-    .llm-pref-group { display: flex; flex-direction: column; gap: 8px; }
-    #__addonRef__-pref-panel-agent .llm-pref-group-title { font-size: 11px;
-    font-weight: 700; color: var(--fill-secondary, #888); } /* Author rules beat
-    the UA [hidden] rule, so collapsed bodies and the customized-model field
-    need display:none restated here. */ #__addonRef__-pref-panel-agent [hidden]
-    { display: none !important; } #__addonRef__-pref-panel-agent .llm-pref-row {
+    is wrong lives in a per-row advanced drawer. Icon URLs are absolute on
+    purpose: Zotero inlines this markup into its own preferences document, so a
+    relative url() would resolve against chrome://zotero/content/ and silently
+    render nothing. */ #__addonRef__-pref-panel-agent { gap: 14px; }
+    #__addonRef__-pref-panel-agent .llm-pref-intro { margin: 0; font-size:
+    11.5px; line-height: 1.5; color: var(--fill-secondary, #888); }
+    #__addonRef__-pref-panel-agent .llm-pref-group { display: flex;
+    flex-direction: column; gap: 8px; } #__addonRef__-pref-panel-agent
+    .llm-pref-group-title { font-size: 11px; font-weight: 700; color:
+    var(--fill-secondary, #888); } #__addonRef__-pref-panel-agent [hidden] {
+    display: none !important; } #__addonRef__-pref-panel-agent .llm-pref-row {
     border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 10px;
     background: Field; overflow: hidden; } #__addonRef__-pref-panel-agent
     .llm-pref-row[data-open="true"] { border-color: var(--color-accent,
@@ -42,23 +43,33 @@
     .llm-pref-row-icon { width: 20px; height: 20px; flex: none;
     background-repeat: no-repeat; background-position: center; background-size:
     contain; } #__addonRef__-pref-panel-agent .llm-pref-row-icon--original {
-    background-image: url("icons/icon.svg"); } #__addonRef__-pref-panel-agent
-    .llm-pref-row-icon--codex { background-image: url("icons/codex-logo.svg"); }
+    background-image: url("chrome://__addonRef__/content/icons/icon.svg"); }
+    #__addonRef__-pref-panel-agent .llm-pref-row-icon--codex { background-image:
+    url("chrome://__addonRef__/content/icons/codex-logo.svg"); }
     #__addonRef__-pref-panel-agent .llm-pref-row-icon--claude {
-    background-color: #d97757; mask-image: url("icons/claude-code.svg");
+    background-color: #d97757; mask-image:
+    url("chrome://__addonRef__/content/icons/claude-code.svg"); mask-repeat:
+    no-repeat; mask-position: center; mask-size: contain; -webkit-mask-image:
+    url("chrome://__addonRef__/content/icons/claude-code.svg");
+    -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
+    -webkit-mask-size: contain; } #__addonRef__-pref-panel-agent
+    .llm-pref-row-icon--notes { background-color: currentColor; opacity: 0.55;
+    mask-image: url("chrome://__addonRef__/content/icons/folder-open.svg");
     mask-repeat: no-repeat; mask-position: center; mask-size: contain;
-    -webkit-mask-image: url("icons/claude-code.svg"); -webkit-mask-repeat:
-    no-repeat; -webkit-mask-position: center; -webkit-mask-size: contain; }
-    #__addonRef__-pref-panel-agent .llm-pref-row-icon--notes { background-color:
-    currentColor; opacity: 0.55; mask-image: url("icons/folder-open.svg");
-    mask-repeat: no-repeat; mask-position: center; mask-size: contain;
-    -webkit-mask-image: url("icons/folder-open.svg"); -webkit-mask-repeat:
-    no-repeat; -webkit-mask-position: center; -webkit-mask-size: contain; }
-    #__addonRef__-pref-panel-agent .llm-pref-row-toggle { display: grid; gap:
-    2px; min-width: 0; padding: 0; text-align: start; background: transparent;
-    border: none; color: inherit; cursor: pointer; }
-    #__addonRef__-pref-panel-agent .llm-pref-row-name { font-size: 12.5px;
-    font-weight: 600; color: FieldText; } #__addonRef__-pref-panel-agent
+    -webkit-mask-image:
+    url("chrome://__addonRef__/content/icons/folder-open.svg");
+    -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
+    -webkit-mask-size: contain; } #__addonRef__-pref-panel-agent
+    .llm-pref-row-toggle { display: grid; gap: 2px; min-width: 0; padding: 0;
+    text-align: start; background: transparent; border: none; color: inherit;
+    cursor: pointer; } #__addonRef__-pref-panel-agent .llm-pref-row-name {
+    font-size: 12.5px; font-weight: 600; color: FieldText; }
+    #__addonRef__-pref-panel-agent .llm-pref-row-sub { display: flex;
+    align-items: center; gap: 6px; min-width: 0; }
+    #__addonRef__-pref-panel-agent .llm-pref-row-dot { flex: none; width: 7px;
+    height: 7px; border-radius: 50%; background: var(--fill-secondary, #9aa1a9);
+    } #__addonRef__-pref-panel-agent .llm-pref-row-dot[data-on="true"] {
+    background: var(--accent-green, #3aa76d); } #__addonRef__-pref-panel-agent
     .llm-pref-row-summary { font-size: 10.5px; color: var(--fill-secondary,
     #888); overflow-wrap: anywhere; } #__addonRef__-pref-panel-agent
     .llm-pref-row-tag { font-size: 10.5px; color: var(--fill-secondary, #888);
@@ -78,7 +89,7 @@
     position: absolute; top: 2px; inset-inline-start: 2px; width: 15px; height:
     15px; border-radius: 50%; background: #fff; transition: transform 0.15s
     ease; } #__addonRef__-pref-panel-agent .llm-pref-switch:checked {
-    background: var(--color-accent, #2563eb); } #__addonRef__-pref-panel-agent
+    background: var(--accent-green, #3aa76d); } #__addonRef__-pref-panel-agent
     .llm-pref-switch:checked::before { transform: translateX(15px); }
     #__addonRef__-pref-panel-agent .llm-pref-section { display: flex;
     flex-direction: column; gap: 8px; } #__addonRef__-pref-panel-agent
@@ -794,12 +805,18 @@
                 aria-controls="__addonRef__-agent-row-original-body"
               >
                 <html:span class="llm-pref-row-name">Original Agent</html:span>
-                <html:span
-                  class="llm-pref-row-summary"
-                  data-llm-row-summary="original"
-                ></html:span>
+                <html:span class="llm-pref-row-sub">
+                  <html:span
+                    class="llm-pref-row-dot"
+                    data-llm-row-dot="original"
+                  ></html:span>
+                  <html:span
+                    class="llm-pref-row-summary"
+                    data-llm-row-summary="original"
+                  ></html:span>
+                </html:span>
               </html:button>
-              <html:span class="llm-pref-row-tag">Built in · Beta</html:span>
+              <html:span class="llm-pref-row-tag">Built in</html:span>
               <html:input
                 id="__addonRef__-enable-agent-mode"
                 class="llm-pref-switch"
@@ -932,10 +949,16 @@
                 aria-controls="__addonRef__-agent-row-codex-body"
               >
                 <html:span class="llm-pref-row-name">Codex</html:span>
-                <html:span
-                  class="llm-pref-row-summary"
-                  data-llm-row-summary="codex"
-                ></html:span>
+                <html:span class="llm-pref-row-sub">
+                  <html:span
+                    class="llm-pref-row-dot"
+                    data-llm-row-dot="codex"
+                  ></html:span>
+                  <html:span
+                    class="llm-pref-row-summary"
+                    data-llm-row-summary="codex"
+                  ></html:span>
+                </html:span>
               </html:button>
               <html:span class="llm-pref-row-tag">OpenAI CLI</html:span>
               <html:input
@@ -1115,10 +1138,16 @@
                 aria-controls="__addonRef__-agent-row-claude-body"
               >
                 <html:span class="llm-pref-row-name">Claude Code</html:span>
-                <html:span
-                  class="llm-pref-row-summary"
-                  data-llm-row-summary="claude"
-                ></html:span>
+                <html:span class="llm-pref-row-sub">
+                  <html:span
+                    class="llm-pref-row-dot"
+                    data-llm-row-dot="claude"
+                  ></html:span>
+                  <html:span
+                    class="llm-pref-row-summary"
+                    data-llm-row-summary="claude"
+                  ></html:span>
+                </html:span>
               </html:button>
               <html:span class="llm-pref-row-tag">Anthropic CLI</html:span>
               <html:input
@@ -1544,10 +1573,16 @@
                 aria-controls="__addonRef__-agent-row-notes-body"
               >
                 <html:span class="llm-pref-row-name">Notes directory</html:span>
-                <html:span
-                  class="llm-pref-row-summary"
-                  data-llm-row-summary="notes"
-                ></html:span>
+                <html:span class="llm-pref-row-sub">
+                  <html:span
+                    class="llm-pref-row-dot"
+                    data-llm-row-dot="notes"
+                  ></html:span>
+                  <html:span
+                    class="llm-pref-row-summary"
+                    data-llm-row-summary="notes"
+                  ></html:span>
+                </html:span>
               </html:button>
               <html:span class="llm-pref-row-tag"></html:span>
               <html:span></html:span>

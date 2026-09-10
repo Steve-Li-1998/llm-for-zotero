@@ -124,6 +124,29 @@ describe("Agent preference tab layout", function () {
     }
   });
 
+  it("addresses its icons absolutely, because Zotero inlines this markup", function () {
+    const markup = source("addon/content/preferences.xhtml");
+    // Zotero copies a preference pane's markup into its own preferences
+    // document, so a relative url() resolves against chrome://zotero/content/
+    // and renders nothing at all — no error, just an empty box.
+    assert.notMatch(markup, /url\("icons\//);
+    for (const icon of ["icon", "codex-logo", "claude-code", "folder-open"]) {
+      assert.include(
+        markup,
+        `url("chrome://__addonRef__/content/icons/${icon}.svg")`,
+        icon,
+      );
+    }
+  });
+
+  it("shows on/off state in the row header without opening it", function () {
+    const panel = agentPanel();
+    const dots = panel.match(/data-llm-row-dot="[a-z-]+"/g) || [];
+    assert.lengthOf(dots, 4);
+    const preferenceScript = source("src/modules/preferenceScript.ts");
+    assert.include(preferenceScript, 'dot.setAttribute("data-on", String(on))');
+  });
+
   it("drives the runtime switches from checkbox state", function () {
     const preferenceScript = source("src/modules/preferenceScript.ts");
     assert.include(preferenceScript, "codexAppServerEnableToggle.checked");

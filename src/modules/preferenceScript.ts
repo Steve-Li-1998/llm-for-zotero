@@ -3338,7 +3338,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     return element?.value.trim() || "";
   };
 
-  const setAgentRowSummary = (row: string, parts: string[]): void => {
+  const setAgentRowSummary = (
+    row: string,
+    on: boolean,
+    parts: string[],
+  ): void => {
+    const dot = doc.querySelector(
+      `[data-llm-row-dot="${row}"]`,
+    ) as HTMLElement | null;
+    if (dot) dot.setAttribute("data-on", String(on));
     const target = doc.querySelector(
       `[data-llm-row-summary="${row}"]`,
     ) as HTMLElement | null;
@@ -3347,9 +3355,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   };
 
   refreshAgentRowSummaries = () => {
+    const originalOn = !!enableAgentModeInput?.checked;
     setAgentRowSummary(
       "original",
-      enableAgentModeInput?.checked
+      originalOn,
+      originalOn
         ? [
             selectedOptionLabel(originalAgentPermissionModeSelect),
             tavilyApiKeyInput?.value.trim()
@@ -3358,18 +3368,22 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           ]
         : [t("Off")],
     );
+    const codexOn = !!codexAppServerEnableToggle?.checked;
     setAgentRowSummary(
       "codex",
-      codexAppServerEnableToggle?.checked
+      codexOn,
+      codexOn
         ? [
             codexAppServerModelInput?.value.trim() || t("Default model"),
             selectedOptionLabel(codexPermissionProfileSelect),
           ]
         : [t("Off")],
     );
+    const claudeOn = !!claudeCodeEnableToggle?.checked;
     setAgentRowSummary(
       "claude",
-      claudeCodeEnableToggle?.checked
+      claudeOn,
+      claudeOn
         ? [
             selectedOptionLabel(claudeCodeModelSelect),
             selectedOptionLabel(agentPermissionModeSelect),
@@ -3379,6 +3393,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const notesPath = inputValue("obsidian-vault-path");
     setAgentRowSummary(
       "notes",
+      !!notesPath,
       notesPath
         ? [inputValue("notes-dir-nickname") || t("Notes"), notesPath]
         : [t("Not set")],

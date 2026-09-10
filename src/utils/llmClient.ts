@@ -189,6 +189,12 @@ export type ChatParams = {
   /** Session-only opaque state for resuming an incomplete provider response. */
   continuationState?: unknown;
   /**
+   * Stable, opaque id for the conversation this request belongs to. Only
+   * providers that route on one ever see it; everyone else gets no extra
+   * header. Absent for one-off utility calls, which have no conversation.
+   */
+  sessionId?: string;
+  /**
    * User-authored capability overrides for the selected model. Threaded through
    * so capability resolution, token clamping and the request body all see the
    * same picture the preferences pane showed.
@@ -4011,6 +4017,8 @@ async function callNativeProtocol(params: {
   /** ollama_native only: runtime context window to allocate. */
   numCtx?: number;
   profileOverride?: ModelProfileOverride;
+  /** Stable per-conversation id for providers that route on one. */
+  sessionId?: string;
 }): Promise<ModelTurnOutcome> {
   const {
     protocol,
@@ -4032,7 +4040,12 @@ async function callNativeProtocol(params: {
       : protocol === "ollama_native"
         ? resolveOllamaNativeEndpoint(apiBase)
         : resolveGeminiNativeEndpoint({ apiBase, model, stream: isStreaming });
-  const headers = buildProviderTransportHeaders({ protocol, apiKey });
+  const headers = buildProviderTransportHeaders({
+    protocol,
+    apiKey,
+    apiBase,
+    sessionId: params.sessionId,
+  });
   const pdfParts: Array<{ base64: string }> = [];
   if (
     (protocol === "anthropic_messages" || protocol === "gemini_native") &&
@@ -4211,6 +4224,7 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
       protocol: providerProtocol,
       apiBase,
       apiKey,
+      sessionId: params.sessionId,
       model,
       messages,
       outputPolicy,
@@ -4281,6 +4295,8 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
     protocol: providerProtocol,
     apiKey: auth.token,
     authMode,
+    apiBase,
+    sessionId: params.sessionId,
   });
   const buildPayload = createChatPayloadBuilder({
     model,
@@ -4365,6 +4381,7 @@ export async function callLLMStream(
       protocol: providerProtocol,
       apiBase,
       apiKey,
+      sessionId: params.sessionId,
       model,
       messages,
       outputPolicy,
@@ -4444,6 +4461,8 @@ export async function callLLMStream(
     protocol: providerProtocol,
     apiKey: auth.token,
     authMode,
+    apiBase,
+    sessionId: params.sessionId,
   });
   const buildPayload = createChatPayloadBuilder({
     model,

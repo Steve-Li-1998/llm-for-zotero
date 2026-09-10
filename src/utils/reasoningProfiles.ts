@@ -1,3 +1,4 @@
+import { modelNameCandidates } from "../shared/modelNameCandidates";
 const REASONING_PROFILE_TABLE_VERSION = 7;
 
 export type ReasoningProvider =
@@ -1066,7 +1067,9 @@ export function hasKnownReasoningProfile(
   modelName: string,
 ): boolean {
   return PROFILE_RULES[provider].rules.some((rule) =>
-    rule.match.test(normalizeModelName(modelName)),
+    modelNameCandidates(modelName).some((candidate) =>
+      rule.match.test(candidate),
+    ),
   );
 }
 
@@ -1074,10 +1077,12 @@ function resolveProviderProfile(
   provider: ReasoningProvider,
   modelName?: string,
 ): ProviderProfile {
-  const normalized = normalizeModelName(modelName);
+  // A gateway's `vendor/model` id keeps the family underneath, so each rule
+  // is tried against the id and against the id with its prefix removed.
+  const candidates = modelNameCandidates(modelName || "");
   const table = PROFILE_RULES[provider];
   for (const rule of table.rules) {
-    if (rule.match.test(normalized)) {
+    if (candidates.some((candidate) => rule.match.test(candidate))) {
       return rule.profile;
     }
   }

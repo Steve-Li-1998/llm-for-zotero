@@ -11,6 +11,7 @@ export type SupportedProviderPresetId =
   | "qwen"
   | "kimi"
   | "mimo"
+  | "opencode"
   | "copilot"
   | "ollama"
   | "local_openai";
@@ -242,6 +243,19 @@ const KIMI_PATHS = [
   "/coding/v1/chat/completions",
 ];
 const MIMO_PATHS = ["/", "/v1", "/v1/chat/completions"];
+// Zen serves the same catalog on two tiers: /zen/v1 and the cheaper /zen/go/v1
+// the reporter of #439 uses. Everything else on opencode.ai is the website and
+// the agent's own server, so the host alone must not claim the preset.
+const OPENCODE_PATHS = [
+  "/zen/v1",
+  "/zen/v1/chat/completions",
+  "/zen/v1/responses",
+  "/zen/v1/messages",
+  "/zen/go/v1",
+  "/zen/go/v1/chat/completions",
+  "/zen/go/v1/responses",
+  "/zen/go/v1/messages",
+];
 const COPILOT_PATHS = ["/", "/chat/completions", "/models"];
 
 const OLLAMA_DEFAULT_PORT = "11434";
@@ -393,6 +407,21 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportedProtocols: ["openai_chat_compat"],
     helperText: "Preset uses Xiaomi MiMo's OpenAI-compatible API base (v1).",
     matches: makeHostAndPathMatcher(["api.xiaomimimo.com"], MIMO_PATHS),
+    supportsEmbeddings: false,
+  },
+  {
+    id: "opencode",
+    label: "OpenCode Zen",
+    defaultApiBase: "https://opencode.ai/zen/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: [
+      "openai_chat_compat",
+      "anthropic_messages",
+      "responses_api",
+    ],
+    helperText:
+      "Gateway for a curated set of models from several vendors, billed on one key.",
+    matches: makeHostAndPathMatcher(["opencode.ai"], OPENCODE_PATHS),
     supportsEmbeddings: false,
   },
   {

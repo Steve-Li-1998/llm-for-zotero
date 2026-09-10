@@ -1,3 +1,4 @@
+import { modelNameCandidates } from "../shared/modelNameCandidates";
 import type { ModelCapabilityProvider } from "./types";
 
 /**
@@ -37,8 +38,13 @@ export function inferProviderFromModelName(
 ): ModelCapabilityProvider | null {
   const name = modelName.trim().toLowerCase();
   if (!name) return null;
+  // Rule order is the priority order, so every candidate is tried against a
+  // rule before moving on: a bare `deepseek-v4` must not lose to a later rule
+  // that happens to match the full prefixed string.
   for (const rule of MODEL_NAME_RULES) {
-    if (rule.pattern.test(name)) return rule.provider;
+    for (const candidate of modelNameCandidates(name)) {
+      if (rule.pattern.test(candidate)) return rule.provider;
+    }
   }
   return null;
 }

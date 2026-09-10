@@ -167,6 +167,7 @@ import { refreshConfiguredProviderModelCatalogs } from "../../utils/modelProvide
 import {
   refreshModelCapabilityRegistry,
   subscribeModelCapabilities,
+  getModelCapabilities,
 } from "../../modelCapabilities";
 import type { ModelProfileOverride } from "../../modelCapabilities";
 import {
@@ -317,6 +318,7 @@ import type {
   SelectedTextContext,
 } from "./types";
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
+import { isReasoningLevelActive } from "../../utils/llmClient";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";
 import {
   browseAllItemCandidates,
@@ -387,7 +389,6 @@ import {
 import { createActionLayoutController } from "./setupHandlers/controllers/actionLayoutController";
 import {
   getReasoningLevelDisplayLabel,
-  isReasoningDisplayLabelActive,
   getScreenshotDisabledHint,
   isScreenshotUnsupportedModel,
   getModelPdfSupport,
@@ -5814,6 +5815,7 @@ export function setupHandlers(
           directSelection.mode === "auto"
             ? "none"
             : (directSelection.mode as ReasoningLevelSelection),
+        activeThinking: directSelection.mode !== "none",
       };
     }
     const selectedProfile = getSelectedModelEntry();
@@ -5853,7 +5855,26 @@ export function setupHandlers(
       reasoningBtn.dataset.reasoningAdjustment =
         "The previous reasoning level is unavailable for this model. Using the provider default.";
     }
-    return { provider, currentModel, options, enabledLevels, selectedLevel };
+    return {
+      provider,
+      currentModel,
+      options,
+      enabledLevels,
+      selectedLevel,
+      // Judged by the request the level sends, not by what it is called.
+      activeThinking:
+        selectedLevel === "auto" ||
+        isReasoningLevelActive(
+          getModelCapabilities({
+            provider,
+            model: currentModel,
+            apiBase: selectedProfile?.apiBase,
+            protocol: selectedProfile?.providerProtocol,
+            profileOverride: selectedProfile?.advanced?.profileOverride,
+          }),
+          selectedLevel,
+        ),
+    };
   };
 
   // [webchat] ChatGPT mode options: maps reasoning levels to ChatGPT modes
@@ -6048,8 +6069,14 @@ export function setupHandlers(
       }
       reasoningBtn.style.display = "";
 
-      const { provider, currentModel, options, enabledLevels, selectedLevel } =
-        getReasoningState();
+      const {
+        provider,
+        currentModel,
+        options,
+        enabledLevels,
+        selectedLevel,
+        activeThinking,
+      } = getReasoningState();
       const directSelection =
         codexDirectController?.resolveReasoningSelection() || {
           mode: "auto",
@@ -6086,8 +6113,7 @@ export function setupHandlers(
                   options,
                 )
               : "Not supported";
-      const active =
-        available && isReasoningDisplayLabelActive(resolvedReasoningLabel);
+      const active = available && activeThinking;
       const reasoningLabel = resolvedReasoningLabel;
       reasoningBtn.disabled = !item;
       reasoningBtn.classList.toggle(

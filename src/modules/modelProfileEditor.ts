@@ -38,6 +38,7 @@ import {
   type ResolvedModelCapabilities,
 } from "../modelCapabilities";
 import { el, iconBtn } from "../utils/domHelpers";
+import { previewReasoningControls } from "../utils/llmClient";
 import { getGeminiReasoningProfileForModel } from "../utils/reasoningProfiles";
 
 /**
@@ -183,6 +184,32 @@ export function deriveLevelParameters(
 }
 
 /**
+ * What one level puts on the wire, for display next to its name.
+ *
+ * The text comes from the request builder itself, so a hosted profile whose
+ * encoding lives in the transport — DeepSeek turning thinking off for
+ * `minimal`, raising the effort to `max` for `xhigh` — describes itself
+ * truthfully instead of falling back to a generic `reasoning_effort=<id>`.
+ */
+export function describeReasoningLevel(
+  detected: ResolvedModelCapabilities,
+  id: string,
+): { sent: string } {
+  const trimmed = id.trim().toLowerCase();
+  const declared = detected.reasoning.options.find(
+    (entry) => entry.id === trimmed,
+  )?.controls?.body;
+  return {
+    sent:
+      (declared && Object.keys(declared).length
+        ? stringifyKeyValueField(declared)
+        : stringifyKeyValueField(
+            previewReasoningControls(detected, trimmed),
+          )) || deriveLevelParameters(detected, trimmed),
+  };
+}
+
+/**
  * The editor's whole decision, as a pure function of its inputs — what gets
  * stored, and which rows deserve a warning. The DOM layer only collects field
  * values and paints the result, so this is where the behavior is tested.
@@ -252,11 +279,8 @@ export function computeProfileOverrideDraft(input: {
     seenIds.add(id);
     options.push({
       id,
-      // Carry the detected label rather than echoing the id. The menu keys
-      // its off/on styling off this string — `isReasoningDisplayLabelActive`
-      // treats "off" and "disabled" as inactive — so relabelling Ollama's
-      // `minimal` to "minimal" would make the button read as *on* while
-      // thinking was off.
+      // A level has one name and it is the id. The menu decides its off/on
+      // styling from the request the level sends, not from this string.
       label: detectedLabelFor(id) || id,
       enabled: true,
       ...(detectedOptions.find((option) => option.id === id)?.effort
@@ -323,16 +347,6 @@ export function createModelProfileEditor(
    * the parameter without ever owning it. Detected levels show their declared
    * body (think=false); everything else shows its derivation.
    */
-  function sentParameterTextFor(id: string): string {
-    const trimmed = id.trim().toLowerCase();
-    const detectedBody = detected.reasoning.options.find(
-      (option) => option.id === trimmed,
-    )?.controls?.body;
-    if (detectedBody && Object.keys(detectedBody).length) {
-      return stringifyKeyValueField(detectedBody);
-    }
-    return deriveLevelParameters(detected, trimmed);
-  }
 
   const sectionLabel = (title: string) =>
     el(doc, "div", styles.sectionLabel, t(title));
@@ -404,17 +418,17 @@ export function createModelProfileEditor(
     idInput.placeholder = t("level");
     idInput.value = seed?.id || firstUnusedLevelId();
 
-    // Read-only: the id is the whole input; this just shows what it becomes
-    // on the wire, and follows the id as it is typed.
-    const sent = el(
-      doc,
-      "span",
-      styles.helper + " font-family: monospace;",
-      `→ ${sentParameterTextFor(idInput.value)}`,
-    );
+    // Read-only: the id is the whole input; these two just show what it
+    // becomes on the wire and what the reasoning menu calls it, and follow the
+    // id as it is typed.
+    const sent = el(doc, "span", styles.helper + " font-family: monospace;");
+    const paintDescription = () => {
+      sent.textContent = `→ ${describeReasoningLevel(detected, idInput.value).sent}`;
+    };
+    paintDescription();
 
     idInput.addEventListener("input", () => {
-      sent.textContent = `→ ${sentParameterTextFor(idInput.value)}`;
+      paintDescription();
       commit();
     });
 

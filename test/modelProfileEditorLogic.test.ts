@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   computeProfileOverrideDraft,
+  describeReasoningLevel,
   SUGGESTED_REASONING_LEVEL_IDS,
 } from "../src/modules/modelProfileEditor";
 import {
@@ -26,7 +27,63 @@ function detectedThinkProfile(): ResolvedModelCapabilities {
   });
 }
 
+/** A hosted profile whose encoding lives in the transport, not in the option. */
+function detectedDeepseekProfile(): ResolvedModelCapabilities {
+  return getModelCapabilities({
+    model: "deepseek-v4-pro",
+    apiBase: "https://api.deepseek.com/v1",
+    protocol: "openai_chat_compat",
+  });
+}
+
 describe("model profile editor logic", function () {
+  describe("describeReasoningLevel", function () {
+    it("shows what a legacy profile really sends, not the generic guess", function () {
+      const detected = detectedDeepseekProfile();
+      // DeepSeek V4 turns thinking off for `minimal` and raises the effort to
+      // `max` for `xhigh`; the row used to claim reasoning_effort=<level>.
+      assert.equal(
+        describeReasoningLevel(detected, "none").sent,
+        "thinking.type=disabled",
+      );
+      assert.equal(
+        describeReasoningLevel(detected, "max").sent,
+        "thinking.type=enabled, reasoning_effort=max",
+      );
+      assert.equal(
+        describeReasoningLevel(detected, "high").sent,
+        "thinking.type=enabled, reasoning_effort=high",
+      );
+    });
+
+    it("keeps a declarative profile's own declared body", function () {
+      assert.equal(
+        describeReasoningLevel(detectedThinkProfile(), "minimal").sent,
+        "think=false",
+      );
+    });
+
+    it("derives from the name for a level the model has not declared", function () {
+      assert.equal(
+        describeReasoningLevel(detectedDeepseekProfile(), "ultra").sent,
+        "reasoning_effort=ultra",
+      );
+    });
+
+    it("names a level once — the id, with no display alias", function () {
+      const detected = detectedDeepseekProfile();
+      // The menu used to call `minimal` "disabled" and `xhigh` "max", so the
+      // two screens named the same level differently. There is one name now.
+      for (const option of detected.reasoning.options) {
+        assert.equal(option.label, option.id);
+      }
+      assert.deepEqual(
+        Object.keys(describeReasoningLevel(detected, "minimal")),
+        ["sent"],
+      );
+    });
+  });
+
   afterEach(function () {
     resetModelCapabilityStateForTests();
   });

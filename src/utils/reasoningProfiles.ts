@@ -6,6 +6,8 @@ export type ReasoningProvider =
   | "deepseek"
   | "kimi"
   | "mimo"
+  | "minimax"
+  | "glm"
   | "qwen"
   | "grok"
   | "anthropic"
@@ -29,6 +31,16 @@ export type OpenAIReasoningEffort =
   | "high"
   | "xhigh"
   | (string & {});
+/**
+ * Providers whose only reasoning control is `thinking.type`, each with its own
+ * vocabulary for the value (GLM says enabled/disabled, MiniMax adaptive).
+ */
+export type ThinkingSwitchType = "enabled" | "disabled" | "adaptive";
+export type ThinkingSwitchProfile = {
+  defaultLevel: ReasoningLevel;
+  levelToThinkingType: Partial<Record<ReasoningLevel, ThinkingSwitchType>>;
+};
+
 export type GeminiThinkingParam = "thinking_level" | "thinking_budget";
 export type GeminiThinkingValue =
   | "minimal"
@@ -81,7 +93,8 @@ export type QwenReasoningProfile = {
   defaultLevel: ReasoningLevel;
 };
 export type DeepseekThinkingType = "enabled" | "disabled";
-export type DeepseekReasoningEffort = "high" | "max";
+/** https://api-docs.deepseek.com/guides/thinking_mode/ */
+export type DeepseekReasoningEffort = "low" | "high" | "max";
 export type DeepseekReasoningProfile = {
   defaultThinkingType: DeepseekThinkingType | null;
   defaultReasoningEffort: DeepseekReasoningEffort | null;
@@ -140,6 +153,7 @@ type ProviderProfile = {
       Record<ReasoningLevel, MimoThinkingType | null>
     >;
   };
+  thinkingSwitch?: ThinkingSwitchProfile;
 };
 
 type ProfileRule = {
@@ -147,16 +161,21 @@ type ProfileRule = {
   profile: ProviderProfile;
 };
 
-const option = (
-  level: ReasoningLevel,
-  label: string,
-): RuntimeReasoningOption => {
-  return { level, label, enabled: true };
+/**
+ * A level has one name, and it is the level id.
+ *
+ * These options used to carry a separate display label — deepseek's `minimal`
+ * showed as "disabled", gemini's `low` as its token budget — so the reasoning
+ * menu and the model editor named the same level differently. The parameters a
+ * level actually sends are shown in the editor next to it, which is where a
+ * budget belongs; the menu just names the level.
+ */
+const option = (level: ReasoningLevel): RuntimeReasoningOption => {
+  return { level, label: level, enabled: true };
 };
 
 function singleEnabledOptionProfile(
   level: ReasoningLevel,
-  label: string,
   extras: Omit<
     Partial<ProviderProfile>,
     "supportsReasoning" | "defaultLevel" | "options"
@@ -165,7 +184,7 @@ function singleEnabledOptionProfile(
   return {
     supportsReasoning: true,
     defaultLevel: level,
-    options: [option(level, label)],
+    options: [option(level)],
     ...extras,
   };
 }
@@ -187,12 +206,7 @@ function cloneLevelMap<T>(
 const OPENAI_GPT5_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
-  options: [
-    option("default", "default"),
-    option("low", "low"),
-    option("medium", "medium"),
-    option("high", "high"),
-  ],
+  options: [option("default"), option("low"), option("medium"), option("high")],
   openai: {
     defaultEffort: "default",
     levelToEffort: {
@@ -208,11 +222,11 @@ const OPENAI_GPT5_XHIGH_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
   options: [
-    option("default", "default"),
-    option("low", "low"),
-    option("medium", "medium"),
-    option("high", "high"),
-    option("xhigh", "xhigh"),
+    option("default"),
+    option("low"),
+    option("medium"),
+    option("high"),
+    option("xhigh"),
   ],
   openai: {
     defaultEffort: "default",
@@ -229,7 +243,7 @@ const OPENAI_GPT5_XHIGH_PROFILE: ProviderProfile = {
 const OPENAI_GPT5_PRO_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "high",
-  options: [option("high", "high")],
+  options: [option("high")],
   openai: {
     defaultEffort: "high",
     levelToEffort: {
@@ -241,11 +255,7 @@ const OPENAI_GPT5_PRO_PROFILE: ProviderProfile = {
 const OPENAI_GPT5_XHIGH_PRO_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "medium",
-  options: [
-    option("medium", "medium"),
-    option("high", "high"),
-    option("xhigh", "xhigh"),
-  ],
+  options: [option("medium"), option("high"), option("xhigh")],
   openai: {
     defaultEffort: "medium",
     levelToEffort: {
@@ -259,12 +269,7 @@ const OPENAI_GPT5_XHIGH_PRO_PROFILE: ProviderProfile = {
 const OPENAI_GPT5_CODEX_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "low",
-  options: [
-    option("low", "low"),
-    option("medium", "medium"),
-    option("high", "high"),
-    option("xhigh", "xhigh"),
-  ],
+  options: [option("low"), option("medium"), option("high"), option("xhigh")],
   openai: {
     defaultEffort: "low",
     levelToEffort: {
@@ -276,14 +281,68 @@ const OPENAI_GPT5_CODEX_PROFILE: ProviderProfile = {
   },
 };
 
+// https://developers.openai.com/api/docs/models/gpt-5.6 — reasoning effort takes
+// none | low | medium (default) | high | xhigh | max.
+const OPENAI_GPT56_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "medium",
+  options: [
+    option("none"),
+    option("low"),
+    option("medium"),
+    option("high"),
+    option("xhigh"),
+    option("max"),
+  ],
+  openai: {
+    defaultEffort: "medium",
+    levelToEffort: {
+      none: "none",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    },
+  },
+};
+
+// https://docs.x.ai/docs/guides/reasoning — grok-4.6 and grok-4.20-multi-agent
+// take low | medium | high (default) | xhigh; grok-4.5 stops at high. Reasoning
+// cannot be disabled on any of them, so there is no off level.
+const GROK_XHIGH_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: [option("low"), option("medium"), option("high"), option("xhigh")],
+  openai: {
+    defaultEffort: "high",
+    levelToEffort: {
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+    },
+  },
+};
+
+const GROK_HIGH_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: [option("low"), option("medium"), option("high")],
+  openai: {
+    defaultEffort: "high",
+    levelToEffort: {
+      low: "low",
+      medium: "medium",
+      high: "high",
+    },
+  },
+};
+
 const GROK_3_MINI_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
-  options: [
-    option("default", "default"),
-    option("low", "low"),
-    option("high", "high"),
-  ],
+  options: [option("default"), option("low"), option("high")],
   openai: {
     defaultEffort: "default",
     levelToEffort: {
@@ -294,15 +353,13 @@ const GROK_3_MINI_PROFILE: ProviderProfile = {
   },
 };
 
-const GROK_REASONING_PROFILE: ProviderProfile = singleEnabledOptionProfile(
-  "default",
-  "enabled",
-);
+const GROK_REASONING_PROFILE: ProviderProfile =
+  singleEnabledOptionProfile("default");
 
 const GEMINI_3_PRO_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "high",
-  options: [option("high", "high"), option("low", "low")],
+  options: [option("high"), option("low")],
   gemini: {
     param: "thinking_level",
     defaultValue: "high",
@@ -318,11 +375,7 @@ const GEMINI_3_PRO_PROFILE: ProviderProfile = {
 const GEMINI_3X_PRO_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "high",
-  options: [
-    option("high", "high"),
-    option("medium", "medium"),
-    option("low", "low"),
-  ],
+  options: [option("high"), option("medium"), option("low")],
   gemini: {
     param: "thinking_level",
     defaultValue: "high",
@@ -339,12 +392,7 @@ const GEMINI_3X_PRO_PROFILE: ProviderProfile = {
 const GEMINI_36_FLASH_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "medium",
-  options: [
-    option("medium", "medium"),
-    option("high", "high"),
-    option("low", "low"),
-    option("minimal", "minimal"),
-  ],
+  options: [option("medium"), option("high"), option("low"), option("minimal")],
   gemini: {
     param: "thinking_level",
     defaultValue: "medium",
@@ -360,12 +408,7 @@ const GEMINI_36_FLASH_PROFILE: ProviderProfile = {
 const GEMINI_3_FLASH_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "high",
-  options: [
-    option("high", "high"),
-    option("medium", "medium"),
-    option("low", "low"),
-    option("minimal", "minimal"),
-  ],
+  options: [option("high"), option("medium"), option("low"), option("minimal")],
   gemini: {
     param: "thinking_level",
     defaultValue: "high",
@@ -381,12 +424,7 @@ const GEMINI_3_FLASH_PROFILE: ProviderProfile = {
 const GEMINI_3_FLASH_LITE_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "minimal",
-  options: [
-    option("minimal", "minimal"),
-    option("low", "low"),
-    option("medium", "medium"),
-    option("high", "high"),
-  ],
+  options: [option("minimal"), option("low"), option("medium"), option("high")],
   gemini: {
     param: "thinking_level",
     defaultValue: "minimal",
@@ -402,11 +440,7 @@ const GEMINI_3_FLASH_LITE_PROFILE: ProviderProfile = {
 const GEMINI_25_PRO_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
-  options: [
-    option("default", "dynamic"),
-    option("low", "128"),
-    option("high", "32768"),
-  ],
+  options: [option("default"), option("low"), option("high")],
   gemini: {
     param: "thinking_budget",
     defaultValue: -1,
@@ -422,10 +456,10 @@ const GEMINI_25_FLASH_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
   options: [
-    option("default", "dynamic"),
-    option("minimal", "off"),
-    option("low", "1"),
-    option("high", "24576"),
+    option("default"),
+    option("minimal"),
+    option("low"),
+    option("high"),
   ],
   gemini: {
     param: "thinking_budget",
@@ -443,10 +477,10 @@ const GEMINI_25_FLASH_LITE_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
   options: [
-    option("default", "off"),
-    option("minimal", "dynamic"),
-    option("low", "512"),
-    option("high", "24576"),
+    option("default"),
+    option("minimal"),
+    option("low"),
+    option("high"),
   ],
   gemini: {
     param: "thinking_budget",
@@ -463,11 +497,7 @@ const GEMINI_25_FLASH_LITE_PROFILE: ProviderProfile = {
 const GEMINI_GENERIC_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "medium",
-  options: [
-    option("medium", "medium"),
-    option("low", "low"),
-    option("high", "high"),
-  ],
+  options: [option("medium"), option("low"), option("high")],
   gemini: {
     param: "thinking_level",
     defaultValue: "medium",
@@ -481,7 +511,6 @@ const GEMINI_GENERIC_PROFILE: ProviderProfile = {
 
 const DEEPSEEK_REASONER_PROFILE: ProviderProfile = singleEnabledOptionProfile(
   "default",
-  "enabled",
   {
     deepseek: {
       defaultThinkingType: "enabled",
@@ -497,29 +526,28 @@ const DEEPSEEK_REASONER_PROFILE: ProviderProfile = singleEnabledOptionProfile(
   },
 );
 
+// https://api-docs.deepseek.com/guides/thinking_mode/ — reasoning_effort takes
+// low | high | max, thinking.type takes enabled | disabled, and the default is
+// thinking on at high effort. `low` used to be missing entirely, and `max` was
+// exposed under our own name `xhigh`.
 const DEEPSEEK_V4_PROFILE: ProviderProfile = {
   supportsReasoning: true,
-  defaultLevel: "default",
-  options: [
-    option("default", "default"),
-    option("minimal", "disabled"),
-    option("high", "high"),
-    option("xhigh", "max"),
-  ],
+  defaultLevel: "high",
+  options: [option("none"), option("low"), option("high"), option("max")],
   deepseek: {
     defaultThinkingType: "enabled",
     defaultReasoningEffort: "high",
     levelToThinkingType: {
-      default: "enabled",
-      minimal: "disabled",
+      none: "disabled",
+      low: "enabled",
       high: "enabled",
-      xhigh: "enabled",
+      max: "enabled",
     },
     levelToReasoningEffort: {
-      default: "high",
-      minimal: null,
+      none: null,
+      low: "low",
       high: "high",
-      xhigh: "max",
+      max: "max",
     },
     omitTemperatureWhenThinking: true,
   },
@@ -531,10 +559,16 @@ const DEEPSEEK_CHAT_PROFILE: ProviderProfile = {
   options: [],
 };
 
+// Kimi k2/k2.5 drive thinking.type only; the registry already names the newer
+// k2.6 levels off/on, so the built-in profile says the same thing.
 const KIMI_THINKING_PROFILE: ProviderProfile = {
   supportsReasoning: true,
-  defaultLevel: "default",
-  options: [option("default", "enabled"), option("minimal", "disabled")],
+  defaultLevel: "on",
+  options: [option("off"), option("on")],
+  thinkingSwitch: {
+    defaultLevel: "on",
+    levelToThinkingType: { off: "disabled", on: "enabled" },
+  },
 };
 
 const KIMI_NON_THINKING_PROFILE: ProviderProfile = {
@@ -543,44 +577,44 @@ const KIMI_NON_THINKING_PROFILE: ProviderProfile = {
   options: [],
 };
 
+// MiMo opts in to thinking with thinking.type=enabled and documents no way to
+// turn it off, so the one level says what it does; Auto sends nothing.
 const MIMO_THINKING_PROFILE: ProviderProfile = {
   supportsReasoning: true,
-  defaultLevel: "default",
-  options: [option("default", "default"), option("high", "enabled")],
+  defaultLevel: "on",
+  options: [option("on")],
   mimo: {
     levelToThinkingType: {
-      default: null,
-      high: "enabled",
+      on: "enabled",
     },
   },
 };
 
+// Qwen's control is enable_thinking: true | false (alibabacloud.com/help/en/
+// model-studio/deep-thinking) — a switch, not an effort ladder, so the levels
+// are named for what they do rather than borrowed from a scale Qwen has not
+// got. "Auto — provider default" covers sending neither.
 const QWEN_TOGGLE_PROFILE: ProviderProfile = {
   supportsReasoning: true,
-  defaultLevel: "default",
-  options: [
-    option("default", "default"),
-    option("high", "enabled"),
-    option("low", "disabled"),
-  ],
+  defaultLevel: "on",
+  options: [option("off"), option("on")],
   qwen: {
     defaultEnableThinking: null,
     levelToEnableThinking: {
-      default: null,
-      high: true,
-      low: false,
+      off: false,
+      on: true,
     },
   },
 };
 
 const QWEN_THINKING_ONLY_PROFILE: ProviderProfile = {
   supportsReasoning: true,
-  defaultLevel: "default",
-  options: [option("default", "enabled")],
+  defaultLevel: "on",
+  options: [option("on")],
   qwen: {
     defaultEnableThinking: true,
     levelToEnableThinking: {
-      default: true,
+      on: true,
     },
   },
 };
@@ -595,43 +629,43 @@ const QWEN_NON_THINKING_ONLY_PROFILE: ProviderProfile = {
   },
 };
 
+// https://platform.claude.com/docs/en/build-with-claude/effort — output_config
+// .effort takes low | medium | high (default) | xhigh | max. `max` used to be
+// reachable only under our name `xhigh`.
+// Per the effort table: `max` is available on Mythos Preview, Opus 4.6/4.7/4.8
+// and 5, Sonnet 4.6 and 5, and the Fable/Mythos 5 line; `xhigh` on a narrower
+// set that excludes Mythos Preview and the 4.6 generation.
 const ANTHROPIC_ADAPTIVE_MAX_OPTIONS: RuntimeReasoningOption[] = [
-  option("low", "low"),
-  option("medium", "medium"),
-  option("high", "high"),
-  option("xhigh", "max"),
+  option("low"),
+  option("medium"),
+  option("high"),
+  option("max"),
 ];
 
-const ANTHROPIC_ADAPTIVE_XHIGH_OPTIONS: RuntimeReasoningOption[] = [
-  option("low", "low"),
-  option("medium", "medium"),
-  option("high", "high"),
-  option("xhigh", "xhigh"),
+const ANTHROPIC_ADAPTIVE_ALL_OPTIONS: RuntimeReasoningOption[] = [
+  option("low"),
+  option("medium"),
+  option("high"),
+  option("xhigh"),
+  option("max"),
 ];
 
 const ANTHROPIC_MANUAL_OPTIONS: RuntimeReasoningOption[] = [
-  option("low", "1024"),
-  option("medium", "2000"),
-  option("high", "10000"),
-  option("xhigh", "32000"),
+  option("low"),
+  option("medium"),
+  option("high"),
+  option("xhigh"),
 ];
 
-const ANTHROPIC_MAX_EFFORT_MAP: Partial<
-  Record<ReasoningLevel, AnthropicAdaptiveEffort>
-> = {
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: "max",
-};
-
-const ANTHROPIC_XHIGH_EFFORT_MAP: Partial<
+// The level id is the effort value; there is nothing to translate.
+const ANTHROPIC_EFFORT_MAP: Partial<
   Record<ReasoningLevel, AnthropicAdaptiveEffort>
 > = {
   low: "low",
   medium: "medium",
   high: "high",
   xhigh: "xhigh",
+  max: "max",
 };
 
 const ANTHROPIC_BUDGET_MAP: Partial<Record<ReasoningLevel, number>> = {
@@ -639,6 +673,7 @@ const ANTHROPIC_BUDGET_MAP: Partial<Record<ReasoningLevel, number>> = {
   medium: 2000,
   high: 10000,
   xhigh: 32000,
+  max: 32000,
 };
 
 const ANTHROPIC_ADAPTIVE_ONLY_PROFILE: ProviderProfile = {
@@ -648,7 +683,7 @@ const ANTHROPIC_ADAPTIVE_ONLY_PROFILE: ProviderProfile = {
   anthropic: {
     defaultBudgetTokens: 2000,
     levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
-    levelToEffort: ANTHROPIC_MAX_EFFORT_MAP,
+    levelToEffort: ANTHROPIC_EFFORT_MAP,
     preferredMode: "adaptive",
     supportsAdaptiveThinking: true,
     supportsManualThinking: false,
@@ -660,15 +695,29 @@ const ANTHROPIC_ADAPTIVE_ONLY_PROFILE: ProviderProfile = {
 const ANTHROPIC_OPUS_47_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "high",
-  options: ANTHROPIC_ADAPTIVE_XHIGH_OPTIONS,
+  options: ANTHROPIC_ADAPTIVE_ALL_OPTIONS,
   anthropic: {
     defaultBudgetTokens: 2000,
     levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
-    levelToEffort: ANTHROPIC_XHIGH_EFFORT_MAP,
+    levelToEffort: ANTHROPIC_EFFORT_MAP,
     preferredMode: "adaptive",
     supportsAdaptiveThinking: true,
     supportsManualThinking: false,
     supportsDisabledThinking: true,
+  },
+};
+
+const ANTHROPIC_ADAPTIVE_ALL_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: ANTHROPIC_ADAPTIVE_ALL_OPTIONS,
+  anthropic: {
+    defaultBudgetTokens: 2000,
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: ANTHROPIC_EFFORT_MAP,
+    preferredMode: "adaptive",
+    supportsAdaptiveThinking: true,
+    supportsManualThinking: false,
   },
 };
 
@@ -679,7 +728,7 @@ const ANTHROPIC_ADAPTIVE_WITH_MANUAL_FALLBACK_PROFILE: ProviderProfile = {
   anthropic: {
     defaultBudgetTokens: 2000,
     levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
-    levelToEffort: ANTHROPIC_MAX_EFFORT_MAP,
+    levelToEffort: ANTHROPIC_EFFORT_MAP,
     preferredMode: "adaptive",
     supportsAdaptiveThinking: true,
     supportsManualThinking: true,
@@ -699,6 +748,47 @@ const ANTHROPIC_MANUAL_THINKING_PROFILE: ProviderProfile = {
     supportsAdaptiveThinking: false,
     supportsManualThinking: true,
     supportsDisabledThinking: true,
+  },
+};
+
+// A provider whose only control is a switch gets `off`/`on`, whatever its API
+// spells the "on" value — MiniMax says `adaptive`, GLM and Kimi say `enabled`,
+// Qwen sends a boolean. The editor shows the real parameter beside the level,
+// so the request stays visible without a different word per provider.
+//
+// https://platform.minimax.io/docs — thinking.type takes adaptive | disabled.
+// M3 ships with thinking off; the M2.x line accepts `disabled` but keeps
+// thinking on regardless, so it gets no off switch to promise something the
+// API will not honour.
+const MINIMAX_TOGGLE_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "off",
+  options: [option("off"), option("on")],
+  thinkingSwitch: {
+    defaultLevel: "off",
+    levelToThinkingType: { off: "disabled", on: "adaptive" },
+  },
+};
+
+const MINIMAX_ALWAYS_THINKING_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "on",
+  options: [option("on")],
+  thinkingSwitch: {
+    defaultLevel: "on",
+    levelToThinkingType: { on: "adaptive" },
+  },
+};
+
+// https://docs.z.ai/guides/llm/glm-4.6 — thinking.type takes enabled |
+// disabled, default enabled.
+const GLM_TOGGLE_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "on",
+  options: [option("off"), option("on")],
+  thinkingSwitch: {
+    defaultLevel: "on",
+    levelToThinkingType: { off: "disabled", on: "enabled" },
   },
 };
 
@@ -725,6 +815,10 @@ const PROFILE_RULES: Record<
       {
         match: /^gpt-5\.(?:2|3)-codex(?:\b|[.-])/,
         profile: OPENAI_GPT5_CODEX_PROFILE,
+      },
+      {
+        match: /^gpt-5\.6(?:\b|[.-])/,
+        profile: OPENAI_GPT56_PROFILE,
       },
       {
         match: /^gpt-5\.(?:4|5)(?:\b|[.-])/,
@@ -849,6 +943,28 @@ const PROFILE_RULES: Record<
     ],
     fallback: UNSUPPORTED_PROFILE,
   },
+  minimax: {
+    rules: [
+      {
+        match: /(^|[/:])minimax-m3(?:\b|[.-])/,
+        profile: MINIMAX_TOGGLE_PROFILE,
+      },
+      {
+        match: /(^|[/:])minimax-m2(?:\.\d+)?(?:\b|[.-])/,
+        profile: MINIMAX_ALWAYS_THINKING_PROFILE,
+      },
+    ],
+    fallback: UNSUPPORTED_PROFILE,
+  },
+  glm: {
+    rules: [
+      {
+        match: /(^|[/:])glm-\d/,
+        profile: GLM_TOGGLE_PROFILE,
+      },
+    ],
+    fallback: UNSUPPORTED_PROFILE,
+  },
   qwen: {
     rules: [
       {
@@ -873,6 +989,14 @@ const PROFILE_RULES: Record<
         profile: GROK_3_MINI_PROFILE,
       },
       {
+        match: /^grok-(?:4\.6|4\.20-multi-agent)(?:\b|[.-])/,
+        profile: GROK_XHIGH_PROFILE,
+      },
+      {
+        match: /^grok-4\.5(?:\b|[.-])/,
+        profile: GROK_HIGH_PROFILE,
+      },
+      {
         match: /(^|[/:])grok(?:\b|[.-])/,
         profile: GROK_REASONING_PROFILE,
       },
@@ -884,6 +1008,13 @@ const PROFILE_RULES: Record<
       {
         match: /(^|[/:.])claude-mythos-preview(?:\b|[.-])/,
         profile: ANTHROPIC_ADAPTIVE_ONLY_PROFILE,
+      },
+      {
+        // Opus 5, Sonnet 5, Fable/Mythos 5.x and Opus 4.8 reject
+        // thinking.type=enabled and steer with output_config.effort instead.
+        match:
+          /(^|[/:.])claude-(?:opus-(?:5|4-8)|sonnet-5|fable-5(?:-1)?|mythos-5(?:-1)?)(?:\b|[.-])/,
+        profile: ANTHROPIC_ADAPTIVE_ALL_PROFILE,
       },
       {
         match: /(^|[/:.])claude-opus-4-7(?:\b|[.-])/,
@@ -1025,6 +1156,14 @@ export function getDeepseekReasoningProfileForModel(
       deepseekProfile?.omitTemperatureWhenThinking,
     ),
   };
+}
+
+/** The thinking.type switch for providers whose only control is that flag. */
+export function getThinkingSwitchProfileForModel(
+  provider: ReasoningProvider,
+  modelName?: string,
+): ThinkingSwitchProfile | null {
+  return resolveProviderProfile(provider, modelName).thinkingSwitch || null;
 }
 
 export function getMimoReasoningProfileForModel(

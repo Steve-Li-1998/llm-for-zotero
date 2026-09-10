@@ -1117,7 +1117,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
       request: makeRequest({
         model: "deepseek-v4-pro",
         apiBase: "https://api.deepseek.com/anthropic",
-        reasoning: { provider: "deepseek", level: "xhigh" },
+        reasoning: { provider: "deepseek", level: "max" },
         advanced: {
           outputTokenLimit: { mode: "custom", tokens: 384000 },
         },

@@ -1,4 +1,5 @@
 import {
+  isReasoningLevelActive,
   parseStatusFromErrorMessage,
   requireCompleteModelText,
   type ChatParams,
@@ -16,6 +17,7 @@ import {
   type ModelProfileOverride,
   type ModelReasoningCapability,
   type ReasoningCapabilityOption,
+  type ResolvedModelCapabilities,
 } from "../modelCapabilities";
 import type { ReasoningLevel, ReasoningProvider } from "./reasoningProfiles";
 import type { ModelTurnOutcome } from "../shared/llm";
@@ -229,6 +231,7 @@ function findLowestSupportedOption(
 }
 
 function findDisabledOption(
+  capabilities: ResolvedModelCapabilities,
   reasoning: ModelReasoningCapability,
   provider?: ReasoningProvider,
 ): ReasoningCapabilityOption | undefined {
@@ -239,6 +242,10 @@ function findDisabledOption(
         option.controls?.body ||
         option.controls?.omit?.length ||
         option.controls?.omitTemperature ||
+        // A hosted profile keeps its encoding in the transport rather than in
+        // the option, so the only way to know the level really switches
+        // thinking off is to look at the request it produces.
+        !isReasoningLevelActive(capabilities, option.id) ||
         (provider === "gemini" &&
           ["off", "disabled", "none"].includes(normalize(option.label))),
       ),
@@ -306,7 +313,7 @@ function buildReasoningPlan(params: {
   ) {
     return { reasoning: undefined, reserveTokens: 0 };
   }
-  const disabled = findDisabledOption(reasoning, provider);
+  const disabled = findDisabledOption(capabilities, reasoning, provider);
   if (disabled) {
     return {
       reasoning: provider

@@ -2688,6 +2688,8 @@ const REASONING_PROVIDER_KINDS = new Set<ReasoningProviderKind>([
   "mimo",
   "qwen",
   "grok",
+  "minimax",
+  "glm",
   "anthropic",
   "local",
 ]);

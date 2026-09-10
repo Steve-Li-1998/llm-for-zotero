@@ -322,7 +322,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportedProtocols: ["anthropic_messages", "openai_chat_compat"],
     helperText:
       "Preset uses GLM's Claude-compatible endpoint for agent tool use.",
-    matches: makeHostAndPathMatcher(["open.bigmodel.cn"], GLM_PATHS),
+    matches: makeHostAndPathMatcher(
+      ["open.bigmodel.cn", "api.z.ai"],
+      GLM_PATHS,
+    ),
     supportsEmbeddings: false,
   },
   {

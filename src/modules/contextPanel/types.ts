@@ -152,6 +152,8 @@ export type ReasoningProviderKind =
   | "mimo"
   | "qwen"
   | "grok"
+  | "minimax"
+  | "glm"
   | "anthropic"
   | "customized"
   | "local"

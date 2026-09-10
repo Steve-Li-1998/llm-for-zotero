@@ -88,11 +88,36 @@ describe("Agent preference tab layout", function () {
     assert.isAtLeast(claudeCard, 0);
     // Zotero MCP tools govern both native runtimes, so the control cannot live
     // inside — and disappear with — the Codex row.
-    assert.isAbove(sharedTools, claudeCard);
+    assert.isAbove(notesRow, claudeCard);
+    assert.isAbove(sharedTools, notesRow);
+    // Both MCP clients — the built-in runtimes and external ones — are
+    // configured in the same panel rather than in two places on the tab.
     assert.isAbove(mcpToggle, sharedTools);
-    assert.isAbove(notesRow, sharedTools);
-    // The library-wide write opt-in closes the tab instead of opening it.
-    assert.isAbove(externalMcp, notesRow);
+    assert.isAbove(externalMcp, mcpToggle);
+    const sharedPanel = panel.slice(sharedTools);
+    assert.include(sharedPanel, 'id="__addonRef__-external-mcp-writes"');
+  });
+
+  it("fills the Codex model picker from the CLI's own catalog", function () {
+    const panel = agentPanel();
+    // A hand-typed model ID cannot be validated and goes stale the moment the
+    // CLI ships a new one, so the picker reads the installed CLI's catalog.
+    const model = elementById(panel, "__addonRef__-codex-app-server-model");
+    assert.include(model, "<html:select");
+    for (const id of [
+      "__addonRef__-codex-app-server-model-refresh",
+      "__addonRef__-codex-app-server-custom-model",
+      "__addonRef__-codex-app-server-model-status",
+    ]) {
+      assert.include(panel, `id="${id}"`, id);
+    }
+
+    const preferenceScript = source("src/modules/preferenceScript.ts");
+    assert.include(preferenceScript, "renderCodexModelOptions");
+    assert.include(preferenceScript, "CODEX_CUSTOMIZED_MODEL_OPTION_KEY");
+    // One catalog read fills the model picker and the reasoning levels.
+    assert.include(preferenceScript, "refreshCodexCatalog");
+    assert.notInclude(preferenceScript, "refreshCodexReasoningOptions");
   });
 
   it("folds runtime detail into a per-row advanced drawer", function () {

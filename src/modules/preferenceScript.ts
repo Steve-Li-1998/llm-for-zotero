@@ -265,6 +265,7 @@ import { applyCodexAppServerModePreferenceChange } from "../codexAppServer/modeP
 import { getConfiguredCodexAppServerBinaryPath } from "../codexAppServer/binaryPath";
 import {
   getCodexAppServerReasoningChoices,
+  CODEX_CUSTOMIZED_MODEL_OPTION_KEY,
   loadCodexAppServerModelCatalog,
   resolveCodexAppServerReasoningSelection,
   type CodexAppServerModelCatalogEntry,
@@ -1136,9 +1137,27 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const codexAppServerSettingsWrap = doc.querySelector(
     `#${config.addonRef}-codex-app-server-settings`,
   ) as HTMLDivElement | null;
-  const codexAppServerModelInput = doc.querySelector(
+  const codexAppServerModelSelect = doc.querySelector(
     `#${config.addonRef}-codex-app-server-model`,
+  ) as HTMLSelectElement | null;
+  const codexAppServerCustomModelWrap = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-custom-model-wrap`,
+  ) as HTMLDivElement | null;
+  const codexAppServerCustomModelInput = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-custom-model`,
   ) as HTMLInputElement | null;
+  const codexAppServerModelStatus = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-model-status`,
+  ) as HTMLSpanElement | null;
+  const codexAppServerModelRefreshButton = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-model-refresh`,
+  ) as HTMLButtonElement | null;
+  // The Codex model is whatever the catalog select names, unless the user
+  // picked "Customized" and typed one the installed CLI knows about.
+  const resolveCodexModelValue = (): string =>
+    codexAppServerModelSelect?.value === CODEX_CUSTOMIZED_MODEL_OPTION_KEY
+      ? codexAppServerCustomModelInput?.value.trim() || ""
+      : codexAppServerModelSelect?.value.trim() || "";
   const codexAppServerReasoningSelect = doc.querySelector(
     `#${config.addonRef}-codex-app-server-reasoning`,
   ) as HTMLSelectElement | null;
@@ -3374,7 +3393,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       codexOn,
       codexOn
         ? [
-            codexAppServerModelInput?.value.trim() || t("Default model"),
+            resolveCodexModelValue() || t("Default model"),
             selectedOptionLabel(codexPermissionProfileSelect),
           ]
         : [t("Off")],
@@ -3450,13 +3469,60 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       applyCodexAppServerUi(enabled);
       applyCodexAppServerModePreferenceChange(enabled);
       if (enabled) {
-        void refreshCodexReasoningOptions();
+        void refreshCodexCatalog();
         void refreshCodexPermissionOptions();
       }
     });
   }
 
   let codexReasoningCatalogRefreshId = 0;
+  // The Codex CLI is the only authority on which models it accepts, so the
+  // picker is filled from its own catalog rather than typed by hand.
+  const renderCodexModelOptions = (
+    models: CodexAppServerModelCatalogEntry[],
+    catalogReady: boolean,
+  ) => {
+    if (!codexAppServerModelSelect) return;
+    const stored = getCodexRuntimeModelPref().trim();
+    const options = models.map((entry) => {
+      const option = el(doc, "option") as HTMLOptionElement;
+      option.value = entry.model;
+      option.textContent = entry.displayName || entry.model;
+      if (entry.description) option.title = entry.description;
+      return option;
+    });
+    const customized = el(doc, "option") as HTMLOptionElement;
+    customized.value = CODEX_CUSTOMIZED_MODEL_OPTION_KEY;
+    customized.textContent = t("Customized");
+    options.push(customized);
+    codexAppServerModelSelect.replaceChildren(...options);
+    codexAppServerModelSelect.removeAttribute("aria-busy");
+
+    const known = models.some((entry) => entry.model === stored);
+    if (known) {
+      codexAppServerModelSelect.value = stored;
+    } else {
+      codexAppServerModelSelect.value = CODEX_CUSTOMIZED_MODEL_OPTION_KEY;
+      if (codexAppServerCustomModelInput && stored) {
+        codexAppServerCustomModelInput.value = stored;
+      }
+    }
+    const customizedSelected =
+      codexAppServerModelSelect.value === CODEX_CUSTOMIZED_MODEL_OPTION_KEY;
+    if (codexAppServerCustomModelWrap) {
+      codexAppServerCustomModelWrap.hidden = !customizedSelected;
+    }
+    if (codexAppServerCustomModelInput) {
+      codexAppServerCustomModelInput.disabled = !customizedSelected;
+    }
+    if (codexAppServerModelStatus) {
+      codexAppServerModelStatus.textContent = catalogReady
+        ? ""
+        : t(
+            "Could not read models from the Codex CLI. Use Customized to enter one manually.",
+          );
+    }
+  };
   const renderCodexReasoningOptions = (
     models: CodexAppServerModelCatalogEntry[],
     catalogReady: boolean,
@@ -3467,8 +3533,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       mode: currentMode,
       choices: getCodexAppServerReasoningChoices({
         models,
-        selectedModel:
-          codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
+        selectedModel: resolveCodexModelValue() || getCodexRuntimeModelPref(),
       }),
       catalogReady,
     });
@@ -3484,44 +3549,79 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     codexAppServerReasoningSelect.replaceChildren(...options);
     codexAppServerReasoningSelect.value = selection.mode;
   };
-  const refreshCodexReasoningOptions = async () => {
-    if (!codexAppServerReasoningSelect) return;
+  // One catalog read fills both the model picker and the reasoning levels it
+  // supports; they come from the same Codex response.
+  const refreshCodexCatalog = async () => {
     if (!isCodexAppServerModeEnabled()) return;
     const refreshId = ++codexReasoningCatalogRefreshId;
+    if (codexAppServerModelRefreshButton) {
+      codexAppServerModelRefreshButton.disabled = true;
+    }
+    if (codexAppServerModelStatus) {
+      codexAppServerModelStatus.textContent = t("Reading models…");
+    }
     try {
       const catalog = await loadCodexAppServerModelCatalog({
         codexPath: getConfiguredCodexAppServerBinaryPath(),
       });
       if (refreshId !== codexReasoningCatalogRefreshId) return;
+      renderCodexModelOptions(catalog.models, true);
       renderCodexReasoningOptions(catalog.models, true);
     } catch (error) {
       if (refreshId !== codexReasoningCatalogRefreshId) return;
       ztoolkit.log(
-        "Codex app-server: failed to load reasoning options in preferences",
+        "Codex app-server: failed to load the model catalog in preferences",
         error,
       );
+      renderCodexModelOptions([], false);
       renderCodexReasoningOptions([], false);
+    } finally {
+      if (refreshId === codexReasoningCatalogRefreshId) {
+        if (codexAppServerModelRefreshButton) {
+          codexAppServerModelRefreshButton.disabled = false;
+        }
+        refreshAgentRowSummaries();
+      }
     }
   };
 
-  if (codexAppServerModelInput) {
-    codexAppServerModelInput.value = getCodexRuntimeModelPref();
+  if (codexAppServerModelSelect) {
+    const syncCodexCustomModelVisibility = () => {
+      const customized =
+        codexAppServerModelSelect.value === CODEX_CUSTOMIZED_MODEL_OPTION_KEY;
+      if (codexAppServerCustomModelWrap) {
+        codexAppServerCustomModelWrap.hidden = !customized;
+      }
+      if (codexAppServerCustomModelInput) {
+        codexAppServerCustomModelInput.disabled = !customized;
+      }
+    };
     const commitCodexModel = () => {
-      setCodexRuntimeModelPref(codexAppServerModelInput.value);
-      codexAppServerModelInput.value = getCodexRuntimeModelPref();
-      void refreshCodexReasoningOptions();
+      const model = resolveCodexModelValue();
+      if (!model) return;
+      setCodexRuntimeModelPref(model);
+      void refreshCodexCatalog();
       void refreshCodexPermissionOptions();
     };
-    codexAppServerModelInput.addEventListener("change", commitCodexModel);
-    codexAppServerModelInput.addEventListener("blur", commitCodexModel);
-    codexAppServerModelInput.addEventListener("input", () => {
-      setCodexRuntimeModelPref(codexAppServerModelInput.value);
+    codexAppServerModelSelect.addEventListener("change", () => {
+      syncCodexCustomModelVisibility();
+      commitCodexModel();
     });
+    codexAppServerCustomModelInput?.addEventListener(
+      "change",
+      commitCodexModel,
+    );
+    codexAppServerCustomModelInput?.addEventListener("blur", commitCodexModel);
+    codexAppServerModelRefreshButton?.addEventListener("click", () => {
+      void refreshCodexCatalog();
+    });
+    renderCodexModelOptions([], false);
+    syncCodexCustomModelVisibility();
   }
 
   if (codexAppServerReasoningSelect) {
     codexAppServerReasoningSelect.value = getCodexReasoningModePref();
-    void refreshCodexReasoningOptions();
+    void refreshCodexCatalog();
     codexAppServerReasoningSelect.addEventListener("change", () => {
       setCodexReasoningModePref(codexAppServerReasoningSelect.value);
     });
@@ -3532,7 +3632,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const commitCodexPath = () => {
       setCodexBinaryPathPref(codexAppServerPathInput.value);
       codexAppServerPathInput.value = getCodexBinaryPathPref();
-      void refreshCodexReasoningOptions();
+      void refreshCodexCatalog();
       void refreshCodexPermissionOptions();
     };
     codexAppServerPathInput.addEventListener("change", commitCodexPath);
@@ -3555,8 +3655,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         codexAppServerStatus.textContent = t("Testing…");
         try {
           const result = await runCodexAppServerConnectionTest({
-            modelName:
-              codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
+            modelName: resolveCodexModelValue() || getCodexRuntimeModelPref(),
             codexPath: getConfiguredCodexAppServerBinaryPath(),
             testZoteroMcp: isNativeZoteroMcpToolsEnabled(),
           });

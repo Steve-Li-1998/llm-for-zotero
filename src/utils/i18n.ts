@@ -988,6 +988,35 @@ const zhCN: Record<string, string> = {
   "Enable Codex": "启用 Codex",
   "Enable Claude Code": "启用 Claude Code",
 
+  // ── Agent tab: runtime rows, Codex model catalog, merged MCP panel ──
+  "Web search on": "网页搜索已开启",
+  "Web search off": "网页搜索未开启",
+  Notes: "笔记",
+  "Not set": "未设置",
+  "%n models available.": "有 %n 个可用模型。",
+  "Built in": "内置",
+  "Codex CLI": "Codex CLI",
+  "Claude CLI": "Claude CLI",
+  Safe: "安全",
+  Yolo: "全自动",
+  Refresh: "刷新",
+  "Loading models…": "正在加载模型…",
+  "Customized model": "自定义模型",
+  "Models are read from your installed Codex CLI. Choose Customized to enter a model ID by hand.":
+    "模型列表读取自你已安装的 Codex CLI。选择“自定义”可手动输入模型 ID。",
+  "Reading models…": "正在读取模型…",
+  "Could not read models from the Codex CLI. Use Customized to enter one manually.":
+    "无法从 Codex CLI 读取模型列表。请选择“自定义”手动输入。",
+  "Loading available models…": "正在加载可用模型…",
+  "Could not load models. Use Customized to enter one manually.":
+    "无法加载模型列表。请选择“自定义”手动输入。",
+  "Choose a model reported by Claude Code. Select Customized to enter an alias, exact model ID, or provider-specific value. Per-response output limit: Managed by runtime.":
+    "从 Claude Code 报告的模型中选择。选择“自定义”可输入别名、精确的模型 ID 或服务商特定值。单次回复输出上限：由运行时管理。",
+  "Zotero MCP": "Zotero MCP",
+  "Built-in runtimes": "内置运行时",
+  "A curated local MCP server that exposes Zotero library and PDF reading plus write operations. The calling client controls approval with its own permission settings. Zotero validates operations, records recovery data, and verifies changes without duplicate permission prompts.":
+    "一个精选的本地 MCP 服务器，提供 Zotero 文献库与 PDF 的读取以及写入操作。审批由调用方客户端按其自身权限设置控制。Zotero 会校验操作、记录可恢复数据并验证修改结果，且不会重复弹出权限提示。",
+
   // Notes and embedding preferences
   "Notes Directory": "笔记目录",
   "Configure a local directory for saving notes as files. Note format and templates are managed through skills — type":

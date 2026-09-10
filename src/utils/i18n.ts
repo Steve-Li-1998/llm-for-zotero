@@ -996,7 +996,7 @@ const zhCN: Record<string, string> = {
   "%n models available.": "有 %n 个可用模型。",
   "Built in": "内置",
   "Codex CLI": "Codex CLI",
-  "Claude CLI": "Claude CLI",
+  "Claude Code CLI": "Claude Code CLI",
   Safe: "安全",
   Yolo: "全自动",
   Refresh: "刷新",

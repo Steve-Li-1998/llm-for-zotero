@@ -39,14 +39,15 @@
     .llm-pref-row[data-open="true"] { border-color: var(--color-accent,
     #2563eb); } #__addonRef__-pref-panel-agent .llm-pref-row-head { display:
     grid; grid-template-columns: 18px minmax(0, 1fr) auto auto 12px; gap: 10px;
-    align-items: center; padding: 8px 12px 9px; } #__addonRef__-pref-panel-agent
-    .llm-pref-row-icon { width: 18px; height: 18px; flex: none;
-    background-repeat: no-repeat; background-position: center; background-size:
-    contain; } #__addonRef__-pref-panel-agent .llm-pref-row-icon--original {
-    background-image: url("chrome://__addonRef__/content/icons/icon.svg"); }
-    #__addonRef__-pref-panel-agent .llm-pref-row-icon--codex { background-image:
-    url("chrome://__addonRef__/content/icons/codex-logo.svg"); }
-    #__addonRef__-pref-panel-agent .llm-pref-row-icon--claude {
+    align-items: center; min-height: 42px; padding: 0 12px 1px; }
+    #__addonRef__-pref-panel-agent .llm-pref-row-icon { width: 18px; height:
+    18px; flex: none; background-repeat: no-repeat; background-position: center;
+    background-size: contain; } #__addonRef__-pref-panel-agent
+    .llm-pref-row-icon--original { background-image:
+    url("chrome://__addonRef__/content/icons/icon.svg"); background-size: 154%;
+    } #__addonRef__-pref-panel-agent .llm-pref-row-icon--codex {
+    background-image: url("chrome://__addonRef__/content/icons/codex-logo.svg");
+    } #__addonRef__-pref-panel-agent .llm-pref-row-icon--claude {
     background-color: #d97757; mask-image:
     url("chrome://__addonRef__/content/icons/claude-code.svg"); mask-repeat:
     no-repeat; mask-position: center; mask-size: contain; -webkit-mask-image:
@@ -1184,7 +1185,7 @@
                   ></html:span>
                 </html:span>
               </html:button>
-              <html:span class="llm-pref-row-tag">Claude CLI</html:span>
+              <html:span class="llm-pref-row-tag">Claude Code CLI</html:span>
               <html:input
                 id="__addonRef__-agent-backend-mode"
                 class="llm-pref-switch"

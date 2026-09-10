@@ -408,10 +408,18 @@ export function createModelProfileEditor(
   let reasoningRows: ReasoningRow[] = [];
 
   function addReasoningRow(seed?: { id: string }) {
+    // The level and its delete button are one control and stay on one line;
+    // the wire description is long enough to wrap, so it gets its own row
+    // underneath instead of pushing the × down to a third line.
     const wrap = el(
       doc,
       "div",
-      "display: flex; gap: 6px; align-items: center; flex-wrap: wrap;",
+      "display: flex; flex-direction: column; gap: 3px;",
+    );
+    const controls = el(
+      doc,
+      "div",
+      "display: flex; gap: 6px; align-items: center;",
     );
     const idInput = createElement(doc, "input", classes.inputSm);
     idInput.type = "text";
@@ -449,7 +457,8 @@ export function createModelProfileEditor(
       commit();
     });
 
-    wrap.append(idInput, sent, removeBtn, warning);
+    controls.append(idInput, removeBtn);
+    wrap.append(controls, sent, warning);
     reasoningList.append(wrap);
     reasoningRows.push(row);
     return row;

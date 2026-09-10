@@ -350,7 +350,7 @@ const PROVIDER_PROFILES: ProviderProfile[] = [
   { label: "Provider C", modelPlaceholder: "gemini-2.5-pro", defaultModel: "" },
   {
     label: "Provider D",
-    modelPlaceholder: "deepseek-v4-flash",
+    modelPlaceholder: "deepseek-flash",
     defaultModel: "",
   },
 ];

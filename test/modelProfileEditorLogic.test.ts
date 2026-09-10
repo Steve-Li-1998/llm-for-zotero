@@ -1,4 +1,7 @@
 import { assert } from "chai";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   computeProfileOverrideDraft,
   describeReasoningLevel,
@@ -483,5 +486,31 @@ describe("model profile editor logic", function () {
       assert.deepEqual(payload.extra.think, "high");
       assert.deepEqual(payload.extra.options, { repeat_penalty: 1.1 });
     });
+  });
+
+  it("keeps a level's delete button on the same line as the level", function () {
+    const source = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src/modules/modelProfileEditor.ts",
+      ),
+      "utf8",
+    );
+
+    // The wire description ("→ extra_body.google…") is long enough to wrap.
+    // With everything in one wrapping flex row it pushed the × onto a third
+    // line, adrift from the input it deletes. Input and × are one control now
+    // and the description sits underneath them.
+    assert.include(
+      source,
+      'const controls = el(\n      doc,\n      "div",\n      "display: flex; gap: 6px; align-items: center;",\n    );',
+    );
+    assert.include(source, "controls.append(idInput, removeBtn);");
+    assert.include(source, "wrap.append(controls, sent, warning);");
+    assert.notInclude(
+      source,
+      "wrap.append(idInput, sent, removeBtn, warning);",
+    );
   });
 });

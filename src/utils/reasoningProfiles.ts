@@ -527,7 +527,8 @@ const DEEPSEEK_REASONER_PROFILE: ProviderProfile = singleEnabledOptionProfile(
   },
 );
 
-// https://api-docs.deepseek.com/guides/thinking_mode/ — reasoning_effort takes
+// https://api-docs.deepseek.com/guides/thinking_mode/ (checked Sept 2026) —
+// reasoning_effort takes
 // low | high | max, thinking.type takes enabled | disabled, and the default is
 // thinking on at high effort. `low` used to be missing entirely, and `max` was
 // exposed under our own name `xhigh`.
@@ -801,7 +802,12 @@ const UNSUPPORTED_PROFILE: ProviderProfile = {
 
 const PROFILE_RULES: Record<
   ReasoningProvider,
-  { rules: ProfileRule[]; fallback: ProviderProfile }
+  {
+    rules: ProfileRule[];
+    fallback: ProviderProfile;
+    /** See hasKnownReasoningProfile: the fallback answers for unseen ids. */
+    fallbackIsAuthoritative?: boolean;
+  }
 > = {
   openai: {
     rules: [
@@ -894,11 +900,15 @@ const PROFILE_RULES: Record<
     fallback: GEMINI_GENERIC_PROFILE,
   },
   deepseek: {
+    // The rules carve out the two models that do NOT follow DeepSeek's
+    // thinking API; everything else — deepseek-flash, deepseek-v4-pro, the
+    // retired deepseek-v4-flash, and any id DeepSeek ships next — falls back
+    // to it. Naming each model explicitly is what made the deepseek-v4-flash
+    // to deepseek-flash rename silently remove the reasoning menu: an
+    // unrecognised name landed on the non-reasoning chat profile. Offering
+    // levels a model rejects is recoverable — Test reports it and the levels
+    // are editable — while offering none is not.
     rules: [
-      {
-        match: /(^|[/:])deepseek-v4-(?:flash|pro)(?:\b|[.-])/,
-        profile: DEEPSEEK_V4_PROFILE,
-      },
       {
         match: /(^|[/:])deepseek-(?:reasoner|r1)(?:\b|[.-])/,
         profile: DEEPSEEK_REASONER_PROFILE,
@@ -908,7 +918,8 @@ const PROFILE_RULES: Record<
         profile: DEEPSEEK_CHAT_PROFILE,
       },
     ],
-    fallback: DEEPSEEK_CHAT_PROFILE,
+    fallback: DEEPSEEK_V4_PROFILE,
+    fallbackIsAuthoritative: true,
   },
   kimi: {
     rules: [
@@ -942,7 +953,9 @@ const PROFILE_RULES: Record<
         profile: MIMO_THINKING_PROFILE,
       },
     ],
-    fallback: UNSUPPORTED_PROFILE,
+    // mimo-v2.5-pro has thinking on by default.
+    fallback: MIMO_THINKING_PROFILE,
+    fallbackIsAuthoritative: true,
   },
   minimax: {
     rules: [
@@ -955,7 +968,9 @@ const PROFILE_RULES: Record<
         profile: MINIMAX_ALWAYS_THINKING_PROFILE,
       },
     ],
-    fallback: UNSUPPORTED_PROFILE,
+    // MiniMax-M3 takes thinking.type enabled|adaptive|disabled.
+    fallback: MINIMAX_TOGGLE_PROFILE,
+    fallbackIsAuthoritative: true,
   },
   glm: {
     rules: [
@@ -964,7 +979,9 @@ const PROFILE_RULES: Record<
         profile: GLM_TOGGLE_PROFILE,
       },
     ],
-    fallback: UNSUPPORTED_PROFILE,
+    // glm-4.6 takes thinking.type enabled|disabled, default enabled.
+    fallback: GLM_TOGGLE_PROFILE,
+    fallbackIsAuthoritative: true,
   },
   qwen: {
     rules: [
@@ -1035,7 +1052,10 @@ const PROFILE_RULES: Record<
         profile: ANTHROPIC_MANUAL_THINKING_PROFILE,
       },
     ],
-    fallback: UNSUPPORTED_PROFILE,
+    // Opus 5 / Sonnet 5 / Fable 5.1 use adaptive thinking with
+    // output_config.effort; `thinking.type: enabled` 400s on 4.7 and later.
+    fallback: ANTHROPIC_ADAPTIVE_ONLY_PROFILE,
+    fallbackIsAuthoritative: true,
   },
   // Locally-served models carry no hand-maintained profile: their options come
   // from what the server reports plus whatever the user configures, resolved
@@ -1062,11 +1082,31 @@ function normalizeModelName(modelName?: string): string {
 }
 
 /** A family hint alone is not evidence for a future model's level set. */
+/**
+ * Whether we can say anything about this model's reasoning.
+ *
+ * By default only an explicit rule counts, so an unrecognised id reports
+ * "unknown" rather than being credited with support it may not have — see
+ * "keeps an unfamiliar model usable without inventing support" in
+ * test/reasoningDefaults.test.ts.
+ *
+ * A family may opt out with `fallbackIsAuthoritative`, which says its
+ * fallback IS the answer for any id: the family's whole line shares one
+ * thinking API, so a model shipped after our last release is far more likely
+ * to follow it than not. DeepSeek is the case in point — renaming
+ * `deepseek-v4-flash` to `deepseek-flash` silently removed its reasoning menu
+ * entirely, and showing levels a model rejects is recoverable (Test reports
+ * it, the levels are editable) where showing none is not.
+ */
 export function hasKnownReasoningProfile(
   provider: ReasoningProvider,
   modelName: string,
 ): boolean {
-  return PROFILE_RULES[provider].rules.some((rule) =>
+  const table = PROFILE_RULES[provider];
+  if (table.fallbackIsAuthoritative && table.fallback.supportsReasoning) {
+    return true;
+  }
+  return table.rules.some((rule) =>
     modelNameCandidates(modelName).some((candidate) =>
       rule.match.test(candidate),
     ),

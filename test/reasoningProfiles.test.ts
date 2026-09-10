@@ -452,9 +452,13 @@ describe("reasoningProfiles", function () {
       const profile = getMimoReasoningProfileForModel("mimo-v2.5-pro");
       assert.equal(profile.defaultLevel, "on");
       assert.equal(profile.levelToThinkingType.on, "enabled");
+      // An unseen MiMo id takes the flagship's opt-in thinking rather than
+      // reporting none; mimo-v2.5-pro has thinking on by default.
       assert.deepEqual(
-        getRuntimeReasoningOptionsForModel("mimo", "mimo-unknown"),
-        [],
+        getRuntimeReasoningOptionsForModel("mimo", "mimo-unknown").map(
+          (option) => option.level,
+        ),
+        ["on"],
       );
     });
 
@@ -516,10 +520,15 @@ describe("reasoningProfiles", function () {
       assert.equal(haiku45.preferredMode, "manual");
     });
 
-    it("does not expose reasoning options for unknown Claude models", function () {
+    it("gives an unknown Claude model the current flagship's levels", function () {
+      // Opus 5 / Sonnet 5 / Fable 5.1 all use adaptive thinking, so a Claude
+      // id we have not seen is assumed to as well rather than being reported
+      // as having no reasoning at all. See test/unseenModelReasoning.test.ts.
       assert.deepEqual(
-        getRuntimeReasoningOptionsForModel("anthropic", "claude-unknown-3"),
-        [],
+        getRuntimeReasoningOptionsForModel("anthropic", "claude-unknown-3").map(
+          (option) => option.level,
+        ),
+        ["low", "medium", "high", "max"],
       );
     });
 

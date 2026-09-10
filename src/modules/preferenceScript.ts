@@ -3911,6 +3911,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         if (claudeCodeModelRefreshButton) {
           claudeCodeModelRefreshButton.disabled = false;
         }
+        // The row summary names the customized model, which only exists once
+        // the catalog has settled and filled the custom field.
+        refreshAgentRowSummaries();
       }
     }
   };

@@ -3380,14 +3380,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         : [t("Off")],
     );
     const claudeOn = !!claudeCodeEnableToggle?.checked;
+    // "Customized" names the entry mode, not the model — show what was typed.
+    const claudeModel =
+      claudeCodeModelSelect?.value === CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY
+        ? claudeCodeCustomModelInput?.value.trim() ||
+          selectedOptionLabel(claudeCodeModelSelect)
+        : selectedOptionLabel(claudeCodeModelSelect);
     setAgentRowSummary(
       "claude",
       claudeOn,
       claudeOn
-        ? [
-            selectedOptionLabel(claudeCodeModelSelect),
-            selectedOptionLabel(agentPermissionModeSelect),
-          ]
+        ? [claudeModel, selectedOptionLabel(agentPermissionModeSelect)]
         : [t("Off")],
     );
     const notesPath = inputValue("obsidian-vault-path");

@@ -23,11 +23,15 @@ describe("web source UI contract", function () {
     assert.include(preferences, 'type="password"');
     assert.include(preferences, "Test connection");
     assert.include(preferences, "Get a free API key");
-    assert.include(preferences, "Basic search costs 1 Tavily credit");
-    assert.match(preferences, /retention,\s+and search-index\s+policies/);
-    assert.match(
-      preferences,
-      /favicons are loaded from public URLs\s+supplied by Tavily/,
+    const flatPreferences = preferences.replace(/\s+/g, " ");
+    assert.include(flatPreferences, "Basic search costs 1 Tavily credit");
+    assert.include(
+      flatPreferences,
+      "under Tavily's privacy, retention, and search-index policies",
+    );
+    assert.include(
+      flatPreferences,
+      "favicons are loaded from public URLs supplied by Tavily",
     );
     const tavilyCard = preferences.slice(tavilyIndex, codexIndex);
     assert.notMatch(tavilyCard, /enable-tavily|type="checkbox"/i);

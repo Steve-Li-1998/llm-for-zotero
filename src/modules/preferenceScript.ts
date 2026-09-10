@@ -1130,9 +1130,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const tavilyKeyLink = doc.querySelector(
     `#${config.addonRef}-tavily-key-link`,
   ) as HTMLAnchorElement | null;
-  const codexAppServerEnableSelect = doc.querySelector(
+  const codexAppServerEnableToggle = doc.querySelector(
     `#${config.addonRef}-codex-app-server-enable`,
-  ) as HTMLSelectElement | null;
+  ) as HTMLInputElement | null;
   const codexAppServerSettingsWrap = doc.querySelector(
     `#${config.addonRef}-codex-app-server-settings`,
   ) as HTMLDivElement | null;
@@ -2921,9 +2921,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  const agentBackendModeSelect = doc.querySelector(
+  // Every collapsed Agent row carries a summary line, so the tab answers "how
+  // is this set up?" without opening anything. The real implementation is
+  // installed once every control exists; the async catalog refreshes defined
+  // above call through this holder.
+  let refreshAgentRowSummaries: () => void = () => undefined;
+
+  const claudeCodeEnableToggle = doc.querySelector(
     `#${config.addonRef}-agent-backend-mode`,
-  ) as HTMLSelectElement | null;
+  ) as HTMLInputElement | null;
   const agentBridgeSettingsWrap = doc.querySelector(
     `#${config.addonRef}-agent-bridge-settings`,
   ) as HTMLDivElement | null;
@@ -3166,6 +3172,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       ) {
         claudePermissionModeRefresh.disabled = false;
       }
+      refreshAgentRowSummaries();
     }
   };
 
@@ -3238,6 +3245,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       ) {
         codexPermissionProfileRefresh.disabled = false;
       }
+      refreshAgentRowSummaries();
     }
   };
 
@@ -3318,16 +3326,109 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   void refreshClaudePermissionOptions();
   void refreshCodexPermissionOptions();
 
-  if (codexAppServerEnableSelect) {
+  // ── Agent tab rows: disclosure + summary lines ───────────────────
+  const selectedOptionLabel = (select: HTMLSelectElement | null): string => {
+    if (!select || select.selectedIndex < 0) return "";
+    return select.options[select.selectedIndex]?.textContent?.trim() || "";
+  };
+  const inputValue = (selector: string): string => {
+    const element = doc.querySelector(
+      `#${config.addonRef}-${selector}`,
+    ) as HTMLInputElement | null;
+    return element?.value.trim() || "";
+  };
+
+  const setAgentRowSummary = (row: string, parts: string[]): void => {
+    const target = doc.querySelector(
+      `[data-llm-row-summary="${row}"]`,
+    ) as HTMLElement | null;
+    if (!target) return;
+    target.textContent = parts.filter((part) => part.length > 0).join(" · ");
+  };
+
+  refreshAgentRowSummaries = () => {
+    setAgentRowSummary(
+      "original",
+      enableAgentModeInput?.checked
+        ? [
+            selectedOptionLabel(originalAgentPermissionModeSelect),
+            tavilyApiKeyInput?.value.trim()
+              ? t("Web search on")
+              : t("Web search off"),
+          ]
+        : [t("Off")],
+    );
+    setAgentRowSummary(
+      "codex",
+      codexAppServerEnableToggle?.checked
+        ? [
+            codexAppServerModelInput?.value.trim() || t("Default model"),
+            selectedOptionLabel(codexPermissionProfileSelect),
+          ]
+        : [t("Off")],
+    );
+    setAgentRowSummary(
+      "claude",
+      claudeCodeEnableToggle?.checked
+        ? [
+            selectedOptionLabel(claudeCodeModelSelect),
+            selectedOptionLabel(agentPermissionModeSelect),
+          ]
+        : [t("Off")],
+    );
+    const notesPath = inputValue("obsidian-vault-path");
+    setAgentRowSummary(
+      "notes",
+      notesPath
+        ? [inputValue("notes-dir-nickname") || t("Notes"), notesPath]
+        : [t("Not set")],
+    );
+  };
+
+  for (const row of Array.from(
+    doc.querySelectorAll(
+      `#${config.addonRef}-pref-panel-agent [data-llm-agent-row]`,
+    ),
+  ) as HTMLElement[]) {
+    const toggle = row.querySelector(
+      ".llm-pref-row-toggle",
+    ) as HTMLButtonElement | null;
+    const bodyId = toggle?.getAttribute("aria-controls");
+    const body = bodyId
+      ? (doc.getElementById(bodyId) as HTMLElement | null)
+      : null;
+    if (!toggle || !body) continue;
+    toggle.addEventListener("click", () => {
+      const open = row.getAttribute("data-open") !== "true";
+      row.setAttribute("data-open", String(open));
+      toggle.setAttribute("aria-expanded", String(open));
+      body.hidden = !open;
+    });
+  }
+
+  // One delegated listener keeps every summary honest without threading a
+  // refresh call through each control's own handler.
+  const agentPanel = doc.querySelector(
+    `#${config.addonRef}-pref-panel-agent`,
+  ) as HTMLElement | null;
+  if (agentPanel) {
+    const onAgentPanelEdit = () => refreshAgentRowSummaries();
+    agentPanel.addEventListener("change", onAgentPanelEdit);
+    agentPanel.addEventListener("input", onAgentPanelEdit);
+  }
+  refreshAgentRowSummaries();
+
+  if (codexAppServerEnableToggle) {
     const applyCodexAppServerUi = (enabled: boolean) => {
-      codexAppServerEnableSelect.value = enabled ? "enabled" : "disabled";
+      codexAppServerEnableToggle.checked = enabled;
       if (codexAppServerSettingsWrap) {
         codexAppServerSettingsWrap.style.display = enabled ? "flex" : "none";
       }
+      refreshAgentRowSummaries();
     };
     applyCodexAppServerUi(isCodexAppServerModeEnabled());
-    codexAppServerEnableSelect.addEventListener("change", () => {
-      const enabled = codexAppServerEnableSelect.value === "enabled";
+    codexAppServerEnableToggle.addEventListener("change", () => {
+      const enabled = codexAppServerEnableToggle.checked;
       applyCodexAppServerUi(enabled);
       applyCodexAppServerModePreferenceChange(enabled);
       if (enabled) {
@@ -3697,16 +3798,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     }
   };
 
-  if (agentBackendModeSelect) {
+  if (claudeCodeEnableToggle) {
     const applyAgentBackendUi = (enabled: boolean) => {
-      agentBackendModeSelect.value = enabled ? "claude_bridge" : "disabled";
+      claudeCodeEnableToggle.checked = enabled;
       if (agentBridgeSettingsWrap) {
         agentBridgeSettingsWrap.style.display = enabled ? "flex" : "none";
       }
+      refreshAgentRowSummaries();
     };
     applyAgentBackendUi(isClaudeCodeModeEnabled());
-    agentBackendModeSelect.addEventListener("change", () => {
-      const enabled = agentBackendModeSelect.value === "claude_bridge";
+    claudeCodeEnableToggle.addEventListener("change", () => {
+      const enabled = claudeCodeEnableToggle.checked;
       void applyClaudeCodeModePreferenceChange(enabled, applyAgentBackendUi);
     });
   }

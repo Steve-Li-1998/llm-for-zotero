@@ -29,8 +29,8 @@ describe("runtime preference UI", function () {
       "applyCodexAppServerModePreferenceChange(enabled)",
     );
     assert.include(
-      preferences,
-      "Codex and Claude Code can both be enabled; only the selected",
+      preferences.replace(/\s+/g, " "),
+      "Codex and Claude Code can both be enabled; only the selected runtime is active.",
     );
   });
 
@@ -38,11 +38,11 @@ describe("runtime preference UI", function () {
     const preferenceScript = source("src/modules/preferenceScript.ts");
     const preferences = source("addon/content/preferences.xhtml");
 
-    assert.include(
+    assert.match(
       preferences,
-      '<html:select\n                      id="__addonRef__-claude-code-model"',
+      /<html:select\s+id="__addonRef__-claude-code-model"/,
     );
-    assert.include(preferences, 'value="customized">Customized');
+    assert.match(preferences, /value="customized"\s*>\s*Customized/);
     assert.include(preferences, 'id="__addonRef__-claude-code-custom-model"');
     assert.include(preferences, 'id="__addonRef__-claude-code-model-refresh"');
     assert.include(preferences, "alias, exact model ID");

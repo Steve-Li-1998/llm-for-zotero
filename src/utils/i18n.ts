@@ -922,6 +922,72 @@ const zhCN: Record<string, string> = {
   "Managed block updated": "托管块已更新",
   "Failed to update CLAUDE.md": "更新 CLAUDE.md 失败",
 
+  // ── Agent tab: collapsible runtime rows ────────────────────────────
+  "Three runtimes can answer in the chat panel. Turn on the ones you want; the runtime you pick in the chat header answers a given turn.":
+    "聊天面板中可以有三种运行时来回答。开启你需要的运行时；实际回答的是你在聊天标题栏中选择的那一个。",
+  Runtimes: "运行时",
+  "Original Agent": "原生 Agent",
+  "Built in · Beta": "内置 · 测试版",
+  'The agent that ships with the plugin. Turning it on adds the "Agent (beta)" toggle to the chat context bar, which runs the multi-step assistant inside Zotero. Its library permissions are independent from the permission controls for Claude Code and Codex.':
+    "插件自带的 Agent。开启后会在聊天上下文栏显示“Agent（测试版）”切换按钮，多步骤助手将完全在 Zotero 内运行。它的文献库权限与 Claude Code 和 Codex 的权限控制彼此独立。",
+  Permissions: "权限",
+  "Web search": "网页搜索",
+  "Runs the Codex CLI as a local app server. Run":
+    "以本地 app server 方式运行 Codex CLI。启用前请先运行",
+  "before turning it on. Codex controls tool approval through its own permission profile. When enabled, Zotero adds a Codex button to the chat header. Codex and Claude Code can both be enabled; only the selected runtime is active.":
+    "。Codex 通过自己的权限配置控制工具审批。启用后，Zotero 会在聊天标题栏添加 Codex 按钮。Codex 和 Claude Code 可以同时启用；只有所选的运行时会生效。",
+  "Permission profile": "权限配置",
+  "The profile comes from Codex's own configuration. Change it in Codex; Zotero reads it so you can see what the runtime is allowed to do.":
+    "该配置来自 Codex 自身的配置文件。请在 Codex 中修改；Zotero 只是读取它，让你看到该运行时被允许做什么。",
+  Advanced: "高级",
+  "Codex CLI path": "Codex CLI 路径",
+  "Leave blank to search your PATH.": "留空则从 PATH 中查找。",
+  "Runs the embedded Claude runtime against your library. When enabled, Zotero adds a Claude Code button to the chat header; you enter Claude Code mode from there, not from settings. Codex and Claude Code can both be enabled; only the selected runtime is active.":
+    "在你的文献库上运行内嵌的 Claude 运行时。启用后，Zotero 会在聊天标题栏添加 Claude Code 按钮；你从那里进入 Claude Code 模式，而不是在设置中切换。Codex 和 Claude Code 可以同时启用；只有所选的运行时会生效。",
+  "Default model": "默认模型",
+  "Default reasoning": "默认推理",
+  "The mode comes from your Claude Code settings. Change it in Claude Code; Zotero reads it so you can see what the runtime is allowed to do.":
+    "该模式来自你的 Claude Code 设置。请在 Claude Code 中修改；Zotero 只是读取它，让你看到该运行时被允许做什么。",
+  Conversation: "对话",
+  Streaming: "流式输出",
+  "Show answers as they stream": "边生成边显示回答",
+  "Shows Claude answers chunk by chunk while they stream, instead of waiting until the final answer is assembled.":
+    "流式输出时逐块显示 Claude 回答，而不是等最终回答组装完成后再显示。",
+  "Auto-compact": "自动压缩",
+  "Compact long conversations automatically": "自动压缩较长的对话",
+  Sends: "会发送",
+  "before a new Claude turn once context usage crosses this threshold.":
+    "，时机是上下文用量超过此阈值后、新的 Claude 回合开始之前。",
+  "Zotero sends Claude requests to this local bridge service. Only change it if you run the bridge yourself.":
+    "Zotero 会把 Claude 请求发送到这个本地 bridge 服务。只有你自己运行 bridge 时才需要修改。",
+  "Where Claude loads its settings from. Most users should keep":
+    "Claude 从哪里加载设置。大多数用户应保持",
+  ", which loads user + project + local with priority local > project > user.":
+    "，即加载用户 + 项目 + 本地配置，优先级为本地 > 项目 > 用户。",
+  "loads just your machine-wide Claude settings;":
+    "只加载你机器全局的 Claude 设置；",
+  "loads just the Zotero-managed shared and per-conversation settings.":
+    "只加载 Zotero 托管的共享设置和单次对话设置。",
+  "Trace log": "跟踪日志",
+  "Save runtime traces": "保存运行时跟踪",
+  "Records Claude runtime traces to a local file for debugging.":
+    "将 Claude 运行时跟踪记录到本地文件，便于调试。",
+  "Runtime CLAUDE.md": "运行时 CLAUDE.md",
+  "This is the text injected between": "此处是注入到以下两段标记之间的文本：",
+  ". Existing files are preserved and Update only refreshes that managed block. If you are not already comfortable editing Claude Code project instructions, leave this unchanged.":
+    "中。已有文件会保留，点击更新只会刷新该托管块。如果你还不熟悉编辑 Claude Code 项目指令，请保持此项不变。",
+  "Shared by every runtime": "所有运行时共用",
+  "Notes directory": "笔记目录",
+  "A local directory for saving notes as files. Note format and templates are managed through skills — type":
+    "用于把笔记保存为文件的本地目录。笔记格式和模板由 skills 管理 — 在聊天中输入",
+  Directory: "目录",
+  "Default folder": "默认文件夹",
+  "Attachments folder": "附件文件夹",
+  "Test write access": "测试写入权限",
+  "Enable Original Agent": "启用原生 Agent",
+  "Enable Codex": "启用 Codex",
+  "Enable Claude Code": "启用 Claude Code",
+
   // Notes and embedding preferences
   "Notes Directory": "笔记目录",
   "Configure a local directory for saving notes as files. Note format and templates are managed through skills — type":

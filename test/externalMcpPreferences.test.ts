@@ -28,11 +28,14 @@ describe("external MCP write preference", function () {
   it("exposes the opt-in in a provider-neutral localized section", function () {
     const markup = readFileSync("addon/content/preferences.xhtml", "utf8");
     const section = markup.indexOf('id="__addonRef__-external-mcp-settings"');
+    // The opt-in is library-wide rather than a runtime setting, so it closes
+    // the Agent tab below the runtime rows instead of opening it.
     assert.isAbove(section, markup.indexOf('data-pref-panel="agent"'));
-    assert.isBelow(
+    assert.isAbove(
       section,
       markup.indexOf('id="__addonRef__-original-agent-card"'),
     );
+    assert.isBelow(section, markup.indexOf('data-pref-panel="mineru"'));
     assert.include(markup, 'data-l10n-id="pref-external-mcp-writes"');
     assert.include(
       readFileSync("addon/prefs.js", "utf8"),

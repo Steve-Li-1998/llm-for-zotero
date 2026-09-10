@@ -15,8 +15,21 @@
     /* The preferences window is a chrome document, whose used user-select value
     roots at `none` — hints, helper text, and status lines must opt back in so
     users can copy URLs and error details out of them. Interactive controls opt
-    out again. */ #__addonRef__-prefs { -moz-user-select: text; user-select:
-    text; } #__addonRef__-prefs button, #__addonRef__-prefs select,
+    out again. */ /* Field and edge colours for the WHOLE preferences pane, not
+    just the two tabs built from .llm-pref-*: every text input, dropdown and
+    textarea on Customization and MinerU takes them too, so the pane reads as
+    one design. Zotero never defines --stroke-secondary, so the borders those
+    tabs used to draw fell back to a light #c8c8c8 on a dark pane. */
+    #__addonRef__-prefs { --llm-pref-surface: #f4f4f4; --llm-pref-head: #ffffff;
+    --llm-pref-field: #ffffff; --llm-pref-stroke: #dadada; } @media
+    (prefers-color-scheme: dark) { #__addonRef__-prefs { --llm-pref-surface:
+    #3a3a3a; --llm-pref-head: #282828; --llm-pref-field: #282828;
+    --llm-pref-stroke: #4f4f4f; } } #__addonRef__-prefs .llm-pref-fields
+    :is(textarea, select,
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"])) {
+    background: var(--llm-pref-field); color: FieldText; border: 1px solid
+    var(--llm-pref-stroke); } #__addonRef__-prefs { -moz-user-select: text;
+    user-select: text; } #__addonRef__-prefs button, #__addonRef__-prefs select,
     #__addonRef__-prefs option, #__addonRef__-prefs summary, #__addonRef__-prefs
     input[type="checkbox"], #__addonRef__-prefs input[type="radio"] {
     -moz-user-select: none; user-select: none; } /* ── Agent tab
@@ -26,112 +39,203 @@
     is wrong lives in a per-row advanced drawer. Icon URLs are absolute on
     purpose: Zotero inlines this markup into its own preferences document, so a
     relative url() would resolve against chrome://zotero/content/ and silently
-    render nothing. */ #__addonRef__-pref-panel-agent { gap: 14px; }
-    #__addonRef__-pref-panel-agent .llm-pref-intro { margin: 0; font-size:
-    11.5px; line-height: 1.5; color: var(--fill-secondary, #888); }
-    #__addonRef__-pref-panel-agent .llm-pref-group { display: flex;
-    flex-direction: column; gap: 8px; } #__addonRef__-pref-panel-agent
-    .llm-pref-group-title { font-size: 11px; font-weight: 700; color:
-    var(--fill-secondary, #888); } #__addonRef__-pref-panel-agent [hidden] {
-    display: none !important; } #__addonRef__-pref-panel-agent .llm-pref-row {
-    border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 10px;
-    background: Field; overflow: hidden; } #__addonRef__-pref-panel-agent
-    .llm-pref-row[data-open="true"] { border-color: var(--color-accent,
-    #2563eb); } #__addonRef__-pref-panel-agent .llm-pref-row-head { display:
-    grid; grid-template-columns: 18px minmax(0, 1fr) auto auto 12px; gap: 10px;
+    render nothing. */ /* Surfaces and edges for both preference tabs. Zotero
+    paints the preferences content area with #prefs-outer-container {
+    background-color: var(--material-sidepane); } which is #303030 dark /
+    #f2f2f2 light. A card has to sit ABOVE that, so these are literal values
+    chosen against it rather than Zotero tokens: --material-mix-quinary is
+    #2b2b2b dark — DARKER than the pane, so a card painted with it sinks into
+    the page, and in light it is #f2f2f2, exactly the pane colour, so the card
+    disappears entirely. --stroke-secondary is never defined by Zotero at all
+    (checked against Zotero.app/Contents/Resources/app/omni.ja ->
+    chrome/skin/default/zotero/preferences.css), so var(--stroke-secondary,
+    #c8c8c8) always drew the light-grey fallback. The Field system colour is
+    near-black in dark chrome. Literals are deliberate here: the colour is the
+    requirement, so it must not move when a Zotero token changes underneath it.
+    tmp/build-provider-preview.mjs renders this stylesheet on the real #303030 /
+    #f2f2f2 pane — check any change there. */ .llm-pref-panel { display: flex;
+    flex-direction: column; gap: 14px; } .llm-pref-panel .llm-pref-intro {
+    margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--fill-secondary,
+    #888); } .llm-pref-panel .llm-pref-group { display: flex; flex-direction:
+    column; gap: 8px; } .llm-pref-panel .llm-pref-group-title { font-size: 11px;
+    font-weight: 700; color: var(--fill-secondary, #888); } .llm-pref-panel
+    [hidden] { display: none !important; } .llm-pref-panel .llm-pref-row {
+    border: 1px solid var(--llm-pref-stroke); border-radius: 10px; background:
+    var(--llm-pref-surface); overflow: hidden; } .llm-pref-panel
+    .llm-pref-row-head { display: grid; background: var(--llm-pref-head);
+    grid-template-columns: 18px minmax(0, 1fr) auto auto 12px; gap: 10px;
     align-items: center; min-height: 42px; padding: 0 12px 1px; }
-    #__addonRef__-pref-panel-agent .llm-pref-row-icon { width: 18px; height:
-    18px; flex: none; background-repeat: no-repeat; background-position: center;
-    background-size: contain; } #__addonRef__-pref-panel-agent
-    .llm-pref-row-icon--original { background-image:
+    .llm-pref-panel .llm-pref-row-icon { width: 18px; height: 18px; flex: none;
+    background-repeat: no-repeat; background-position: center; background-size:
+    contain; } .llm-pref-panel .llm-pref-row-icon--original { background-image:
     url("chrome://__addonRef__/content/icons/icon.svg"); background-size: 130%;
-    } #__addonRef__-pref-panel-agent .llm-pref-row-icon--codex {
-    background-image: url("chrome://__addonRef__/content/icons/codex-logo.svg");
-    } #__addonRef__-pref-panel-agent .llm-pref-row-icon--claude {
-    background-color: #d97757; mask-image:
+    } .llm-pref-panel .llm-pref-row-icon--codex { background-image:
+    url("chrome://__addonRef__/content/icons/codex-logo.svg"); } .llm-pref-panel
+    .llm-pref-row-icon--claude { background-color: #d97757; mask-image:
     url("chrome://__addonRef__/content/icons/claude-code.svg"); mask-repeat:
     no-repeat; mask-position: center; mask-size: contain; -webkit-mask-image:
     url("chrome://__addonRef__/content/icons/claude-code.svg");
     -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
-    -webkit-mask-size: contain; } #__addonRef__-pref-panel-agent
-    .llm-pref-row-icon--notes { background-color: currentColor; opacity: 0.55;
-    mask-image: url("chrome://__addonRef__/content/icons/folder-open.svg");
-    mask-repeat: no-repeat; mask-position: center; mask-size: contain;
-    -webkit-mask-image:
+    -webkit-mask-size: contain; } .llm-pref-panel .llm-pref-row-icon--notes {
+    background-color: FieldText; mask-image:
+    url("chrome://__addonRef__/content/icons/folder-open.svg"); mask-repeat:
+    no-repeat; mask-position: center; mask-size: contain; -webkit-mask-image:
     url("chrome://__addonRef__/content/icons/folder-open.svg");
     -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
-    -webkit-mask-size: contain; } #__addonRef__-pref-panel-agent
-    .llm-pref-row-toggle { display: grid; gap: 1px; min-width: 0; padding: 0;
-    text-align: start; background: transparent; border: none; color: inherit;
-    cursor: pointer; } #__addonRef__-pref-panel-agent .llm-pref-row-name {
-    font-size: 12px; font-weight: 600; line-height: 1.35; color: FieldText; }
-    #__addonRef__-pref-panel-agent .llm-pref-row-sub { display: flex;
-    align-items: center; gap: 6px; min-width: 0; }
-    #__addonRef__-pref-panel-agent .llm-pref-row-dot { flex: none; width: 6px;
-    height: 6px; border-radius: 50%; background: var(--fill-secondary, #9aa1a9);
-    } #__addonRef__-pref-panel-agent .llm-pref-row-dot[data-on="true"] {
-    background: var(--accent-green, #3aa76d); } #__addonRef__-pref-panel-agent
-    .llm-pref-row-summary { font-size: 10.5px; line-height: 1.35; color:
-    var(--fill-secondary, #888); overflow-wrap: anywhere; }
-    #__addonRef__-pref-panel-agent .llm-pref-row-tag { font-size: 10.5px; color:
-    var(--fill-secondary, #888); white-space: nowrap; }
-    #__addonRef__-pref-panel-agent .llm-pref-row-chevron { font-size: 12px;
-    line-height: 1; color: var(--fill-secondary, #888); justify-self: center;
-    transition: transform 0.15s ease; } #__addonRef__-pref-panel-agent
-    .llm-pref-row[data-open="true"] .llm-pref-row-chevron { transform:
-    rotate(90deg); } #__addonRef__-pref-panel-agent .llm-pref-row-body {
-    display: flex; flex-direction: column; gap: 12px; padding: 12px; border-top:
-    1px solid var(--stroke-secondary, #e0e0e0); } #__addonRef__-pref-panel-agent
-    .llm-pref-switch { appearance: none; -moz-appearance: none; position:
-    relative; flex: none; width: 32px; height: 18px; margin: 0; padding: 0;
-    border: none; border-radius: 999px; background: var(--fill-secondary,
-    #9aa1a9); cursor: pointer; transition: background 0.15s ease; }
-    #__addonRef__-pref-panel-agent .llm-pref-switch::before { content: "";
+    -webkit-mask-size: contain; } .llm-pref-panel .llm-pref-row-toggle {
+    appearance: none; -moz-appearance: none; display: grid; align-content:
+    center; gap: 1px; min-width: 0; padding: 0; text-align: start; background:
+    transparent; border: none; color: inherit; cursor: pointer; }
+    .llm-pref-panel .llm-pref-row-name { font-size: 12px; font-weight: 600;
+    line-height: 1.35; color: FieldText; } .llm-pref-panel .llm-pref-row-sub {
+    display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .llm-pref-panel .llm-pref-row-dot { flex: none; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--fill-secondary, #9aa1a9); }
+    .llm-pref-panel .llm-pref-row-dot[data-on="true"] { background:
+    var(--accent-green, #3aa76d); } .llm-pref-panel .llm-pref-row-summary {
+    font-size: 10.5px; line-height: 1.35; color: var(--fill-secondary, #888);
+    overflow-wrap: anywhere; } .llm-pref-panel .llm-pref-row-tag { font-size:
+    10.5px; color: var(--fill-secondary, #888); white-space: nowrap; }
+    .llm-pref-panel .llm-pref-row-chevron { font-size: 12px; line-height: 1;
+    color: var(--fill-secondary, #888); justify-self: center; transition:
+    transform 0.15s ease; } .llm-pref-panel .llm-pref-row[data-open="true"]
+    .llm-pref-row-chevron { transform: rotate(90deg); } .llm-pref-panel
+    .llm-pref-row-body { display: flex; flex-direction: column; gap: 12px;
+    padding: 12px; border-top: 1px solid var(--llm-pref-stroke); }
+    .llm-pref-panel .llm-pref-switch { appearance: none; -moz-appearance: none;
+    position: relative; flex: none; width: 32px; height: 18px; margin: 0;
+    padding: 0; border: none; border-radius: 999px; background:
+    var(--fill-secondary, #9aa1a9); cursor: pointer; transition: background
+    0.15s ease; } .llm-pref-panel .llm-pref-switch::before { content: "";
     position: absolute; top: 2px; inset-inline-start: 2px; width: 14px; height:
     14px; border-radius: 50%; background: #fff; transition: transform 0.15s
-    ease; } #__addonRef__-pref-panel-agent .llm-pref-switch:checked {
-    background: var(--accent-green, #3aa76d); } #__addonRef__-pref-panel-agent
+    ease; } .llm-pref-panel .llm-pref-switch:checked { background:
+    var(--accent-green, #3aa76d); } .llm-pref-panel
     .llm-pref-switch:checked::before { transform: translateX(14px); }
-    #__addonRef__-pref-panel-agent .llm-pref-section { display: flex;
-    flex-direction: column; gap: 8px; } #__addonRef__-pref-panel-agent
-    .llm-pref-section + .llm-pref-section { padding-top: 12px; border-top: 1px
-    solid var(--stroke-secondary, #e0e0e0); } #__addonRef__-pref-panel-agent
-    .llm-pref-section-title { font-size: 11px; font-weight: 700; color:
-    FieldText; } #__addonRef__-pref-panel-agent .llm-pref-field { display: grid;
+    .llm-pref-panel .llm-pref-section { display: flex; flex-direction: column;
+    gap: 8px; } .llm-pref-panel .llm-pref-section + .llm-pref-section {
+    padding-top: 12px; border-top: 1px solid var(--llm-pref-stroke); }
+    .llm-pref-panel .llm-pref-section-title { font-size: 11px; font-weight: 700;
+    color: FieldText; } .llm-pref-panel .llm-pref-field { display: grid;
     grid-template-columns: 148px minmax(0, 1fr); gap: 6px 14px; align-items:
-    start; } #__addonRef__-pref-panel-agent .llm-pref-field > label { font-size:
-    12px; padding-top: 5px; color: FieldText; } #__addonRef__-pref-panel-agent
-    .llm-pref-control { display: flex; flex-direction: column; gap: 5px;
-    min-width: 0; } #__addonRef__-pref-panel-agent .llm-pref-line { display:
-    flex; gap: 8px; align-items: center; min-width: 0; }
-    #__addonRef__-pref-panel-agent .llm-pref-line--wrap { display: grid;
-    grid-template-columns: minmax(min(220px, 100%), 1fr) auto; box-sizing:
-    border-box; } #__addonRef__-pref-panel-agent .llm-pref-hint { font-size:
-    11px; line-height: 1.45; color: var(--fill-secondary, #888); overflow-wrap:
-    anywhere; min-width: 0; } #__addonRef__-pref-panel-agent .llm-pref-input,
-    #__addonRef__-pref-panel-agent .llm-pref-select { width: 100%; min-width: 0;
-    max-width: 100%; height: 26px; margin: 0; padding: 3px 8px; font-size: 12px;
-    box-sizing: border-box; border: 1px solid var(--stroke-secondary, #c8c8c8);
-    border-radius: 6px; background: Field; color: FieldText; }
-    #__addonRef__-pref-panel-agent textarea.llm-pref-input { height: auto;
-    padding: 6px 8px; font-family: monospace; line-height: 1.5; }
-    #__addonRef__-pref-panel-agent .llm-pref-button { flex-shrink: 0; padding:
-    4px 10px; font-size: 11.5px; font-weight: 500; white-space: nowrap; border:
-    1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background:
-    Field; color: FieldText; cursor: pointer; } #__addonRef__-pref-panel-agent
-    .llm-pref-button--accent { border-color: var(--color-accent, #2563eb);
-    color: var(--color-accent, #2563eb); background: transparent; }
-    #__addonRef__-pref-panel-agent .llm-pref-check { display: flex; gap: 8px;
-    align-items: flex-start; font-size: 12px; color: FieldText; }
-    #__addonRef__-pref-panel-agent .llm-pref-check > input { margin: 2px 0 0; }
-    #__addonRef__-pref-panel-agent .llm-pref-link { width: fit-content;
-    font-size: 11px; color: var(--color-accent, #2563eb); cursor: pointer; }
-    #__addonRef__-pref-panel-agent .llm-pref-advanced { border-top: 1px solid
-    var(--stroke-secondary, #e0e0e0); padding-top: 10px; }
-    #__addonRef__-pref-panel-agent .llm-pref-advanced > summary { font-size:
-    11.5px; font-weight: 600; color: var(--fill-secondary, #888); cursor:
-    pointer; } #__addonRef__-pref-panel-agent .llm-pref-advanced-body { display:
-    flex; flex-direction: column; gap: 9px; padding-top: 10px; }
+    start; } .llm-pref-panel .llm-pref-field > label { font-size: 12px;
+    padding-top: 5px; color: FieldText; } .llm-pref-panel .llm-pref-control {
+    display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    .llm-pref-panel .llm-pref-line { display: flex; gap: 8px; align-items:
+    center; min-width: 0; } .llm-pref-panel .llm-pref-line--wrap { display:
+    grid; grid-template-columns: minmax(min(220px, 100%), 1fr) auto; box-sizing:
+    border-box; } .llm-pref-panel .llm-pref-hint { font-size: 11px; line-height:
+    1.45; color: var(--fill-secondary, #888); overflow-wrap: anywhere;
+    min-width: 0; } .llm-pref-panel .llm-pref-input, .llm-pref-panel
+    .llm-pref-select { width: 100%; min-width: 0; max-width: 100%; height: 26px;
+    margin: 0; padding: 3px 8px; font-size: 12px; box-sizing: border-box;
+    border: 1px solid var(--llm-pref-stroke); border-radius: 6px; background:
+    var(--llm-pref-field); color: FieldText; } .llm-pref-panel
+    textarea.llm-pref-input { height: auto; padding: 6px 8px; font-family:
+    monospace; line-height: 1.5; } .llm-pref-panel .llm-pref-button {
+    flex-shrink: 0; padding: 4px 10px; font-size: 11.5px; font-weight: 500;
+    white-space: nowrap; border: 1px solid var(--llm-pref-stroke);
+    border-radius: 6px; background: var(--llm-pref-field); color: FieldText;
+    cursor: pointer; } .llm-pref-panel .llm-pref-button--accent { border-color:
+    var(--color-accent, #2563eb); color: var(--color-accent, #2563eb);
+    background: transparent; } .llm-pref-panel .llm-pref-check { display: flex;
+    gap: 8px; align-items: flex-start; font-size: 12px; color: FieldText; }
+    .llm-pref-panel .llm-pref-check > input { margin: 2px 0 0; } .llm-pref-panel
+    .llm-pref-link { width: fit-content; font-size: 11px; color:
+    var(--color-accent, #2563eb); cursor: pointer; } .llm-pref-panel
+    .llm-pref-advanced { border-top: 1px solid var(--llm-pref-stroke);
+    padding-top: 10px; } .llm-pref-panel .llm-pref-advanced > summary {
+    font-size: 11.5px; font-weight: 600; color: var(--fill-secondary, #888);
+    cursor: pointer; } .llm-pref-panel .llm-pref-advanced-body { display: flex;
+    flex-direction: column; gap: 9px; padding-top: 10px; } /* ── Provider rows
+    (AI Providers tab) ────────────────────────────────── A provider is the same
+    collapsible row as a runtime, so every rule above applies unchanged. Only
+    the pieces a provider has and a runtime does not are defined here: a head
+    with no on/off switch, a section header that carries an action, the
+    per-model control line, and the gear drawer. */ .llm-pref-panel
+    .llm-pref-row-head--plain { grid-template-columns: 18px minmax(0, 1fr) auto
+    12px; } .llm-pref-panel .llm-pref-row-icon--provider { background-color:
+    FieldText; mask-image:
+    url("chrome://__addonRef__/content/icons/action-model-chip.svg");
+    mask-repeat: no-repeat; mask-position: center; mask-size: contain;
+    -webkit-mask-image:
+    url("chrome://__addonRef__/content/icons/action-model-chip.svg");
+    -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
+    -webkit-mask-size: contain; } .llm-pref-panel .llm-pref-row-icon--webchat {
+    background-color: FieldText; mask-image:
+    url("chrome://__addonRef__/content/icons/action-mode-global.svg");
+    mask-repeat: no-repeat; mask-position: center; mask-size: contain;
+    -webkit-mask-image:
+    url("chrome://__addonRef__/content/icons/action-mode-global.svg");
+    -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
+    -webkit-mask-size: contain; } .llm-pref-panel .llm-pref-section-head {
+    display: flex; align-items: center; justify-content: space-between; gap:
+    8px; } .llm-pref-panel .llm-pref-section--footer { align-items: flex-end; }
+    .llm-pref-panel .llm-pref-model-row { display: flex; flex-direction: column;
+    gap: 5px; } .llm-pref-panel .llm-pref-model-controls { display: flex;
+    align-items: center; gap: 6px; min-width: 0; } .llm-pref-panel
+    .llm-pref-model-controls > .llm-pref-input, .llm-pref-panel
+    .llm-pref-model-controls > .llm-pref-select { flex: 1; min-width: 0; }
+    .llm-pref-panel .llm-pref-status { font-size: 11.5px; line-height: 1.45;
+    white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+    .llm-pref-panel .llm-pref-advanced-panel { display: none; flex-direction:
+    column; gap: 8px; padding: 10px 12px; background: rgba(128, 128, 128, 0.06);
+    border: 1px solid var(--llm-pref-stroke); border-radius: 6px; }
+    .llm-pref-panel .llm-pref-advanced-panel[data-open="true"] { display: flex;
+    } .llm-pref-panel .llm-pref-compact-fields { display: flex; gap: 10px;
+    flex-wrap: wrap; align-items: flex-end; } .llm-pref-panel
+    .llm-pref-compact-field { display: flex; flex-direction: column; gap: 3px; }
+    .llm-pref-panel .llm-pref-compact-field > label { font-size: 10.5px;
+    font-weight: 600; color: FieldText; } .llm-pref-panel .llm-pref-input--sm {
+    width: 88px; height: 24px; padding: 3px 7px; border-radius: 5px; }
+    .llm-pref-panel .llm-pref-input--mode { width: 108px; } .llm-pref-panel
+    .llm-pref-input--protocol { width: 135px; } .llm-pref-panel
+    .llm-pref-button--danger { border-color: color-mix(in srgb, #e0574f 55%,
+    var(--llm-pref-stroke)); color: #e0574f; } .llm-pref-panel
+    .llm-pref-button--primary { border: none; background: var(--color-accent,
+    #2563eb); color: #fff; font-weight: 600; } .llm-pref-panel
+    .llm-pref-button--block { width: 100%; margin-top: 2px; padding: 5px 12px;
+    font-size: 12.5px; line-height: normal; text-align: center; }
+    .llm-pref-panel .llm-pref-button[disabled] { opacity: 0.4; cursor: default;
+    } .llm-pref-panel .llm-pref-model-control-slot { flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 6px; } .llm-pref-panel
+    .llm-pref-model-control-slot > .llm-pref-input, .llm-pref-panel
+    .llm-pref-model-control-slot > .llm-pref-select { flex: 1; min-width: 0; }
+    .llm-pref-panel .llm-pref-advanced-rule { border-top: 1px solid
+    var(--llm-pref-stroke); opacity: 0.6; margin: 2px 0; } /* ── Add-provider
+    row (AI Providers tab) ─────────────────────────────── An empty slot shaped
+    like a collapsed provider row — full width, the same 42px head height —
+    rather than a full-width button. Hovering fills it with the card surface it
+    is about to become (panel colours only, no accent) and lifts it slightly. */
+    .llm-pref-panel .llm-pref-add-card { display: grid; min-height: 42px;
+    border-style: dashed; background: var(--llm-pref-head); transition:
+    transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
+    } .llm-pref-panel .llm-pref-add-card-btn { display: grid; grid-auto-flow:
+    column; place-content: center; align-items: center; gap: 8px; padding: 0
+    12px; border-radius: inherit; color: var(--fill-secondary, #888); font:
+    inherit; cursor: pointer; -moz-user-select: none; user-select: none; }
+    .llm-pref-panel .llm-pref-add-card:hover { transform: scale(1.01);
+    border-color: color-mix(in srgb, var(--fill-primary, #fff) 28%,
+    var(--llm-pref-stroke)); background-color: color-mix(in srgb,
+    var(--fill-primary, #fff) 7%, var(--llm-pref-head)); } .llm-pref-panel
+    .llm-pref-add-card:active { transform: scale(0.995); } .llm-pref-panel
+    .llm-pref-add-card:hover .llm-pref-add-card-btn { color: var(--fill-primary,
+    inherit); } .llm-pref-panel .llm-pref-add-card[data-disabled="true"]
+    .llm-pref-add-card-btn { cursor: default; } .llm-pref-panel
+    .llm-pref-add-card-btn:focus-visible { outline: 2px solid
+    var(--color-accent, #2563eb); outline-offset: -3px; } .llm-pref-panel
+    .llm-pref-add-card-plus { font-size: 20px; line-height: 1; font-weight: 300;
+    color: inherit; transition: transform 0.18s ease; } .llm-pref-panel
+    .llm-pref-add-card:hover .llm-pref-add-card-plus { transform: scale(1.12); }
+    .llm-pref-panel .llm-pref-add-card-label { font-size: 12px; font-weight:
+    500; } .llm-pref-panel .llm-pref-add-card[disabled] { opacity: 0.4; }
+    .llm-pref-panel .llm-pref-add-card[disabled]:hover { transform: none;
+    background-color: transparent; border-color: var(--llm-pref-stroke); }
+    @media (prefers-reduced-motion: reduce) { .llm-pref-panel
+    .llm-pref-add-card, .llm-pref-panel .llm-pref-add-card-plus { transition:
+    none; } .llm-pref-panel .llm-pref-add-card:hover, .llm-pref-panel
+    .llm-pref-add-card:active, .llm-pref-panel .llm-pref-add-card:hover
+    .llm-pref-add-card-plus { transform: none; } }
   </html:style>
   <groupbox>
     <html:div style="display: flex; flex-direction: column; padding: 10px">
@@ -231,18 +335,20 @@
       <!-- ═══ Tab 1: AI Providers ═══ -->
       <html:div
         id="__addonRef__-pref-panel-models"
+        class="llm-pref-panel"
         data-pref-panel="models"
-        style="display: flex; flex-direction: column; gap: 18px"
+        style="display: flex; flex-direction: column"
       >
         <html:div
           id="__addonRef__-model-sections"
-          style="display: flex; flex-direction: column; gap: 18px"
+          style="display: flex; flex-direction: column; gap: 14px"
         ></html:div>
       </html:div>
 
       <!-- ═══ Tab 2: Customization ═══ -->
       <html:div
         id="__addonRef__-pref-panel-customization"
+        class="llm-pref-fields"
         data-pref-panel="customization"
         style="display: none; flex-direction: column; gap: 18px"
       >
@@ -267,12 +373,9 @@
               width: 100%;
               padding: 6px 10px;
               font-size: 13px;
-              border: 1px solid var(--stroke-secondary, #c8c8c8);
               border-radius: 6px;
               box-sizing: border-box;
               resize: vertical;
-              background: Field;
-              color: FieldText;
             "
           ></html:textarea>
           <html:span
@@ -655,10 +758,7 @@
                     max-width: 520px;
                     padding: 5px 8px;
                     font-size: 12px;
-                    border: 1px solid var(--stroke-secondary, #c8c8c8);
                     border-radius: 6px;
-                    background: Field;
-                    color: FieldText;
                   "
                 />
                 <html:button
@@ -747,10 +847,7 @@
               width: 220px;
               padding: 4px 8px;
               font-size: 12px;
-              border: 1px solid var(--stroke-secondary, #c8c8c8);
               border-radius: 6px;
-              background: Field;
-              color: FieldText;
             "
           >
             <html:option value="auto">Auto (follow Zotero)</html:option>
@@ -774,6 +871,7 @@
       <!-- ═══ Tab 3: Agent ═══ -->
       <html:div
         id="__addonRef__-pref-panel-agent"
+        class="llm-pref-panel"
         data-pref-panel="agent"
         style="display: none; flex-direction: column"
       >
@@ -1762,6 +1860,7 @@
       <!-- ═══ Tab 4: MinerU ═══ -->
       <html:div
         id="__addonRef__-pref-panel-mineru"
+        class="llm-pref-fields"
         data-pref-panel="mineru"
         style="display: none; flex-direction: column; gap: 18px"
       >
@@ -2065,11 +2164,8 @@
                   width: 100%;
                   padding: 6px 10px;
                   font-size: 13px;
-                  border: 1px solid var(--stroke-secondary, #c8c8c8);
                   border-radius: 6px;
                   box-sizing: border-box;
-                  background: Field;
-                  color: FieldText;
                 "
               ></html:input>
               <html:span
@@ -2115,11 +2211,8 @@
                   width: 100%;
                   padding: 6px 10px;
                   font-size: 13px;
-                  border: 1px solid var(--stroke-secondary, #c8c8c8);
                   border-radius: 6px;
                   box-sizing: border-box;
-                  background: Field;
-                  color: FieldText;
                 "
               >
                 <html:option value="pipeline">pipeline</html:option>
@@ -2162,11 +2255,8 @@
                     width: 100%;
                     padding: 6px 10px;
                     font-size: 13px;
-                    border: 1px solid var(--stroke-secondary, #c8c8c8);
                     border-radius: 6px;
                     box-sizing: border-box;
-                    background: Field;
-                    color: FieldText;
                   "
                 ></html:input>
                 <html:span
@@ -2200,11 +2290,8 @@
                     width: 100%;
                     padding: 6px 10px;
                     font-size: 13px;
-                    border: 1px solid var(--stroke-secondary, #c8c8c8);
                     border-radius: 6px;
                     box-sizing: border-box;
-                    background: Field;
-                    color: FieldText;
                   "
                 >
                   <html:option value="pipeline">pipeline</html:option>
@@ -2340,11 +2427,8 @@
                         width: 46px;
                         padding: 3px 6px;
                         font-size: 13px;
-                        border: 1px solid var(--stroke-secondary, #c8c8c8);
                         border-radius: 5px;
                         box-sizing: border-box;
-                        background: Field;
-                        color: FieldText;
                         text-align: right;
                       "
                     ></html:input>
@@ -2384,11 +2468,8 @@
                       width: 100%;
                       padding: 6px 10px;
                       font-size: 13px;
-                      border: 1px solid var(--stroke-secondary, #c8c8c8);
                       border-radius: 6px;
                       box-sizing: border-box;
-                      background: Field;
-                      color: FieldText;
                     "
                   ></html:input>
                   <html:span

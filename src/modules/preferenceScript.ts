@@ -9,7 +9,7 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_TEMPERATURE,
 } from "../utils/llmDefaults";
-import { HTML_NS, el, iconBtn } from "../utils/domHelpers";
+import { HTML_NS, createElement, el, iconBtn } from "../utils/domHelpers";
 import { registerAddonDialog } from "../utils/dialogRegistry";
 import {
   normalizeMaxTokens,
@@ -55,11 +55,13 @@ import {
   canOfferCodexDirectAuthMode,
 } from "../utils/codexDirectProviderCard";
 import {
-  PROVIDER_MODEL_CONTROL_STYLE,
-  createProviderCardSectionDivider,
+  PROVIDER_MODEL_INPUT_CLASS,
+  PROVIDER_MODEL_SELECT_CLASS,
+  PROVIDER_MODEL_SLOT_CLASS,
   createProviderModelRowBlueprint,
   createProviderModelSectionBlueprint,
 } from "../utils/providerCardModelSection";
+import { describeProviderRow } from "./preferences/providerCards/providerRowHeader";
 import {
   getModelCapabilities,
   getModelCatalogStatus,
@@ -502,19 +504,11 @@ function attachProviderModelSelect(args: {
 }): { container: HTMLElement; statusEl: HTMLElement; refresh: () => void } {
   const { doc, input, group, modelEntry } = args;
 
-  const container = el(
-    doc,
-    "div",
-    "flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px;",
-  );
-  const select = el(
-    doc,
-    "select",
-    PROVIDER_MODEL_CONTROL_STYLE,
-  ) as HTMLSelectElement;
+  const container = createElement(doc, "div", PROVIDER_MODEL_SLOT_CLASS);
+  const select = createElement(doc, "select", PROVIDER_MODEL_SELECT_CLASS);
   container.append(select, input);
 
-  const statusEl = el(doc, "span", HELPER_STYLE);
+  const statusEl = createElement(doc, "span", "llm-pref-hint");
   statusEl.style.display = "none";
 
   let userCustomized = false;
@@ -758,21 +752,20 @@ function normalizeAuthMode(value: unknown): ModelProviderAuthMode {
 
 // ── Style tokens ───────────────────────────────────────────────────
 
+// The AI Providers tab renders from the shared `.llm-pref-*` stylesheet in
+// preferences.xhtml. These inline tokens are what is left for the surfaces
+// that stylesheet does not reach: the Embedding Provider card on the
+// Customization tab, and the GitHub device-code dialog, which mounts on
+// document.body outside any panel.
+//
 // Inputs use CSS system colors (Field / FieldText) so they automatically
 // match Zotero's native input appearance in both light and dark mode.
-// Borders use --stroke-secondary, the real Zotero border variable.
+// Borders use --llm-pref-stroke, defined on the prefs root: Zotero never
+// defines --stroke-secondary, so that fell back to a light #c8c8c8.
 const INPUT_STYLE =
   "width: 100%; padding: 6px 10px; font-size: 13px;" +
-  " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
-  " box-sizing: border-box; background: Field; color: FieldText;";
-
-const INPUT_SM_STYLE =
-  "width: 88px; padding: 4px 7px; font-size: 12px;" +
-  " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 5px;" +
-  " box-sizing: border-box; background: Field; color: FieldText;";
-
-const INPUT_MODE_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 108px;";
-const PROTOCOL_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 135px;";
+  " border: 1px solid var(--llm-pref-stroke); border-radius: 6px;" +
+  " box-sizing: border-box;";
 
 const LABEL_STYLE =
   "display: block; font-weight: 600; font-size: 12px;" +
@@ -780,10 +773,6 @@ const LABEL_STYLE =
 
 const HELPER_STYLE =
   "font-size: 11px; color: var(--fill-secondary, #888); margin-top: 3px; display: block;";
-
-const SECTION_LABEL_STYLE =
-  "font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;" +
-  " color: var(--fill-secondary, #888);";
 
 const PRIMARY_BTN_STYLE =
   "padding: 5px 12px; font-size: 12px; font-weight: 600;" +
@@ -795,21 +784,61 @@ const OUTLINE_BTN_STYLE =
   " background: transparent; color: var(--color-accent, #2563eb);" +
   " border: 1px solid var(--color-accent, #2563eb); border-radius: 5px; cursor: pointer;";
 
+// The Embedding Provider card mirrors a provider row: a head in the chrome
+// colour over a body in the card surface, from the same tokens.
 const CARD_STYLE =
-  "border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; overflow: hidden;";
+  "border: 1px solid var(--llm-pref-stroke); border-radius: 10px;" +
+  " background: var(--llm-pref-surface); overflow: hidden;";
 
 const CARD_HEADER_STYLE =
-  "display: flex; align-items: center; justify-content: space-between; padding: 8px 12px;" +
-  " background: Field; color: FieldText;" +
-  " border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);";
+  "display: flex; align-items: center; justify-content: space-between;" +
+  " min-height: 42px; padding: 0 12px; background: var(--llm-pref-head);" +
+  " color: FieldText; border-bottom: 1px solid var(--llm-pref-stroke);";
 
 const CARD_BODY_STYLE =
   "display: flex; flex-direction: column; gap: 12px; padding: 14px;";
 
-const ADV_ROW_STYLE =
-  "display: none; flex-direction: column; gap: 8px; padding: 10px 12px;" +
-  " background: rgba(128,128,128,0.06);" +
-  " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; margin-top: 4px;";
+/**
+ * The card's first block: how this provider authenticates and where it lives.
+ * `.llm-pref-section` supplies its own separator from the next section, so
+ * the old hand-drawn divider between connection and models is gone.
+ */
+function connectionSection(
+  doc: Document,
+  fields: HTMLElement[],
+): HTMLDivElement {
+  const section = createElement(doc, "div", "llm-pref-section");
+  section.appendChild(
+    createElement(doc, "span", "llm-pref-section-title", {
+      textContent: t("Connection"),
+    }),
+  );
+  section.append(...fields);
+  return section;
+}
+
+/**
+ * One row of the provider card's fixed label column — the same
+ * `.llm-pref-field` grid the Agent tab uses, so labels line up down the whole
+ * tab. Controls are appended to `control`; hints go there too.
+ */
+function prefField(
+  doc: Document,
+  labelText: string,
+): { wrap: HTMLDivElement; label: HTMLLabelElement; control: HTMLDivElement } {
+  const wrap = createElement(doc, "div", "llm-pref-field");
+  const label = createElement(doc, "label", undefined, {
+    textContent: labelText,
+  });
+  const control = createElement(doc, "div", "llm-pref-control");
+  wrap.append(label, control);
+  return { wrap, label, control };
+}
+
+/** A hint line under a control. */
+function prefHint(doc: Document, text: string): HTMLSpanElement {
+  return createElement(doc, "span", "llm-pref-hint", { textContent: text });
+}
 
 async function confirmMineruSyncPackageDeletion(
   disableSync: boolean,
@@ -1209,6 +1238,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     return result;
   })();
 
+  // Which provider rows are expanded. `rerender` rebuilds the whole list, so
+  // the open set lives outside it — otherwise adding a model or switching an
+  // auth mode would slam the row shut under the user's hands. Seeded once:
+  // a provider that still needs setting up starts open, a finished one starts
+  // closed, and from then on only the user's clicks move it.
+  const openProviderIds = new Set<string>(
+    groups
+      .filter((group) => !describeProviderRow(group).configured)
+      .map((group) => group.id),
+  );
+
   // Mutable reference so input listeners inside rerender can update the
   // "Add Provider" button state without triggering a full rerender.
   let syncAddProviderBtn: () => void = () => undefined;
@@ -1227,35 +1267,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     disposeDirectCardControllers();
     modelSections.innerHTML = "";
 
-    const wrap = el(
-      doc,
-      "div",
-      "display: flex; flex-direction: column; gap: 10px;",
+    modelSections.appendChild(
+      createElement(doc, "p", "llm-pref-intro", {
+        textContent: t(
+          "Each provider has an auth mode, an endpoint, and one or more model variants. Open a provider to configure it; the model you pick in the chat header answers a given turn.",
+        ),
+      }),
     );
 
-    // Section heading
-    const headingLeft = el(
-      doc,
-      "div",
-      "display: flex; flex-direction: column; gap: 2px; margin-bottom: 2px;",
+    const wrap = createElement(doc, "div", "llm-pref-group");
+    wrap.appendChild(
+      createElement(doc, "span", "llm-pref-group-title", {
+        textContent: t("Providers"),
+      }),
     );
-    headingLeft.append(
-      el(
-        doc,
-        "span",
-        "font-size: 14px; font-weight: 800; color: var(--fill-primary, inherit);",
-        t("AI Providers"),
-      ),
-      el(
-        doc,
-        "span",
-        "font-size: 11.5px; color: var(--fill-secondary, #888);",
-        t(
-          "Each provider has an auth mode, API URL, and one or more model variants.",
-        ),
-      ),
-    );
-    wrap.appendChild(headingLeft);
+    modelSections.appendChild(wrap);
 
     // ── Per-provider cards ─────────────────────────────────────────
 
@@ -1274,14 +1300,81 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         group.models = ensureModels(group, profile);
       }
 
-      const card = el(doc, "div", CARD_STYLE);
+      // ── Row shell ────────────────────────────────────────────────
+      // A provider is the same collapsible row as a runtime on the Agent
+      // tab: the head answers "is this set up, and as what?" while closed.
+      const description = describeProviderRow(group);
+      const card = createElement(doc, "div", "llm-pref-row");
+      const open = openProviderIds.has(group.id);
+      card.setAttribute("data-open", String(open));
+      card.setAttribute("data-llm-provider-row", group.id);
 
-      // Card header: label + remove button
-      const cardHeader = el(doc, "div", CARD_HEADER_STYLE);
-      cardHeader.append(
-        el(doc, "span", "font-weight: 700; font-size: 13px;", profile.label),
+      const cardHeader = createElement(
+        doc,
+        "div",
+        "llm-pref-row-head llm-pref-row-head--plain",
       );
-      const removeProvBtn = iconBtn(doc, "×", t("Remove provider"));
+      cardHeader.appendChild(
+        createElement(
+          doc,
+          "span",
+          `llm-pref-row-icon llm-pref-row-icon--${description.iconModifier}`,
+        ),
+      );
+      const cardToggle = createElement(doc, "button", "llm-pref-row-toggle", {
+        type: "button",
+      });
+      cardToggle.setAttribute("aria-expanded", String(open));
+      cardToggle.appendChild(
+        createElement(doc, "span", "llm-pref-row-name", {
+          textContent: profile.label,
+        }),
+      );
+      const cardSub = createElement(doc, "span", "llm-pref-row-sub");
+      const cardDot = createElement(doc, "span", "llm-pref-row-dot");
+      cardDot.setAttribute("data-on", String(description.configured));
+      cardSub.append(
+        cardDot,
+        createElement(doc, "span", "llm-pref-row-summary", {
+          textContent: description.summary,
+        }),
+      );
+      cardToggle.appendChild(cardSub);
+      cardHeader.appendChild(cardToggle);
+      cardHeader.appendChild(
+        createElement(doc, "span", "llm-pref-row-tag", {
+          textContent: description.tag,
+        }),
+      );
+      cardHeader.appendChild(
+        createElement(doc, "span", "llm-pref-row-chevron", {
+          textContent: "\u203A",
+        }),
+      );
+
+      // Card body
+      const cardBody = createElement(doc, "div", "llm-pref-row-body");
+      cardBody.hidden = !open;
+      const cardBodyId = `${config.addonRef}-provider-row-${group.id}-body`;
+      cardBody.id = cardBodyId;
+      cardToggle.setAttribute("aria-controls", cardBodyId);
+      cardToggle.addEventListener("click", () => {
+        const nextOpen = !openProviderIds.has(group.id);
+        if (nextOpen) openProviderIds.add(group.id);
+        else openProviderIds.delete(group.id);
+        card.setAttribute("data-open", String(nextOpen));
+        cardToggle.setAttribute("aria-expanded", String(nextOpen));
+        cardBody.hidden = !nextOpen;
+      });
+
+      // Removing a provider is destructive, so it lives at the foot of the
+      // open body rather than in the head, where the Agent tab puts a switch.
+      const removeProvBtn = createElement(
+        doc,
+        "button",
+        "llm-pref-button llm-pref-button--danger",
+        { type: "button", textContent: t("Remove provider") },
+      );
       removeProvBtn.addEventListener("click", () => {
         const removesSelectedModel = group.models.some(
           (model) => model.id === getLastUsedModelEntryId(),
@@ -1290,27 +1383,32 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         if (removesSelectedModel) {
           setLastUsedModelEntryId(getFirstSelectableModelEntryId(nextGroups));
         }
+        openProviderIds.delete(group.id);
         groups.splice(groupIndex, 1);
         persistGroups(groups);
         rerender();
       });
-      cardHeader.appendChild(removeProvBtn);
 
-      // Card body
-      const cardBody = el(doc, "div", CARD_BODY_STYLE);
+      /** Assemble the row: every auth mode finishes the same way. */
+      const finishProviderRow = () => {
+        const footer = createElement(
+          doc,
+          "div",
+          "llm-pref-section llm-pref-section--footer",
+        );
+        footer.appendChild(removeProvBtn);
+        cardBody.appendChild(footer);
+        card.append(cardHeader, cardBody);
+        wrap.appendChild(card);
+      };
 
       // ── Auth mode ────────────────────────────────────────────────
-      const authModeWrap = el(
-        doc,
-        "div",
-        "display: flex; flex-direction: column;",
-      );
-      const authModeLabel = el(doc, "label", LABEL_STYLE, t("Auth Mode"));
-      const authModeSelect = el(
-        doc,
-        "select",
-        INPUT_STYLE,
-      ) as HTMLSelectElement;
+      const {
+        wrap: authModeWrap,
+        label: authModeLabel,
+        control: authModeControl,
+      } = prefField(doc, t("Auth mode"));
+      const authModeSelect = createElement(doc, "select", "llm-pref-select");
       authModeSelect.id = `${config.addonRef}-auth-mode-${group.id}`;
       authModeLabel.setAttribute("for", authModeSelect.id);
       const apiKeyOption = el(doc, "option") as HTMLOptionElement;
@@ -1368,11 +1466,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               : group.authMode === "codex_app_server"
                 ? t(CODEX_APP_SERVER_HELPER_TEXT)
                 : "";
-      authModeWrap.append(
-        authModeLabel,
-        authModeSelect,
-        el(doc, "span", HELPER_STYLE, authModeHelperText),
-      );
+      authModeControl.append(authModeSelect);
+      if (authModeHelperText) {
+        authModeControl.append(prefHint(doc, authModeHelperText));
+      }
 
       const selectedPresetId = resolveProviderPresetId(group);
       const selectedPreset =
@@ -1395,9 +1492,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         const controller = createCodexDirectProviderCardController({
           doc,
           group,
-          sectionLabelStyle: SECTION_LABEL_STYLE,
-          outlineButtonStyle: OUTLINE_BTN_STYLE,
-          helperStyle: HELPER_STYLE,
           onGroupChange: (next) => {
             groups[groupIndex] = next;
             persistGroups(groups);
@@ -1409,33 +1503,25 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         directCardControllers.push(controller);
 
         cardBody.append(
-          authModeWrap,
-          createProviderCardSectionDivider(doc),
+          connectionSection(doc, [authModeWrap]),
           controller.element,
         );
-        card.append(cardHeader, cardBody);
-        wrap.appendChild(card);
+        finishProviderRow();
         return;
       }
 
       // ── Provider preset ─────────────────────────────────────────
-      const providerPresetWrap = el(
-        doc,
-        "div",
-        "display: flex; flex-direction: column;",
-      );
+      const {
+        wrap: providerPresetWrap,
+        label: providerPresetLabel,
+        control: providerPresetControl,
+      } = prefField(doc, t("Provider"));
       if (cardMode.showProviderPreset) {
-        const providerPresetLabel = el(
-          doc,
-          "label",
-          LABEL_STYLE,
-          t("Provider"),
-        );
-        const providerPresetSelect = el(
+        const providerPresetSelect = createElement(
           doc,
           "select",
-          INPUT_STYLE,
-        ) as HTMLSelectElement;
+          "llm-pref-select",
+        );
         providerPresetSelect.id = `${config.addonRef}-provider-preset-${group.id}`;
         providerPresetLabel.setAttribute("for", providerPresetSelect.id);
 
@@ -1470,24 +1556,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           setTimeout(() => rerender(), 0);
         });
 
-        providerPresetWrap.append(providerPresetLabel, providerPresetSelect);
+        providerPresetControl.append(providerPresetSelect);
       }
 
       // ── API URL ──────────────────────────────────────────────────
-      const apiUrlWrap = el(
+      const {
+        wrap: apiUrlWrap,
+        label: apiUrlLabel,
+        control: apiUrlControl,
+      } = prefField(
         doc,
-        "div",
-        "display: flex; flex-direction: column;",
-      );
-      const apiUrlLabel = el(
-        doc,
-        "label",
-        LABEL_STYLE,
         group.authMode === "codex_app_server"
-          ? t("Codex CLI Path")
+          ? t("Codex CLI path")
           : t("API URL"),
       );
-      const apiUrlInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
+      const apiUrlInput = createElement(doc, "input", "llm-pref-input");
       apiUrlInput.id = `${config.addonRef}-api-base-${group.id}`;
       apiUrlLabel.setAttribute("for", apiUrlInput.id);
       apiUrlInput.type = "text";
@@ -1517,31 +1600,26 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         persistGroups(groups);
         syncAddProviderBtn();
       });
-      const apiUrlHelper = el(
+      const apiUrlHelper = prefHint(
         doc,
-        "span",
-        HELPER_STYLE,
         group.authMode === "codex_app_server"
           ? t(getCodexAppServerPathHelperText())
           : group.authMode === "copilot_auth"
             ? t(COPILOT_API_HELPER_TEXT)
             : getPresetSelectHelperText(selectedPresetId),
       );
-      apiUrlWrap.append(apiUrlLabel, apiUrlInput, apiUrlHelper);
+      apiUrlControl.append(apiUrlInput, apiUrlHelper);
 
       // ── API Key ──────────────────────────────────────────────────
-      const apiKeyWrap = el(
+      const {
+        wrap: apiKeyWrap,
+        label: apiKeyLabel,
+        control: apiKeyControl,
+      } = prefField(
         doc,
-        "div",
-        "display: flex; flex-direction: column;",
+        presetRequiresApiKey ? t("API key") : t("API key (optional)"),
       );
-      const apiKeyLabel = el(
-        doc,
-        "label",
-        LABEL_STYLE,
-        presetRequiresApiKey ? t("API Key") : t("API Key (optional)"),
-      );
-      const apiKeyInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
+      const apiKeyInput = createElement(doc, "input", "llm-pref-input");
       apiKeyInput.id = `${config.addonRef}-api-key-${group.id}`;
       apiKeyLabel.setAttribute("for", apiKeyInput.id);
       apiKeyInput.type = "password";
@@ -1566,7 +1644,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           for (const refresh of modelPickerRefreshers) refresh();
         }, 800);
       });
-      apiKeyWrap.append(apiKeyLabel, apiKeyInput);
+      apiKeyControl.append(apiKeyInput);
       if (
         group.authMode === "codex_app_server" ||
         group.authMode === "copilot_auth"
@@ -1575,27 +1653,26 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       }
 
       // ── Copilot Login ────────────────────────────────────────────
-      const copilotLoginWrap = el(
-        doc,
-        "div",
-        "display: flex; flex-direction: column; gap: 6px;",
-      );
+      const { wrap: copilotLoginWrap, control: copilotLoginControl } =
+        prefField(doc, t("Sign-in"));
       if (group.authMode === "copilot_auth") {
         const isLoggedIn = group.apiKey.startsWith("ghu_");
-        const copilotStatus = el(
+        const copilotStatus = prefHint(
           doc,
-          "span",
-          HELPER_STYLE + " font-weight: 500;",
           isLoggedIn ? t("Logged in to GitHub Copilot") : "",
         );
 
-        const copilotLoginBtn = el(
+        const copilotLoginBtn = createElement(
           doc,
           "button",
-          PRIMARY_BTN_STYLE + " font-size: 12.5px;",
-          isLoggedIn ? t("Re-login") : t("Login with GitHub Copilot"),
-        ) as HTMLButtonElement;
-        copilotLoginBtn.type = "button";
+          "llm-pref-button llm-pref-button--primary",
+          {
+            type: "button",
+            textContent: isLoggedIn
+              ? t("Re-login")
+              : t("Login with GitHub Copilot"),
+          },
+        );
 
         const AbortControllerCtor =
           (ztoolkit.getGlobal("AbortController") as
@@ -1800,13 +1877,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           }
         });
 
-        const copilotLogoutBtn = el(
+        const copilotLogoutBtn = createElement(
           doc,
           "button",
-          OUTLINE_BTN_STYLE + " font-size: 11px; padding: 2px 8px;",
-          t("Log out"),
-        ) as HTMLButtonElement;
-        copilotLogoutBtn.type = "button";
+          "llm-pref-button",
+          { type: "button", textContent: t("Log out") },
+        );
         copilotLogoutBtn.style.display = isLoggedIn ? "inline-block" : "none";
         copilotLogoutBtn.addEventListener("click", () => {
           group.apiKey = "";
@@ -1814,23 +1890,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           rerender();
         });
 
-        const copilotBtnRow = el(
-          doc,
-          "div",
-          "display: flex; gap: 8px; align-items: center;",
-        );
+        const copilotBtnRow = createElement(doc, "div", "llm-pref-line");
         copilotBtnRow.append(copilotLoginBtn, copilotLogoutBtn);
 
         // ── Fetch models button ──
-        const fetchModelsBtn = el(
+        const fetchModelsBtn = createElement(
           doc,
           "button",
-          OUTLINE_BTN_STYLE + " font-size: 11px; padding: 3px 10px;",
-          t("Fetch available models"),
-        ) as HTMLButtonElement;
-        fetchModelsBtn.type = "button";
+          "llm-pref-button llm-pref-button--accent",
+          { type: "button", textContent: t("Fetch available models") },
+        );
         fetchModelsBtn.style.display = isLoggedIn ? "inline-block" : "none";
-        const fetchModelsStatus = el(doc, "span", HELPER_STYLE, "");
+        const fetchModelsStatus = prefHint(doc, "");
 
         fetchModelsBtn.addEventListener("click", async () => {
           fetchModelsBtn.disabled = true;
@@ -1886,14 +1957,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           }
         });
 
-        const fetchModelsRow = el(
-          doc,
-          "div",
-          "display: flex; gap: 8px; align-items: center;",
-        );
+        const fetchModelsRow = createElement(doc, "div", "llm-pref-line");
         fetchModelsRow.append(fetchModelsBtn, fetchModelsStatus);
 
-        copilotLoginWrap.append(copilotBtnRow, copilotStatus, fetchModelsRow);
+        copilotLoginControl.append(
+          copilotBtnRow,
+          copilotStatus,
+          fetchModelsRow,
+        );
       }
 
       // ── Models list ──────────────────────────────────────────────
@@ -1903,22 +1974,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         addButton: addModelBtn,
       } = createProviderModelSectionBlueprint({
         doc,
-        sectionLabelStyle: SECTION_LABEL_STYLE,
-        title: t("Model names"),
+        title: t("Models"),
         addTitle: t("Add model"),
       });
       if (group.authMode === "webchat") {
         // [webchat] Replace "+" with a "Fetch Models" button that adds all webchat targets
         addModelBtn.style.display = "none";
-        const fetchModelsBtn = el(
+        const fetchModelsBtn = createElement(
           doc,
           "button",
-          OUTLINE_BTN_STYLE,
-          t("Fetch Models"),
-        ) as HTMLButtonElement;
-        fetchModelsBtn.type = "button";
-        fetchModelsBtn.style.fontSize = "11px";
-        fetchModelsBtn.style.padding = "2px 8px";
+          "llm-pref-button llm-pref-button--accent",
+          { type: "button", textContent: t("Fetch Models") },
+        );
         fetchModelsBtn.addEventListener("click", () => {
           const allTargets = WEBCHAT_TARGETS.map((wt) => wt.modelName);
           const existing = new Set(
@@ -1961,24 +2028,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             status: statusLine,
           } = createProviderModelRowBlueprint({
             doc,
-            outlineButtonStyle: OUTLINE_BTN_STYLE,
             testLabel: t("Test"),
           });
           testBtn.style.display = "none";
           statusLine.style.display = "none";
           rowWrap.appendChild(
-            el(
-              doc,
-              "span",
-              HELPER_STYLE,
-              t("Per-response output limit: Managed by runtime"),
-            ),
+            prefHint(doc, t("Per-response output limit: Managed by runtime")),
           );
-          const modelSelect = el(
+          const modelSelect = createElement(
             doc,
             "select",
-            PROVIDER_MODEL_CONTROL_STYLE,
-          ) as HTMLSelectElement;
+            PROVIDER_MODEL_SELECT_CLASS,
+          );
           for (const target of WEBCHAT_TARGETS) {
             const option = doc.createElement("option");
             option.value = target.modelName;
@@ -2011,13 +2072,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           }
           modelsWrap.appendChild(rowWrap);
         });
-        cardBody.append(
-          authModeWrap,
-          createProviderCardSectionDivider(doc),
-          modelsWrap,
-        );
-        card.append(cardHeader, cardBody);
-        wrap.appendChild(card);
+        cardBody.append(connectionSection(doc, [authModeWrap]), modelsWrap);
+        finishProviderRow();
         return;
       }
 
@@ -2029,15 +2085,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           status: statusLine,
         } = createProviderModelRowBlueprint({
           doc,
-          outlineButtonStyle: OUTLINE_BTN_STYLE,
           testLabel: t("Test"),
         });
 
-        const modelInput = el(
+        const modelInput = createElement(
           doc,
           "input",
-          PROVIDER_MODEL_CONTROL_STYLE,
-        ) as HTMLInputElement;
+          PROVIDER_MODEL_INPUT_CLASS,
+        );
         modelInput.type = "text";
         modelInput.value = modelEntry.model;
         modelInput.placeholder =
@@ -2089,31 +2144,25 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         }
 
         // ── Advanced section (hidden by default) ──────────────────
-        const advRow = el(doc, "div", ADV_ROW_STYLE);
+        const advRow = createElement(doc, "div", "llm-pref-advanced-panel");
+        advRow.setAttribute("data-open", "false");
 
-        const advFields = el(
-          doc,
-          "div",
-          "display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;",
-        );
+        const advFields = createElement(doc, "div", "llm-pref-compact-fields");
 
         const makeCompactField = (
           labelText: string,
           value: string,
           placeholder: string,
         ) => {
-          const fieldWrap = el(
+          const fieldWrap = createElement(doc, "div", "llm-pref-compact-field");
+          const lbl = createElement(doc, "label", undefined, {
+            textContent: labelText,
+          });
+          const input = createElement(
             doc,
-            "div",
-            "display: flex; flex-direction: column; gap: 3px;",
+            "input",
+            "llm-pref-input llm-pref-input--sm",
           );
-          const lbl = el(
-            doc,
-            "label",
-            "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
-            labelText,
-          );
-          const input = el(doc, "input", INPUT_SM_STYLE) as HTMLInputElement;
           input.type = "text";
           input.value = value;
           input.placeholder = t(placeholder);
@@ -2138,27 +2187,20 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             authMode: group.authMode,
             scope: group.id,
           });
-        const outputLimitField = el(
+        const outputLimitField = createElement(
           doc,
           "div",
-          "display: flex; flex-direction: column; gap: 3px;",
+          "llm-pref-compact-field",
         );
-        const outputLimitLabel = el(
-          doc,
-          "label",
-          "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
-          t("Per-response output limit"),
-        );
-        const outputLimitControls = el(
-          doc,
-          "div",
-          "display: flex; gap: 4px; align-items: center;",
-        );
-        const outputLimitSelect = el(
+        const outputLimitLabel = createElement(doc, "label", undefined, {
+          textContent: t("Per-response output limit"),
+        });
+        const outputLimitControls = createElement(doc, "div", "llm-pref-line");
+        const outputLimitSelect = createElement(
           doc,
           "select",
-          INPUT_MODE_SELECT_SM_STYLE,
-        ) as HTMLSelectElement;
+          "llm-pref-select llm-pref-input--sm llm-pref-input--mode",
+        );
         const outputLimitIsRuntimeManaged =
           group.authMode === "codex_app_server";
         for (const option of outputLimitIsRuntimeManaged
@@ -2172,11 +2214,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           element.textContent = t(option.label);
           outputLimitSelect.appendChild(element);
         }
-        const outputLimitInput = el(
+        const outputLimitInput = createElement(
           doc,
           "input",
-          INPUT_SM_STYLE,
-        ) as HTMLInputElement;
+          "llm-pref-input llm-pref-input--sm",
+        );
         outputLimitInput.type = "number";
         outputLimitInput.min = "1";
         outputLimitInput.step = "1";
@@ -2215,22 +2257,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         let inputModeFieldWrap: HTMLDivElement | null = null;
         let inputModeSelect: HTMLSelectElement | null = null;
         if (inputModeOptions.length > 0) {
-          inputModeFieldWrap = el(
+          inputModeFieldWrap = createElement(
             doc,
             "div",
-            "display: flex; flex-direction: column; gap: 3px;",
+            "llm-pref-compact-field",
           );
-          const inputModeFieldLabel = el(
-            doc,
-            "label",
-            "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
-            t("Input mode"),
-          );
-          inputModeSelect = el(
+          const inputModeFieldLabel = createElement(doc, "label", undefined, {
+            textContent: t("Input mode"),
+          });
+          inputModeSelect = createElement(
             doc,
             "select",
-            INPUT_MODE_SELECT_SM_STYLE,
-          ) as HTMLSelectElement;
+            "llm-pref-select llm-pref-input--sm llm-pref-input--mode",
+          );
           for (const mode of inputModeOptions) {
             const opt = el(doc, "option") as HTMLOptionElement;
             opt.value = mode;
@@ -2247,22 +2286,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         }
 
         // ── Per-model protocol override ──
-        const protocolFieldWrap = el(
+        const protocolFieldWrap = createElement(
           doc,
           "div",
-          "display: flex; flex-direction: column; gap: 3px;",
+          "llm-pref-compact-field",
         );
-        const protocolFieldLabel = el(
-          doc,
-          "label",
-          "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
-          t("API protocol override"),
-        );
-        const protocolFieldSelect = el(
+        const protocolFieldLabel = createElement(doc, "label", undefined, {
+          textContent: t("API protocol override"),
+        });
+        const protocolFieldSelect = createElement(
           doc,
           "select",
-          PROTOCOL_SELECT_SM_STYLE,
-        ) as HTMLSelectElement;
+          "llm-pref-select llm-pref-input--sm llm-pref-input--protocol",
+        );
         const autoOption = el(doc, "option") as HTMLOptionElement;
         autoOption.value = "";
         autoOption.textContent = t("auto");
@@ -2289,15 +2325,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         const inputModeHelpText = inputModeFieldWrap
           ? "Temperature: randomness (0–2)  ·  Output limit applies to one response, including hidden reasoning on some APIs; it does not limit total Agent duration  ·  Input mode: auto/text-only/vision"
           : "Temperature: randomness (0–2)  ·  Output limit applies to one response, including hidden reasoning on some APIs; it does not limit total Agent duration";
-        advRow.append(
-          advFields,
-          el(
-            doc,
-            "span",
-            "font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 2px; display: block;",
-            t(inputModeHelpText),
-          ),
-        );
+        advRow.append(advFields, prefHint(doc, t(inputModeHelpText)));
 
         // ── Capability, reasoning and extra-parameter controls ───────────
         // Part of the same advanced panel rather than a nested disclosure:
@@ -2318,21 +2346,16 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             }
             persistGroups(groups);
           },
-          styles: {
-            input: INPUT_STYLE,
-            inputSm: INPUT_SM_STYLE,
-            helper: HELPER_STYLE,
-            sectionLabel: SECTION_LABEL_STYLE,
-            outlineBtn: OUTLINE_BTN_STYLE,
+          classes: {
+            input: "llm-pref-input",
+            inputSm: "llm-pref-input llm-pref-input--sm",
+            helper: "llm-pref-hint",
+            sectionLabel: "llm-pref-section-title",
+            outlineBtn: "llm-pref-button",
           },
         });
         advRow.append(
-          el(
-            doc,
-            "div",
-            "border-top: 1px solid var(--stroke-secondary, #c8c8c8);" +
-              " margin: 4px 0 2px; opacity: 0.6;",
-          ),
+          createElement(doc, "div", "llm-pref-advanced-rule"),
           profileEditor.element,
         );
         // The detected profile arrives asynchronously (catalog fetch), so the
@@ -2423,8 +2446,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
         const syncAdvAvailability = () => {
           const hasModel = Boolean(modelEntry.model.trim());
-          advRow.style.opacity = hasModel ? "1" : "0.45";
-          advRow.style.pointerEvents = hasModel ? "" : "none";
+          advGearBtn.disabled = !hasModel;
+          advGearBtn.style.opacity = hasModel ? "1" : "0.45";
           for (const f of [tempField, inputCapField])
             f.input.disabled = !hasModel;
           outputLimitSelect.disabled = !hasModel || outputLimitIsRuntimeManaged;
@@ -2437,10 +2460,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         };
         syncAdvAvailability();
 
-        let advOpen = false;
         advGearBtn.addEventListener("click", () => {
-          advOpen = !advOpen;
-          advRow.style.display = advOpen ? "flex" : "none";
+          if (advGearBtn.disabled) return;
+          const advOpen = advRow.getAttribute("data-open") !== "true";
+          advRow.setAttribute("data-open", String(advOpen));
           advGearBtn.style.color = advOpen
             ? "var(--color-accent, #2563eb)"
             : "var(--fill-secondary, #888)";
@@ -2589,49 +2612,58 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         modelsWrap.appendChild(rowWrap);
       });
 
-      const divider = createProviderCardSectionDivider(doc);
       if (group.authMode === "copilot_auth") {
         cardBody.append(
-          authModeWrap,
-          copilotLoginWrap,
-          apiUrlWrap,
-          divider,
+          connectionSection(doc, [authModeWrap, copilotLoginWrap, apiUrlWrap]),
           modelsWrap,
         );
       } else if (group.authMode === "codex_app_server") {
-        cardBody.append(authModeWrap, apiUrlWrap, divider, modelsWrap);
+        cardBody.append(
+          connectionSection(doc, [authModeWrap, apiUrlWrap]),
+          modelsWrap,
+        );
       } else {
         cardBody.append(
-          authModeWrap,
-          providerPresetWrap,
-          apiUrlWrap,
-          apiKeyWrap,
-          divider,
+          connectionSection(doc, [
+            authModeWrap,
+            providerPresetWrap,
+            apiUrlWrap,
+            apiKeyWrap,
+          ]),
           modelsWrap,
         );
       }
-      card.append(cardHeader, cardBody);
-      wrap.appendChild(card);
+      finishProviderRow();
     });
 
     // ── Add Provider button ──────────────────────────────────────
 
-    const addProviderBtn = el(
-      doc,
-      "button",
-      PRIMARY_BTN_STYLE +
-        " margin-top: 2px; font-size: 12.5px; text-align: center;",
-      t("+ Add Provider"),
-    ) as HTMLButtonElement;
-    addProviderBtn.type = "button";
+    const addCard = createElement(doc, "div", "llm-pref-row llm-pref-add-card");
+    // A div, not a <button>: Gecko gives a button an anonymous inner box it
+    // will not stretch to its parent, which left this label 8px above centre
+    // (measured in the real pane, 25px tall inside a 44px slot). role and
+    // tabindex restore everything the element type provided.
+    const addProviderBtn = createElement(doc, "div", "llm-pref-add-card-btn", {
+      tabIndex: 0,
+    });
+    addProviderBtn.setAttribute("role", "button");
+    addProviderBtn.append(
+      createElement(doc, "span", "llm-pref-add-card-plus", {
+        textContent: "+",
+      }),
+      createElement(doc, "span", "llm-pref-add-card-label", {
+        textContent: t("Add provider"),
+      }),
+    );
+    addCard.appendChild(addProviderBtn);
 
     const syncAddProviderBtnInner = () => {
       const atMax = groups.length >= MAX_PROVIDER_COUNT;
       const hasEmpty = groups.some(isProviderEmpty);
       const canAdd = !atMax && !hasEmpty;
-      addProviderBtn.disabled = !canAdd;
-      addProviderBtn.style.opacity = canAdd ? "1" : "0.4";
-      addProviderBtn.style.cursor = canAdd ? "pointer" : "default";
+      addCard.setAttribute("data-disabled", String(!canAdd));
+      addProviderBtn.setAttribute("aria-disabled", String(!canAdd));
+      addProviderBtn.tabIndex = canAdd ? 0 : -1;
       addProviderBtn.title = atMax
         ? `Maximum ${MAX_PROVIDER_COUNT} providers`
         : hasEmpty
@@ -2641,15 +2673,24 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     syncAddProviderBtnInner();
     syncAddProviderBtn = syncAddProviderBtnInner;
 
-    addProviderBtn.addEventListener("click", () => {
-      if (addProviderBtn.disabled) return;
-      groups.push(createEmptyProviderGroup());
+    const addProvider = () => {
+      if (addProviderBtn.getAttribute("aria-disabled") === "true") return;
+      const added = createEmptyProviderGroup();
+      groups.push(added);
+      openProviderIds.add(added.id);
       persistGroups(groups);
       rerender();
+    };
+    addProviderBtn.addEventListener("click", addProvider);
+    // A div gets no implicit keyboard activation, so restore what a button had.
+    addProviderBtn.addEventListener("keydown", (event) => {
+      const key = (event as KeyboardEvent).key;
+      if (key !== "Enter" && key !== " ") return;
+      event.preventDefault();
+      addProvider();
     });
 
-    wrap.appendChild(addProviderBtn);
-    modelSections.appendChild(wrap);
+    wrap.appendChild(addCard);
   };
 
   rerender();
@@ -4151,7 +4192,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const wrap = el(
         doc,
         "div",
-        "display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border:1px solid var(--stroke-secondary, #c8c8c8); border-radius:8px; background: rgba(255,255,255,0.02);",
+        "display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border:1px solid var(--llm-pref-stroke); border-radius:8px; background: rgba(255,255,255,0.02);",
       );
       const textWrap = el(
         doc,
@@ -4179,7 +4220,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const openBtn = el(
         doc,
         "button",
-        "padding:4px 10px; font-size:11px; border:1px solid var(--stroke-secondary, #c8c8c8); border-radius:6px; background: Field; color: FieldText; cursor:pointer; flex:0 0 auto;",
+        "padding:4px 10px; font-size:11px; border:1px solid var(--llm-pref-stroke); border-radius:6px; cursor:pointer; flex:0 0 auto;",
         t("Open folder"),
       ) as HTMLButtonElement;
       openBtn.type = "button";
@@ -4867,8 +4908,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
       const INLINE_INPUT_STYLE =
         "flex: 1; min-width: 0; padding: 6px 10px; font-size: 13px;" +
-        " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
-        " box-sizing: border-box; background: Field; color: FieldText;";
+        " border: 1px solid var(--llm-pref-stroke); border-radius: 6px;" +
+        " box-sizing: border-box;";
 
       const modelRow = el(
         doc,

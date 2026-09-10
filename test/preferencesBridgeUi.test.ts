@@ -34,12 +34,18 @@ describe("bridge settings UI behavior", function () {
       "utf8",
     );
 
+    const preferences = readFileSync("addon/content/preferences.xhtml", "utf8");
+
     assert.include(preferenceScript, "getModelInputModeOptionsForRuntime");
-    assert.include(preferenceScript, "INPUT_MODE_SELECT_SM_STYLE");
     assert.include(preferenceScript, 't("Input mode")');
     assert.include(preferenceScript, "inputModeOptions.length > 0");
     assert.include(preferenceScript, "normalizeModelInputModeForRuntime");
-    assert.include(preferenceScript, "width: 108px");
+    // The compact width is a stylesheet class now, not an inline token.
+    assert.include(preferenceScript, "llm-pref-input--mode");
+    assert.include(
+      preferences.replace(/\s+/g, " "),
+      ".llm-pref-input--mode { width: 108px; }",
+    );
   });
 
   it("translates model input mode preference strings in Chinese locale", function () {

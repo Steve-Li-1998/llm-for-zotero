@@ -37,7 +37,7 @@ import {
   type ModelProfileOverride,
   type ResolvedModelCapabilities,
 } from "../modelCapabilities";
-import { el, iconBtn } from "../utils/domHelpers";
+import { createElement, el, iconBtn } from "../utils/domHelpers";
 import { previewReasoningControls } from "../utils/llmClient";
 import { getGeminiReasoningProfileForModel } from "../utils/reasoningProfiles";
 
@@ -77,7 +77,11 @@ type EditorDeps = {
   /** The model this entry currently points at; overrides are keyed to it. */
   getModelName: () => string;
   t: (text: string) => string;
-  styles: {
+  /**
+   * Class names from the shared `.llm-pref-*` stylesheet, passed in so this
+   * editor stays independent of which pane mounts it.
+   */
+  classes: {
     input: string;
     inputSm: string;
     helper: string;
@@ -324,7 +328,7 @@ export function computeProfileOverrideDraft(input: {
 export function createModelProfileEditor(
   deps: EditorDeps,
 ): ModelProfileEditorHandle {
-  const { doc, t, styles } = deps;
+  const { doc, t, classes } = deps;
   const root = el(
     doc,
     "div",
@@ -349,9 +353,10 @@ export function createModelProfileEditor(
    */
 
   const sectionLabel = (title: string) =>
-    el(doc, "div", styles.sectionLabel, t(title));
+    createElement(doc, "div", classes.sectionLabel, { textContent: t(title) });
 
-  const hint = (text: string) => el(doc, "span", styles.helper, t(text));
+  const hint = (text: string) =>
+    createElement(doc, "span", classes.helper, { textContent: t(text) });
 
   // ── Reasoning levels ──────────────────────────────────────────────────────
   const reasoningWrap = el(
@@ -364,13 +369,10 @@ export function createModelProfileEditor(
     "div",
     "display: flex; align-items: center; gap: 8px;",
   );
-  const addLevelBtn = el(
-    doc,
-    "button",
-    styles.outlineBtn,
-    t("+ Add level"),
-  ) as HTMLButtonElement;
-  addLevelBtn.type = "button";
+  const addLevelBtn = createElement(doc, "button", classes.outlineBtn, {
+    type: "button",
+    textContent: t("+ Add level"),
+  });
   reasoningHeader.append(sectionLabel("Reasoning levels"), addLevelBtn);
   const reasoningList = el(
     doc,
@@ -411,7 +413,7 @@ export function createModelProfileEditor(
       "div",
       "display: flex; gap: 6px; align-items: center; flex-wrap: wrap;",
     );
-    const idInput = el(doc, "input", styles.inputSm) as HTMLInputElement;
+    const idInput = createElement(doc, "input", classes.inputSm);
     idInput.type = "text";
     idInput.style.width = "104px";
     idInput.setAttribute("list", levelSuggestionsId);
@@ -421,7 +423,8 @@ export function createModelProfileEditor(
     // Read-only: the id is the whole input; these two just show what it
     // becomes on the wire and what the reasoning menu calls it, and follow the
     // id as it is typed.
-    const sent = el(doc, "span", styles.helper + " font-family: monospace;");
+    const sent = createElement(doc, "span", classes.helper);
+    sent.style.fontFamily = "monospace";
     const paintDescription = () => {
       sent.textContent = `→ ${describeReasoningLevel(detected, idInput.value).sent}`;
     };
@@ -435,7 +438,8 @@ export function createModelProfileEditor(
     const removeBtn = iconBtn(doc, "×", t("Delete level"));
     removeBtn.style.fontSize = "15px";
 
-    const warning = el(doc, "span", styles.helper + " color: #b45309;");
+    const warning = createElement(doc, "span", classes.helper);
+    warning.style.color = "#b45309";
     warning.style.display = "none";
 
     const row: ReasoningRow = { wrap, id: idInput, sent, warning };
@@ -470,14 +474,14 @@ export function createModelProfileEditor(
     "div",
     "display: flex; flex-direction: column; gap: 4px;",
   );
-  const extraInput = el(
-    doc,
-    "textarea",
-    styles.input +
-      " min-height: 54px; font-family: monospace; font-size: 12px; resize: vertical;",
-  ) as HTMLTextAreaElement;
+  const extraInput = createElement(doc, "textarea", classes.input);
+  extraInput.style.height = "auto";
+  extraInput.style.minHeight = "54px";
+  extraInput.style.fontFamily = "monospace";
+  extraInput.style.resize = "vertical";
   extraInput.addEventListener("input", commit);
-  const extraError = el(doc, "span", styles.helper + " color: #b45309;");
+  const extraError = createElement(doc, "span", classes.helper);
+  extraError.style.color = "#b45309";
   extraError.style.display = "none";
   extraWrap.append(
     sectionLabel("Extra request parameters"),
@@ -495,13 +499,10 @@ export function createModelProfileEditor(
     "div",
     "display: flex; gap: 8px; align-items: center;",
   );
-  const resetBtn = el(
-    doc,
-    "button",
-    styles.outlineBtn,
-    t("Reset to detected"),
-  ) as HTMLButtonElement;
-  resetBtn.type = "button";
+  const resetBtn = createElement(doc, "button", classes.outlineBtn, {
+    type: "button",
+    textContent: t("Reset to detected"),
+  });
   resetBtn.title = t("Discard changes and return to the detected profile");
   // Always clickable: mid-edit state (a half-typed level, invalid JSON that
   // never committed) is exactly what a user wants to bail out of, and none of

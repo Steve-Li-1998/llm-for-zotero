@@ -114,4 +114,26 @@ describe("runtime preference UI", function () {
     assert.include(embeddedPanel, "setupHandlers(body, rawItem)");
     assert.include(standalonePanel, "setupHandlers(contentArea, mountedItem");
   });
+
+  it("keeps an expanded runtime row's border identical to a collapsed one", function () {
+    const css = source("addon/content/preferences.xhtml").replace(/\s+/g, " ");
+
+    // The neutral card border is the only border the row ever draws; expanding
+    // must not repaint it in the accent colour.
+    assert.include(
+      css,
+      ".llm-pref-panel .llm-pref-row { border: 1px solid var(--llm-pref-stroke);",
+    );
+    assert.notMatch(
+      css,
+      /\.llm-pref-row\[data-open="true"\] \{[^}]*border-color/,
+    );
+
+    // Guard against a vacuous pass: the chevron rotation is the affordance that
+    // still has to signal the open state.
+    assert.include(
+      css,
+      '.llm-pref-row[data-open="true"] .llm-pref-row-chevron { transform: rotate(90deg); }',
+    );
+  });
 });

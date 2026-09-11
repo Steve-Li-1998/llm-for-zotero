@@ -355,6 +355,13 @@ export type AgentInheritedApproval = {
   approvedCallDigest?: string;
 };
 
+export type AgentWorkCategory =
+  | "retrieval"
+  | "planning"
+  | "generation"
+  | "zotero_action"
+  | "external_system";
+
 export type ToolSpec = {
   name: string;
   description: string;
@@ -377,6 +384,14 @@ export type ToolSpec = {
    * effects require a typed action adapter and the full authorization path.
    */
   executionClass: "read" | "control" | "external_effect";
+  /**
+   * Product work represented by this tool.
+   *
+   * This is deliberately independent of execution lifecycle and effect
+   * status.  It lets trace and recovery readers describe what the Agent was
+   * doing without guessing from a tool name or model prose.
+   */
+  workCategory?: AgentWorkCategory;
   requiresConfirmation: boolean;
   /**
    * Model-visible tools are advertised to agent/model runtimes and MCP
@@ -427,6 +442,7 @@ export type AgentEvent =
       callId: string;
       name: string;
       args: unknown;
+      workCategory?: AgentWorkCategory;
       executionId?: string;
       taskId?: string;
     }
@@ -435,6 +451,7 @@ export type AgentEvent =
       callId: string;
       name: string;
       ok: boolean;
+      workCategory?: AgentWorkCategory;
       effect?: AgentToolEffect;
       authority?: "yolo_judgment";
       actionReceipts: AgentActionReceipt[];
@@ -449,6 +466,7 @@ export type AgentEvent =
       name: string;
       error: string;
       round: number;
+      workCategory?: AgentWorkCategory;
     }
   | {
       type: "confirmation_required";
@@ -484,6 +502,7 @@ export type AgentEvent =
       codeBlock?: string;
       artifacts?: AgentToolArtifact[];
       actionReceipts?: AgentActionReceipt[];
+      workCategory?: AgentWorkCategory;
     }
   | {
       type: "usage";

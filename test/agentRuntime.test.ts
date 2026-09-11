@@ -1380,6 +1380,10 @@ describe("AgentRuntime", function () {
       );
       assert.isTrue(events.some((event) => event.type === "tool_call"));
       assert.isTrue(events.some((event) => event.type === "tool_result"));
+      assert.equal(
+        events.find((event) => event.type === "tool_call")?.workCategory,
+        "zotero_action",
+      );
       const toolResultIndex = events.findIndex(
         (event) => event.type === "tool_result",
       );
@@ -1403,6 +1407,12 @@ describe("AgentRuntime", function () {
           saved: "edited hello",
           target: "standalone",
         },
+      );
+      assert.equal(
+        toolResultEvent?.type === "tool_result"
+          ? toolResultEvent.workCategory
+          : undefined,
+        "zotero_action",
       );
       assert.isTrue(
         events.some(

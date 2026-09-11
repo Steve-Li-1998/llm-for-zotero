@@ -70,6 +70,7 @@ import type {
 } from "../plans/types";
 import { createTrustedReadObservations } from "../plans/readObservation";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
+import { resolveAgentWorkCategory } from "../workCategory";
 
 export const ZOTERO_MCP_SERVER_NAME = "llm_for_zotero";
 export const ZOTERO_MCP_ENDPOINT_PATH = "/llm-for-zotero/mcp";
@@ -1649,6 +1650,7 @@ function buildMcpToolActivityEvent(params: {
   quoteCitations?: QuoteCitation[];
   artifacts?: AgentToolArtifact[];
   actionReceipts?: AgentActionReceipt[];
+  workCategory?: import("../types").AgentWorkCategory;
   verifiedReadSources?: VerifiedReadSource[];
   readObservations?: readonly TrustedReadObservation[];
   mutability?: "read" | "write";
@@ -1668,6 +1670,7 @@ function buildMcpToolActivityEvent(params: {
     error: params.error,
     artifacts: params.artifacts,
     actionReceipts: params.actionReceipts,
+    workCategory: params.workCategory,
     mutability: params.mutability,
     quoteCitations: params.quoteCitations,
     verifiedReadSources: params.verifiedReadSources,
@@ -2049,7 +2052,9 @@ async function handleToolsCall(
     headers,
   });
   const { scopeArgs, scope } = callScope;
+  const tool = deps.toolRegistry.getTool(name);
   const toolLabel = getMcpToolPresentationLabel(deps, name);
+  const workCategory = tool ? resolveAgentWorkCategory(tool.spec) : undefined;
   emitZoteroMcpToolActivity(
     buildMcpToolActivityEvent({
       id,
@@ -2057,6 +2062,7 @@ async function handleToolsCall(
       toolName: name,
       toolLabel,
       args: scopeArgs.toolArgs,
+      workCategory,
       scope,
       libraryID: callScope.libraryID,
     }),
@@ -2082,6 +2088,7 @@ async function handleToolsCall(
         error: result.error,
         artifacts: result.artifacts,
         actionReceipts: result.actionReceipts,
+        workCategory,
         verifiedReadSources: result.verifiedReadSources,
         readObservations: result.readObservations,
         mutability:
@@ -2093,7 +2100,6 @@ async function handleToolsCall(
     );
   };
 
-  const tool = deps.toolRegistry.getTool(name);
   if (!tool || !isMcpExposedTool(tool.spec)) {
     completeActivity({ ok: false, error: "Tool unavailable in native mode" });
     return {

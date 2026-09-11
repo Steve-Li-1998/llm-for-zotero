@@ -450,6 +450,7 @@ import type {
   AgentRunEventRecord,
   AgentRuntimeRequestInput as AgentRuntimeRequest,
   AgentToolArtifact,
+  AgentWorkCategory,
 } from "../../agent/types";
 import {
   sendAgentTurn,
@@ -6434,6 +6435,7 @@ type CodexNativeMcpToolActivityEvent = {
   quoteCitations?: QuoteCitation[];
   artifacts?: AgentToolArtifact[];
   actionReceipts?: import("../../agent/contracts/types").AgentActionReceipt[];
+  workCategory?: AgentWorkCategory;
 };
 
 type CodexToolActivityEventPayload = Extract<
@@ -6809,6 +6811,7 @@ function createCodexNativeActivityTraceController(
       codeBlock?: string;
       artifacts?: AgentToolArtifact[];
       actionReceipts?: import("../../agent/contracts/types").AgentActionReceipt[];
+      workCategory?: AgentWorkCategory;
     },
     options: { matchRecentUnknown?: boolean } = {},
   ): string | null => {
@@ -6832,6 +6835,7 @@ function createCodexNativeActivityTraceController(
       ...(activity.actionReceipts?.length
         ? { actionReceipts: activity.actionReceipts }
         : {}),
+      ...(activity.workCategory ? { workCategory: activity.workCategory } : {}),
     });
     const matchedUnknown =
       options.matchRecentUnknown && (cleanToolName || cleanToolLabel)
@@ -6972,6 +6976,7 @@ function createCodexNativeActivityTraceController(
         args: webSearch?.args || (query ? { query } : undefined),
         ok: phase === "completed" ? !failed : undefined,
         text: failed && phase === "completed" ? "Web search failed" : verb,
+        workCategory: "retrieval",
       });
       return Boolean(updated);
     }
@@ -7002,6 +7007,7 @@ function createCodexNativeActivityTraceController(
               ? `Generated image: ${status || "failed"}`
               : "Generated image"
             : "Generating image",
+        workCategory: "generation",
       });
       return Boolean(updated) || changedImage;
     }
@@ -7018,6 +7024,7 @@ function createCodexNativeActivityTraceController(
         args: path ? { path } : undefined,
         ok: phase === "completed" ? !failed : undefined,
         text: phase === "completed" ? "Viewed image" : "Viewing image",
+        workCategory: "retrieval",
       });
       return Boolean(updated);
     }
@@ -7052,6 +7059,7 @@ function createCodexNativeActivityTraceController(
               : "Ran command"
             : "Running command",
         codeBlock: command || undefined,
+        workCategory: "external_system",
       });
       return Boolean(updated);
     }
@@ -7073,6 +7081,7 @@ function createCodexNativeActivityTraceController(
               ? "File changes failed"
               : "Updated files"
             : "Updating files",
+        workCategory: "external_system",
       });
       return Boolean(updated);
     }
@@ -7186,6 +7195,7 @@ function createCodexNativeActivityTraceController(
         text: event.error,
         artifacts: event.artifacts,
         actionReceipts: event.actionReceipts,
+        workCategory: event.workCategory,
       },
       { matchRecentUnknown: !existingItemId },
     );

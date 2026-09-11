@@ -1147,6 +1147,71 @@ describe("rendered Markdown code block source controls", function () {
 });
 
 describe("agentTrace render", function () {
+  it("projects authoritative work categories without inferring from tool names", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-category",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "category-call",
+          name: "paper_read",
+          args: {},
+          workCategory: "generation",
+        },
+        createdAt: 1,
+      },
+    ];
+    const projection = buildAgentTraceDisplayItems(events);
+    const action = projection.items.find(
+      (item) =>
+        item.type === "action" && item.detailKey === "tool-call:category-call",
+    );
+    assert.equal(
+      action?.type === "action" ? action.workCategory : undefined,
+      "generation",
+    );
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "", timestamp: 1, runMode: "agent" },
+      events,
+    }) as unknown as FakeElement;
+    const categorized = trace
+      .findAllByClass("llm-agent-process-action")
+      .find((entry) => entry.attributes["data-work-category"] === "generation");
+    assert.exists(categorized);
+  });
+  it("preserves authoritative work categories from provider-native tool activity", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "native-category-call",
+        phase: "completed",
+        toolName: "paper_read",
+        ok: true,
+        workCategory: "external_system",
+      }),
+    ];
+
+    const projection = buildAgentTraceDisplayItems(events, null, {
+      role: "assistant",
+      text: "",
+      timestamp: 1,
+      runMode: "agent",
+      modelProviderLabel: "Codex",
+    });
+    const action = projection.items.find(
+      (item) =>
+        item.type === "action" &&
+        item.detailKey === "codex:native-category-call",
+    );
+    assert.equal(
+      action?.type === "action" ? action.workCategory : undefined,
+      "external_system",
+    );
+  });
   it("keeps continuous animation phase anchored to its lifecycle start", function () {
     assert.equal(getStableAnimationDelay(1_000, 1_000), "0ms");
     assert.equal(getStableAnimationDelay(1_000, 2_750), "-1750ms");
@@ -2609,6 +2674,43 @@ describe("agentTrace render", function () {
           entry.payload.type === "codex_progress" ? entry.payload.text : "",
         ),
       ["I’m using the simple-paper-QA skill.", "This is the final answer."],
+    );
+  });
+
+  it("classifies structured Codex-native work from protocol event kinds", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.appendItemStatus(
+      { id: "web-1", type: "web_search", query: "evidence" },
+      "started",
+    );
+    controller.appendItemStatus(
+      { id: "command-1", type: "command_execution", command: "pwd" },
+      "started",
+    );
+
+    const activities = (message.pendingAgentTraceEvents || [])
+      .map((entry) => entry.payload)
+      .filter(
+        (
+          payload,
+        ): payload is Extract<AgentEvent, { type: "codex_tool_activity" }> =>
+          payload.type === "codex_tool_activity",
+      );
+    assert.deepEqual(
+      activities.map((activity) => activity.workCategory),
+      ["retrieval", "external_system"],
     );
   });
 

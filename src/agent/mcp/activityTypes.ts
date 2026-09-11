@@ -4,7 +4,7 @@ import type {
   TrustedReadObservation,
   VerifiedReadSource,
 } from "../plans/types";
-import type { AgentToolArtifact } from "../types";
+import type { AgentToolArtifact, AgentWorkCategory } from "../types";
 
 export type ZoteroMcpToolActivityEvent = {
   requestId: string;
@@ -19,6 +19,7 @@ export type ZoteroMcpToolActivityEvent = {
   error?: string;
   artifacts?: AgentToolArtifact[];
   actionReceipts?: AgentActionReceipt[];
+  workCategory?: AgentWorkCategory;
   mutability?: "read" | "write";
   profileSignature?: string;
   conversationKey?: number;

@@ -1561,6 +1561,7 @@ describe("Zotero MCP server", function () {
       arguments?: unknown;
       conversationKey?: number;
       libraryID?: number;
+      workCategory?: string;
     }> = [];
     const unregister = addZoteroMcpToolActivityObserver((event) => {
       events.push(event);
@@ -1594,6 +1595,7 @@ describe("Zotero MCP server", function () {
         arguments: event.arguments,
         conversationKey: event.conversationKey,
         libraryID: event.libraryID,
+        workCategory: event.workCategory,
       })),
       [
         {
@@ -1603,6 +1605,7 @@ describe("Zotero MCP server", function () {
           arguments: { sections: ["metadata"] },
           conversationKey: 789,
           libraryID: 999,
+          workCategory: "retrieval",
         },
         {
           requestId: "jsonrpc:tool-call-1",
@@ -1611,6 +1614,7 @@ describe("Zotero MCP server", function () {
           arguments: { sections: ["metadata"] },
           conversationKey: 789,
           libraryID: 999,
+          workCategory: "retrieval",
         },
       ],
     );

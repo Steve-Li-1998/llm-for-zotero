@@ -3050,6 +3050,7 @@ export async function runCodexAppServerNativeTurn(input: {
                   ok: event.ok,
                   text: event.error,
                   actionReceipts: redactedEvent.actionReceipts,
+                  workCategory: redactedEvent.workCategory,
                 })
                 .then(() => publishAuthority())
                 .then(() => recordMcpPlanEvidence(planContext, redactedEvent))

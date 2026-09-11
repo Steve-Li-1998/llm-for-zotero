@@ -154,8 +154,7 @@ import type {
   AgentUserMessage,
   ResolvedAgentRuntimeRequest,
 } from "./types";
-
-const TOOL_RESULT_READ_TOOL_NAME = "tool_result_read";
+import { resolveAgentWorkCategory } from "./workCategory";
 
 type AgentRuntimeDeps = {
   registry: AgentToolRegistry;
@@ -1584,6 +1583,10 @@ export class AgentRuntime {
           checkpointedWorkflow?: boolean;
         } = {},
       ): Promise<ExecutedToolCall> => {
+        const toolSpec = this.registry.getTool(call.name)?.spec;
+        const workCategory = toolSpec
+          ? resolveAgentWorkCategory(toolSpec)
+          : undefined;
         const lifecycleError = (): ExecutedToolCall => ({
           toolResult: {
             callId: call.id,
@@ -1608,6 +1611,7 @@ export class AgentRuntime {
           callId: call.id,
           name: call.name,
           args: call.arguments,
+          workCategory,
           executionId:
             request.planContext?.phase === "executing"
               ? request.planContext.executionId
@@ -1839,6 +1843,7 @@ export class AgentRuntime {
               name: toolResult.name,
               error: rawError,
               round,
+              workCategory,
             });
           }
         }
@@ -1847,6 +1852,7 @@ export class AgentRuntime {
           callId: toolResult.callId,
           name: toolResult.name,
           ok: toolResult.ok,
+          workCategory,
           effect: toolResult.effect,
           authority: toolResult.authority,
           actionReceipts: toolResult.actionReceipts,

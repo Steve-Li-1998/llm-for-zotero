@@ -37,6 +37,7 @@ import type {
   AgentTraceChip,
   AgentTraceDetail,
   AgentTraceRequestSummary,
+  AgentWorkCategory,
   PlanArtifact,
   PlanExecutionLedger,
 } from "../../../agent/types";
@@ -144,6 +145,7 @@ type AgentTraceDisplayItem =
       chips?: AgentTraceChip[];
       details?: AgentTraceDetail[];
       detailKey?: string;
+      workCategory?: AgentWorkCategory;
     }
   | {
       type: "card_list";
@@ -4134,6 +4136,7 @@ function appendLegacyAgentTraceEvent(
       ctx.items.push({
         type: "action",
         row,
+        workCategory: entry.payload.workCategory,
         chips: buildAgentTraceToolChips(
           entry.payload.name,
           entry.payload.args,
@@ -4182,6 +4185,7 @@ function appendLegacyAgentTraceEvent(
         ctx.items.push({
           type: "action",
           row,
+          workCategory: entry.payload.workCategory,
         });
         if (entry.payload.ok || entry.payload.name === "note_write") {
           try {
@@ -4277,6 +4281,7 @@ function appendCodexAgentTraceEvent(
           codeBlock: entry.payload.codeBlock,
           artifacts: entry.payload.artifacts,
         }),
+        workCategory: entry.payload.workCategory,
         chips: toolName
           ? buildAgentTraceToolChips(
               toolName,
@@ -5873,6 +5878,9 @@ export function renderAgentTrace({
     actionWrap.className = `llm-agent-process-action${
       isExpandable ? " llm-agent-process-action-expandable" : ""
     }`;
+    if (itemEntry.workCategory) {
+      actionWrap.setAttribute("data-work-category", itemEntry.workCategory);
+    }
     const expansionKey = `${runId}:action:${itemEntry.detailKey || itemIndex}`;
     if (isExpandable) {
       (actionWrap as HTMLDetailsElement).open = Boolean(

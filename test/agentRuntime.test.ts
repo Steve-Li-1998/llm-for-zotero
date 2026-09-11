@@ -9,7 +9,6 @@ import {
   bumpConversationWriteGeneration,
   getConversationWriteGeneration,
 } from "../src/shared/conversationWriteFence";
-import { declaredSemanticInterpreter } from "./helpers/semanticIntent";
 import { actionFixture } from "./helpers/semanticIntent";
 import { classifiedFixture } from "./helpers/semanticIntent";
 import { semanticContractFixture } from "./helpers/semanticIntent";
@@ -396,7 +395,54 @@ describe("AgentRuntime", function () {
     clearAgentToolResultHandleStore();
   });
 
-  it("preserves the prior workflow when a continuation fails before interpretation", async function () {
+  it("reaches the main model without a preliminary semantic model call", async function () {
+    const restore = installMockDb();
+    let mainModelCalls = 0;
+    try {
+      const runtime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            mainModelCalls++;
+            return {
+              kind: "final",
+              text: "The paper argues that attention changes sensory gain.",
+              assistantMessage: {
+                role: "assistant",
+                content:
+                  "The paper argues that attention changes sensory gain.",
+              },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 998812,
+          mode: "agent",
+          userText: "What is the main claim?",
+          libraryID: 1,
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      assert.equal(mainModelCalls, 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("preserves prior durable workflow evidence when the main model fails", async function () {
     const restore = installMockDb();
     try {
       const service = createRequiredMoveActionContractService();
@@ -416,14 +462,6 @@ describe("AgentRuntime", function () {
       });
       const runtime = new AgentRuntime({
         registry: new AgentToolRegistry(service),
-        semanticInterpreter: {
-          interpret: async () => ({
-            skillIds: [],
-            classifiedIntent: null,
-            degraded: true,
-            failureReason: "unparseable",
-          }),
-        },
         adapterFactory: () =>
           new MockAdapter([], {
             streaming: false,
@@ -453,96 +491,6 @@ describe("AgentRuntime", function () {
         retained?.contract.id,
         contract.id,
         "A failed interpretation must not hide the last durable workflow from the next turn",
-      );
-    } finally {
-      restore();
-    }
-  });
-
-  it("does not end a compound action when its document is finalized before the library effect", async function () {
-    const restore = installMockDb();
-    let steps = 0;
-    try {
-      const registry = new AgentToolRegistry(
-        createRequiredMoveActionContractService(),
-      );
-      registry.register({
-        spec: {
-          name: "submit_document",
-          description: "Finalize material",
-          inputSchema: { type: "object" },
-          executionClass: "read",
-          requiresConfirmation: false,
-        },
-        validate: () => ({ ok: true, value: {} }),
-        execute: async () => ({
-          documentId: "durable-before-filing",
-          visibleMarkdown: "Finalized material.",
-        }),
-        resolveTerminalResult: () => ({
-          documentId: "durable-before-filing",
-          finalText: "Finalized material.",
-          providerTranscript: "tool_only",
-        }),
-      });
-      const runtime = new AgentRuntime({
-        registry,
-        semanticInterpreter: declaredSemanticInterpreter,
-        adapterFactory: () => ({
-          getCapabilities: () => ({
-            streaming: false,
-            toolCalls: true,
-            multimodal: false,
-          }),
-          supportsTools: () => true,
-          async runStep(): Promise<AgentModelStep> {
-            steps++;
-            if (steps === 1)
-              return {
-                kind: "tool_calls",
-                calls: [
-                  { id: "finalize", name: "submit_document", arguments: {} },
-                ],
-                assistantMessage: { role: "assistant", content: "" },
-              };
-            return {
-              kind: "final",
-              text: "The document is ready; filing is not done.",
-              assistantMessage: {
-                role: "assistant",
-                content: "The document is ready; filing is not done.",
-              },
-            };
-          },
-        }),
-      });
-      const outcome = await runtime.runTurn({
-        request: {
-          conversationKey: 998802,
-          mode: "agent",
-          userText: "Prepare a report and file the paper",
-          model: "gpt-4o-mini",
-          apiKey: "test",
-          apiBase: "https://example.invalid",
-          libraryID: 1,
-          classifiedIntent: classifiedFixture({
-            deliverableIntent: "document",
-            documentKind: "report",
-          }),
-        },
-      });
-      assert.isAbove(
-        steps,
-        1,
-        "Finalizing material must leave the unfinished action available to execute",
-      );
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.equal(outcome.documentId, "durable-before-filing");
-      assert.include(outcome.text, "Finalized material.");
-      assert.equal(
-        (await getAgentRunTrace(outcome.runId)).run?.status,
-        "failed",
       );
     } finally {
       restore();
@@ -707,7 +655,6 @@ describe("AgentRuntime", function () {
           },
         });
         const runtime = new AgentRuntime({
-          semanticInterpreter: declaredSemanticInterpreter,
           registry,
           adapterFactory: () => ({
             getCapabilities: () => ({
@@ -812,7 +759,6 @@ describe("AgentRuntime", function () {
     const restoreDb = installMockDb();
     try {
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () =>
           new MockAdapter([], {
@@ -842,48 +788,6 @@ describe("AgentRuntime", function () {
       assert.deepInclude(events[0], {
         type: "fallback",
       });
-    } finally {
-      restoreDb();
-    }
-  });
-
-  it("fails visibly instead of falling back to prose for a required document", async function () {
-    const restoreDb = installMockDb();
-    try {
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry: new AgentToolRegistry(createTestActionContractService()),
-        adapterFactory: () =>
-          new MockAdapter([], {
-            streaming: false,
-            toolCalls: false,
-            multimodal: false,
-          }),
-      });
-      let failure = "";
-      try {
-        await runtime.runTurn({
-          request: {
-            classifiedIntent: classifiedFixture({
-              deliverableIntent: "document",
-              documentKind: "report",
-            }),
-            conversationKey: 2,
-            libraryID: 1,
-            mode: "agent",
-            userText: "Write a report about this topic",
-          },
-        });
-      } catch (error) {
-        failure = String(error);
-      }
-
-      assert.match(failure, /does not support Agent tools/);
-      const run = [...restoreDb.runs.values()].find(
-        (entry) => Number(entry.conversationKey) === 2,
-      );
-      assert.equal(run?.status, "failed");
-      assert.match(String(run?.finalText), /cannot be produced/);
     } finally {
       restoreDb();
     }
@@ -925,7 +829,6 @@ describe("AgentRuntime", function () {
       let observed: AgentRuntimeRequest["documentReadObservations"];
       let calls = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           supportsTools: () => true,
@@ -996,7 +899,6 @@ describe("AgentRuntime", function () {
     };
     try {
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -1103,7 +1005,6 @@ describe("AgentRuntime", function () {
         },
       };
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -1177,7 +1078,6 @@ describe("AgentRuntime", function () {
     );
     try {
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () =>
           new MockAdapter(
@@ -1260,7 +1160,6 @@ describe("AgentRuntime", function () {
     const restoreDb = installMockDb();
     try {
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () =>
           new MockAdapter(
@@ -1405,7 +1304,6 @@ describe("AgentRuntime", function () {
       });
 
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -1456,6 +1354,7 @@ describe("AgentRuntime", function () {
           }),
           conversationKey: 1,
           mode: "agent",
+          libraryID: 1,
           userText: "create a standalone note with hello",
           model: "gpt-4o-mini",
           apiBase: "https://api.openai.com/v1/chat/completions",
@@ -1485,14 +1384,15 @@ describe("AgentRuntime", function () {
         (event) => event.type === "tool_result",
       );
       const toolResultEvent = events[toolResultIndex];
-      const postToolContractIndex = events.findIndex(
-        (event, index) =>
-          index > toolResultIndex &&
-          event.type === "provider_event" &&
-          event.providerType === "agent_action_contract",
-      );
       assert.isAtLeast(toolResultIndex, 0);
-      assert.isAbove(postToolContractIndex, toolResultIndex);
+      assert.isFalse(
+        events.some(
+          (event) =>
+            event.type === "provider_event" &&
+            event.providerType === "agent_action_contract",
+        ),
+        "ordinary execution must not recreate an action-contract stage",
+      );
       assert.deepEqual(
         toolResultEvent && toolResultEvent.type === "tool_result"
           ? toolResultEvent.content
@@ -1572,7 +1472,6 @@ describe("AgentRuntime", function () {
 
       let sawArtifactUserMessage = false;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -1718,7 +1617,6 @@ describe("AgentRuntime", function () {
       let stepIndex = 0;
       let continuationMessages: AgentModelMessage[] = [];
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -1834,7 +1732,6 @@ describe("AgentRuntime", function () {
       let stepIndex = 0;
       let continuationMessages: AgentModelMessage[] = [];
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -1920,7 +1817,6 @@ describe("AgentRuntime", function () {
       });
 
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -2042,7 +1938,6 @@ describe("AgentRuntime", function () {
         },
       );
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -2175,7 +2070,6 @@ describe("AgentRuntime", function () {
         );
         const events: AgentEvent[] = [];
         const runtime = new AgentRuntime({
-          semanticInterpreter: declaredSemanticInterpreter,
           registry,
           adapterFactory: () =>
             new MockAdapter(steps, {
@@ -2251,7 +2145,6 @@ describe("AgentRuntime", function () {
         },
       );
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(repeatedSteps, {
@@ -2307,7 +2200,6 @@ describe("AgentRuntime", function () {
       let initialMessages: AgentModelMessage[] = [];
       const overLimitCallCount = MAX_AGENT_TOOL_CALLS_PER_ROUND + 1;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -2455,7 +2347,6 @@ describe("AgentRuntime", function () {
         },
       });
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -2522,7 +2413,6 @@ describe("AgentRuntime", function () {
     const restoreDb = installMockDb();
     try {
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -2582,7 +2472,6 @@ describe("AgentRuntime", function () {
         let modelSteps = 0;
         let continuationMessages: AgentModelMessage[] = [];
         const runtime = new AgentRuntime({
-          semanticInterpreter: declaredSemanticInterpreter,
           registry: new AgentToolRegistry(),
           adapterFactory: () => ({
             getCapabilities: () => ({
@@ -2663,7 +2552,6 @@ describe("AgentRuntime", function () {
       let modelSteps = 0;
       let continuationMessages: AgentModelMessage[] = [];
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -2749,7 +2637,6 @@ describe("AgentRuntime", function () {
     try {
       let modelSteps = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -2803,7 +2690,6 @@ describe("AgentRuntime", function () {
     try {
       let modelSteps = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -2892,7 +2778,6 @@ describe("AgentRuntime", function () {
     try {
       let calls = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -2934,7 +2819,6 @@ describe("AgentRuntime", function () {
     try {
       let modelSteps = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -2988,7 +2872,6 @@ describe("AgentRuntime", function () {
     const split = Math.floor(rawPath.length / 2);
     try {
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -3085,7 +2968,6 @@ describe("AgentRuntime", function () {
       });
       let stepIndex = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -3188,7 +3070,6 @@ describe("AgentRuntime", function () {
       });
 
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -3281,7 +3162,6 @@ describe("AgentRuntime", function () {
       });
 
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -3378,186 +3258,12 @@ describe("AgentRuntime", function () {
     }
   });
 
-  it("issues one corrective continuation when an Obsidian note request finishes without a file write", async function () {
-    const restoreDb = installMockDb();
-    try {
-      await initAgentChangeJournal();
-      (
-        globalThis as typeof globalThis & {
-          Zotero: {
-            Prefs: {
-              set: (key: string, value: unknown, global?: boolean) => void;
-            };
-          };
-        }
-      ).Zotero.Prefs.set(
-        "extensions.zotero.llmforzotero.obsidianVaultPath",
-        "/tmp/obsidian-vault",
-        true,
-      );
-
-      const registry = new AgentToolRegistry(createTestActionContractService());
-      const writes: unknown[] = [];
-      registry.register({
-        spec: {
-          name: "file_io",
-          description: "file io",
-          inputSchema: { type: "object" },
-          executionClass: "external_effect",
-          requiresConfirmation: false,
-        },
-        validate: (args: unknown) => ({ ok: true, value: args }),
-        planInvocation: async () =>
-          stateChangeInvocationPlan({
-            reversibility: "full",
-            reason: "Test file write.",
-          }),
-        describeAction: (input) => [
-          {
-            id: `file_write:${String((input as { filePath?: unknown }).filePath || "")}`,
-            proofDomain: "file_state",
-            capability: "file.write",
-            operation: "file_write",
-            source: "file_io",
-            parameters: {
-              filePath: String(
-                (input as { filePath?: unknown }).filePath || "",
-              ),
-            },
-            requestedTargets: [
-              `file:${String((input as { filePath?: unknown }).filePath || "")}`,
-            ],
-            destinationCollectionIds: [],
-          },
-        ],
-        execute: async (input) => {
-          writes.push(input);
-          return {
-            content: {
-              ...(input as Record<string, unknown>),
-              exists: true,
-              expectedContentHash: "verified-hash",
-              contentHash: "verified-hash",
-            },
-            effect: "applied",
-          };
-        },
-      });
-
-      let stepIndex = 0;
-      let sawCorrectivePrompt = false;
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry,
-        adapterFactory: () => ({
-          getCapabilities: () => ({
-            streaming: true,
-            toolCalls: true,
-            multimodal: false,
-            fileInputs: false,
-            reasoning: true,
-          }),
-          supportsTools: () => true,
-          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
-            stepIndex += 1;
-            if (stepIndex === 1) {
-              return {
-                kind: "final",
-                text: "## Figure 2\nDraft body in chat.",
-                assistantMessage: {
-                  role: "assistant",
-                  content: "## Figure 2\nDraft body in chat.",
-                },
-              };
-            }
-            sawCorrectivePrompt = params.messages.some(
-              (message) =>
-                message.role === "user" &&
-                typeof message.content === "string" &&
-                message.content.includes("open typed obligation(s)"),
-            );
-            if (stepIndex === 2) {
-              return {
-                kind: "tool_calls",
-                calls: [
-                  {
-                    id: "call-write",
-                    name: "file_io",
-                    arguments: {
-                      action: "write",
-                      filePath: "/tmp/obsidian-vault/Figure 2.md",
-                      content: "## Figure 2\nGrounded note.",
-                    },
-                  },
-                ],
-                assistantMessage: {
-                  role: "assistant",
-                  content: "",
-                  tool_calls: [
-                    {
-                      id: "call-write",
-                      name: "file_io",
-                      arguments: {
-                        action: "write",
-                        filePath: "/tmp/obsidian-vault/Figure 2.md",
-                        content: "## Figure 2\nGrounded note.",
-                      },
-                    },
-                  ],
-                },
-              };
-            }
-            return {
-              kind: "final",
-              text: "Saved.",
-              assistantMessage: {
-                role: "assistant",
-                content: "Saved.",
-              },
-            };
-          },
-        }),
-      });
-
-      const outcome = await runtime.runTurn({
-        request: {
-          classifiedIntent: actionFixture("file_write", undefined, {
-            noteDestination: "file",
-          }),
-          conversationKey: 1,
-          mode: "agent",
-          userText: "help me write an explanation of figure 2 to my obsidian",
-          forcedSkillIds: ["write-note"],
-          model: "gpt-5.4",
-          apiBase: "",
-          apiKey: "test",
-        },
-      });
-
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.include(outcome.text, "Saved.");
-      assert.include(outcome.text, "file_write — applied");
-      assert.isTrue(sawCorrectivePrompt);
-      assert.deepEqual(writes, [
-        {
-          action: "write",
-          filePath: "/tmp/obsidian-vault/Figure 2.md",
-          content: "## Figure 2\nGrounded note.",
-        },
-      ]);
-    } finally {
-      restoreDb();
-    }
-  });
-
   it("keeps a successful preclassified empty intent authoritative", async function () {
     const restoreDb = installMockDb();
     try {
       let stepIndex = 0;
       let sawCorrection = false;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -3614,7 +3320,7 @@ describe("AgentRuntime", function () {
     }
   });
 
-  it("preserves an informational final after unrelated exploratory actions are blocked", async function () {
+  it("preserves an informational final after permitted exploratory reads", async function () {
     const restoreDb = installMockDb();
     try {
       await initAgentChangeJournal();
@@ -3746,7 +3452,6 @@ describe("AgentRuntime", function () {
       ];
       let modelSteps = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -3796,19 +3501,21 @@ describe("AgentRuntime", function () {
       assert.equal(
         confirmations,
         0,
-        "Unrelated effects are blocked before review.",
+        "The concrete calls are assessed as read-only inspection.",
       );
       assert.equal(
         paperReads,
         1,
         "the identical second read must reuse the turn-local evidence handle",
       );
-      assert.equal(effectExecutions, 0);
+      assert.equal(effectExecutions, 2);
       assert.isFalse(events.some((event) => event.type === "message_rollback"));
       assert.equal(modelSteps, 5, "the substantive final must not be retried");
       assert.equal(outcome.kind, "completed");
       if (outcome.kind !== "completed") return;
-      assert.equal(outcome.text, substantiveAnswer);
+      assert.include(outcome.text, substantiveAnswer);
+      assert.include(outcome.text, "zotero_script_execute — observed");
+      assert.include(outcome.text, "command_execute — observed");
     } finally {
       restoreDb();
     }
@@ -3861,7 +3568,6 @@ describe("AgentRuntime", function () {
       let step = 0;
       let restoredContent: Record<string, unknown> | undefined;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -3991,286 +3697,6 @@ describe("AgentRuntime", function () {
     }
   });
 
-  it("requires paper_read full before completing an explicit Agent full-text request", async function () {
-    const restoreDb = installMockDb();
-    try {
-      const registry = new AgentToolRegistry(createTestActionContractService());
-      const reads: unknown[] = [];
-      registry.register({
-        spec: {
-          name: "paper_read",
-          description: "read paper",
-          inputSchema: { type: "object" },
-          executionClass: "read",
-          requiresConfirmation: false,
-        },
-        validate: (args: unknown) => ({ ok: true, value: args }),
-        execute: async (input) => {
-          reads.push(input);
-          return {
-            mode: "full",
-            status: "complete",
-            coverageReceipt: {
-              complete: true,
-              processedChunks: 8,
-              totalChunks: 8,
-            },
-          };
-        },
-      });
-
-      let stepIndex = 0;
-      let sawCorrection = false;
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry,
-        adapterFactory: () => ({
-          getCapabilities: () => ({
-            streaming: true,
-            toolCalls: true,
-            multimodal: false,
-            fileInputs: false,
-            reasoning: true,
-          }),
-          supportsTools: () => true,
-          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
-            stepIndex += 1;
-            if (stepIndex === 1) {
-              return {
-                kind: "final",
-                text: "Here is a summary.",
-                assistantMessage: {
-                  role: "assistant",
-                  content: "Here is a summary.",
-                },
-              };
-            }
-            sawCorrection = params.messages.some(
-              (message) =>
-                message.role === "user" &&
-                typeof message.content === "string" &&
-                message.content.includes("open typed obligation(s)"),
-            );
-            if (stepIndex === 2) {
-              return {
-                kind: "tool_calls",
-                calls: [
-                  {
-                    id: "call-full-read",
-                    name: "paper_read",
-                    arguments: { mode: "full" },
-                  },
-                ],
-                assistantMessage: {
-                  role: "assistant",
-                  content: "",
-                  tool_calls: [
-                    {
-                      id: "call-full-read",
-                      name: "paper_read",
-                      arguments: { mode: "full" },
-                    },
-                  ],
-                },
-              };
-            }
-            return {
-              kind: "final",
-              text: "Grounded full-text answer.",
-              assistantMessage: {
-                role: "assistant",
-                content: "Grounded full-text answer.",
-              },
-            };
-          },
-        }),
-      });
-
-      const outcome = await runtime.runTurn({
-        request: {
-          classifiedIntent: actionFixture("read_full", undefined, {
-            reading: { source: "document_text", coverage: "exhaustive" },
-          }),
-          conversationKey: 9,
-          mode: "agent",
-          conversationKind: "paper",
-          activeItemId: 42,
-          userText: "请先通读整篇论文，再回答问题。",
-          model: "gpt-5.4",
-          apiBase: "",
-          apiKey: "test",
-        },
-      });
-
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.include(outcome.text, "Grounded full-text answer.");
-      assert.include(outcome.text, "read_full — observed; verified");
-      assert.isTrue(sawCorrection);
-      assert.deepEqual(reads, [{ mode: "full" }]);
-    } finally {
-      restoreDb();
-    }
-  });
-
-  it("continues a rejected final without replaying the preceding tool result", async function () {
-    const restoreDb = installMockDb();
-    try {
-      const registry = new AgentToolRegistry(createTestActionContractService());
-      registry.register({
-        spec: {
-          name: "paper_read",
-          description: "read paper",
-          inputSchema: { type: "object" },
-          executionClass: "read",
-          requiresConfirmation: false,
-        },
-        validate: (args: unknown) => ({ ok: true, value: args }),
-        execute: async (input) => ({
-          mode: (input as { mode?: unknown }).mode,
-          status: "complete",
-          coverageReceipt: {
-            complete: true,
-            processedChunks: 2,
-            totalChunks: 2,
-          },
-        }),
-      });
-
-      let stepIndex = 0;
-      const continuationDeltas: AgentModelMessage[][] = [];
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry,
-        adapterFactory: () => ({
-          getCapabilities: () => ({
-            streaming: true,
-            toolCalls: true,
-            multimodal: false,
-            fileInputs: false,
-            reasoning: true,
-          }),
-          supportsTools: () => true,
-          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
-            continuationDeltas.push([...(params.continuationMessages || [])]);
-            stepIndex += 1;
-            if (stepIndex === 1) {
-              return {
-                kind: "tool_calls",
-                calls: [
-                  {
-                    id: "call-overview-read",
-                    name: "paper_read",
-                    arguments: { mode: "overview" },
-                  },
-                ],
-                assistantMessage: {
-                  role: "assistant",
-                  content: "",
-                  tool_calls: [
-                    {
-                      id: "call-overview-read",
-                      name: "paper_read",
-                      arguments: { mode: "overview" },
-                    },
-                  ],
-                },
-              };
-            }
-            if (stepIndex === 2) {
-              return {
-                kind: "final",
-                text: "Premature answer from overview evidence.",
-                assistantMessage: {
-                  role: "assistant",
-                  content: "Premature answer from overview evidence.",
-                },
-              };
-            }
-            if (stepIndex === 3) {
-              return {
-                kind: "tool_calls",
-                calls: [
-                  {
-                    id: "call-full-read-after-correction",
-                    name: "paper_read",
-                    arguments: { mode: "full" },
-                  },
-                ],
-                assistantMessage: {
-                  role: "assistant",
-                  content: "",
-                  tool_calls: [
-                    {
-                      id: "call-full-read-after-correction",
-                      name: "paper_read",
-                      arguments: { mode: "full" },
-                    },
-                  ],
-                },
-              };
-            }
-            return {
-              kind: "final",
-              text: "Grounded answer after the full read.",
-              assistantMessage: {
-                role: "assistant",
-                content: "Grounded answer after the full read.",
-              },
-            };
-          },
-        }),
-      });
-
-      const outcome = await runtime.runTurn({
-        request: {
-          classifiedIntent: actionFixture("read_full", undefined, {
-            reading: { source: "document_text", coverage: "exhaustive" },
-          }),
-          conversationKey: 10,
-          mode: "agent",
-          conversationKind: "paper",
-          activeItemId: 42,
-          userText: "Read the complete paper before answering.",
-          model: "deepseek-v4-pro",
-          apiBase: "https://api.deepseek.com/anthropic",
-          apiKey: "test",
-        },
-      });
-
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.include(outcome.text, "Grounded answer after the full read.");
-      assert.lengthOf(continuationDeltas, 4);
-      assert.deepEqual(
-        continuationDeltas[1].map((message) => message.role),
-        ["tool"],
-      );
-      assert.deepEqual(
-        continuationDeltas[2].map((message) => message.role),
-        ["user"],
-      );
-      assert.notInclude(
-        JSON.stringify(continuationDeltas[2]),
-        "call-overview-read",
-      );
-      assert.include(
-        JSON.stringify(continuationDeltas[2]),
-        "open typed obligation(s)",
-      );
-      assert.deepEqual(
-        continuationDeltas[3].map((message) => message.role),
-        ["tool"],
-      );
-      assert.include(
-        JSON.stringify(continuationDeltas[3]),
-        "call-full-read-after-correction",
-      );
-    } finally {
-      restoreDb();
-    }
-  });
-
   it("does not force file writes after a standalone Zotero note request is satisfied", async function () {
     const restoreDb = installMockDb();
     try {
@@ -4384,7 +3810,6 @@ describe("AgentRuntime", function () {
       let sawInitialFileRule = false;
       let sawCorrectivePrompt = false;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -4461,6 +3886,7 @@ describe("AgentRuntime", function () {
           }),
           conversationKey: 1,
           mode: "agent",
+          libraryID: 1,
           userText:
             "help me summarize this paper and save a standalone note into my zotero library",
           forcedSkillIds: ["write-note"],
@@ -4474,7 +3900,7 @@ describe("AgentRuntime", function () {
       if (outcome.kind !== "completed") return;
       assert.include(outcome.text, "Saved Zotero note.");
       assert.include(outcome.text, "note_create — applied");
-      assert.isTrue(sawInitialZoteroRule);
+      assert.isFalse(sawInitialZoteroRule);
       assert.isFalse(sawInitialFileRule);
       assert.isFalse(sawCorrectivePrompt);
       assert.equal(stepIndex, 2);
@@ -4556,7 +3982,6 @@ describe("AgentRuntime", function () {
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register(createFileIOTool());
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -4660,7 +4085,6 @@ describe("AgentRuntime", function () {
 
       let stepIndex = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -4758,7 +4182,6 @@ describe("AgentRuntime", function () {
     const restoreDb = installMockDb();
     try {
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -4857,7 +4280,6 @@ describe("AgentRuntime", function () {
     const restoreDb = installMockDb();
     try {
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -4935,7 +4357,6 @@ describe("AgentRuntime", function () {
       };
 
       const firstRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () =>
           new MockAdapter(
@@ -4982,7 +4403,6 @@ describe("AgentRuntime", function () {
 
       let secondInitialUserMessage = "";
       const secondRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -5042,7 +4462,6 @@ describe("AgentRuntime", function () {
       assert.include(secondInitialUserMessage, 'title="Lifecycle Paper"');
 
       const failingRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () =>
           new MockAdapter(
@@ -5079,7 +4498,6 @@ describe("AgentRuntime", function () {
         },
       });
       const retryRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () =>
           new MockAdapter(
@@ -5185,7 +4603,6 @@ describe("AgentRuntime", function () {
       };
 
       const firstRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -5245,7 +4662,6 @@ describe("AgentRuntime", function () {
 
       let secondInitialUserMessage = "";
       const secondRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -5315,7 +4731,6 @@ describe("AgentRuntime", function () {
       });
       let step = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -5444,7 +4859,6 @@ describe("AgentRuntime", function () {
         }),
       });
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -5497,6 +4911,7 @@ describe("AgentRuntime", function () {
           classifiedIntent: actionFixture("command_execute"),
           conversationKey,
           mode: "agent",
+          libraryID: 1,
           userText: "run command after asking for confirmation",
           model: "gpt-4o-mini",
           apiBase: "https://api.openai.com/v1/chat/completions",
@@ -5540,7 +4955,6 @@ describe("AgentRuntime", function () {
       const registry = new AgentToolRegistry();
       registry.register(createToolResultReadTool());
       const firstRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -5577,7 +4991,6 @@ describe("AgentRuntime", function () {
       let secondMessages: AgentModelMessage[] = [];
       let secondToolNames: string[] = [];
       const secondRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -5680,7 +5093,6 @@ describe("AgentRuntime", function () {
       });
       let firstStep = 0;
       const firstRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -5752,7 +5164,6 @@ describe("AgentRuntime", function () {
 
       let continuedMessages: AgentModelMessage[] = [];
       const continuedRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -5851,7 +5262,6 @@ describe("AgentRuntime", function () {
       });
       let step = 0;
       const interruptedRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -5932,7 +5342,6 @@ describe("AgentRuntime", function () {
 
       let continuedMessages: AgentModelMessage[] = [];
       const continuedRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -6022,7 +5431,6 @@ describe("AgentRuntime", function () {
       });
       let seedStep = 0;
       const seedRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: seedRegistry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -6078,7 +5486,6 @@ describe("AgentRuntime", function () {
       });
       for (let index = 0; index < 3; index += 1) {
         const runtime = new AgentRuntime({
-          semanticInterpreter: declaredSemanticInterpreter,
           registry: seedRegistry,
           adapterFactory: () =>
             new MockAdapter(
@@ -6112,7 +5519,6 @@ describe("AgentRuntime", function () {
 
       const compactEvents: AgentEvent[] = [];
       const compactRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: seedRegistry,
         adapterFactory: () =>
           new MockAdapter([], {
@@ -6144,7 +5550,6 @@ describe("AgentRuntime", function () {
 
       let followupMessages: AgentModelMessage[] = [];
       const followupRuntime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: seedRegistry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -6271,7 +5676,6 @@ describe("AgentRuntime", function () {
         },
       };
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => adapter,
       });
@@ -6408,7 +5812,6 @@ describe("AgentRuntime", function () {
         },
       };
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => adapter,
       });
@@ -6619,7 +6022,6 @@ describe("AgentRuntime", function () {
         },
       };
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => adapter,
       });
@@ -6811,7 +6213,6 @@ describe("AgentRuntime", function () {
         },
       };
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => adapter,
       });
@@ -6921,7 +6322,6 @@ describe("AgentRuntime", function () {
         },
       };
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => adapter,
       });
@@ -7012,7 +6412,6 @@ describe("AgentRuntime", function () {
       let messagesAfterBatch: AgentModelMessage[] = [];
       const events: AgentEvent[] = [];
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -7142,7 +6541,6 @@ describe("AgentRuntime", function () {
 
       let stepIndex = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -7240,7 +6638,6 @@ describe("AgentRuntime", function () {
 
       let stepIndex = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -7313,7 +6710,6 @@ describe("AgentRuntime", function () {
       let secondStepMessages: AgentModelMessage[] = [];
       const events: AgentEvent[] = [];
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -7439,7 +6835,6 @@ describe("AgentRuntime", function () {
       let initialMessages: AgentModelMessage[] = [];
       let firstCheckpointHandle = "";
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -7544,7 +6939,7 @@ describe("AgentRuntime", function () {
   });
 
   for (const mode of ["yolo", "auto"] as const) {
-    it(`${mode}: an unrequested typed write is ${mode === "yolo" ? "applied on judgment" : "refused"}`, async function () {
+    it(`${mode}: a typed same-library write is applied by the configured policy`, async function () {
       const restoreDb = installMockDb();
       try {
         await initAgentChangeJournal();
@@ -7578,6 +6973,14 @@ describe("AgentRuntime", function () {
               destinationCollectionIds: [],
             },
           ],
+          planInvocation: () =>
+            stateChangeInvocationPlan({
+              domains: ["zotero_library"],
+              effects: ["modify"],
+              targets: ["item:41"],
+              reversibility: "full",
+              reason: "Apply a routine same-library tag.",
+            }),
           execute: async () => {
             writes++;
             return { content: { tagged: 1 }, effect: "applied" };
@@ -7585,7 +6988,6 @@ describe("AgentRuntime", function () {
         });
         const call = { id: "call-1", name: "tag_related", arguments: {} };
         const runtime = new AgentRuntime({
-          semanticInterpreter: declaredSemanticInterpreter,
           registry,
           adapterFactory: () =>
             new MockAdapter(
@@ -7614,6 +7016,7 @@ describe("AgentRuntime", function () {
             classifiedIntent: classifiedFixture(),
             conversationKey: 1,
             mode: "agent",
+            libraryID: 1,
             userText: "tidy up this folder",
             model: "gpt-4o-mini",
             apiBase: "https://api.openai.com/v1/chat/completions",
@@ -7630,16 +7033,13 @@ describe("AgentRuntime", function () {
           events.some((event) => event.type === "confirmation_required"),
           "no card in either mode",
         );
-        if (mode === "yolo") {
-          assert.equal(writes, 1);
-          assert.isTrue(toolResult.ok);
-          assert.equal(toolResult.authority, "yolo_judgment");
-          assert.equal(outcome.kind, "completed");
-        } else {
-          assert.equal(writes, 0);
-          assert.isFalse(toolResult.ok);
-          assert.isUndefined(toolResult.authority);
-        }
+        assert.equal(writes, 1);
+        assert.isTrue(toolResult.ok);
+        assert.equal(
+          toolResult.authority,
+          mode === "yolo" ? "yolo_judgment" : undefined,
+        );
+        assert.equal(outcome.kind, "completed");
       } finally {
         restoreDb();
       }
@@ -7733,7 +7133,6 @@ describe("AgentRuntime", function () {
       };
       const unrequested = { id: "call-2", name: "tag_related", arguments: {} };
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -7776,6 +7175,7 @@ describe("AgentRuntime", function () {
           }),
           conversationKey: 1,
           mode: "agent",
+          libraryID: 1,
           userText: "create a note with hello",
           model: "gpt-4o-mini",
           apiBase: "https://api.openai.com/v1/chat/completions",
@@ -7800,9 +7200,9 @@ describe("AgentRuntime", function () {
       assert.equal(judgmentWrites, 1);
       assert.isTrue(results[0].ok);
       assert.isTrue(results[1].ok);
-      // The requested write runs on the contract's own authority; only the
-      // action the user never asked for carries the judgment grant.
-      assert.isUndefined(results[0].authority);
+      // Fresh ordinary turns have no semantic contract. YOLO owns both
+      // concrete calls at the shared invocation boundary.
+      assert.equal(results[0].authority, "yolo_judgment");
       assert.equal(results[1].authority, "yolo_judgment");
       assert.equal(outcome.kind, "completed");
     } finally {
@@ -7915,7 +7315,6 @@ describe("web attribution runtime guard", function () {
       registry.register(createWebSearchTool(() => countingProvider));
       let step = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => capabilities,
@@ -8023,7 +7422,6 @@ describe("web attribution runtime guard", function () {
       let step = 0;
       const modelInputs: AgentModelMessage[][] = [];
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => capabilities,
@@ -8109,7 +7507,6 @@ describe("web attribution runtime guard", function () {
       const registry = new AgentToolRegistry();
       registry.register(createWebSearchTool(() => provider));
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -8161,231 +7558,53 @@ describe("web attribution runtime guard", function () {
   });
 });
 
-describe("shallow library answer guard", function () {
-  beforeEach(function () {
-    clearAgentReadLedger();
-    clearAgentCoverageLedger();
-    clearAgentTranscriptStore();
-    clearAgentToolResultHandleStore();
-  });
-
-  const GUARD_CAPS = {
-    streaming: false,
-    toolCalls: true,
-    multimodal: false,
-    fileInputs: false,
-    reasoning: true,
-  };
-  const GUARD_REQUEST = {
-    classifiedIntent: classifiedFixture({ retrievalIntent: "summarize" }),
-    conversationKey: 1,
-    mode: "agent" as const,
-    userText: "What methods do these papers share?",
-    model: "gpt-4o-mini",
-    apiBase: "https://api.openai.com/v1/chat/completions",
-    apiKey: "test",
-    selectedCollectionContexts: [{ collectionId: 3, name: "C", libraryID: 1 }],
-  };
-  const registerGuardRetrieve = (
-    registry: AgentToolRegistry,
-    result: unknown,
-  ) => {
-    registry.register({
-      spec: {
-        name: "library_retrieve",
-        description: "retrieve",
-        inputSchema: { type: "object" },
-        executionClass: "read",
-        requiresConfirmation: false,
-      },
-      validate: () => ({ ok: true, value: {} }),
-      execute: async () => result,
-    });
-  };
-  const finalStep = (text: string) => ({
-    kind: "final" as const,
-    text,
-    assistantMessage: { role: "assistant" as const, content: text },
-  });
-  const retrieveCallStep = (id: string) => ({
-    kind: "tool_calls" as const,
-    calls: [{ id, name: "library_retrieve", arguments: {} }],
-    assistantMessage: {
-      role: "assistant" as const,
-      content: "",
-      tool_calls: [{ id, name: "library_retrieve", arguments: {} }],
-    },
-  });
-
-  it("injects one correction when a collection-scoped evidence question skips retrieval", async function () {
+describe("direct Q&A completion", function () {
+  it("accepts a supported answer without a hidden retrieval classifier", async function () {
     const restoreDb = installMockDb();
     try {
-      const registry = new AgentToolRegistry();
-      registerGuardRetrieve(registry, {
-        answerContract: { papersBodyRead: 3, papersPlanned: 5 },
-        resourcePool: { states: { textAvailable: 5 }, queryCoverage: {} },
-        snippets: [],
-        warnings: [],
-      });
-      const stepMessages: AgentModelMessage[][] = [];
-      const steps = [
-        finalStep("Shallow answer."),
-        retrieveCallStep("call-guard-1"),
-        finalStep("Grounded answer."),
-      ];
-      let stepIndex = 0;
+      let modelSteps = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry,
+        registry: new AgentToolRegistry(),
         adapterFactory: () => ({
-          getCapabilities: () => GUARD_CAPS,
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
           supportsTools: () => true,
-          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
-            stepMessages.push(params.messages.slice());
-            const step = steps[stepIndex];
-            stepIndex += 1;
-            return step;
+          async runStep(): Promise<AgentModelStep> {
+            modelSteps += 1;
+            return {
+              kind: "final",
+              text: "Answer from the evidence already supplied.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Answer from the evidence already supplied.",
+              },
+            };
           },
         }),
       });
-      const outcome = await runtime.runTurn({
-        request: { ...GUARD_REQUEST },
-        onEvent: () => {},
-      });
 
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.equal(outcome.text, "Grounded answer.");
-      const lastMessages = stepMessages[stepMessages.length - 1];
-      const corrections = lastMessages.filter(
-        (message) =>
-          message.role === "user" &&
-          typeof message.content === "string" &&
-          message.content.includes("Correction for this turn"),
-      );
-      assert.lengthOf(corrections, 1);
-    } finally {
-      restoreDb();
-    }
-  });
-
-  it("accepts the next final unconditionally after one correction", async function () {
-    const restoreDb = installMockDb();
-    try {
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry: new AgentToolRegistry(),
-        adapterFactory: () =>
-          new MockAdapter(
-            [finalStep("First answer."), finalStep("Second answer.")],
-            GUARD_CAPS,
-          ),
-      });
-      const outcome = await runtime.runTurn({
-        request: { ...GUARD_REQUEST },
-        onEvent: () => {},
-      });
-
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.equal(outcome.text, "Second answer.");
-    } finally {
-      restoreDb();
-    }
-  });
-
-  it("suppresses the guard when the classifier says the turn needs no retrieval", async function () {
-    const restoreDb = installMockDb();
-    try {
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry: new AgentToolRegistry(),
-        adapterFactory: () =>
-          new MockAdapter([finalStep("Direct answer.")], GUARD_CAPS),
-      });
       const outcome = await runtime.runTurn({
         request: {
-          ...GUARD_REQUEST,
-          classifiedIntent: {
-            ...classifiedFixture(),
-            semantic: semanticFixture(),
-            retrievalIntent: "none",
-            wantedSections: [],
-          },
+          conversationKey: 8201,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Explain the result using the evidence above.",
+          model: "test-model",
+          apiKey: "test",
+          apiBase: "",
         },
-        onEvent: () => {},
       });
 
       assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.equal(outcome.text, "Direct answer.");
-    } finally {
-      restoreDb();
-    }
-  });
-
-  it("does not correct without a selected library scope", async function () {
-    const restoreDb = installMockDb();
-    try {
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry: new AgentToolRegistry(),
-        adapterFactory: () =>
-          new MockAdapter([finalStep("Direct answer.")], GUARD_CAPS),
-      });
-      const outcome = await runtime.runTurn({
-        request: { ...GUARD_REQUEST, selectedCollectionContexts: [] },
-        onEvent: () => {},
-      });
-
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.equal(outcome.text, "Direct answer.");
-    } finally {
-      restoreDb();
-    }
-  });
-
-  it("corrects a metadata-only retrieve for a classified summarize turn", async function () {
-    const restoreDb = installMockDb();
-    try {
-      const registry = new AgentToolRegistry();
-      registerGuardRetrieve(registry, {
-        answerContract: { papersBodyRead: 0, papersPlanned: 5 },
-        resourcePool: { states: { textAvailable: 5 }, queryCoverage: {} },
-        snippets: [],
-        warnings: [],
-      });
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry,
-        adapterFactory: () =>
-          new MockAdapter(
-            [
-              retrieveCallStep("call-guard-2"),
-              finalStep("Metadata-only answer."),
-              retrieveCallStep("call-guard-3"),
-              finalStep("Still metadata."),
-            ],
-            GUARD_CAPS,
-          ),
-      });
-      const outcome = await runtime.runTurn({
-        request: {
-          ...GUARD_REQUEST,
-          classifiedIntent: {
-            ...classifiedFixture(),
-            semantic: semanticFixture(),
-            retrievalIntent: "summarize",
-            wantedSections: [],
-          },
-        },
-        onEvent: () => {},
-      });
-
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.equal(outcome.text, "Still metadata.");
+      assert.equal(modelSteps, 1);
+      if (outcome.kind === "completed")
+        assert.equal(
+          outcome.text,
+          "Answer from the evidence already supplied.",
+        );
     } finally {
       restoreDb();
     }
@@ -8438,7 +7657,6 @@ describe("shallow guard round-limit safety", function () {
         },
       });
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(steps, {
@@ -8484,398 +7702,6 @@ describe("shallow guard round-limit safety", function () {
    * legitimate ("they were already in that collection") — the goal is an
    * accurate report, not a failed run.
    */
-  it("fails truthfully after one correction when a write has no verifiable receipt", async function () {
-    const restoreDb = installMockDb();
-    try {
-      await initAgentChangeJournal();
-      const registry = new AgentToolRegistry(
-        createRequiredMoveActionContractService(),
-      );
-      registerZeroEffectLibraryUpdate(registry);
-
-      let stepIndex = 0;
-      let resolvedRequest: AgentRuntimeRequest | undefined;
-      let correctionRequestMessages: AgentModelMessage[] = [];
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry,
-        adapterFactory: (request) => {
-          resolvedRequest = request;
-          return {
-            getCapabilities: () => ({
-              streaming: true,
-              toolCalls: true,
-              multimodal: false,
-            }),
-            supportsTools: () => true,
-            async runStep(params: AgentStepParams): Promise<AgentModelStep> {
-              stepIndex += 1;
-              if (stepIndex === 1) {
-                return {
-                  kind: "tool_calls",
-                  calls: [
-                    {
-                      id: "c1",
-                      name: "library_update",
-                      arguments: { kind: "collections" },
-                    },
-                  ],
-                  assistantMessage: { role: "assistant", content: "" },
-                };
-              }
-              if (stepIndex === 2) {
-                resolvedRequest!.actionProgress!.updatedAt = 11;
-                await params.onTextDelta?.(
-                  "Filed both papers into Neuroscience.",
-                );
-                return {
-                  kind: "final",
-                  text: "Filed both papers into Neuroscience.",
-                  assistantMessage: {
-                    role: "assistant",
-                    content: "Filed both papers into Neuroscience.",
-                  },
-                };
-              }
-              assert.equal(resolvedRequest?.actionProgress?.correctionCount, 1);
-              assert.isAbove(
-                resolvedRequest?.actionProgress?.updatedAt || 0,
-                11,
-              );
-              resolvedRequest!.actionProgress!.updatedAt = 22;
-              correctionRequestMessages = structuredClone(params.messages);
-              await params.onTextDelta?.(
-                "Nothing changed — both items are the wrong type to file.",
-              );
-              return {
-                kind: "final",
-                text: "Nothing changed — both items are the wrong type to file.",
-                assistantMessage: {
-                  role: "assistant",
-                  content:
-                    "Nothing changed — both items are the wrong type to file.",
-                },
-              };
-            },
-          };
-        },
-      });
-
-      const events: AgentEvent[] = [];
-      const rollbackProgress: Array<{
-        correctionCount: number | undefined;
-        state: string | undefined;
-        updatedAt: number | undefined;
-      }> = [];
-      const outcome = await runtime.runTurn({
-        request: {
-          classifiedIntent: classifiedFixture(),
-          conversationKey: 991,
-          mode: "agent",
-          userText: "file these two papers into Neuroscience",
-          model: "gpt-4o-mini",
-          apiBase: "https://api.openai.com/v1/chat/completions",
-          apiKey: "test",
-          libraryID: 1,
-        },
-        onEvent: (event) => {
-          events.push(event);
-          if (event.type !== "message_rollback") return;
-          const terminalSnapshot = [...events]
-            .reverse()
-            .find(
-              (candidate) =>
-                candidate.type === "provider_event" &&
-                candidate.providerType === "agent_action_contract" &&
-                typeof candidate.payload?.state === "string",
-            );
-          const progress = resolvedRequest?.actionProgress;
-          rollbackProgress.push({
-            correctionCount: progress?.correctionCount,
-            state: progress?.state,
-            updatedAt: progress?.updatedAt,
-          });
-          assert.equal(
-            terminalSnapshot?.type === "provider_event"
-              ? terminalSnapshot.payload?.state
-              : undefined,
-            "unverified",
-          );
-          assert.equal(
-            progress?.state,
-            "unverified",
-            "the unverified obligation must remain nonterminal until rollback succeeds",
-          );
-        },
-      });
-
-      assert.equal(outcome.kind, "completed");
-      if (outcome.kind !== "completed") return;
-      assert.notInclude(
-        outcome.text,
-        "Filed both papers",
-        "the first, false claim must not be what the user is left with",
-      );
-      assert.include(outcome.text, "could not verify completion");
-      assert.deepEqual(rollbackProgress, [
-        { correctionCount: 0, state: "unverified", updatedAt: 11 },
-        { correctionCount: 1, state: "unverified", updatedAt: 22 },
-      ]);
-      assert.equal(resolvedRequest?.actionProgress?.state, "failed");
-      assert.isAbove(resolvedRequest?.actionProgress?.updatedAt || 0, 22);
-
-      const falseFinalIndexes = correctionRequestMessages
-        .map((message, index) =>
-          message.role === "assistant" &&
-          message.content === "Filed both papers into Neuroscience."
-            ? index
-            : -1,
-        )
-        .filter((index) => index >= 0);
-      assert.lengthOf(falseFinalIndexes, 1);
-      const falseFinalIndex = falseFinalIndexes[0];
-      assert.isAtLeast(falseFinalIndex, 0);
-      assert.equal(
-        correctionRequestMessages[falseFinalIndex + 1]?.role,
-        "user",
-      );
-      assert.match(
-        String(correctionRequestMessages[falseFinalIndex + 1]?.content || ""),
-        /^Correction for this turn:/,
-      );
-      assert.equal(
-        correctionRequestMessages.filter(
-          (message) =>
-            message.role === "user" &&
-            String(message.content || "").startsWith(
-              "Correction for this turn:",
-            ),
-        ).length,
-        1,
-      );
-
-      const terminalContractSnapshots = events.filter(
-        (event) =>
-          event.type === "provider_event" &&
-          event.providerType === "agent_action_contract" &&
-          typeof event.payload?.state === "string",
-      );
-      assert.lengthOf(terminalContractSnapshots, 2);
-      assert.deepEqual(
-        terminalContractSnapshots.map((event) =>
-          event.type === "provider_event"
-            ? (event.payload?.progress as { correctionCount?: number })
-                ?.correctionCount
-            : undefined,
-        ),
-        [0, 1],
-      );
-    } finally {
-      restoreDb();
-    }
-  });
-
-  it("does not consume an action correction when streamed rollback fails", async function () {
-    const installed = installMockDb();
-    try {
-      await initAgentChangeJournal();
-      const registry = new AgentToolRegistry(
-        createRequiredMoveActionContractService(),
-      );
-      registerZeroEffectLibraryUpdate(registry);
-
-      let resolvedRequest: AgentRuntimeRequest | undefined;
-      let modelStep = 0;
-      let transcriptAttemptsAtRollback = 0;
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry,
-        adapterFactory: (request) => {
-          resolvedRequest = request;
-          return {
-            getCapabilities: () => ({
-              streaming: true,
-              toolCalls: true,
-              multimodal: false,
-            }),
-            supportsTools: () => true,
-            async runStep(params: AgentStepParams): Promise<AgentModelStep> {
-              modelStep += 1;
-              if (modelStep === 1) {
-                const call = {
-                  id: "rollback-c1",
-                  name: "library_update",
-                  arguments: { kind: "collections" },
-                };
-                return {
-                  kind: "tool_calls",
-                  calls: [call],
-                  assistantMessage: {
-                    role: "assistant",
-                    content: "",
-                    tool_calls: [call],
-                  },
-                };
-              }
-              resolvedRequest!.actionProgress!.updatedAt = 17;
-              await params.onTextDelta?.(
-                "Filed both papers into Neuroscience.",
-              );
-              return {
-                kind: "final",
-                text: "Filed both papers into Neuroscience.",
-                assistantMessage: {
-                  role: "assistant",
-                  content: "Filed both papers into Neuroscience.",
-                },
-              };
-            },
-          };
-        },
-      });
-
-      let error: unknown;
-      try {
-        await runtime.runTurn({
-          request: {
-            classifiedIntent: classifiedFixture(),
-            conversationKey: 993,
-            mode: "agent",
-            userText: "file these two papers into Neuroscience",
-            model: "gpt-4o-mini",
-            apiBase: "https://api.openai.com/v1/chat/completions",
-            apiKey: "test",
-            libraryID: 1,
-          },
-          onEvent: (event) => {
-            if (event.type !== "message_rollback") return;
-            transcriptAttemptsAtRollback = installed.transcriptWriteAttempts();
-            throw new Error("Injected rollback failure");
-          },
-        });
-      } catch (caught) {
-        error = caught;
-      }
-
-      assert.match(String(error), /injected rollback failure/i);
-      assert.equal(modelStep, 2);
-      assert.equal(resolvedRequest?.actionProgress?.correctionCount, 0);
-      assert.equal(resolvedRequest?.actionProgress?.state, "unverified");
-      assert.equal(resolvedRequest?.actionProgress?.updatedAt, 17);
-      assert.equal(
-        installed.transcriptWriteAttempts(),
-        transcriptAttemptsAtRollback,
-        "no correction checkpoint may be attempted after rollback fails",
-      );
-    } finally {
-      installed();
-    }
-  });
-
-  it("does not consume an action correction when correction checkpoint storage fails", async function () {
-    const installed = installMockDb();
-    try {
-      await initAgentChangeJournal();
-      const registry = new AgentToolRegistry(
-        createRequiredMoveActionContractService(),
-      );
-      registerZeroEffectLibraryUpdate(registry);
-
-      let resolvedRequest: AgentRuntimeRequest | undefined;
-      let modelStep = 0;
-      let rollbackObserved = false;
-      const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
-        registry,
-        adapterFactory: (request) => {
-          resolvedRequest = request;
-          return {
-            getCapabilities: () => ({
-              streaming: true,
-              toolCalls: true,
-              multimodal: false,
-            }),
-            supportsTools: () => true,
-            async runStep(params: AgentStepParams): Promise<AgentModelStep> {
-              modelStep += 1;
-              if (modelStep === 1) {
-                const call = {
-                  id: "storage-c1",
-                  name: "library_update",
-                  arguments: { kind: "collections" },
-                };
-                return {
-                  kind: "tool_calls",
-                  calls: [call],
-                  assistantMessage: {
-                    role: "assistant",
-                    content: "",
-                    tool_calls: [call],
-                  },
-                };
-              }
-              resolvedRequest!.actionProgress!.updatedAt = 19;
-              installed.setTranscriptWriteFailure(true);
-              await params.onTextDelta?.(
-                "Filed both papers into Neuroscience.",
-              );
-              return {
-                kind: "final",
-                text: "Filed both papers into Neuroscience.",
-                assistantMessage: {
-                  role: "assistant",
-                  content: "Filed both papers into Neuroscience.",
-                },
-              };
-            },
-          };
-        },
-      });
-
-      let error: unknown;
-      try {
-        await runtime.runTurn({
-          request: {
-            classifiedIntent: classifiedFixture(),
-            conversationKey: 994,
-            mode: "agent",
-            userText: "file these two papers into Neuroscience",
-            model: "gpt-4o-mini",
-            apiBase: "https://api.openai.com/v1/chat/completions",
-            apiKey: "test",
-            libraryID: 1,
-          },
-          onEvent: (event) => {
-            if (event.type !== "message_rollback") return;
-            rollbackObserved = true;
-            assert.equal(resolvedRequest?.actionProgress?.correctionCount, 0);
-          },
-        });
-      } catch (caught) {
-        error = caught;
-      }
-
-      assert.match(String(error), /transcript checkpoint storage failed/i);
-      assert.isTrue(rollbackObserved);
-      assert.equal(modelStep, 2);
-      assert.equal(resolvedRequest?.actionProgress?.correctionCount, 0);
-      assert.equal(resolvedRequest?.actionProgress?.state, "unverified");
-      assert.equal(resolvedRequest?.actionProgress?.updatedAt, 19);
-      assert.notInclude(
-        JSON.stringify(installed.transcripts),
-        "Correction for this turn:",
-      );
-    } finally {
-      installed();
-    }
-  });
-
-  /**
-   * Chain survival. Three careful "Cancel" clicks used to fail the run
-   * outright, because a denial incremented the same counter as a broken tool
-   * -- and persistence was gated on a clean finish, so the run discarded its
-   * own transcript *after* its library writes had landed.
-   */
   it("does not retry a typed obligation after the user declines it", async function () {
     const restoreDb = installMockDb();
     try {
@@ -8917,20 +7743,17 @@ describe("shallow guard round-limit safety", function () {
       });
 
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
             [
               toolStep("c1"),
-              toolStep("c2"),
-              toolStep("c3"),
               {
                 kind: "final",
-                text: "You cancelled all three, so nothing changed.",
+                text: "You cancelled the write, so nothing changed.",
                 assistantMessage: {
                   role: "assistant",
-                  content: "You cancelled all three, so nothing changed.",
+                  content: "You cancelled the write, so nothing changed.",
                 },
               },
             ],
@@ -9101,7 +7924,6 @@ describe("shallow guard round-limit safety", function () {
       });
 
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () =>
           new MockAdapter(
@@ -9165,434 +7987,6 @@ describe("shallow guard round-limit safety", function () {
   });
 });
 
-describe("prepared native actions through AgentRuntime", function () {
-  for (const [removeSource, compound, batched, cancelBeforeExecution] of [
-    [true, false],
-    [false, false],
-    [true, true],
-    [true, false, true],
-    [true, false, false, true],
-  ]) {
-    it(
-      cancelBeforeExecution
-        ? "stops a prepared action cancelled between selection and execution without reselecting it"
-        : batched
-          ? "rechecks host action readiness after a sibling read while preserving provider tool result IDs"
-          : compound
-            ? "executes the resolved move before asking the model to generate compound material"
-            : removeSource
-              ? "executes one bound move and persists its verified answer without an execution-model call"
-              : "rejects destination-only evidence without asking the model to guess another action",
-      async function () {
-        const installed = installMockDb();
-        clearAgentReadLedger();
-        clearAgentCoverageLedger();
-        clearAgentTranscriptStore();
-        clearAgentToolResultHandleStore();
-        await initAgentChangeJournal();
-        let memberships = [1];
-        let modelCalls = 0;
-        let writes = 0;
-        const events: AgentEvent[] = [];
-        let readComplete = false;
-        const abort = new AbortController();
-        let preparedSelections = 0;
-        const deliveredIds: string[] = [];
-        const originalCompleteStep =
-          AgentRunContinuationSession.prototype.completeToolStep;
-        if (batched)
-          AgentRunContinuationSession.prototype.completeToolStep = function (
-            params,
-          ) {
-            deliveredIds.push(
-              ...params.toolMessages.map((message) => message.tool_call_id),
-            );
-            return originalCompleteStep.call(this, params);
-          };
-        const originalReadyIds =
-          PlanExecutionRunSession.prototype.activeWorkflowObligationIds;
-        if (batched)
-          PlanExecutionRunSession.prototype.activeWorkflowObligationIds =
-            function () {
-              return readComplete ? undefined : [];
-            };
-        try {
-          const item = {
-            id: 2317,
-            libraryID: 1,
-            isRegularItem: () => true,
-            getField: () => "Representational geometry",
-            getCollections: () => [...memberships],
-          };
-          const gateway = {
-            getItem: () => item,
-            listCollectionSummaries: () => [
-              {
-                collectionId: 7,
-                libraryID: 1,
-                name: "Learning",
-                path: "Learning",
-              },
-            ],
-            getCollectionSummary: (id: number) => ({
-              collectionId: id,
-              libraryID: 1,
-              name: id === 1 ? "Geometry" : "Learning",
-            }),
-          };
-          const registry = new AgentToolRegistry(
-            new ActionContractService(gateway as never),
-          );
-          const operation = {
-            type: "move_to_collection" as const,
-            itemIds: [2317],
-            targetCollectionId: 7,
-            mode: "move" as const,
-            from: 1,
-          };
-          const nativeState = () => ({
-            version: 1 as const,
-            operation: "move_to_collection" as const,
-            items: [
-              { itemId: 2317, exists: true, collectionIds: [...memberships] },
-            ],
-          });
-          registry.register({
-            spec: {
-              name: "library_update",
-              description: "Collection mutation test boundary",
-              inputSchema: { type: "object" },
-              executionClass: "external_effect",
-              requiresConfirmation: false,
-            },
-            validate: (args) => ({ ok: true, value: args }),
-            describeAction: () => describeLibraryMutationActions(operation),
-            planInvocation: () =>
-              stateChangeInvocationPlan({
-                reversibility: "full",
-                reason: "Move the resolved paper",
-              }),
-            execute: async (input) => {
-              if (batched)
-                assert.notProperty(
-                  input,
-                  "modelOnly",
-                  "The host must supply the canonical action arguments",
-                );
-              writes++;
-              const preState = nativeState();
-              memberships = removeSource ? [7] : [1, 7];
-              return {
-                content: { result: "captured" },
-                effect: "applied",
-                actionEvidence: [
-                  {
-                    version: 1,
-                    proofDomain: "zotero_state",
-                    operationValue: operation,
-                    preState,
-                    postState: nativeState(),
-                    effect: "applied",
-                    journalStepId: "bound-move",
-                  },
-                ],
-              };
-            },
-          });
-          if (batched)
-            registry.register({
-              spec: {
-                name: "library_read",
-                description: "Read prerequisite",
-                inputSchema: { type: "object" },
-                executionClass: "read",
-              },
-              validate: (args) => ({ ok: true, value: args }),
-              execute: async () => {
-                readComplete = true;
-                return { content: { read: true } };
-              },
-            });
-          const { registerPreparedLibraryActions } =
-            await import("../src/agent/tools/preparedLibraryActions");
-          registerPreparedLibraryActions(registry, gateway as never);
-          const runtime = new AgentRuntime({
-            registry,
-            semanticInterpreter: declaredSemanticInterpreter,
-            adapterFactory: () => ({
-              getCapabilities: () => ({
-                streaming: false,
-                toolCalls: true,
-                multimodal: false,
-              }),
-              supportsTools: () => true,
-              runStep: async () => {
-                modelCalls++;
-                if (batched) {
-                  assert.equal(
-                    modelCalls,
-                    1,
-                    "The newly ready host action must finish without another model round",
-                  );
-                  const calls = [
-                    { id: "model-read", name: "library_read", arguments: {} },
-                    {
-                      id: "model-move",
-                      name: "library_update",
-                      arguments: {
-                        modelOnly: true,
-                        kind: "collections",
-                        action: "add",
-                        itemIds: [2317],
-                        mode: "move",
-                        from: 1,
-                        targetCollectionId: 7,
-                      },
-                    },
-                  ];
-                  return {
-                    kind: "tool_calls" as const,
-                    calls,
-                    assistantMessage: {
-                      role: "assistant" as const,
-                      content: "",
-                      tool_calls: calls,
-                    },
-                  };
-                }
-                if (compound) {
-                  assert.deepEqual(
-                    memberships,
-                    [7],
-                    "the model starts only after the ready move is verified",
-                  );
-                  throw new Error("Generation boundary reached");
-                }
-                throw new Error(
-                  "A resolved fixed action must not ask the execution model for arguments",
-                );
-              },
-            }),
-          });
-          const intent = actionFixture("move_to_collection", {
-            destinationCollectionId: 7,
-          });
-          intent.actionIntents[0].constraints = { collectionMode: "move" };
-          if (compound) {
-            intent.retrievalIntent = "summarize";
-            intent.semantic!.materialOutputs = [
-              {
-                id: "summary",
-                description: "Summarize the moved paper",
-                afterActions: [0],
-                sourceActionIndexes: [0],
-                requiredEvidence: "body",
-              },
-            ];
-          }
-          const outcome = await runtime
-            .runTurn({
-              signal: abort.signal,
-              request: {
-                conversationKey: removeSource ? 998831 : 998832,
-                mode: "agent",
-                libraryID: 1,
-                activeItemId: 2317,
-                userText: "move this paper to learning folder",
-                model: "gpt-4o-mini",
-                apiKey: "test",
-                apiBase: "https://example.invalid",
-                classifiedIntent: intent,
-              },
-              onEvent: async (event) => {
-                events.push(event);
-                if (
-                  cancelBeforeExecution &&
-                  event.type === "status" &&
-                  event.text === "Applying the next resolved action"
-                ) {
-                  if (++preparedSelections > 1)
-                    throw new Error("Cancelled action selected again");
-                  abort.abort();
-                }
-              },
-            })
-            .catch((error) => {
-              if (cancelBeforeExecution) {
-                assert.equal(String(error), "Error: Aborted");
-                return {
-                  kind: "completed" as const,
-                  runId: "cancelled-boundary",
-                  text: "",
-                };
-              }
-              if (!compound) throw error;
-              assert.include(String(error), "Generation boundary reached");
-              return {
-                kind: "completed" as const,
-                runId: "generation-boundary",
-                text: "",
-              };
-            });
-          if (cancelBeforeExecution) {
-            assert.equal(preparedSelections, 1);
-            assert.equal(writes, 0);
-            assert.equal(modelCalls, 0);
-            assert.deepEqual(memberships, [1]);
-            return;
-          }
-          assert.equal(modelCalls, compound || batched ? 1 : 0);
-          assert.equal(
-            writes,
-            1,
-            JSON.stringify({
-              outcome,
-              events: events.filter((event) =>
-                ["tool_result", "final", "confirmation_required"].includes(
-                  event.type,
-                ),
-              ),
-            }),
-          );
-          assert.lengthOf(
-            events.filter((event) => event.type === "tool_call"),
-            batched ? 2 : 1,
-          );
-          if (batched) {
-            const move = events.find(
-              (event) =>
-                event.type === "tool_call" && event.name === "library_update",
-            );
-            assert.isTrue(
-              move?.type === "tool_call" && move.callId.startsWith("workflow:"),
-            );
-            assert.deepEqual(
-              deliveredIds,
-              ["model-read", "model-move"],
-              "Complete the provider batch with its original IDs, not host execution IDs",
-            );
-          }
-          if (compound) {
-            assert.deepEqual(memberships, [7]);
-            return;
-          }
-          assert.equal(outcome.kind, "completed");
-          if (outcome.kind !== "completed") return;
-          assert.equal(
-            (await getAgentRunTrace(outcome.runId)).run?.status,
-            removeSource ? "completed" : "failed",
-          );
-          if (removeSource) {
-            assert.include(outcome.text, "Moved");
-            assert.include(outcome.text, "Geometry");
-            assert.include(
-              JSON.stringify(readPersistedTranscript(installed, 998831)),
-              outcome.text,
-            );
-          } else
-            assert.notInclude(
-              outcome.text,
-              "Moved “Representational geometry”",
-            );
-        } finally {
-          PlanExecutionRunSession.prototype.activeWorkflowObligationIds =
-            originalReadyIds;
-          AgentRunContinuationSession.prototype.completeToolStep =
-            originalCompleteStep;
-          installed();
-        }
-      },
-    );
-  }
-});
-
-describe("model continuation after host clarification", function () {
-  it("rebuilds the model input from the resolved contract after choosing a native source", async function () {
-    const installed = installMockDb();
-    clearAgentReadLedger();
-    clearAgentCoverageLedger();
-    clearAgentTranscriptStore();
-    clearAgentToolResultHandleStore();
-    let firstModelInput = "";
-    try {
-      const item = {
-        id: 2317,
-        libraryID: 1,
-        isRegularItem: () => true,
-        getField: () => "Paper",
-        getCollections: () => [1, 8],
-      };
-      const collections = [
-        { collectionId: 1, libraryID: 1, name: "Geometry", path: "Geometry" },
-        { collectionId: 7, libraryID: 1, name: "Learning", path: "Learning" },
-        { collectionId: 8, libraryID: 1, name: "Other", path: "Other" },
-      ];
-      const service = new ActionContractService({
-        getItem: () => item,
-        listCollectionSummaries: () => collections,
-        getCollectionSummary: (id: number) =>
-          collections.find((c) => c.collectionId === id) || null,
-      } as never);
-      const registry = new AgentToolRegistry(service);
-      registry.register(
-        createRequestUserInputTool((request) =>
-          service.createContract(request),
-        ),
-      );
-      const runtime = new AgentRuntime({
-        registry,
-        semanticInterpreter: declaredSemanticInterpreter,
-        adapterFactory: () => ({
-          getCapabilities: () => ({
-            streaming: false,
-            toolCalls: true,
-            multimodal: false,
-          }),
-          supportsTools: () => true,
-          runStep: async (params) => {
-            firstModelInput ||= JSON.stringify(params.messages);
-            return {
-              kind: "final",
-              text: "The test does not execute effects.",
-              assistantMessage: {
-                role: "assistant",
-                content: "The test does not execute effects.",
-              },
-            };
-          },
-        }),
-      });
-      const intent = actionFixture("move_to_collection", {
-        destinationCollectionId: 7,
-      });
-      intent.actionIntents[0].constraints = { collectionMode: "move" };
-      await runtime.runTurn({
-        request: {
-          conversationKey: 998840,
-          mode: "agent",
-          libraryID: 1,
-          activeItemId: 2317,
-          userText: "Move this paper into Learning",
-          model: "gpt-4o-mini",
-          apiKey: "test",
-          apiBase: "https://example.invalid",
-          classifiedIntent: intent,
-        },
-        onEvent: async (event) => {
-          if (event.type === "confirmation_required")
-            runtime.resolveConfirmation(event.requestId, true, {
-              reference: { kind: "option", optionId: "source:1" },
-            });
-        },
-      });
-      assert.include(firstModelInput, "sourceCollectionId");
-      assert.notInclude(firstModelInput, "Action references are unresolved");
-    } finally {
-      installed();
-    }
-  });
-});
-
 describe("AgentRuntime evidence stop policy", function () {
   it("tells a targeted question to answer now after a repeated paper read", async function () {
     const restoreDb = installMockDb();
@@ -9623,7 +8017,6 @@ describe("AgentRuntime evidence stop policy", function () {
         }),
       });
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => ({
           getCapabilities: () => ({
@@ -9707,7 +8100,6 @@ describe("truncated answer continuation with a non-streaming final step", functi
     try {
       let modelSteps = 0;
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry: new AgentToolRegistry(),
         adapterFactory: () => ({
           getCapabilities: () => ({

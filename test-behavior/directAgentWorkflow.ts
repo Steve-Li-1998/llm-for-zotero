@@ -24,8 +24,27 @@ import { getConversationWriteGeneration } from "../src/shared/conversationWriteF
 declare const Zotero: any;
 declare const IOUtils: any;
 
+function assertDirectModelLoop(
+  events: Array<{ type: string; providerType?: string }>,
+  label: string,
+) {
+  check(
+    events.some((event) => event.type === "usage"),
+    `${label}: the main model ran`,
+  );
+  check(
+    !events.some(
+      (event) =>
+        event.type === "provider_event" &&
+        (event.providerType === "agent_semantic_intent" ||
+          event.providerType === "agent_action_preparation"),
+    ),
+    `${label}: no preliminary interpretation or prepared-action stage`,
+  );
+}
+
 /** A real composer-to-native-state journey; no model answers or effects are supplied by the driver. */
-export async function semanticWorkflow(id: string, ctx: JourneyContext) {
+export async function directAgentWorkflow(id: string, ctx: JourneyContext) {
   const { fixtures: f, harness, driver, write } = ctx;
   const planned = id === "semantic.compound-plan";
   const revised = id === "semantic.compound-revise";
@@ -526,11 +545,7 @@ export async function ordinaryMoveWorkflow(ctx: JourneyContext) {
     "No rejected or failed calls in a simple move",
   );
   assertExact(calls.length, 1, "Exactly one complete action call");
-  assertExact(
-    turn.events.filter((event) => event.type === "usage").length,
-    0,
-    "No execution-model rounds after semantic preparation",
-  );
+  assertDirectModelLoop(turn.events, "ordinary move");
   check(
     results.some(
       (event) =>
@@ -554,7 +569,7 @@ export async function ordinaryMoveWorkflow(ctx: JourneyContext) {
   );
 }
 
-export async function preparedActionCases(ctx: JourneyContext) {
+export async function directActionCases(ctx: JourneyContext) {
   const { fixtures: f, harness, driver, write } = ctx;
   const id = "semantic.action-cases";
   const destination = Zotero.Collections.getByLibrary(
@@ -569,7 +584,22 @@ export async function preparedActionCases(ctx: JourneyContext) {
       false,
       false,
     ],
-    ["multilingual", "请把当前论文移到 Learning 文件夹。", false, false],
+    ["chinese", "请把当前论文移到 Learning 文件夹。", false, false],
+    [
+      "japanese",
+      "この論文を Learning コレクションに移動してください。",
+      false,
+      false,
+    ],
+    ["korean", "이 논문을 Learning 컬렉션으로 이동해 주세요.", false, false],
+    ["spanish", "Mueve este artículo a la colección Learning.", false, false],
+    [
+      "french",
+      "Déplacez cet article vers la collection Learning.",
+      false,
+      false,
+    ],
+    ["russian", "Переместите эту статью в коллекцию Learning.", false, false],
     [
       "additive",
       "Add this paper to Learning and keep all its existing collection memberships.",
@@ -580,7 +610,7 @@ export async function preparedActionCases(ctx: JourneyContext) {
   ] as const) {
     const paper = new Zotero.Item("journalArticle");
     paper.libraryID = Zotero.Libraries.userLibraryID;
-    paper.setField("title", `Prepared action ${label} ${f.marker}`);
+    paper.setField("title", `Direct action ${label} ${f.marker}`);
     paper.setCollections(
       ambiguous || additive
         ? [f.collections.geometry.id, f.collections.unrelated.id]
@@ -627,11 +657,7 @@ export async function preparedActionCases(ctx: JourneyContext) {
       `${label}: exact membership effect`,
     );
     onlyChanges(before, after, (row) => row.key === itemKey(paper));
-    assertExact(
-      turn.events.filter((event) => event.type === "usage").length,
-      0,
-      `${label}: no execution-model round`,
-    );
+    assertDirectModelLoop(turn.events, label);
     const calls = turn.events.filter((event) => event.type === "tool_call");
     assertExact(
       calls.length,
@@ -663,6 +689,8 @@ export async function preparedActionCases(ctx: JourneyContext) {
     id,
     `Delete the folder "${folder.name}" and keep its papers.`,
     "auto",
+    {},
+    "approval",
   );
   const after = await snapshot();
   check(
@@ -675,11 +703,7 @@ export async function preparedActionCases(ctx: JourneyContext) {
     after,
     (row) => row.key === `collection:${folder.libraryID}:${folder.key}`,
   );
-  assertExact(
-    turn.events.filter((event) => event.type === "usage").length,
-    0,
-    "Collection deletion needs no execution-model round",
-  );
+  assertDirectModelLoop(turn.events, "collection deletion");
   check(
     turn.events.some(
       (event) =>
@@ -763,11 +787,7 @@ export async function createdDestinationWorkflow(ctx: JourneyContext) {
     ),
     "Both steps are dispatched by the shared host runner",
   );
-  assertExact(
-    turn.events.filter((event) => event.type === "usage").length,
-    0,
-    "No execution-model round is needed after interpretation",
-  );
+  assertDirectModelLoop(turn.events, "created destination workflow");
   for (const operation of ["create_collection", "move_to_collection"])
     check(
       turn.events.some(

@@ -9194,9 +9194,9 @@ export async function retryLatestAssistantResponse(
           }),
         )
       : null;
-    const codexSemanticRequest = isCodexNativeTurn
+    const codexExecutionRequest = isCodexNativeTurn
       ? await initAgentSubsystem().then(async (runtime) =>
-          runtime.prepareSemanticRequest(
+          runtime.prepareExecutionRequest(
             await buildAgentRuntimeRequest({
               conversationKey,
               conversationGeneration,
@@ -9225,7 +9225,10 @@ export async function retryLatestAssistantResponse(
               effectiveRequestConfig,
               history: llmHistory,
             }),
-            { signal: getAbortController(conversationKey)?.signal },
+            {
+              signal: getAbortController(conversationKey)?.signal,
+              permissionOwner: "external_runtime",
+            },
           ),
         )
       : undefined;
@@ -9243,7 +9246,7 @@ export async function retryLatestAssistantResponse(
     const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
       ? await (async () => {
           const result = await runCodexAppServerNativeTurn({
-            semanticRequest: codexSemanticRequest!,
+            executionRequest: codexExecutionRequest!,
             scope: codexScope!,
             conversationGeneration,
             model: effectiveRequestConfig.model,
@@ -12162,7 +12165,7 @@ export async function sendQuestion(
           }),
         )
       : null;
-    const codexSemanticRequest = isCodexNativeTurn
+    const codexExecutionRequest = isCodexNativeTurn
       ? await initAgentSubsystem().then(async (runtime) => {
           const planRequest = await buildAgentRuntimeRequest({
             conversationKey,
@@ -12190,12 +12193,13 @@ export async function sendQuestion(
             effectiveRequestConfig,
             history: llmHistory,
           });
-          return runtime.prepareSemanticRequest(planRequest, {
+          return runtime.prepareExecutionRequest(planRequest, {
             signal: getAbortController(conversationKey)?.signal,
+            permissionOwner: "external_runtime",
           });
         })
       : undefined;
-    const codexPlanActionContract = codexSemanticRequest?.actionContract;
+    const codexPlanActionContract = codexExecutionRequest?.actionContract;
     if (await stopInactiveRequest()) return;
     if (
       !notifyProviderDispatch(
@@ -12211,7 +12215,7 @@ export async function sendQuestion(
     const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
       ? await (async () => {
           const result = await runCodexAppServerNativeTurn({
-            semanticRequest: codexSemanticRequest!,
+            executionRequest: codexExecutionRequest!,
             scope: codexScope!,
             conversationGeneration,
             model: effectiveRequestConfig.model,
@@ -12253,9 +12257,9 @@ export async function sendQuestion(
               conversationGeneration,
               planContext: opts.planContext,
               actionContract: codexPlanActionContract,
-              classifiedIntent: codexSemanticRequest?.classifiedIntent,
-              skillRoutingReceipt: codexSemanticRequest?.skillRoutingReceipt,
-              actionPreparation: codexSemanticRequest?.actionPreparation,
+              classifiedIntent: codexExecutionRequest?.classifiedIntent,
+              skillRoutingReceipt: codexExecutionRequest?.skillRoutingReceipt,
+              actionPreparation: codexExecutionRequest?.actionPreparation,
             }),
           });
           assistantMessage.agentRunId = result.agentRunId;

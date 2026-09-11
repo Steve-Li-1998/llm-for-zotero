@@ -19,6 +19,7 @@ import { prepareActionExecution } from "../../contracts/actionOperationEvidence"
 import { preparationEffectBlock } from "../../contracts/actionPreparation";
 import { getOriginalAgentPermissionMode } from "../../originalAgentPermissionMode";
 import { isAgentChangeJournalAvailable } from "../../store/changeJournal";
+import { matchPlanEffectProposals } from "../../plans/effectAuthorization";
 import type {
   AgentInvocationPlan,
   AgentToolContext,
@@ -34,6 +35,8 @@ export type AssessedInvocation = {
   scopeFailure: ScopeValidationFailure | null;
   interaction: ActionInteraction;
   authorization: AuthorizationDecision;
+  /** Active v5 effect IDs matched by the host; never model-authored authority. */
+  planEffectIds: readonly string[];
 };
 
 function completePlan(value: unknown): value is AgentInvocationPlan {
@@ -54,6 +57,54 @@ function completePlan(value: unknown): value is AgentInvocationPlan {
     typeof plan.reason === "string" &&
     Boolean(plan.reason.trim())
   );
+}
+
+function positiveInteger(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function explicitLibraryIDs(value: unknown, depth = 0): number[] {
+  if (!value || typeof value !== "object" || depth > 5) return [];
+  if (Array.isArray(value))
+    return value.flatMap((entry) => explicitLibraryIDs(entry, depth + 1));
+  return Object.entries(value as Record<string, unknown>).flatMap(
+    ([key, entry]) => {
+      if (key === "libraryID") {
+        const libraryID = positiveInteger(entry);
+        return libraryID ? [libraryID] : [];
+      }
+      return explicitLibraryIDs(entry, depth + 1);
+    },
+  );
+}
+
+function nativeTargetLibraryIDs(
+  requestedTargets: readonly string[],
+  destinationCollectionIds: readonly number[],
+): number[] {
+  const ids: number[] = [];
+  const zotero = globalThis.Zotero;
+  for (const target of requestedTargets) {
+    const itemMatch = /^item:(\d+)$/.exec(target);
+    const collectionMatch = /^collection:(\d+)$/.exec(target);
+    const savedSearchMatch = /^saved-search:(\d+)$/.exec(target);
+    const nativeObject = itemMatch
+      ? zotero?.Items?.get?.(Number(itemMatch[1]))
+      : collectionMatch
+        ? zotero?.Collections?.get?.(Number(collectionMatch[1]))
+        : savedSearchMatch
+          ? zotero?.Searches?.get?.(Number(savedSearchMatch[1]))
+          : null;
+    const libraryID = positiveInteger(nativeObject?.libraryID);
+    if (libraryID) ids.push(libraryID);
+  }
+  for (const collectionId of destinationCollectionIds) {
+    const collection = zotero?.Collections?.get?.(collectionId);
+    const libraryID = positiveInteger(collection?.libraryID);
+    if (libraryID) ids.push(libraryID);
+  }
+  return ids;
 }
 
 /** Exact invocation assessment is shared by preparation, edited review and execution. */
@@ -86,11 +137,29 @@ export class InvocationAssessor {
             ? contracts.prepare(tool, input, context)
             : prepareActionExecution(tool, input, context))
         : undefined;
+    const chatLibraryID =
+      request.executionContext?.chatLibraryID ||
+      positiveInteger(request.libraryID) ||
+      undefined;
+    const targetLibraryIDs = [
+      ...explicitLibraryIDs(input),
+      ...nativeTargetLibraryIDs(
+        preparedAction?.requestedTargets || [],
+        preparedAction?.destinationCollectionIds || [],
+      ),
+    ];
+    if (
+      !targetLibraryIDs.length &&
+      plan.domains.includes("zotero_library") &&
+      chatLibraryID
+    )
+      targetLibraryIDs.push(chatLibraryID);
     const proposal = buildActionProposal({
       tool,
       input,
       plan,
       typedProposals: preparedAction?.proposals,
+      targetLibraryIDs,
       intentBinding: {
         conversationKey: request.conversationKey,
         conversationGeneration: request.conversationGeneration,
@@ -105,10 +174,39 @@ export class InvocationAssessor {
       Boolean(options.inheritedApproval) ||
       (options.callerKind === "action" &&
         request.actionEntryPoint !== "conversation");
+    const directAgent =
+      request.executionContext?.permissionOwner === "original_agent";
+    const approvedPlan =
+      request.executionContext?.permissionOwner === "approved_plan" ||
+      request.planContext?.phase === "executing";
+    const approvedEffectContext =
+      effect && approvedPlan
+        ? await context.loadApprovedPlanEffectContext?.()
+        : undefined;
+    const approvedEffectMatch = approvedEffectContext
+      ? matchPlanEffectProposals({
+          ...approvedEffectContext,
+          proposals: preparedAction?.proposals || [],
+        })
+      : undefined;
+    const approvedEffectFailure =
+      approvedEffectMatch?.kind === "outside_approved_effects"
+        ? approvedEffectMatch.reason
+        : effect &&
+            approvedPlan &&
+            !request.actionContract &&
+            !approvedEffectContext
+          ? `Approved Plan execution blocked ${tool.spec.name}: the frozen effect specification is unavailable.`
+          : undefined;
+    const approvedEffectAuthorized = approvedEffectMatch?.kind === "matched";
     const enforceContract =
-      !delegated && (!hostAction || Boolean(context.journalActionScope));
+      !delegated &&
+      !directAgent &&
+      (!hostAction || Boolean(context.journalActionScope));
     const preparationBlock =
-      hostAction || delegated ? null : preparationEffectBlock(request, plan);
+      hostAction || delegated || directAgent || approvedPlan
+        ? null
+        : preparationEffectBlock(request, plan);
     if (preparationBlock) throw new Error(preparationBlock);
     if (
       effect &&
@@ -123,16 +221,9 @@ export class InvocationAssessor {
       );
     if (
       effect &&
-      request.planContext?.phase === "executing" &&
       !delegated &&
-      !request.actionContract
-    )
-      throw new Error(
-        `Approved Plan execution blocked ${tool.spec.name}: the frozen action contract is unavailable.`,
-      );
-    if (
-      effect &&
-      !delegated &&
+      !directAgent &&
+      !approvedPlan &&
       !hostAction &&
       contracts &&
       !request.actionContract
@@ -179,35 +270,48 @@ export class InvocationAssessor {
       throw new Error(
         `${tool.spec.name} was refused because the durable change journal is unavailable. Effects cannot run without restart-safe authorization and recovery.`,
       );
-    const interaction = resolveActionInteraction(
+    const baseInteraction = resolveActionInteraction(
       request,
       preparedAction?.proposals || [],
       Boolean(options.forceConfirmation),
     );
+    const interaction =
+      approvedEffectMatch?.kind === "matched"
+        ? {
+            ...baseInteraction,
+            reviewPreference: approvedEffectMatch.reviewPreference,
+          }
+        : baseInteraction;
     if (delegated) proposal.runtime = "external";
-    const authorization = delegated
-      ? authorizeExternalAction(proposal)
-      : authorizeOriginalAction(proposal, {
-          mode: getOriginalAgentPermissionMode(),
-          interaction,
-          hasApprovedPlanAuthority: request.planContext?.phase === "executing",
-          semantic: options.inheritedApproval
-            ? undefined
-            : request.classifiedIntent?.semantic ||
-              request.actionContract?.intent?.semantic,
-          constraints:
-            request.actionContract?.intent?.semantic?.constraints ||
-            request.classifiedIntent?.semantic?.constraints ||
-            [],
-          hasMatchingActionIntent:
-            hostAction ||
-            Boolean(
-              scopeValidated &&
-              !scopeFailure &&
-              preparedAction?.proposals.length &&
-              request.actionContract?.obligations.length,
+    const authorization: AuthorizationDecision = approvedEffectFailure
+      ? { kind: "block", reason: approvedEffectFailure }
+      : delegated
+        ? authorizeExternalAction(proposal)
+        : authorizeOriginalAction(proposal, {
+            mode: getOriginalAgentPermissionMode(),
+            interaction,
+            executionContext: request.executionContext,
+            hasApprovedPlanAuthority: Boolean(
+              approvedPlan &&
+              ((scopeValidated && !scopeFailure) || approvedEffectAuthorized),
             ),
-        });
+            constraints:
+              approvedEffectMatch?.kind === "matched"
+                ? approvedEffectMatch.constraints
+                : request.actionContract?.intent?.semantic?.constraints || [],
+            semantic: request.executionContext
+              ? undefined
+              : request.classifiedIntent?.semantic ||
+                request.actionContract?.intent?.semantic,
+            hasMatchingActionIntent:
+              hostAction ||
+              Boolean(
+                scopeValidated &&
+                !scopeFailure &&
+                preparedAction?.proposals.length &&
+                request.actionContract?.obligations.length,
+              ),
+          });
     return {
       input,
       plan,
@@ -216,6 +320,10 @@ export class InvocationAssessor {
       scopeFailure,
       interaction,
       authorization,
+      planEffectIds:
+        approvedEffectMatch?.kind === "matched"
+          ? approvedEffectMatch.effectIds
+          : [],
     };
   }
 }

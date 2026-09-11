@@ -18,6 +18,7 @@ import {
   resolvePreResearchActionContract,
 } from "../../plans/coordinator";
 import type { PlanStep } from "../../plans/types";
+import { freezePlanEffectSpecification } from "../../plans/effectSpecification";
 import {
   createUpdatePlanTool,
   resolvePlanContract,
@@ -35,6 +36,7 @@ type ResearchScopeInput = {
 type ContractRevisionInput = {
   kind: "contract_revision";
   contract: unknown;
+  effectSpecification?: UpdatePlanInput["effectSpecification"];
   steps: UpdatePlanInput["steps"];
   rationale: string;
 };
@@ -73,6 +75,7 @@ function validateInput(
     const validated = validateUpdatePlanInput({
       ready: true,
       contract: args.contract,
+      effectSpecification: args.effectSpecification,
       steps: args.steps,
     });
     if (!validated.ok)
@@ -80,6 +83,7 @@ function validateInput(
     return ok({
       kind: "contract_revision",
       contract: validated.value.contract,
+      effectSpecification: validated.value.effectSpecification,
       steps: validated.value.steps,
       rationale,
     });
@@ -136,6 +140,9 @@ export function createAmendPlanTool(
             },
           },
           contract: updateSchema.properties?.contract || { type: "object" },
+          effectSpecification: updateSchema.properties?.effectSpecification || {
+            type: "object",
+          },
           steps: updateSchema.properties?.steps || { type: "array" },
         },
       },
@@ -244,15 +251,48 @@ export function createAmendPlanTool(
               : `${plan.planId}:r${revision}:s${index + 1}`,
         }),
       );
+      const effectSpecification = input.effectSpecification
+        ? await freezePlanEffectSpecification(input.effectSpecification)
+        : priorArtifact.version === 5 && priorArtifact.effectSpecification
+          ? {
+              version: 1 as const,
+              constraints: priorArtifact.effectSpecification.constraints,
+              effects: [],
+              deferredEffects: [],
+            }
+          : undefined;
       const replacementActionContract =
         resolvePreResearchActionContract(contract);
       amendments.assertContractRevisionHardBoundaries({
         priorActionContract:
           priorArtifact.actionContract || context.request.actionContract,
         replacementActionContract,
-        replacementHasEffects: Boolean(contract.effects),
+        priorEffectSpecification: priorArtifact.effectSpecification,
+        replacementEffectSpecification: effectSpecification,
+        replacementHasEffects: Boolean(
+          contract.effects ||
+          effectSpecification?.effects.length ||
+          effectSpecification?.deferredEffects.length,
+        ),
       });
-      const resultingScopeDigest = await computePlanContractDigest(contract);
+      const artifact = await planExecutionCoordinator.updateDraft({
+        planId: plan.planId,
+        conversationKey: context.request.conversationKey,
+        provider: plan.provider,
+        revision,
+        explanation: input.rationale,
+        steps: normalizedSteps,
+        contract,
+        effectSpecification,
+        actionContractId: replacementActionContract?.id,
+        actionContract: replacementActionContract,
+        sourceRunId: context.runId,
+        skillBindings: context.request.loadedSkillRecords,
+        ready: true,
+      });
+      const resultingScopeDigest =
+        artifact.contractDigest ||
+        (await computePlanContractDigest(contract, effectSpecification));
       const proposal = await amendments.buildProposal({
         kind: "contract_revision",
         goalImpact: "contract_revision",
@@ -266,15 +306,20 @@ export function createAmendPlanTool(
           priorArtifact.contractDigest || priorArtifact.digest,
         resultingScopeDigest,
         targetSetDigest: await amendments.digest(
-          contract.investigation?.scope || contract.deliverable,
+          artifact.contract?.investigation?.scope ||
+            artifact.contract?.deliverable,
         ),
         proposalPayloadDigest: await amendments.digest({
-          contract,
-          steps: normalizedSteps,
+          contract: artifact.contract,
+          effectSpecification: artifact.effectSpecification,
+          steps: artifact.steps,
+          skillBindings: artifact.skillBindings,
         }),
-        replacementContract: contract,
-        replacementSteps: normalizedSteps as readonly PlanStep[],
-        replacementActionContract,
+        replacementContract: artifact.contract,
+        replacementSteps: artifact.steps as readonly PlanStep[],
+        replacementActionContract: artifact.actionContract,
+        replacementEffectSpecification: artifact.effectSpecification,
+        replacementSkillBindings: artifact.skillBindings,
         rationale: input.rationale,
       });
       let grant:
@@ -309,20 +354,6 @@ export function createAmendPlanTool(
           decision.kind === "execute"
             ? await amendments.authorize(proposal, decision.authority)
             : undefined;
-        const actionContract = replacementActionContract;
-        const artifact = await planExecutionCoordinator.updateDraft({
-          planId: plan.planId,
-          conversationKey: context.request.conversationKey,
-          provider: plan.provider,
-          revision,
-          explanation: input.rationale,
-          steps: normalizedSteps,
-          contract,
-          actionContractId: actionContract?.id,
-          actionContract,
-          sourceRunId: context.runId,
-          ready: true,
-        });
         if (decision.kind !== "execute") {
           const active = priorLedger.tasks.find(
             (task) => task.taskId === priorLedger.activeTaskId,

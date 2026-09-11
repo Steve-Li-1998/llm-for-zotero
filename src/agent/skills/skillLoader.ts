@@ -1,14 +1,16 @@
 import type { AgentRuntimeRequest } from "../types";
 
 /**
- * A skill is a file-driven guidance instruction that gets injected into the
- * agent current-turn guidance after contextual eligibility and semantic routing.
+ * A skill is file-driven guidance. Its metadata can be presented in the
+ * initial agent context and its full body loaded only when the workflow needs
+ * it; explicitly selected skills may still be supplied directly.
  *
  * Skills are defined as `.md` files with frontmatter:
  *
  * ```markdown
  * ---
  * id: my-skill
+ * name: My Skill
  * contexts: single-paper
  * activation: auto
  * ---
@@ -18,6 +20,8 @@ import type { AgentRuntimeRequest } from "../types";
  */
 export type AgentSkill = {
   id: string;
+  /** Human-readable native skill name. Falls back to `id` when omitted. */
+  name?: string;
   description: string;
   version: number;
   contexts: SkillContextKind[];
@@ -74,6 +78,7 @@ function parseSkillActivation(raw: string): SkillActivationMode {
  * Parse a raw `.md` skill file into an AgentSkill.
  * Frontmatter is delimited by `---` lines. Supported keys:
  * - `id: <string>`          — unique skill identifier
+ * - `name: <string>`        — human-readable name (falls back to id)
  * - `contexts: <context>[,<context>]` — request contexts where the skill is valid
  * - `activation: auto|manual|both` — whether the skill can activate automatically
  * - `supersedes: <id>[,<id>]` — automatic skills this workflow replaces
@@ -159,6 +164,7 @@ export function parseSkill(raw: string): AgentSkill {
 
   return {
     id,
+    name: name || id,
     description,
     version,
     contexts,

@@ -203,7 +203,7 @@ describe("native selection structure and boundaries", function () {
       assert.include(String(error), "must belong to the target note");
     }
   });
-  it("offers only the note tools needed by a self-contained edit and keeps research tools for requested source work", function () {
+  it("keeps direct read, clarification, and document tools available for a note edit", function () {
     const registry = new AgentToolRegistry();
     for (const name of [
       "note_write",
@@ -232,18 +232,14 @@ describe("native selection structure and boundaries", function () {
     };
     assert.deepEqual(
       registry.listToolsForRequest(request).map((t) => t.name),
-      ["note_write", "library_read", "request_user_input"],
-    );
-    request.documentOutcomePolicy = { required: true } as never;
-    assert.include(
-      registry.listToolsForRequest(request).map((t) => t.name),
-      "submit_document",
-    );
-    request.documentOutcomePolicy = undefined;
-    request.classifiedIntent.semantic!.reading.source = "document_text";
-    assert.include(
-      registry.listToolsForRequest(request).map((t) => t.name),
-      "paper_read",
+      [
+        "note_write",
+        "library_read",
+        "request_user_input",
+        "paper_read",
+        "library_search",
+        "submit_document",
+      ],
     );
   });
 });

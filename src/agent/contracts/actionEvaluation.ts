@@ -55,6 +55,19 @@ export function evaluatePreparedActionContract(
       failure: `Delegated action results:\n${formatReceiptStatus(delegated)}`,
     };
   }
+  if (!request.actionContract && !request.classifiedIntent?.semantic) {
+    const unverifiableApplied = receipts.filter(
+      (receipt) =>
+        (receipt.status === "applied" || receipt.status === "partial") &&
+        receipt.verification === "unverified",
+    );
+    return unverifiableApplied.length
+      ? {
+          state: "unverified",
+          failure: `Concrete action results could not be verified:\n${formatReceiptStatus(unverifiableApplied)}`,
+        }
+      : { state: "satisfied" };
+  }
   if (
     request.actionPreparation &&
     request.actionPreparation.state !== "ready"

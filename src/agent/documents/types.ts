@@ -28,6 +28,13 @@ export type DocumentSpec = Readonly<{
 
 export type DocumentIntegrityPolicy = "research_grounded" | "authored";
 
+/** Immutable identity of one finalized document revision. */
+export type MaterialRef = Readonly<{
+  documentId: string;
+  documentVersion: number;
+  contentHash: string;
+}>;
+
 export type DocumentOutcomePolicy = Readonly<{
   required: boolean;
   documentKind: DocumentSpec["kind"];
@@ -257,6 +264,10 @@ export type PlanDocumentOutboxRecord = Readonly<{
 
 export type SubmitPlanDocumentInput = Readonly<{
   materialOutputId?: string;
+  /** Direct-agent document shape. Approved Plans continue to use their frozen spec. */
+  documentKind?: DocumentSpec["kind"];
+  /** Use research_grounded when claims depend on retrieved literature evidence. */
+  integrityPolicy?: DocumentIntegrityPolicy;
   title: string;
   markdown: string;
   citations: readonly PlanCitationCluster[];

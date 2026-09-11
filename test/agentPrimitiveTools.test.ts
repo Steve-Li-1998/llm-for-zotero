@@ -757,7 +757,7 @@ describe("primitive agent tools", function () {
     assert.isFalse(updateCalled);
   });
 
-  it("keeps fixed instructions focused on cross-turn semantic invariants", async function () {
+  it("keeps fixed instructions focused on the direct tool loop", async function () {
     const messages = await buildAgentInitialMessages(
       {
         conversationKey: 1,
@@ -780,8 +780,9 @@ describe("primitive agent tools", function () {
     assert.include(systemText, "workflow:'answer'");
     assert.include(systemText, "web_search");
     assert.include(systemText, "web_read");
-    assert.include(systemText, "use the semantic tool");
-    assert.include(systemText, "current-turn verified receipt");
+    assert.include(systemText, "Use actual tools for requested effects");
+    assert.notInclude(systemText, "use the semantic tool");
+    assert.include(systemText, "the host validates each concrete proposal");
     assert.notInclude(systemText, "library_update");
     assert.notInclude(systemText, "search_literature_online");
     assert.notInclude(systemText, "query_library");

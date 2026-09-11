@@ -176,13 +176,28 @@ function resolveFullReadTargets(params: {
         )
       : [];
   const request = params.context.request;
+  const legacyPlanAuthorization = hasApprovedFullReadAuthorization(request);
+  const isLegacySemanticTurn = Boolean(request.classifiedIntent?.semantic);
   if (
+    isLegacySemanticTurn &&
     request.classifiedIntent?.semantic?.reading.coverage !== "exhaustive" &&
-    !hasApprovedFullReadAuthorization(request)
-  ) {
+    !legacyPlanAuthorization
+  )
     throw new Error(
-      "Exhaustive reading requires a resolved semantic reading intent or approved full-read contract.",
+      "Exhaustive reading requires compatible legacy turn intent or an approved full-read contract.",
     );
+
+  // In the direct workflow the main agent chooses reading depth through the
+  // actual paper_read call. Explicit selectors are already host-resolved and
+  // therefore define the intended read set without a preliminary model gate.
+  if (!isLegacySemanticTurn && !legacyPlanAuthorization) {
+    if (explicitTargets.length) return explicitTargets;
+    const active = getTurnPapersWithRoles(request, ["active"]).slice(0, 1);
+    if (!active.length)
+      throw new Error(
+        "The full-read target is unresolved. Pass explicit paper targets or open an active paper.",
+      );
+    return active;
   }
   const available = dedupePaperContexts(
     params.zoteroGateway.listPaperContexts(request),

@@ -10,7 +10,7 @@ const read = (path: string) =>
     true,
   );
 
-describe("semantic ownership boundary", function () {
+describe("direct Agent ownership boundary", function () {
   it("does not change host permission mode based on the provider entry point", function () {
     const source = read("src/agent/tools/registry.ts");
     const overrides: string[] = [];
@@ -64,7 +64,7 @@ describe("semantic ownership boundary", function () {
       assert.isTrue(found, path);
     }
   });
-  it("supplies semantic authority to every native Codex turn dispatch", function () {
+  it("supplies host execution context to every native Codex turn dispatch", function () {
     const source = read("src/modules/contextPanel/chat.ts");
     let count = 0;
     const visit = (node: ts.Node) => {
@@ -78,7 +78,7 @@ describe("semantic ownership boundary", function () {
         const names = (argument as ts.ObjectLiteralExpression).properties.map(
           (p) => p.name?.getText(source),
         );
-        for (const field of ["semanticRequest"]) assert.include(names, field);
+        for (const field of ["executionRequest"]) assert.include(names, field);
       }
       ts.forEachChild(node, visit);
     };

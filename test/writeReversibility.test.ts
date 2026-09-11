@@ -131,9 +131,9 @@ describe("invocation-plan confirmation policy", function () {
     }
   });
 
-  it("defaults a future write without a planner to irreversible", async function () {
+  it("reviews a future write whose concrete effects are unknown", async function () {
     const prepared = await prepare({ mode: "auto", journal: true });
-    assert.equal(prepared.kind, "result");
+    assert.equal(prepared.kind, "confirmation");
   });
 
   it("does not let a tool override yolo with its own prompt", async function () {

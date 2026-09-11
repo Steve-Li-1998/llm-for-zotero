@@ -497,13 +497,14 @@ describe("agent prompt envelope", function () {
         yolo,
         "importing discovered papers without the user's selection",
       );
-      assert.include(yolo, "Interpretation assumptions: Assumed append.");
+      assert.notInclude(yolo, "Interpretation assumptions");
       const auto = await promptText("auto");
       assert.include(auto, "Permission mode: auto");
       assert.include(auto, "only for genuine ambiguity");
       const safe = await promptText("safe");
       assert.include(safe, "Permission mode: safe");
-      assert.include(safe, "do not ask for permission in text");
+      assert.include(safe, "Call the concrete tool");
+      assert.include(safe, "host owns the review UI");
       assert.notInclude(safe, "Interpretation assumptions");
     });
   });

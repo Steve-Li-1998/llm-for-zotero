@@ -1,6 +1,4 @@
-import { loadWorkflowMaterial } from "./documents/workflowMaterial";
 import { evaluatePreparedActionContract } from "./contracts/actionEvaluation";
-import { hasCurrentSemanticIntent } from "./model/semanticTransport";
 import { config } from "../../package.json";
 import {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -96,10 +94,7 @@ import {
   loadLatestDocumentForRun,
   loadLatestPlanDocumentForExecution,
 } from "./documents/store";
-import {
-  detectTurnIntent,
-  resolvePlanSkillRoutingReceipt,
-} from "./model/semanticIntentService";
+import { resolvePlanSkillRoutingReceipt } from "./model/semanticSkillRouting";
 import { getAllSkills, getMatchedSkillIds } from "./skills";
 import { resolveDocumentOutcomePolicy } from "./documents/outcomePolicy";
 import {
@@ -149,7 +144,7 @@ export type AgentRuntimeLike = Pick<
   | "getToolDefinition"
   | "unregisterTool"
   | "registerTool"
-  | "createActionContractForRequest"
+  | "prepareExecutionRequest"
   | "registerPendingConfirmation"
   | "resolveConfirmation"
   | "getRunTrace"
@@ -448,6 +443,7 @@ type BridgeRuntimeRequest = {
   apiBase?: string;
   authMode?: string;
   providerProtocol?: string;
+  executionContext?: AgentRuntimeRequest["executionContext"];
   selectedTextContexts?: SelectedTextContext[];
   resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
@@ -1308,16 +1304,14 @@ function buildClaudeZoteroMcpScope(
     runtimeAuthority: "claude",
     sourceMessageTimestamp: Number(request.metadata?.sourceMessageTimestamp),
     planContext: request.planContext,
+    executionContext: request.executionContext,
     actionContract: request.actionContract,
     actionProgress: request.actionProgress,
     clarificationHistory: request.clarificationHistory,
-    classifiedIntent: request.classifiedIntent,
     actionPreparation: request.actionPreparation,
-    semanticProvider: request.semanticProvider,
     documentOutcomePolicy: request.documentOutcomePolicy,
     documentReadObservations: request.documentReadObservations,
     documentArtifactObservations: request.documentArtifactObservations,
-    skillRoutingReceipt: request.skillRoutingReceipt,
     profileSignature,
     conversationGeneration: request.conversationGeneration,
     conversationKey: normalizePositiveInt(request.conversationKey),
@@ -1840,6 +1834,7 @@ async function buildBridgeRuntimeRequest(
     apiBase: request.apiBase,
     authMode: request.authMode,
     providerProtocol: request.providerProtocol,
+    executionContext: request.executionContext,
     selectedTextContexts: Array.isArray(request.selectedTextContexts)
       ? request.selectedTextContexts
       : undefined,
@@ -2618,8 +2613,8 @@ export function createExternalBackendBridgeRuntime(options: {
 
   return {
     listTools: () => coreRuntime.listTools(),
-    createActionContractForRequest: (request) =>
-      coreRuntime.createActionContractForRequest(request),
+    prepareExecutionRequest: (request, options) =>
+      coreRuntime.prepareExecutionRequest(request, options),
     getToolDefinition: (name: string) => coreRuntime.getToolDefinition(name),
     unregisterTool: (name: string) => coreRuntime.unregisterTool(name),
     registerTool: (tool) => coreRuntime.registerTool(tool),
@@ -2890,6 +2885,13 @@ export function createExternalBackendBridgeRuntime(options: {
       params.request.conversationGeneration ??= getConversationWriteGeneration(
         params.request.conversationKey,
       );
+      params.request = await coreRuntime.prepareExecutionRequest(
+        params.request,
+        {
+          signal: params.signal,
+          permissionOwner: "external_runtime",
+        },
+      );
       const requestMetadata =
         params.request.metadata && typeof params.request.metadata === "object"
           ? params.request.metadata
@@ -3046,45 +3048,8 @@ export function createExternalBackendBridgeRuntime(options: {
             );
           }
           routedSkillIds = reused.skillIds;
-          params.request.classifiedIntent =
-            approvedPlanArtifact?.actionContract?.intent;
-        } else if (await hasCurrentSemanticIntent(params.request)) {
-          routedSkillIds =
-            params.request.skillRoutingReceipt?.skills.map(
-              (skill) => skill.id,
-            ) || [];
         } else {
-          params.request.actionContract = undefined;
-          params.request.actionProgress = undefined;
-          params.request.semanticProvider = {
-            kind: "claude",
-            baseUrl: getBridgeUrl(),
-          };
-          const intent = await detectTurnIntent(
-            params.request,
-            getAllSkills(),
-            { signal: params.signal },
-          );
-          routedSkillIds = intent.skillIds;
-          params.request.classifiedIntent =
-            intent.classifiedIntent || undefined;
-          if (!params.request.classifiedIntent?.semantic)
-            throw new Error(
-              "Semantic interpretation is unavailable. No actions were authorized.",
-            );
-          params.request.skillRoutingReceipt = intent.routingReceipt;
-          if (intent.degraded) {
-            const degradedEvent: AgentEvent = {
-              type: "provider_event",
-              providerType: "turn_intent_classifier",
-              payload: {
-                status: "degraded_no_automatic_skills",
-                reason: intent.failureReason,
-              },
-            };
-            await appendPersistedEvent(degradedEvent);
-            await notifyIfLive(degradedEvent);
-          }
+          routedSkillIds = params.request.forcedSkillIds || [];
         }
         const matchedSkillIds = getMatchedSkillIds(
           params.request,
@@ -3101,10 +3066,6 @@ export function createExternalBackendBridgeRuntime(options: {
             approvedPlanArtifact?.contract?.investigation,
           ),
         });
-        if (!params.request.actionContract) {
-          params.request.actionContract =
-            await coreRuntime.createActionContractForRequest(params.request);
-        }
         const contextEnvelope = buildContextEnvelope(params.request);
         await appendPersistedEvent(
           makeProfilingEvent("frontend.context_envelope.ready"),
@@ -3526,13 +3487,11 @@ export function createExternalBackendBridgeRuntime(options: {
               resolveExternalConfirmation,
             });
           const loadFinalizedDocument = async () =>
-            params.request.classifiedIntent?.semantic?.materialOutputs?.length
-              ? loadWorkflowMaterial(params.request)
-              : params.request.planContext?.phase === "executing"
-                ? loadLatestPlanDocumentForExecution(
-                    params.request.planContext.executionId,
-                  )
-                : loadLatestDocumentForRun(persistedRunId);
+            params.request.planContext?.phase === "executing"
+              ? loadLatestPlanDocumentForExecution(
+                  params.request.planContext.executionId,
+                )
+              : loadLatestDocumentForRun(persistedRunId);
 
           let outcome = await runBridge(params.request, runtimeRequest);
           await Promise.all(pendingPlanEvidence);

@@ -1,6 +1,5 @@
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { isExplicitLiteratureImport } from "../../model/literatureIntent";
-import { getOriginalAgentPermissionMode } from "../../originalAgentPermissionMode";
 import {
   createSearchLiteratureReviewAction,
   resolveSearchLiteratureReview,
@@ -213,12 +212,7 @@ export function createLiteratureReviewTool(
       return discoveryContent(discovery.record);
     },
     createResultReviewAction: (_input, result, context) =>
-      context.request.actionEntryPoint === "action_ui" ||
-      getOriginalAgentPermissionMode() === "safe" ||
-      context.request.classifiedIntent?.semantic?.literature ===
-        "select_then_import"
-        ? createSearchLiteratureReviewAction(result, context, result.content)
-        : null,
+      createSearchLiteratureReviewAction(result, context, result.content),
     resolveResultReview: async (_input, result, resolution, context) => {
       const content = result.content as {
         sessionId?: string;

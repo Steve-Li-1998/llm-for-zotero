@@ -881,7 +881,7 @@ describe("AgentToolRegistry", function () {
   });
 
   for (const permissionMode of ["safe", "auto", "yolo"]) {
-    it(`creates a contract-matched new note in ${permissionMode} without confirmation`, async function () {
+    it(`applies ${permissionMode} mode to a contract-matched new note`, async function () {
       globalThis.Zotero = {
         DB: new ChangeJournalTestDb(),
         Prefs: { get: () => permissionMode },
@@ -970,8 +970,16 @@ describe("AgentToolRegistry", function () {
         { callerKind: "model" },
       );
 
-      assert.equal(prepared.kind, "result");
-      assert.equal(executions, 1);
+      assert.equal(
+        prepared.kind,
+        permissionMode === "safe" ? "confirmation" : "result",
+      );
+      assert.equal(executions, permissionMode === "safe" ? 0 : 1);
+      if (prepared.kind === "confirmation") {
+        const approved = await prepared.execute({ approved: true });
+        assert.equal(approved.kind, "result");
+        assert.equal(executions, 1);
+      }
     });
   }
 

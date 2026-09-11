@@ -10,6 +10,7 @@ import {
 } from "./store";
 import type {
   DocumentCoverageItem,
+  DocumentOutcomePolicy,
   PlanDocument,
   PlanDocumentAsset,
   PlanDocumentOutboxRecord,
@@ -23,15 +24,14 @@ import {
 import { ToolInputRejection } from "../tools/execution/failure";
 function directDocumentSpec(params: {
   request: AgentRuntimeRequest;
+  policy: DocumentOutcomePolicy;
   title: string;
   hasCitations: boolean;
 }) {
-  const policy = params.request.documentOutcomePolicy;
-  if (!policy?.required)
-    throw new Error("This turn does not require a document");
-  const researchGrounded = policy.integrityPolicy === "research_grounded";
+  const researchGrounded =
+    params.policy.integrityPolicy === "research_grounded";
   return {
-    kind: policy.documentKind,
+    kind: params.policy.documentKind,
     title: params.title,
     requiredSections: researchGrounded ? ["Scope and limitations"] : [],
     requiresReferences: researchGrounded || params.hasCitations,
@@ -40,7 +40,10 @@ function directDocumentSpec(params: {
     citationStyle: {
       styleId: "http://www.zotero.org/styles/apa",
       styleTitle: "APA",
-      locale: params.request.classifiedIntent?.queryLanguage || "en-US",
+      locale:
+        typeof params.request.metadata?.queryLanguage === "string"
+          ? params.request.metadata.queryLanguage
+          : "en-US",
     },
   } as const;
 }
@@ -184,7 +187,7 @@ export class DirectDocumentFinalizer {
     input: SubmitPlanDocumentInput;
     now?: number;
   }): Promise<{ document: PlanDocument; outbox: PlanDocumentOutboxRecord }> {
-    const policy = params.request.documentOutcomePolicy;
+    const configuredPolicy = params.request.documentOutcomePolicy;
     const material = resolveMaterialOutput(
       params.request,
       params.input.materialOutputId,
@@ -192,12 +195,20 @@ export class DirectDocumentFinalizer {
     const stableDocumentId = material
       ? materialDocumentId(params.request, material.id)
       : undefined;
-    if (
-      !policy?.required ||
-      (params.request.planContext?.phase === "executing" && !material)
-    ) {
+    if (params.request.planContext?.phase === "planning") {
       throw new Error("Direct document finalization is not authorized");
     }
+    if (params.request.planContext?.phase === "executing" && !material) {
+      throw new Error("Plan document finalization must use the approved spec");
+    }
+    const policy: DocumentOutcomePolicy = configuredPolicy?.required
+      ? configuredPolicy
+      : {
+          required: true,
+          documentKind: params.input.documentKind || "custom",
+          integrityPolicy: params.input.integrityPolicy || "authored",
+          trigger: "document_intent",
+        };
     const prior = stableDocumentId
       ? await loadPlanDocument(stableDocumentId)
       : await loadLatestDocumentForRun(params.runId);
@@ -235,6 +246,7 @@ export class DirectDocumentFinalizer {
     }
     const spec = directDocumentSpec({
       request: params.request,
+      policy,
       title,
       hasCitations: params.input.citations.length > 0,
     });

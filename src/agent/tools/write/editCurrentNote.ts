@@ -572,7 +572,7 @@ export function createEditCurrentNoteTool(
         "For finalized workflow material, call `note_write` with documentId returned by submit_document and omit content. Use mode:create with exact parent targetItemId, or mode:edit/append with exact targetNoteId. For standalone notes, call `edit_current_note` with mode 'create', target 'standalone', and `content`. " +
         SOURCE_NOTE_COPY_GUIDANCE +
         " " +
-        "Requested new notes are created directly; the UI shows the saved content and a link to the native note after verification. Do not ask the user to approve a new-note draft or repeat the full saved note in your completion message. Auto applies edits and appends directly, then displays the verified diff; explicit review and Safe wait on the note card first. " +
+        "The UI shows saved content and a link to the native note after verification. Do not repeat the full saved note in the completion message. Auto applies routine same-library note changes directly and then displays the verified diff; explicit review and Safe wait on the note card before every write, including creation. " +
         "Pass Markdown by default. When the user explicitly requests HTML output (e.g. for styled note templates), pass well-formed HTML with inline styles directly. " +
         "When the note discusses a specific figure, first use `paper_read({ mode:'figures' })` and embed the extracted PDF crop path: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment. " +
         "Treat paper_read mode:'figures' as the authority for figure crop cache reuse/regeneration; use returned crop paths as-is and do not inspect or validate `figure_crops` metadata before writing. " +

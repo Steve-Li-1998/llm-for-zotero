@@ -61,7 +61,7 @@ describe("research mutation authorization", function () {
   it("executes without review in auto and yolo when no preference was stated", function () {
     for (const [mode, authority] of [
       ["auto", "auto_policy"],
-      ["yolo", "yolo"],
+      ["yolo", "yolo_judgment"],
     ] as const) {
       withMode(mode);
       assert.deepEqual(

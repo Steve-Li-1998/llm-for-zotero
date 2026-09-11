@@ -1,6 +1,7 @@
 import { stateChangeInvocationPlan } from "../authorization/invocationPlan";
 import { authorizeOriginalAction } from "../authorization/policy";
 import type { ActionProposal } from "../authorization/types";
+import type { ActionConstraint } from "../authorization/types";
 import type { AgentActionIntent } from "../contracts/types";
 import { getOriginalAgentPermissionMode } from "../originalAgentPermissionMode";
 import { canonicalJson } from "../services/libraryMutation/canonicalJson";
@@ -15,6 +16,7 @@ export function researchMutationAuthorization(params: {
     parameters?: unknown;
     targets: readonly { libraryID: number; itemKey: string }[];
   }[];
+  constraints?: readonly ActionConstraint[];
 }) {
   const { context, intents, operations } = params;
   for (const operation of operations) {
@@ -81,10 +83,12 @@ export function researchMutationAuthorization(params: {
     hasMatchingActionIntent: true,
     semantic: context.request.classifiedIntent?.semantic,
     constraints:
+      params.constraints ||
       context.request.actionContract?.hardConstraints?.filter(
         (entry): entry is import("../authorization/types").ActionConstraint =>
           entry.kind !== "no_write",
-      ) || context.request.classifiedIntent?.semantic?.constraints,
+      ) ||
+      context.request.classifiedIntent?.semantic?.constraints,
     interaction: {
       entryPoint: context.request.actionEntryPoint || "conversation",
       reviewPreference: review ? "review" : "default",

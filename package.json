@@ -34,7 +34,6 @@
     "test:workflow": "node scripts/run-workflow-tests.mjs",
     "test:behavior": "node scripts/run-behavior-tests.mjs",
     "test:behavior:smoke": "node scripts/run-behavior-tests.mjs --tier smoke",
-    "eval:skill-router": "tsx scripts/evaluate-skill-router.ts",
     "test:webchat:live": "node scripts/run-workflow-tests.mjs --webchat-live",
     "update-deps": "npm update --save",
     "test:agent:live": "node scripts/run-workflow-tests.mjs --agent-live"

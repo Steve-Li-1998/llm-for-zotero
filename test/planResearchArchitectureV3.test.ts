@@ -349,7 +349,7 @@ describe("Plan Mode research architecture v3", function () {
 
   it("injects the persisted prior plan into a revision prompt", async function () {
     const priorPlan = {
-      version: 4 as const,
+      version: 5 as const,
       planId: "plan-1",
       conversationKey: 1,
       provider: "original" as const,
@@ -725,18 +725,18 @@ describe("Plan Mode research architecture v3", function () {
     assert.notInclude(themeSchema.required, "paperFindingIds");
     assert.notInclude(themeSchema.required, "evidenceRefs");
     const taskUpdate = createTaskUpdateTool();
-    assert.isFalse(
+    assert.isTrue(
       taskUpdate.validate({
         tasks: [
           { taskId: "task-1", status: "completed" },
           { taskId: "task-2", status: "in_progress" },
         ],
       }).ok,
-      "multi-task updates must be rejected before execution",
+      "compound work can persist a batch through the shared transition owner",
     );
     assert.include(
       taskUpdate.guidance?.instruction || "",
-      "include reasoningAssertion",
+      "reasoningAssertion",
     );
     const hostOwnedRequest = resolvedAgentRequest({
       conversationKey: 1,
@@ -821,7 +821,7 @@ describe("Plan Mode research architecture v3", function () {
     assert.match(
       (taskUpdate.spec.inputSchema as any).properties.task.properties
         .reasoningAssertion.description,
-      /required when completing a reasoning task/i,
+      /required when completing an approved bounded-reasoning Plan task/i,
     );
     const probeSchema = (researchUpdate.spec.inputSchema as any).properties
       .probes.items;

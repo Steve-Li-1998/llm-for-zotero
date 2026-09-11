@@ -1,12 +1,9 @@
 import {
-  semanticWorkflow,
+  directAgentWorkflow,
   ordinaryMoveWorkflow,
   createdDestinationWorkflow,
-  preparedActionCases,
-} from "./semanticWorkflow";
-import { SemanticIntentService } from "../src/agent/model/semanticIntentService";
-import { resolveAgentRuntimeRequest } from "../src/agent/context/resolvedAgentRequest";
-import { getAllSkills } from "../src/agent/skills";
+  directActionCases,
+} from "./directAgentWorkflow";
 import type { AgentRuntimeRequestInput } from "../src/agent/types";
 import { assertExact, check, type StepOutcome } from "./core";
 import { catalog } from "./catalog";
@@ -105,7 +102,7 @@ export async function executeJourneyStep(
     if (id === "semantic.create-file") {
       await createdDestinationWorkflow(ctx);
     } else if (id === "semantic.action-cases") {
-      await preparedActionCases(ctx);
+      await directActionCases(ctx);
     } else if (id === "semantic.move") {
       await ordinaryMoveWorkflow(ctx);
     } else if (
@@ -116,7 +113,7 @@ export async function executeJourneyStep(
       id === "semantic.compound-implicit" ||
       id === "semantic.compound-clarified"
     ) {
-      await semanticWorkflow(id, ctx);
+      await directAgentWorkflow(id, ctx);
     } else if (id === "paper.conversation") {
       await harness.openStandaloneForItem(f.items.primary.id);
       await harness.clickStandaloneTab("paper");
@@ -422,44 +419,6 @@ export async function executeJourneyStep(
         ),
       );
       requireReceipt(turn);
-    } else if (id === "semantic.transport") {
-      const item = f.items.geometry;
-      const request = resolveAgentRuntimeRequest({
-        conversationKey: item.id,
-        mode: "agent",
-        libraryID: item.libraryID,
-        authMode: "api_key",
-        model: driver.creds.model,
-        apiBase: driver.creds.apiBase,
-        apiKey: driver.creds.apiKey,
-        providerProtocol: driver.creds
-          .providerProtocol as AgentRuntimeRequestInput["providerProtocol"],
-        reasoning: {
-          provider: "deepseek",
-          level: driver.creds.reasoningLevel || "high",
-        } as AgentRuntimeRequestInput["reasoning"],
-        userText: `Move the paper titled "${item.getField("title")}" from "${f.collections.geometry.name}" to "${f.collections.destination.name}". Preserve membership in "${f.collections.unrelated.name}".`,
-      });
-      const started = Date.now();
-      const result = await new SemanticIntentService().interpret(
-        request,
-        getAllSkills(),
-        { timeoutMs: 180000 },
-      );
-      const elapsedMs = Date.now() - started;
-      await write(`${id}/transport.json`, {
-        diagnostic: true,
-        timeoutMs: 180000,
-        elapsedMs,
-        model: request.model,
-        reasoning: request.reasoning,
-        result,
-      });
-      onlyChanges(before, await snapshot(), () => false);
-      return {
-        status: "REVIEW_REQUIRED",
-        detail: `Read-only timing diagnostic: ${result.degraded ? "unavailable" : "interpreted"} in ${elapsedMs} ms under a 180-second per-attempt limit. This is not production action acceptance.`,
-      };
     } else if (id === "semantic.filing") {
       const item = f.items.geometry;
       const destination = f.collections.destination;
@@ -665,7 +624,7 @@ export async function executeJourneyStep(
         turn = await run(
           `Create exactly one child note on this paper containing the exact sentence "Mode ${spec.mode} behavior probe ${f.marker}."`,
           request,
-          "none",
+          expected,
         );
         const added = (await notes(item)).filter(
           (note) => !prior.includes(note.id),

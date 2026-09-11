@@ -60,9 +60,9 @@ import {
   type McpToolDefinition,
   type McpToolsListResult,
 } from "./protocol";
-import { loadPlanArtifact, loadPlanExecutionLedger } from "../plans/store";
-import { loadLatestResearchMutationApprovalGrant } from "../research/store";
-import { validateResearchMutationGrant } from "../research/mutationApproval";
+import { PlanExecutionRunSession } from "../plans/runSession";
+import type { ZoteroMcpToolActivityEvent } from "./activityTypes";
+export type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 import { extractVerifiedReadSources } from "../plans/readEvidence";
 import type {
   TrustedReadObservation,
@@ -82,6 +82,7 @@ const MCP_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_ZOTERO_HTTP_PORT = 23119;
 const SCOPED_MCP_SCOPE_TTL_MS = 2 * 60 * 60 * 1000;
 export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
+  "load_skill",
   "library_search",
   "library_read",
   "library_retrieve",
@@ -228,14 +229,13 @@ type ZoteroMcpScopeMetadata = {
   codexPath?: string;
   reasoning?: ReasoningConfig;
   planContext?: AgentRuntimeRequest["planContext"];
+  /** Host-created execution facts; never accepted from MCP tool arguments. */
+  executionContext?: AgentRuntimeRequest["executionContext"];
   actionContract?: AgentRuntimeRequest["actionContract"];
-  classifiedIntent?: AgentRuntimeRequest["classifiedIntent"];
   actionPreparation?: AgentRuntimeRequest["actionPreparation"];
-  semanticProvider?: AgentRuntimeRequest["semanticProvider"];
   documentOutcomePolicy?: AgentRuntimeRequest["documentOutcomePolicy"];
   documentReadObservations?: AgentRuntimeRequest["documentReadObservations"];
   documentArtifactObservations?: AgentRuntimeRequest["documentArtifactObservations"];
-  skillRoutingReceipt?: AgentRuntimeRequest["skillRoutingReceipt"];
   exhaustiveReadBackend?: Extract<
     ExhaustiveReadBackend,
     "codex_responses" | "unavailable"
@@ -331,30 +331,6 @@ const mcpReadDedupeCache = new Map<
     observations: readonly TrustedReadObservation[];
   }
 >();
-
-export type ZoteroMcpToolActivityEvent = {
-  requestId: string;
-  runId?: string;
-  conversationGeneration?: number;
-  phase: "started" | "completed";
-  toolName: string;
-  toolLabel?: string;
-  serverName: string;
-  arguments?: unknown;
-  ok?: boolean;
-  error?: string;
-  artifacts?: AgentToolArtifact[];
-  actionReceipts?: AgentActionReceipt[];
-  mutability?: "read" | "write";
-  profileSignature?: string;
-  conversationKey?: number;
-  libraryID?: number;
-  kind?: "global" | "paper";
-  quoteCitations?: QuoteCitation[];
-  verifiedReadSources?: VerifiedReadSource[];
-  readObservations?: readonly TrustedReadObservation[];
-  timestamp: number;
-};
 
 type ZoteroMcpToolActivityObserver = (
   event: ZoteroMcpToolActivityEvent,
@@ -790,14 +766,15 @@ function normalizeActiveScope(
     reasoning: normalizeReasoningConfig(scope.reasoning),
     signal: scope.signal,
     planContext: scope.planContext,
+    executionContext: scope.executionContext
+      ? { ...scope.executionContext, permissionOwner: "external_runtime" }
+      : undefined,
     requestInteraction: scope.requestInteraction,
     publishHostEvent: scope.publishHostEvent,
     actionProgress: scope.actionProgress,
     clarificationHistory: scope.clarificationHistory,
     actionContract: scope.actionContract,
-    classifiedIntent: scope.classifiedIntent || scope.actionContract?.intent,
     actionPreparation: scope.actionPreparation,
-    semanticProvider: scope.semanticProvider,
     documentOutcomePolicy: scope.documentOutcomePolicy,
     documentReadObservations: scope.documentReadObservations
       ? cloneTrustedReadObservations(scope.documentReadObservations)
@@ -805,7 +782,6 @@ function normalizeActiveScope(
     documentArtifactObservations: scope.documentArtifactObservations
       ? cloneToolArtifacts(scope.documentArtifactObservations)
       : undefined,
-    skillRoutingReceipt: scope.skillRoutingReceipt,
     exhaustiveReadBackend:
       scope.exhaustiveReadBackend === "codex_responses"
         ? "codex_responses"
@@ -1372,12 +1348,10 @@ function isMcpToolVisibleInScope(
 ): boolean {
   if (!isMcpExposedTool(tool)) return false;
   if (tool.name === "request_user_input")
-    return Boolean(
-      scope?.classifiedIntent?.semantic && scope.requestInteraction,
-    );
+    return Boolean(scope?.requestInteraction);
   if (CURATED_PLAN_TOOL_NAMES.has(tool.name)) {
     if (tool.name === "submit_document") {
-      return scope?.documentOutcomePolicy?.required === true;
+      return true;
     }
     const phase = scope?.planContext?.phase;
     if (tool.name === "update_plan")
@@ -1712,6 +1686,7 @@ function createToolContext(
   zoteroGateway?: ZoteroGateway,
 ): AgentToolContext {
   const { scope, libraryID, activeItemId, activeContextItemId } = callScope;
+  const runId = scope?.runId || createJournalId("mcp-run");
   const itemLookupId = activeItemId || activeContextItemId;
   const item = itemLookupId
     ? (
@@ -1764,16 +1739,17 @@ function createToolContext(
         : undefined,
     reasoning: scope?.reasoning,
     planContext: scope?.planContext,
+    executionContext: scope?.executionContext,
     actionProgress: scope?.actionProgress,
     clarificationHistory: scope?.clarificationHistory,
     actionContract: scope?.actionContract,
-    classifiedIntent: scope?.classifiedIntent || scope?.actionContract?.intent,
+    // Legacy approved plans can still expose their frozen intent through the
+    // contract reader. Fresh ordinary MCP turns have no classified intent.
+    classifiedIntent: scope?.actionContract?.intent,
     actionPreparation: scope?.actionPreparation,
-    semanticProvider: scope?.semanticProvider,
     documentOutcomePolicy: scope?.documentOutcomePolicy,
     documentReadObservations: scope?.documentReadObservations,
     documentArtifactObservations: scope?.documentArtifactObservations,
-    skillRoutingReceipt: scope?.skillRoutingReceipt,
     exhaustiveReadBackend,
     activeNoteContext,
     metadata: {
@@ -1815,6 +1791,64 @@ function createToolContext(
             : undefined,
         },
       );
+  const activePaper = getActiveTurnPaper(request.turnPaperScope);
+  request.executionContext ||= {
+    version: 1,
+    executionId: runId,
+    conversationKey: request.conversationKey,
+    conversationGeneration: request.conversationGeneration || 0,
+    chatLibraryID: request.libraryID || undefined,
+    permissionOwner: "external_runtime",
+    workspaceSnapshot: {
+      ...(activePaper
+        ? {
+            activePaper: {
+              libraryID: activePaper.libraryID,
+              itemId: activePaper.itemId,
+              contextItemId: activePaper.contextItemId,
+              title: activePaper.title,
+            },
+          }
+        : {}),
+      selectedPapers: request.turnPaperScope.papers
+        .filter((entry) => entry.roles.includes("selected"))
+        .map(({ paper }) => ({
+          libraryID: paper.libraryID,
+          itemId: paper.itemId,
+          contextItemId: paper.contextItemId,
+          title: paper.title,
+        })),
+      selectedCollections: request.turnPaperScope.collections.map(
+        (collection) => ({
+          libraryID: collection.libraryID,
+          collectionId: collection.collectionId,
+          name: collection.name,
+        }),
+      ),
+      ...(request.activeNoteContext
+        ? {
+            activeNote: {
+              noteId: request.activeNoteContext.noteId,
+              parentItemId: request.activeNoteContext.parentItemId,
+              title: request.activeNoteContext.title,
+            },
+          }
+        : {}),
+    },
+    configuredAccess: {
+      libraryIDs: request.libraryID ? [request.libraryID] : [],
+      outputDirectories: [],
+    },
+    ...(request.planContext?.phase === "executing"
+      ? {
+          approvedPlanBinding: {
+            planId: request.planContext.planId,
+            revision: request.planContext.revision,
+            approvedDigest: request.planContext.approvedDigest,
+          },
+        }
+      : {}),
+  };
   return {
     request,
     authorization: {
@@ -1822,7 +1856,7 @@ function createToolContext(
       standalone: !scope?.runtimeAuthority,
     },
     signal: scope?.signal,
-    runId: scope?.runId || createJournalId("mcp-run"),
+    runId,
     item,
     currentAnswerText: "",
     modelName: scope?.model || "external-mcp",
@@ -1837,35 +1871,27 @@ async function restorePlanExecutionContext(
 ): Promise<void> {
   const plan = context.request.planContext;
   if (plan?.phase !== "executing") return;
-  const ledger = await loadPlanExecutionLedger(plan.executionId);
-  if (
-    !ledger ||
-    ledger.planId !== plan.planId ||
-    ledger.revision !== plan.revision ||
-    ledger.planDigest !== plan.approvedDigest ||
-    ledger.conversationKey !== context.request.conversationKey
-  ) {
-    throw new Error(
-      "The MCP plan execution no longer matches its saved ledger",
+  const session = new PlanExecutionRunSession(
+    context.request,
+    async () => undefined,
+  );
+  const initialized = await session.initialize();
+  if (initialized.kind === "failed") throw new Error(initialized.userMessage);
+  context.loadApprovedPlanEffectContext = async () => {
+    const specification = session.approvedEffectSpecification();
+    if (!specification) return undefined;
+    return {
+      specification,
+      activeEffectIds: session.activeWorkflowEffectIds() || [],
+      resolvedMaterials: await session.resolvedWorkflowMaterials(),
+      resolvedTargetBindings: await session.resolvedWorkflowTargetBindings(),
+    };
+  };
+  if (context.request.actionContract && !context.request.actionProgress) {
+    context.request.actionProgress = toolRegistry.createActionProgress(
+      context.request.actionContract,
     );
   }
-  // A scoped token lasts for the provider turn, while each successful tool may
-  // advance the durable task. Never use the dispatch-time active task hint.
-  context.request.planContext = { ...plan, activeTaskId: ledger.activeTaskId };
-  if (context.request.actionContract) return;
-  const artifact = await loadPlanArtifact(plan.planId, plan.revision);
-  if (
-    !artifact ||
-    artifact.digest !== plan.approvedDigest ||
-    artifact.contract?.effects?.libraryMutation.approval !== "after_research"
-  ) {
-    return;
-  }
-  const grant = await loadLatestResearchMutationApprovalGrant(plan.executionId);
-  if (!grant || grant.status !== "approved") return;
-  const contract = await validateResearchMutationGrant({ grant, artifact });
-  context.request.actionContract = contract;
-  context.request.actionProgress = toolRegistry.createActionProgress(contract);
 }
 
 function formatToolResult(
@@ -2207,20 +2233,10 @@ async function handleToolsCall(
           request.actionContract,
         );
       if (scope) {
-        scope.classifiedIntent = request.classifiedIntent;
         scope.actionContract = request.actionContract;
         scope.actionPreparation = request.actionPreparation;
         scope.actionProgress = request.actionProgress;
         scope.clarificationHistory = request.clarificationHistory;
-        if (request.classifiedIntent?.semantic)
-          await scope.publishHostEvent?.({
-            type: "provider_event",
-            providerType: "agent_semantic_intent",
-            payload: {
-              intent: request.classifiedIntent,
-              clarificationHistory: request.clarificationHistory || [],
-            },
-          });
         if (request.actionPreparation)
           await scope.publishHostEvent?.({
             type: "provider_event",
@@ -2282,7 +2298,6 @@ async function handleToolsCall(
         : { kind: "result", execution: prepared.deny(resolution.data) };
     }
     if (scope) {
-      scope.classifiedIntent = toolContext.request.classifiedIntent;
       scope.actionContract = toolContext.request.actionContract;
       scope.actionPreparation = toolContext.request.actionPreparation;
       scope.actionProgress = toolContext.request.actionProgress;

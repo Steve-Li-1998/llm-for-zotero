@@ -14,7 +14,11 @@ import type {
 } from "../agent/types";
 import { resolveAgentRuntimeRequest } from "../agent/context/resolvedAgentRequest";
 import type { AgentSkill } from "../agent/skills";
-import { getAllSkills, getMatchedSkillIds } from "../agent/skills";
+import {
+  getAllSkills,
+  getBuiltinSkillInstructionById,
+  loadSkill,
+} from "../agent/skills";
 import { getSkillCustomizationNotice } from "../agent/skills/managedBlock";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "../agent/context/rawPdfTransportPolicy";
 
@@ -57,7 +61,7 @@ export type CodexNativeResolvedSkills = {
   request: AgentRuntimeRequest;
   matchedSkillIds: string[];
   instructionBlock: string;
-  resolutionSource?: "none" | "explicit" | "semantic";
+  resolutionSource?: "none" | "explicit";
 };
 
 type ResolveNativeSkillsParams = {
@@ -67,8 +71,6 @@ type ResolveNativeSkillsParams = {
   apiBase?: string;
   signal?: AbortSignal;
   skillContext?: CodexNativeSkillContext;
-  classifiedIntent?: AgentRuntimeRequest["classifiedIntent"];
-  skillRoutingReceipt?: AgentRuntimeRequest["skillRoutingReceipt"];
 };
 
 export function resolveExplicitCodexNativeSkillIds(
@@ -126,8 +128,6 @@ export function buildCodexNativeSkillRequest(
     conversationKey: scope.conversationKey,
     mode: "agent",
     userText: params.userText,
-    classifiedIntent: params.classifiedIntent,
-    skillRoutingReceipt: params.skillRoutingReceipt,
     activeItemId: scope.activeItemId || scope.paperItemID,
     libraryID: scope.libraryID,
     conversationKind: scope.kind === "paper" ? "paper" : "global",
@@ -199,10 +199,18 @@ export async function resolveCodexNativeSkills(
   const request = buildCodexNativeSkillRequest(params);
   const rawPdfMode = Boolean(params.skillContext?.localDocuments?.length);
   const allSkills = getAllSkills();
-  const semanticIds = request.classifiedIntent?.semantic
-    ? request.skillRoutingReceipt?.skills.map((entry) => entry.id) || []
-    : [];
-  const matchedSkillIds = getMatchedSkillIds(request, semanticIds);
+  const matchedSkillIds = resolveExplicitCodexNativeSkillIds(
+    request.forcedSkillIds || [],
+  );
+  request.loadedSkillRecords = await Promise.all(
+    allSkills
+      .filter((skill) => matchedSkillIds.includes(skill.id))
+      .map(async (skill) => ({
+        ...(await loadSkill(skill, getBuiltinSkillInstructionById(skill.id)))
+          .loadedSkill,
+        source: "forced" as const,
+      })),
+  );
   return {
     request,
     matchedSkillIds,
@@ -211,10 +219,6 @@ export async function resolveCodexNativeSkills(
       allSkills,
       { rawPdfMode },
     ),
-    resolutionSource: request.classifiedIntent?.semantic
-      ? "semantic"
-      : matchedSkillIds.length
-        ? "explicit"
-        : "none",
+    resolutionSource: matchedSkillIds.length ? "explicit" : "none",
   };
 }

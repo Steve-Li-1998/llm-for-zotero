@@ -59,11 +59,14 @@ import type {
 import {
   initAgentPlanStore,
   loadPlanExecutionLedger,
+  savePlanArtifact,
   savePlanExecutionLedger,
   saveTaskEvidence,
 } from "../src/agent/plans/store";
 import type {
   ExecutionTask,
+  PlanArtifact,
+  PlanEffectSpecification,
   PlanExecutionLedger,
   TaskEvidence,
 } from "../src/agent/plans/types";
@@ -81,6 +84,7 @@ import {
 } from "../src/agent/store/traceStore";
 import type { Message } from "../src/modules/contextPanel/types";
 import { ensureConversationKeyLedgerEntry } from "../src/shared/conversationKeyLedger";
+import { researchMutationDigest } from "../src/agent/research/mutationApproval";
 
 const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
 
@@ -485,6 +489,17 @@ describe("transactional Plan task transitions", function () {
   });
 
   it("retains an unchanged typed mutation scope across native proposal-only revisions", async function () {
+    const zotero = (globalScope.Zotero || {}) as Record<string, unknown>;
+    globalScope.Zotero = {
+      ...zotero,
+      Items: {
+        ...((zotero.Items || {}) as Record<string, unknown>),
+        get: (itemId: number) =>
+          itemId === 3900
+            ? { id: 3900, key: "ITEM3900", libraryID: 1, deleted: false }
+            : null,
+      },
+    };
     const initialRequest = resolvedAgentRequest({
       conversationKey: 41,
       userText: 'Add the tag "review" to item 3900.',
@@ -584,10 +599,10 @@ describe("transactional Plan task transitions", function () {
     } as any);
     const revised = (await loadPlanArtifact("native-tag-revision", 2))!;
     assert.deepEqual(
-      revised.actionContract?.obligations,
-      original.actionContract?.obligations,
+      revised.effectSpecification?.effects,
+      original.effectSpecification?.effects,
     );
-    assert.deepEqual(revised.actionContract?.hardConstraints, constraints);
+    assert.deepEqual(revised.effectSpecification?.constraints, constraints);
     assert.equal(
       (await loadPlanArtifact("native-tag-revision", 1))?.status,
       "superseded",
@@ -614,8 +629,8 @@ describe("transactional Plan task transitions", function () {
       { request: revisionRequest, runId: "second" } as any,
     );
     assert.isEmpty(
-      (await loadPlanArtifact("native-tag-revision", 2))?.actionContract
-        ?.obligations,
+      (await loadPlanArtifact("native-tag-revision", 2))?.effectSpecification
+        ?.effects,
     );
   });
 
@@ -692,7 +707,7 @@ describe("transactional Plan task transitions", function () {
     } as any);
     const staged = await loadPlanArtifact(plan.planId, 1);
     assert.equal(staged?.status, "drafting");
-    assert.deepEqual(staged?.actionContract?.hardConstraints, noExecution);
+    assert.deepEqual(staged?.effectSpecification?.constraints, noExecution);
     let approvalError: unknown;
     try {
       await new PlanExecutionCoordinator().approve({
@@ -1031,13 +1046,13 @@ describe("transactional Plan task transitions", function () {
       } as any);
     }
     assert.deepEqual(
-      (await loadPlanArtifact("restrictions", 2))?.actionContract
-        ?.hardConstraints,
+      (await loadPlanArtifact("restrictions", 2))?.effectSpecification
+        ?.constraints,
       restrictions,
     );
     assert.deepEqual(
-      (await loadPlanArtifact("restrictions", 1))?.actionContract
-        ?.hardConstraints,
+      (await loadPlanArtifact("restrictions", 1))?.effectSpecification
+        ?.constraints,
       restrictions,
     );
   });
@@ -1454,7 +1469,30 @@ describe("transactional Plan task transitions", function () {
   });
 
   it("binds MCP document submission to the current durable task after research advances", async function () {
-    await savePlanExecutionLedger(documentExecution());
+    const documentLedger = documentExecution();
+    await savePlanArtifact({
+      version: 4,
+      planId: documentLedger.planId,
+      conversationKey: documentLedger.conversationKey,
+      provider: "codex",
+      revision: documentLedger.revision,
+      digest: documentLedger.planDigest,
+      status: "approved",
+      contract: { deliverable: { kind: "answer" } },
+      contractDigest: "sha256:contract",
+      steps: documentLedger.tasks.map((task) => ({
+        planStepId: task.planStepId,
+        content: task.content,
+        activeForm: task.activeForm,
+        acceptanceCriteria: task.acceptanceCriteria,
+        expectedEffect: task.expectedEffect,
+        completionRequirements: task.completionRequirements,
+      })),
+      createdAt: 1,
+      updatedAt: 1,
+      approvedAt: 1,
+    });
+    await savePlanExecutionLedger(documentLedger);
     const restorePrefs = installDirectPathTestPrefs();
     const zotero = globalScope.Zotero as any;
     const originalGet = zotero.Prefs.get;
@@ -1630,6 +1668,303 @@ describe("transactional Plan task transitions", function () {
         ? request.planContext.activeTaskId
         : undefined,
       second.taskId,
+    );
+  });
+
+  it("resolves a producer-created target only from its verified receipt", async function () {
+    const producer: ExecutionTask = {
+      ...reasoningTask(),
+      taskId: "execution-1:create-task",
+      planStepId: "create-step",
+      content: "Create the destination collection",
+      activeForm: "Creating the destination collection",
+      expectedEffect: "mutation",
+      effectIds: ["create-destination"],
+      completionRequirements: [],
+      status: "completed",
+      completedAt: 2,
+      evidenceIds: ["create-receipt"],
+    };
+    const consumer: ExecutionTask = {
+      ...reasoningTask(),
+      taskId: "execution-1:move-task",
+      planStepId: "move-step",
+      content: "Move the paper",
+      activeForm: "Moving the paper",
+      expectedEffect: "mutation",
+      effectIds: ["move-paper"],
+      completionRequirements: [],
+    };
+    const ledger = {
+      ...execution(),
+      activeTaskId: consumer.taskId,
+      tasks: [producer, consumer],
+    };
+    await savePlanExecutionLedger(ledger);
+    await saveTaskEvidence({
+      version: 3,
+      evidenceId: "create-receipt",
+      executionId: ledger.executionId,
+      taskId: producer.taskId,
+      kind: "mutation_receipt",
+      verified: true,
+      criterionIds: [],
+      payload: {
+        type: "mutation_receipts",
+        receiptIds: ["receipt-create"],
+        effectIds: ["create-destination"],
+        effectTargets: [
+          { effectId: "create-destination", targetIds: ["library:1"] },
+        ],
+      },
+      receipt: {
+        version: 2,
+        id: "receipt-create",
+        proposalId: "proposal-create",
+        proofDomain: "zotero_state",
+        capability: "zotero.collections",
+        operation: "create_collection",
+        verification: "verified",
+        status: "applied",
+        requestedTargets: ["library:1"],
+        appliedTargets: ["collection:77"],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: [],
+        reasons: [],
+        verifiedFacts: ["Collection 77 exists"],
+      },
+      summary: "Created collection 77",
+      createdAt: 2,
+    });
+    const artifact = {
+      version: 5,
+      effectSpecification: {
+        version: 1,
+        constraints: [],
+        effects: [
+          {
+            effectId: "create-destination",
+            approval: "initial",
+            operation: "create_collection",
+            targets: [
+              {
+                domain: "zotero",
+                libraryID: 1,
+                targetIds: ["library:1"],
+                scopeDigest: "sha256:library",
+              },
+            ],
+            targetBindings: [],
+            parameters: { collectionName: "Reviewed" },
+            review: "default",
+            restrictions: [],
+            dependsOnEffectIds: [],
+            materialBindings: [],
+          },
+          {
+            effectId: "move-paper",
+            approval: "initial",
+            operation: "move_to_collection",
+            targets: [
+              {
+                domain: "zotero",
+                libraryID: 1,
+                targetIds: ["item:42"],
+                scopeDigest: "sha256:item",
+              },
+            ],
+            targetBindings: [
+              {
+                role: "destination_collection",
+                producedByEffectId: "create-destination",
+              },
+            ],
+            parameters: { sourceCollectionId: 8 },
+            review: "default",
+            restrictions: [],
+            dependsOnEffectIds: ["create-destination"],
+            materialBindings: [],
+          },
+        ],
+        deferredEffects: [],
+      },
+    } as PlanArtifact;
+    const request = resolvedAgentRequest({
+      conversationKey: 41,
+      mode: "agent",
+      userText: "Continue the plan",
+    });
+    const session = new PlanExecutionRunSession(request, async () => {});
+    (session as unknown as { artifact: PlanArtifact }).artifact = artifact;
+    (session as unknown as { ledger: PlanExecutionLedger }).ledger = ledger;
+
+    assert.deepEqual(await session.resolvedWorkflowTargetBindings(), {
+      "move-paper": ["collection:77"],
+    });
+  });
+
+  it("makes newly approved research-derived effects usable in the same agent run", async function () {
+    const deferred = {
+      effectId: "tag-research-results",
+      approval: "after_research" as const,
+      operation: "apply_tags" as const,
+      targetSelectionDescription: "Papers supported by the completed review",
+      targetBindings: [],
+      parameters: { tags: ["reviewed"] },
+      review: "review" as const,
+      restrictions: [],
+      dependsOnEffectIds: [],
+      materialBindings: [],
+    };
+    const baseSpecification: PlanEffectSpecification = {
+      version: 1,
+      constraints: [],
+      effects: [],
+      deferredEffects: [deferred],
+    };
+    const approvedSpecification: PlanEffectSpecification = {
+      ...baseSpecification,
+      effects: [
+        {
+          effectId: "tag-research-results:approved:1",
+          approval: "after_research",
+          operation: "apply_tags",
+          targets: [
+            {
+              domain: "zotero",
+              libraryID: 1,
+              targetIds: ["item:42"],
+              scopeDigest: "sha256:item-42",
+            },
+          ],
+          targetBindings: [],
+          parameters: deferred.parameters,
+          review: deferred.review,
+          restrictions: [],
+          dependsOnEffectIds: [],
+          materialBindings: [],
+          derivedFromDeferredEffectId: deferred.effectId,
+        },
+      ],
+    };
+    const task: ExecutionTask = {
+      ...reasoningTask(),
+      expectedEffect: "mutation",
+      effectIds: ["tag-research-results:approved:1"],
+      completionRequirements: [],
+    };
+    const ledger: PlanExecutionLedger = {
+      ...execution(),
+      researchEffectSpecificationDigest: await researchMutationDigest(
+        approvedSpecification,
+      ),
+      tasks: [task],
+      activeTaskId: task.taskId,
+    };
+    await savePlanExecutionLedger(ledger);
+    const request = resolvedAgentRequest({
+      conversationKey: 41,
+      mode: "agent",
+      userText: "Approve and apply the research-selected tags",
+      planContext: {
+        phase: "executing",
+        planId: ledger.planId,
+        revision: ledger.revision,
+        executionId: ledger.executionId,
+        approvedDigest: ledger.planDigest,
+        provider: "original",
+        activeTaskId: task.taskId,
+      },
+    });
+    const session = new PlanExecutionRunSession(request, async () => {});
+    (session as unknown as { artifact: PlanArtifact }).artifact = {
+      version: 5,
+      effectSpecification: baseSpecification,
+    } as PlanArtifact;
+    (session as unknown as { ledger: PlanExecutionLedger }).ledger = ledger;
+
+    await session.recordToolResult({
+      toolName: "approve_research_mutation",
+      executionClass: "control",
+      input: {},
+      result: {
+        callId: "approve-derived",
+        name: "approve_research_mutation",
+        ok: true,
+        actionReceipts: [],
+        content: { effectSpecification: approvedSpecification },
+      },
+      runId: "run-1",
+    });
+
+    assert.deepEqual(
+      session
+        .approvedEffectSpecification()
+        ?.effects.map((effect) => effect.effectId),
+      ["tag-research-results:approved:1"],
+    );
+  });
+
+  it("rolls back an entire Plan transition batch when a later transition is invalid", async function () {
+    const first = reasoningTask();
+    const second: ExecutionTask = {
+      ...reasoningTask(),
+      taskId: "execution-1:task-2",
+      planStepId: "step-2",
+      content: "Write a second bounded conclusion",
+      activeForm: "Writing a second bounded conclusion",
+      status: "pending",
+      attemptCount: 0,
+      startedAt: undefined,
+    };
+    await savePlanExecutionLedger({
+      ...execution(),
+      tasks: [first, second],
+    });
+
+    let failure = "";
+    try {
+      await new PlanExecutionCoordinator().requestTransitionBatch(
+        [
+          {
+            request: {
+              executionId: "execution-1",
+              taskId: first.taskId,
+              toStatus: "completed",
+              requestedBy: "original",
+            },
+            evidence: reasoningEvidence(),
+          },
+          {
+            request: {
+              executionId: "execution-1",
+              taskId: second.taskId,
+              toStatus: "skipped",
+              requestedBy: "original",
+            },
+          },
+        ],
+        2,
+      );
+    } catch (error) {
+      failure = String(error);
+    }
+
+    assert.match(failure, /only the user may skip/i);
+    const persisted = await loadPlanExecutionLedger("execution-1");
+    assert.deepEqual(
+      persisted?.tasks.map((task) => task.status),
+      ["in_progress", "pending"],
+    );
+    assert.equal(
+      Number(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM llm_for_zotero_plan_task_evidence",
+          )
+          .get()?.count,
+      ),
+      0,
     );
   });
 

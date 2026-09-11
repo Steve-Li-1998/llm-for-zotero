@@ -646,10 +646,14 @@ describe("autonomous Plan scope amendments", function () {
         targetSetDigest: await service.digest(replacementContract.deliverable),
         proposalPayloadDigest: await service.digest({
           contract: successorArtifact.contract,
+          effectSpecification: successorArtifact.effectSpecification,
           steps: successorArtifact.steps,
+          skillBindings: successorArtifact.skillBindings,
         }),
         replacementContract: successorArtifact.contract,
         replacementSteps: successorArtifact.steps,
+        replacementEffectSpecification: successorArtifact.effectSpecification,
+        replacementSkillBindings: successorArtifact.skillBindings,
         rationale: "The requested deliverable changed.",
         now: 3,
       });
@@ -776,10 +780,14 @@ describe("autonomous Plan scope amendments", function () {
         ),
         proposalPayloadDigest: await service.digest({
           contract: successorArtifact.contract,
+          effectSpecification: successorArtifact.effectSpecification,
           steps: successorArtifact.steps,
+          skillBindings: successorArtifact.skillBindings,
         }),
         replacementContract: successorArtifact.contract,
         replacementSteps: successorArtifact.steps,
+        replacementEffectSpecification: successorArtifact.effectSpecification,
+        replacementSkillBindings: successorArtifact.skillBindings,
         rationale: "The requested deliverable changed.",
         now: 3,
       });
@@ -905,10 +913,14 @@ describe("autonomous Plan scope amendments", function () {
         ),
         proposalPayloadDigest: await service.digest({
           contract: firstSuccessor.contract,
+          effectSpecification: firstSuccessor.effectSpecification,
           steps: firstSuccessor.steps,
+          skillBindings: firstSuccessor.skillBindings,
         }),
         replacementContract: firstSuccessor.contract,
         replacementSteps: firstSuccessor.steps,
+        replacementEffectSpecification: firstSuccessor.effectSpecification,
+        replacementSkillBindings: firstSuccessor.skillBindings,
         rationale: "The requested deliverable changed.",
         now: 3,
       });
@@ -1781,12 +1793,13 @@ describe("autonomous Plan scope amendments", function () {
     assert.equal(job.scopeLineageDigest, "legacy:snapshot-1");
   });
 
-  it("lets a plan declare reviewPreference on a mutation intent", function () {
+  it("lets a plan declare a review preference on each concrete effect", function () {
     const tool = createUpdatePlanTool();
     const schema = JSON.stringify(tool.spec.inputSchema);
     assert.include(
       schema,
-      '"reviewPreference":{"type":"string","enum":["default","review","direct"]',
+      '"review":{"type":"string","enum":["default","review","direct"]',
     );
+    assert.notInclude(schema, '"reviewPreference"');
   });
 });

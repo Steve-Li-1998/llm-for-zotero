@@ -22,9 +22,9 @@ describe("prepared action completion", function () {
     );
   });
 
-  it("does not accept prose completion without a current semantic contract", function () {
+  it("accepts a fresh direct answer without predicted obligations", function () {
     const decision = evaluatePreparedActionContract({}, []);
-    assert.equal(decision.state, "failed");
+    assert.equal(decision.state, "satisfied");
     assert.isUndefined(decision.correction);
   });
   it("does not accept an unresolved reference even when a prior contract exists", function () {
@@ -119,6 +119,7 @@ describe("prepared action completion", function () {
       executionAuthority: "external_runtime" as const,
     };
     const request = {
+      classifiedIntent: classifiedFixture(),
       actionPreparation: {
         state: "needs_input" as const,
         issues: ["Original semantic reference was not resolved"],

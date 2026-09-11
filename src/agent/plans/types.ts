@@ -5,8 +5,11 @@ import type {
 } from "../contracts/types";
 import type { PlanSkillRoutingReceipt } from "../skills/routingTypes";
 import type { DocumentSpec, PlanDocument } from "../documents/types";
+import type { MaterialRef } from "../documents/types";
 import type { ResearchContract, ResearchProgress } from "../research/types";
 import type { ResearchPolicySnapshot } from "../research/policy";
+import type { ActionConstraint } from "../authorization/types";
+import type { AgentActionOperation } from "../contracts/types";
 
 export type PlanProvider = "original" | "codex" | "claude";
 
@@ -55,6 +58,8 @@ export type PlanStep = Readonly<{
   expectedCapability?: string;
   expectedEffect: PlanStepEffect;
   actionIndexes?: readonly number[];
+  /** Stable concrete-effect identities used by v5 plans. */
+  effectIds?: readonly string[];
   materialOutputId?: string;
   /** Authoritative for v3 plans. Legacy plans derive one requirement by effect. */
   completionRequirements?: readonly PlanCompletionRequirement[];
@@ -63,6 +68,76 @@ export type PlanStep = Readonly<{
     targetIds?: readonly string[];
     scopeDigest?: string;
   }>;
+}>;
+
+export type PlanEffectTarget = Readonly<
+  | {
+      domain: "zotero";
+      libraryID: number;
+      targetIds: readonly string[];
+      scopeDigest: string;
+    }
+  | { domain: "filesystem"; paths: readonly string[] }
+  | { domain: "execution"; fingerprints: readonly string[] }
+>;
+
+export type PlanEffectMaterialBinding = Readonly<
+  | { role: string; material: MaterialRef }
+  | { role: string; producedByStepId: string; outputId: string }
+>;
+
+export type PlanEffectTargetBinding = Readonly<{
+  role: string;
+  producedByEffectId: string;
+}>;
+
+export type PlanConcreteEffect = Readonly<{
+  effectId: string;
+  approval: "initial" | "after_research";
+  operation: AgentActionOperation;
+  targets: readonly PlanEffectTarget[];
+  targetBindings: readonly PlanEffectTargetBinding[];
+  parameters: Readonly<Record<string, unknown>>;
+  review: "default" | "review" | "direct";
+  restrictions: readonly ActionConstraint[];
+  dependsOnEffectIds: readonly string[];
+  materialBindings: readonly PlanEffectMaterialBinding[];
+  derivedFromDeferredEffectId?: string;
+}>;
+
+/** A frozen effect template whose concrete targets require the second gate. */
+export type PlanDeferredEffect = Readonly<{
+  effectId: string;
+  approval: "after_research";
+  operation: AgentActionOperation;
+  targetSelectionDescription: string;
+  targetBindings: readonly PlanEffectTargetBinding[];
+  parameters: Readonly<Record<string, unknown>>;
+  review: "default" | "review" | "direct";
+  restrictions: readonly ActionConstraint[];
+  dependsOnEffectIds: readonly string[];
+  materialBindings: readonly PlanEffectMaterialBinding[];
+}>;
+
+export type PlanEffectSpecification = Readonly<{
+  version: 1;
+  /** Turn-wide restrictions that bind every effect and future amendment. */
+  constraints: readonly ActionConstraint[];
+  effects: readonly PlanConcreteEffect[];
+  deferredEffects: readonly PlanDeferredEffect[];
+}>;
+
+export type PlanApprovalProvenance = Readonly<{
+  sourceArtifactVersion: 1 | 2 | 3 | 4;
+  sourceDigest: string;
+  sourceContractDigest?: string;
+}>;
+
+export type PlanSkillBinding = Readonly<{
+  id: string;
+  version: number;
+  instructionFingerprint: string;
+  source: "loaded" | "forced";
 }>;
 
 export type ResearchDerivedMutationIntent = Readonly<{
@@ -105,7 +180,7 @@ export type NativePlanBinding = NativePlanAttempt &
 
 /** A revision is editable only while drafting and is frozen by approval. */
 export type PlanArtifact = Readonly<{
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   planId: string;
   conversationKey: number;
   provider: PlanProvider;
@@ -120,10 +195,16 @@ export type PlanArtifact = Readonly<{
   nativePlanning?: NativePlanBinding;
   /** Present on v2 artifacts; binds planning-time skill instructions. */
   skillRoutingReceipt?: PlanSkillRoutingReceipt;
+  /** Host-observed skill instructions frozen with a v5 plan. */
+  skillBindings?: readonly PlanSkillBinding[];
   /** Required and centrally validated on v3 artifacts. */
   contract?: PlanContract;
   /** Digest of the approved composable contract, excluding plan presentation. */
   contractDigest?: string;
+  /** Authoritative concrete/deferred effects for v5 plans. */
+  effectSpecification?: PlanEffectSpecification;
+  /** Immutable source approval identity when a legacy artifact is projected. */
+  approvalProvenance?: PlanApprovalProvenance;
   steps: readonly PlanStep[];
   createdAt: number;
   updatedAt: number;
@@ -201,6 +282,7 @@ export type TaskEvidencePayload =
       type: "material_integrity";
       materialOutputId: string;
       documentId: string;
+      documentVersion?: number;
       contentHash: string;
       integrityValidated: true;
     }>
@@ -219,6 +301,11 @@ export type TaskEvidencePayload =
   | Readonly<{
       type: "mutation_receipts";
       receiptIds: readonly string[];
+      effectIds?: readonly string[];
+      effectTargets?: readonly Readonly<{
+        effectId: string;
+        targetIds: readonly string[];
+      }>[];
     }>
   | Readonly<{
       type: "user_decision";
@@ -290,6 +377,7 @@ export type ExecutionTask = Readonly<{
   acceptanceCriteria: readonly (string | PlanAcceptanceCriterion)[];
   expectedEffect: PlanStepEffect;
   actionIndexes?: readonly number[];
+  effectIds?: readonly string[];
   materialOutputId?: string;
   completionRequirements?: readonly PlanCompletionRequirement[];
   expectedCapability?: string;
@@ -324,6 +412,7 @@ export type ApprovedPlanGrant = Readonly<{
   conversationKey: number;
   conversationGeneration: number;
   actionContractId?: string;
+  effectSpecificationDigest?: string;
   authority: "user" | "auto_policy" | "yolo";
   approvedAt: number;
 }>;
@@ -339,6 +428,8 @@ export type PlanExecutionLedger = Readonly<{
   provider: PlanProvider;
   providerContinuationId?: string;
   actionContractId?: string;
+  effectSpecificationDigest?: string;
+  researchEffectSpecificationDigest?: string;
   grant: ApprovedPlanGrant;
   status: PlanExecutionStatus;
   activeTaskId?: string;

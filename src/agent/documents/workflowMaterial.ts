@@ -6,19 +6,113 @@ import {
   obligationsForAction,
   type MaterialOutputIntent,
 } from "../contracts/workflowDependencies";
-import type { PlanDocument } from "./types";
+import type { MaterialRef, PlanDocument } from "./types";
 import { loadPlanDocument } from "./store";
+
+function requiredIdentity(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${label} is required.`);
+  }
+  return value.trim();
+}
+
+/** Stable identity supplied by the host-owned execution or Plan lifecycle. */
+export function materialDocumentIdForWorkflow(
+  workflowId: string,
+  outputId: string,
+): string {
+  const workflow = requiredIdentity(
+    workflowId,
+    "The material workflow identity",
+  );
+  const output = requiredIdentity(outputId, "The material output identity");
+  return `material:${encodeURIComponent(workflow)}:${encodeURIComponent(output)}`;
+}
+
+function legacyMaterialDocumentId(
+  request: AgentRuntimeRequest,
+  outputId: string,
+): string | undefined {
+  const identity =
+    request.actionContract?.intent?.semantic?.id ||
+    request.classifiedIntent?.semantic?.id;
+  return identity ? `material:${identity}:${outputId}` : undefined;
+}
 
 export function materialDocumentId(
   request: AgentRuntimeRequest,
   outputId: string,
 ): string {
-  const identity =
-    request.actionContract?.intent?.semantic?.id ||
-    request.classifiedIntent?.semantic?.id;
-  if (!identity)
-    throw new Error("The authored material has no frozen semantic identity.");
-  return `material:${identity}:${outputId}`;
+  if (request.executionContext?.executionId) {
+    return materialDocumentIdForWorkflow(
+      request.executionContext.executionId,
+      outputId,
+    );
+  }
+  const legacyId = legacyMaterialDocumentId(request, outputId);
+  if (legacyId) return legacyId;
+  throw new Error("The authored material has no frozen workflow identity.");
+}
+
+export function materialRefFromDocument(
+  document: Pick<
+    PlanDocument,
+    "documentId" | "documentVersion" | "contentHash"
+  >,
+): MaterialRef {
+  if (
+    !Number.isSafeInteger(document.documentVersion) ||
+    document.documentVersion < 1
+  ) {
+    throw new Error(
+      "The material document version must be a positive integer.",
+    );
+  }
+  const contentHash = requiredIdentity(
+    document.contentHash,
+    "The material content hash",
+  );
+  return {
+    documentId: requiredIdentity(
+      document.documentId,
+      "The material document ID",
+    ),
+    documentVersion: document.documentVersion,
+    contentHash,
+  };
+}
+
+export function assertMaterialRefMatches(
+  document: Pick<
+    PlanDocument,
+    "documentId" | "documentVersion" | "contentHash"
+  >,
+  reference: MaterialRef,
+): void {
+  materialRefFromDocument(reference);
+  if (
+    document.documentId !== reference.documentId ||
+    document.documentVersion !== reference.documentVersion ||
+    document.contentHash !== reference.contentHash
+  ) {
+    throw new Error("The finalized material version or content has changed.");
+  }
+}
+
+export async function loadMaterialRef(
+  reference: MaterialRef,
+  conversationKey?: number,
+): Promise<PlanDocument | null> {
+  const document = await loadPlanDocument(reference.documentId);
+  if (!document) return null;
+  assertMaterialRefMatches(document, reference);
+  if (
+    conversationKey !== undefined &&
+    document.conversationKey !== conversationKey
+  ) {
+    throw new Error("The finalized material belongs to another conversation.");
+  }
+  return document;
 }
 export function resolveMaterialOutput(
   request: AgentRuntimeRequest,
@@ -113,9 +207,7 @@ export function recordMaterialOutput(
     throw new Error("The output's action progress is unavailable.");
   const receipt = {
     outputId: output.id,
-    documentId: document.documentId,
-    documentVersion: document.documentVersion,
-    contentHash: document.contentHash,
+    ...materialRefFromDocument(document),
   };
   progress.materialOutputs = [
     ...(progress.materialOutputs || []).filter(
@@ -177,15 +269,10 @@ export async function resolveWorkflowNoteDocument(
       "The note must use the finalized workflow document and its exact authorized destination.",
     );
   const document = await loadPlanDocument(documentId);
-  if (
-    !document ||
-    document.documentId !== documentId ||
-    document.conversationKey !== request.conversationKey ||
-    document.documentVersion !== receipt.documentVersion ||
-    document.contentHash !== receipt.contentHash
-  )
+  if (!document || document.conversationKey !== request.conversationKey)
     throw new Error(
       "The finalized workflow document identity or content has changed.",
     );
+  assertMaterialRefMatches(document, receipt);
   return document;
 }

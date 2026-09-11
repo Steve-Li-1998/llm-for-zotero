@@ -110,17 +110,6 @@ export function authorizeOriginalAction(
       reason: violation.description,
     };
   }
-  if (
-    context.semantic?.conversationOnly &&
-    (proposal.capabilities.includes("zotero.notes") ||
-      proposal.capabilities.includes("file.write"))
-  ) {
-    return {
-      kind: "block",
-      reason:
-        "Remember this within the conversation only. The user did not request a saved note or file; answer from the paper and retain the discussion in chat.",
-    };
-  }
   const integrityFailure = actionIntegrityFailure(proposal);
   if (integrityFailure) return integrityFailure;
   const trustedRead =
@@ -129,27 +118,40 @@ export function authorizeOriginalAction(
   if (trustedRead) {
     return { kind: "execute", authority: "safe_read" };
   }
-  const requested = Boolean(
-    context.hasMatchingActionIntent || context.hasApprovedPlanAuthority,
-  );
-  // Yolo delegates judgment: an effect the interpreter did not predict may
-  // still run once every hard rail above has passed. Safe and auto require
-  // the exact requested authority.
-  if (!requested && context.mode !== "yolo") {
-    return {
-      kind: "block",
-      reason: "The proposed effect has no matching semantic action authority.",
-    };
-  }
+  // Stored classifier-era workflows retain their selection gate while fresh
+  // direct-agent turns no longer create or consume semantic authority.
   if (
-    proposal.capabilities.includes("zotero.import") &&
-    (context.semantic?.literature === "discover" ||
-      context.semantic?.literature === "select_then_import")
+    context.semantic?.conversationOnly &&
+    (proposal.capabilities.includes("zotero.notes") ||
+      proposal.capabilities.includes("file.write"))
   ) {
     return {
       kind: "block",
       reason:
-        "Paper discovery requires user selection in every permission mode. Call literature_review with the ranked candidates; only its approved selection may initiate the import.",
+        "Remember this within the conversation only. The stored workflow does not permit a saved note or file.",
+    };
+  }
+  if (
+    context.semantic &&
+    proposal.capabilities.includes("zotero.import") &&
+    (context.semantic.literature === "discover" ||
+      context.semantic.literature === "select_then_import")
+  ) {
+    return {
+      kind: "block",
+      reason:
+        "Paper discovery requires user selection. Call literature_review with the ranked candidates before importing the approved selection.",
+    };
+  }
+  const chatLibraryID = context.executionContext?.chatLibraryID;
+  const isLibraryWrite =
+    proposal.domains.includes("zotero_library") &&
+    proposal.effects.some((effect) => effect !== "read");
+  if (context.executionContext && isLibraryWrite && !chatLibraryID) {
+    return {
+      kind: "block",
+      reason:
+        "The chat library is unresolved. Resolve and freeze its native identity before changing Zotero state.",
     };
   }
   if (
@@ -164,42 +166,32 @@ export function authorizeOriginalAction(
   if (context.hasApprovedPlanAuthority) {
     return { kind: "execute", authority: "plan_approval" };
   }
-  // Creating requested research material is not a review step. This exemption
-  // applies only after the exact native note action matched the turn contract;
-  // edits, scripts, extra effects, ambiguity and explicit prohibitions retain
-  // their normal authorization path.
-  if (
-    context.hasMatchingActionIntent &&
-    proposal.operation === "note_create" &&
-    proposal.capabilities.length === 1 &&
-    proposal.capabilities[0] === "zotero.notes" &&
-    proposal.invocationPlan.mechanism === "none" &&
-    proposal.invocationPlan.impact === "state_change" &&
-    proposal.invocationPlan.assurance === "runtime_enforced" &&
-    proposal.domains.length === 1 &&
-    proposal.domains[0] === "zotero_library" &&
-    proposal.effects.length === 1 &&
-    proposal.effects[0] === "create" &&
-    !proposal.riskSignals.length
-  ) {
-    return { kind: "execute", authority: "requested_note" };
-  }
   if (context.mode === "safe") {
     return {
       kind: "confirm",
-      reason: "Safe mode reviews this action before it runs.",
+      reason: "Safe mode reviews every external write before it runs.",
     };
   }
-  if (context.mode === "yolo") {
-    return {
-      kind: "execute",
-      authority: requested ? "yolo" : "yolo_judgment",
-    };
-  }
+  const crossesChatLibrary = Boolean(
+    chatLibraryID &&
+    (proposal.targetLibraryIDs || []).some(
+      (libraryID) => libraryID !== chatLibraryID,
+    ),
+  );
+  const writesOutsideConfiguredRoots =
+    proposal.domains.includes("filesystem") &&
+    proposal.effects.some((effect) => effect !== "read") &&
+    !proposal.targets.every((target) =>
+      isWithinConfiguredRoot(
+        target,
+        context.executionContext?.configuredAccess.outputDirectories || [],
+      ),
+    );
   const exceptionalDanger = proposal.riskSignals.some((signal) =>
     [
       "ambiguous_target",
       "scope_expansion",
+      "exclusive_replacement",
       "sensitive_egress",
       "broad_delete",
       "privilege_escalation",
@@ -207,20 +199,74 @@ export function authorizeOriginalAction(
       "download_to_shell",
     ].includes(signal),
   );
-  if (exceptionalDanger) {
+  const destructive = proposal.effects.includes("delete");
+  const uncertain =
+    proposal.invocationPlan.impact === "ambiguous" ||
+    proposal.invocationPlan.assurance === "unknown";
+  if (context.mode === "yolo") {
+    if (crossesChatLibrary || writesOutsideConfiguredRoots) {
+      return {
+        kind: "confirm",
+        reason:
+          "The proposal crosses the configured library or filesystem boundary and requires review.",
+      };
+    }
+    return {
+      kind: "execute",
+      authority: "yolo_judgment",
+    };
+  }
+  if (
+    exceptionalDanger ||
+    destructive ||
+    uncertain ||
+    crossesChatLibrary ||
+    writesOutsideConfiguredRoots
+  ) {
     return {
       kind: "confirm",
       reason:
         "Auto mode found genuine ambiguity or exceptional danger in the exact action.",
     };
   }
-  if (context.hasMatchingActionIntent) {
-    return { kind: "execute", authority: "auto_policy" };
+  return { kind: "execute", authority: "auto_policy" };
+}
+
+function normalizedPathSegments(value: string): string[] | null {
+  const normalized = value.trim().replace(/\\/g, "/");
+  if (
+    !normalized ||
+    (!normalized.startsWith("/") && !/^[a-z]:\//i.test(normalized))
+  )
+    return null;
+  const prefix = /^[a-z]:\//i.test(normalized)
+    ? normalized.slice(0, 2).toLowerCase()
+    : "/";
+  const segments: string[] = [prefix];
+  for (const part of normalized.replace(/^[a-z]:|^\//i, "").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (segments.length === 1) return null;
+      segments.pop();
+    } else segments.push(part);
   }
-  return {
-    kind: "block",
-    reason: "The proposed effect has no matching semantic action authority.",
-  };
+  return segments;
+}
+
+function isWithinConfiguredRoot(
+  target: string,
+  roots: readonly string[],
+): boolean {
+  const targetSegments = normalizedPathSegments(target);
+  if (!targetSegments) return false;
+  return roots.some((root) => {
+    const rootSegments = normalizedPathSegments(root);
+    return Boolean(
+      rootSegments &&
+      rootSegments.length <= targetSegments.length &&
+      rootSegments.every((part, index) => part === targetSegments[index]),
+    );
+  });
 }
 
 /** Execution integrity applies independently of which agent owns permission. */

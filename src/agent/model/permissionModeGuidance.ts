@@ -8,11 +8,11 @@ export function buildPermissionModeGuidance(
   const lines: string[] = [];
   if (mode === "safe") {
     lines.push(
-      "Permission mode: safe. Writes you were asked for are shown to the user for review before they run. Call the tool; do not ask for permission in text.",
+      "Permission mode: safe. Every external write is shown to the user for review before it runs, including new-note creation. Call the concrete tool; the host owns the review UI.",
     );
   } else if (mode === "auto") {
     lines.push(
-      "Permission mode: auto. Requested writes run without review. Use request_user_input only for genuine ambiguity in the request that reading cannot resolve.",
+      "Permission mode: auto. Routine reversible edits in this chat's Zotero library may run directly. Cross-library, destructive, exclusive-replacement, unresolved-scope, sensitive-egress, and out-of-root effects are reviewed by the host. Use request_user_input only for genuine ambiguity that reading or bounded search cannot resolve.",
     );
   } else {
     lines.push(

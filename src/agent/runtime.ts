@@ -6,6 +6,7 @@ import { ensureModelCapabilities } from "../modelCapabilities";
 import { readAttachmentBytes } from "../modules/contextPanel/attachmentStorage";
 import {
   areConversationWritesFrozen,
+  getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
@@ -73,13 +74,7 @@ import {
   normalizeHistoryMessages,
   renderAgentPromptEnvelope,
 } from "./model/messageBuilder";
-import { classifyRequest } from "./model/requestClassifier";
-import {
-  detectTurnIntent,
-  resolvePlanSkillRoutingReceipt,
-  SemanticIntentService,
-} from "./model/semanticIntentService";
-import { hasCurrentSemanticIntent } from "./model/semanticTransport";
+import { resolvePlanSkillRoutingReceipt } from "./model/semanticSkillRouting";
 import { encodeBytesBase64 } from "./model/shared";
 import { createTrustedReadObservations } from "./plans/readObservation";
 import { PlanExecutionRunSession } from "./plans/runSession";
@@ -90,7 +85,12 @@ import {
   LocalDocumentPathStreamRedactor,
 } from "./privacy/localDocumentPathRedaction";
 import { canonicalJson } from "./services/libraryMutation/canonicalJson";
-import { getAllSkills, getMatchedSkillIds } from "./skills";
+import {
+  getAllSkills,
+  getBuiltinSkillInstructionById,
+  getMatchedSkillIds,
+  loadSkill,
+} from "./skills";
 import {
   listJournalActions,
   type JournalActionWithSteps,
@@ -121,9 +121,11 @@ import {
   type AgentTranscriptWriteResult,
 } from "./store/transcriptStore";
 import { AgentToolRegistry } from "./tools/registry";
+import { latestExecutionCheckpoint } from "./execution/checkpoint";
 import type { PreparedActionCall } from "./tools/workflowSteps";
 import type {
   AgentAssistantMessage,
+  AgentActionReceipt,
   AgentConfirmationResolution,
   AgentContentInputCapabilities,
   AgentEvent,
@@ -154,7 +156,6 @@ type AgentRuntimeDeps = {
   adapterFactory: (request: ResolvedAgentRuntimeRequest) => AgentModelAdapter;
   paperContextResolver?: AgentRequestPaperContextResolver;
   now?: () => number;
-  semanticInterpreter?: Pick<SemanticIntentService, "interpret">;
 };
 
 type PendingConfirmation = {
@@ -163,6 +164,83 @@ type PendingConfirmation = {
 
 function createRunId(): string {
   return `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createExecutionContext(
+  request: AgentRuntimeRequest,
+  executionId: string,
+): NonNullable<AgentRuntimeRequest["executionContext"]> {
+  const activePaper = request.turnPaperScope.papers.find((entry) =>
+    entry.roles.includes("active"),
+  )?.paper;
+  const selectedPapers = request.turnPaperScope.papers
+    .filter((entry) => entry.roles.includes("selected"))
+    .map(({ paper }) => ({
+      libraryID: paper.libraryID,
+      itemId: paper.itemId,
+      contextItemId: paper.contextItemId,
+      title: paper.title,
+    }));
+  const notesDirectory = getNotesDirectoryConfig();
+  return {
+    version: 1,
+    executionId,
+    conversationKey: request.conversationKey,
+    conversationGeneration: request.conversationGeneration || 0,
+    chatLibraryID:
+      request.libraryID || request.turnPaperScope.libraryID || undefined,
+    permissionOwner:
+      request.planContext?.phase === "executing"
+        ? "approved_plan"
+        : "original_agent",
+    workspaceSnapshot: {
+      ...(activePaper
+        ? {
+            activePaper: {
+              libraryID: activePaper.libraryID,
+              itemId: activePaper.itemId,
+              contextItemId: activePaper.contextItemId,
+              title: activePaper.title,
+            },
+          }
+        : {}),
+      selectedPapers,
+      selectedCollections: request.turnPaperScope.collections.map(
+        (collection) => ({
+          libraryID: collection.libraryID,
+          collectionId: collection.collectionId,
+          name: collection.name,
+        }),
+      ),
+      ...(request.activeNoteContext
+        ? {
+            activeNote: {
+              noteId: request.activeNoteContext.noteId,
+              parentItemId: request.activeNoteContext.parentItemId,
+              title: request.activeNoteContext.title,
+            },
+          }
+        : {}),
+    },
+    configuredAccess: {
+      libraryIDs:
+        request.libraryID || request.turnPaperScope.libraryID
+          ? [request.libraryID || request.turnPaperScope.libraryID]
+          : [],
+      outputDirectories: notesDirectory?.directoryPath
+        ? [notesDirectory.directoryPath]
+        : [],
+    },
+    ...(request.planContext?.phase === "executing"
+      ? {
+          approvedPlanBinding: {
+            planId: request.planContext.planId,
+            revision: request.planContext.revision,
+            approvedDigest: request.planContext.approvedDigest,
+          },
+        }
+      : {}),
+  };
 }
 
 function createConfirmationRequestId(): string {
@@ -736,14 +814,7 @@ export class AgentRuntime {
     PendingConfirmation
   >();
 
-  private readonly semanticInterpreter: Pick<
-    SemanticIntentService,
-    "interpret"
-  >;
-
   constructor(deps: AgentRuntimeDeps) {
-    this.semanticInterpreter =
-      deps.semanticInterpreter || new SemanticIntentService();
     this.registry = deps.registry;
     this.adapterFactory = deps.adapterFactory;
     this.paperContextResolver = deps.paperContextResolver;
@@ -768,9 +839,14 @@ export class AgentRuntime {
     return this.registry.unregister(name);
   }
 
-  async prepareSemanticRequest(
+  async prepareExecutionRequest(
     requestInput: AgentRuntimeRequestInput | AgentRuntimeRequest,
-    options: { signal?: AbortSignal } = {},
+    options: {
+      signal?: AbortSignal;
+      permissionOwner?: NonNullable<
+        AgentRuntimeRequest["executionContext"]
+      >["permissionOwner"];
+    } = {},
   ): Promise<AgentRuntimeRequest> {
     const request =
       "turnPaperScope" in requestInput
@@ -779,6 +855,9 @@ export class AgentRuntime {
             resolvePaperContext: this.paperContextResolver,
           });
     request.workflowCheckpoint = await loadWorkflowCheckpoint(
+      request.conversationKey,
+    );
+    request.conversationGeneration ??= getConversationWriteGeneration(
       request.conversationKey,
     );
     if (request.planContext?.phase === "executing") {
@@ -794,62 +873,26 @@ export class AgentRuntime {
         );
       request.actionContract = artifact.actionContract;
       request.classifiedIntent = artifact.actionContract?.intent;
-    } else if (!(await hasCurrentSemanticIntent(request))) {
+    } else {
       request.actionContract = undefined;
       request.actionProgress = undefined;
-      request.actionPreparation = { state: "interpreting", issues: [] };
-      const result = await this.semanticInterpreter.interpret(
-        request,
-        getAllSkills(),
-        options,
-      );
-      request.classifiedIntent = result.classifiedIntent || undefined;
-      request.skillRoutingReceipt = result.routingReceipt;
-      if (!result.classifiedIntent) {
-        request.actionPreparation = {
-          state: "unavailable",
-          issues: ["Semantic interpretation is unavailable."],
-        };
-        throw new Error(
-          `Semantic interpretation is unavailable (${result.failureReason || "unknown"}${result.failureStatus ? ` HTTP ${result.failureStatus}` : ""}${result.failureStage ? `: ${result.failureStage}` : ""}). No action was authorized.`,
-        );
-      }
+      request.actionPreparation = undefined;
+      request.classifiedIntent = undefined;
+      request.skillRoutingReceipt = undefined;
     }
     if (options.signal?.aborted)
-      throw new Error("Semantic preparation was cancelled.");
-    const intent = request.classifiedIntent?.semantic;
-    const boundIntent = request.actionContract?.intent?.semantic;
-    if (
-      request.actionPreparation?.state === "ready" &&
-      request.actionContract?.version === 4 &&
-      intent &&
-      boundIntent &&
-      boundIntent.id === intent.id &&
-      boundIntent.revision === intent.revision &&
-      boundIntent.inputDigest === intent.inputDigest &&
-      request.actionProgress?.contractId === request.actionContract.id
-    )
-      return request;
-    const session = new ActionContractRunSession({
+      throw new Error("Agent preparation was cancelled.");
+    request.executionContext ||= createExecutionContext(
       request,
-      contracts: this.registry,
-      emit: async () => {},
-    });
-    const initialized = await session.initialize({ checkpoint: null });
-    if (initialized.kind === "failed") throw new Error(initialized.userMessage);
+      `execution-${request.conversationKey}-${request.conversationGeneration}-${this.now()}`,
+    );
+    if (options.permissionOwner) {
+      request.executionContext = {
+        ...request.executionContext,
+        permissionOwner: options.permissionOwner,
+      };
+    }
     return request;
-  }
-
-  async createActionContractForRequest(
-    requestInput: AgentRuntimeRequestInput | AgentRuntimeRequest,
-  ): Promise<AgentRuntimeRequest["actionContract"]> {
-    const request = await this.prepareSemanticRequest(requestInput);
-    Object.assign(requestInput, {
-      classifiedIntent: request.classifiedIntent,
-      actionPreparation: request.actionPreparation,
-      actionContract: request.actionContract,
-    });
-    return request.actionContract;
   }
 
   getCapabilities(request: AgentRuntimeRequestInput) {
@@ -910,6 +953,11 @@ export class AgentRuntime {
     const request = resolveAgentRuntimeRequest(params.request, {
       resolvePaperContext: this.paperContextResolver,
     });
+    request.conversationGeneration ??= getConversationWriteGeneration(
+      request.conversationKey,
+    );
+    const runId = createRunId();
+    request.executionContext ||= createExecutionContext(request, runId);
     const writeAllowed = () =>
       !areConversationWritesFrozen(request.conversationKey) &&
       (request.conversationGeneration === undefined ||
@@ -966,7 +1014,6 @@ export class AgentRuntime {
         latestPriorRun.finalText === INTERRUPTED_AGENT_RUN_MARKER
           ? latestPriorRun
           : null;
-      const runId = createRunId();
       webSourceRunId = runId;
       const adapter = this.adapterFactory(request);
       const adapterCapabilities = adapter.getCapabilities(request);
@@ -1038,6 +1085,20 @@ export class AgentRuntime {
         signal: params.signal,
         checkpointActionProgress: () => actionContractSession.checkpoint(),
         publishPlanEvent: emit,
+        publishExecutionCheckpoint: (checkpoint) =>
+          emit({ type: "execution_checkpoint", checkpoint }),
+        loadApprovedPlanEffectContext: async () => {
+          const specification = activePlanSession.approvedEffectSpecification();
+          if (!specification) return undefined;
+          return {
+            specification,
+            activeEffectIds: activePlanSession.activeWorkflowEffectIds() || [],
+            resolvedMaterials:
+              await activePlanSession.resolvedWorkflowMaterials(),
+            resolvedTargetBindings:
+              await activePlanSession.resolvedWorkflowTargetBindings(),
+          };
+        },
       };
       const toolsUsedThisTurn: string[] = [];
       const toolExecutionRecords: Array<{
@@ -1047,6 +1108,7 @@ export class AgentRuntime {
         effect?: AgentToolEffect;
         input?: unknown;
         content?: unknown;
+        actionReceipts?: AgentActionReceipt[];
       }> = [];
       const pendingReadActivities: AgentPendingReadActivity[] = [];
       await hydrateAgentToolResultHandles(request.conversationKey);
@@ -1054,12 +1116,15 @@ export class AgentRuntime {
         request.conversationKey,
       );
       setToolResultReadAvailability(request, false);
-      // Resolve routing and the visible outcome contract before enumerating
-      // tools. This keeps submit_document absent from ordinary Agent turns and
-      // makes the transcript compatibility key include the terminal tool when
-      // a document is mandatory.
-      const preclassifiedIntent = request.classifiedIntent;
-      let turnIntent: Awaited<ReturnType<typeof detectTurnIntent>>;
+      // Approved Plans retain their frozen skill binding. Ordinary turns go
+      // directly to the main model with user-selected skills; the host does
+      // not predict actions or run a model router first.
+      let turnIntent: {
+        skillIds: string[];
+        classifiedIntent: AgentRuntimeRequest["classifiedIntent"] | null;
+        degraded: boolean;
+        routingReceipt?: AgentRuntimeRequest["skillRoutingReceipt"];
+      };
       let approvedPlanArtifact: Awaited<ReturnType<typeof loadPlanArtifact>> =
         null;
       if (request.planContext?.phase === "executing") {
@@ -1092,57 +1157,39 @@ export class AgentRuntime {
             approvedPlanArtifact?.actionContract?.intent || null,
           degraded: false,
         };
-      } else if (await hasCurrentSemanticIntent(request)) {
-        turnIntent = {
-          skillIds:
-            request.skillRoutingReceipt?.skills.map((skill) => skill.id) || [],
-          classifiedIntent: preclassifiedIntent || null,
-          degraded: false,
-          routingReceipt: request.skillRoutingReceipt,
-        };
       } else {
         request.actionContract = undefined;
         request.actionProgress = undefined;
-        request.actionPreparation = { state: "interpreting", issues: [] };
-        turnIntent = await this.semanticInterpreter.interpret(
-          request,
-          getAllSkills(),
-          {
-            signal: params.signal,
-          },
-        );
+        request.actionPreparation = undefined;
+        request.classifiedIntent = undefined;
+        request.skillRoutingReceipt = undefined;
+        turnIntent = {
+          skillIds: request.forcedSkillIds || [],
+          classifiedIntent: null,
+          degraded: false,
+        };
       }
       request.classifiedIntent = turnIntent.classifiedIntent || undefined;
-      if (
-        !request.classifiedIntent?.semantic &&
-        request.planContext?.phase !== "executing"
-      ) {
-        await emit({
-          type: "provider_event",
-          providerType: "agent_semantic_unavailable",
-          payload: {
-            reason: turnIntent.failureReason,
-            status: turnIntent.failureStatus,
-            rejectedResponses: turnIntent.rejectedResponses || [],
-            authority: "none",
-          },
-        });
-        throw new Error(
-          `Semantic interpretation is unavailable (${turnIntent.failureReason || "unknown"}${turnIntent.failureStatus ? ` HTTP ${turnIntent.failureStatus}` : ""}${turnIntent.failureStage ? `: ${turnIntent.failureStage}` : ""}). Actions are paused; retry after resolving the interpretation failure.`,
-        );
-      }
       request.skillRoutingReceipt = turnIntent.routingReceipt;
-      if (turnIntent.degraded) {
-        await emit({
-          type: "provider_event",
-          providerType: "turn_intent_classifier",
-          payload: {
-            status: "degraded_no_automatic_skills",
-            reason: turnIntent.failureReason,
-          },
-        });
-      }
       const matchedSkills = getMatchedSkillIds(request, turnIntent.skillIds);
+      if (request.planContext?.phase !== "executing") {
+        const forcedSkillIds = new Set(request.forcedSkillIds || []);
+        request.loadedSkillRecords = (
+          await Promise.all(
+            getAllSkills()
+              .filter((skill) => forcedSkillIds.has(skill.id))
+              .map(async (skill) => ({
+                ...(
+                  await loadSkill(
+                    skill,
+                    getBuiltinSkillInstructionById(skill.id),
+                  )
+                ).loadedSkill,
+                source: "forced" as const,
+              })),
+          )
+        ).sort((left, right) => left.id.localeCompare(right.id));
+      }
       const plannedSpec =
         approvedPlanArtifact?.contract?.deliverable.kind === "document"
           ? approvedPlanArtifact.contract.deliverable.spec
@@ -1222,6 +1269,22 @@ export class AgentRuntime {
         interruptedActionCheckpoint = readLatestActionContractCheckpoint(
           interruptedTrace.events.map((event) => event.payload),
         );
+        const ordinaryCheckpoint = latestExecutionCheckpoint(
+          interruptedTrace.events,
+        );
+        if (
+          ordinaryCheckpoint &&
+          request.executionContext?.permissionOwner === "original_agent" &&
+          ordinaryCheckpoint.conversationKey === request.conversationKey &&
+          ordinaryCheckpoint.conversationGeneration ===
+            request.executionContext.conversationGeneration
+        ) {
+          request.executionCheckpoint = ordinaryCheckpoint;
+          request.executionContext = {
+            ...request.executionContext,
+            executionId: ordinaryCheckpoint.executionId,
+          };
+        }
         const compatibilityMatches =
           latestTranscriptSegment?.compatibilityKey ===
           transcriptCompatibilityKey;
@@ -1362,7 +1425,6 @@ export class AgentRuntime {
         }
       }
 
-      const requestIntent = classifyRequest(request);
       const requiresFileNoteWrite = Boolean(
         request.classifiedIntent?.actionIntents?.some(
           (intent) => intent.operation === "file_write",
@@ -1666,10 +1728,11 @@ export class AgentRuntime {
       // Rejected input never ran, so it is a repair opportunity, not a failing
       // tool. It gets its own, more forgiving cap.
       let consecutiveInputRejectionRounds = 0;
-      const intent = requestIntent;
-      const { maxRounds, maxToolCallsPerRound } = resolveAgentLimits(
-        intent.isBulkOperation,
-      );
+      const extendedRunLimits =
+        request.planContext?.phase === "executing" ||
+        request.metadata?.hostRecordedBatchJob === true;
+      const { maxRounds, maxToolCallsPerRound } =
+        resolveAgentLimits(extendedRunLimits);
       const finalAnswerController = new AgentFinalAnswerController(
         request,
         actionContractSession,
@@ -2280,8 +2343,7 @@ export class AgentRuntime {
         if (
           !cachedPaperEvidence &&
           toolResult.ok &&
-          executedCall.toolDefinition?.spec.executionClass === "read" &&
-          request.documentOutcomePolicy?.required
+          executedCall.toolDefinition?.spec.executionClass === "read"
         ) {
           const observations = await createTrustedReadObservations({
             toolName: toolResult.name,
@@ -2365,6 +2427,7 @@ export class AgentRuntime {
           effect: toolResult.effect,
           input: executedCall.input,
           content: toolResult.content,
+          actionReceipts: toolResult.actionReceipts,
         });
         if (toolResult.ok) {
           if (paperEvidenceFrontierState !== "unchanged") {
@@ -3011,7 +3074,10 @@ export class AgentRuntime {
           segmentRound <= maxRounds;
           segmentRound += 1
         ) {
-          const hostOutcome = await advanceHostWorkflow();
+          const hostOutcome =
+            approvedPlanArtifact && approvedPlanArtifact.version <= 4
+              ? await advanceHostWorkflow()
+              : null;
           if (hostOutcome) return hostOutcome;
           round += 1;
           let stepResult: { step: AgentModelStep; stepStreamedText: string };

@@ -3,6 +3,7 @@ import {
   attachPlanMaterialEvidence,
 } from "../../plans/materialEvidence";
 import {
+  materialRefFromDocument,
   resolveMaterialOutput,
   recordMaterialOutput,
 } from "../../documents/workflowMaterial";
@@ -19,6 +20,7 @@ import type {
   PlanCitationCluster,
   PlanCitationSource,
   PlanDocumentAsset,
+  MaterialRef,
   SubmitPlanDocumentInput,
 } from "../../documents/types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
@@ -27,6 +29,7 @@ import { fail, ok, validateObject } from "../shared";
 type SubmitPlanDocumentResult = {
   documentId: string;
   contentHash: string;
+  materialRef: MaterialRef;
   visibleMarkdown: string;
 };
 
@@ -224,11 +227,36 @@ function validateSubmitPlanDocument(
     ) {
       return fail("groundingReviewed must record the completed model review");
     }
+    const documentKinds = new Set([
+      "research_brief",
+      "literature_review",
+      "comparison",
+      "report",
+      "guide",
+      "custom",
+    ]);
+    if (
+      args.documentKind !== undefined &&
+      !documentKinds.has(String(args.documentKind))
+    ) {
+      return fail("documentKind is not supported");
+    }
+    if (
+      args.integrityPolicy !== undefined &&
+      args.integrityPolicy !== "authored" &&
+      args.integrityPolicy !== "research_grounded"
+    ) {
+      return fail("integrityPolicy is not supported");
+    }
     return ok({
       materialOutputId:
         args.materialOutputId === undefined
           ? undefined
           : requiredString(args.materialOutputId, "materialOutputId"),
+      documentKind:
+        args.documentKind as SubmitPlanDocumentInput["documentKind"],
+      integrityPolicy:
+        args.integrityPolicy as SubmitPlanDocumentInput["integrityPolicy"],
       title: requiredString(args.title, "title"),
       markdown: requiredString(args.markdown, "markdown"),
       citations: args.citations.map(parseCitation),
@@ -271,6 +299,25 @@ export function createSubmitDocumentTool(
             type: "string",
             description:
               "The frozen material output ID when generating content for later workflow actions.",
+          },
+          documentKind: {
+            type: "string",
+            enum: [
+              "research_brief",
+              "literature_review",
+              "comparison",
+              "report",
+              "guide",
+              "custom",
+            ],
+            description:
+              "Document shape for direct Agent submissions. Approved Plans use their frozen document specification.",
+          },
+          integrityPolicy: {
+            type: "string",
+            enum: ["authored", "research_grounded"],
+            description:
+              "Use research_grounded when the document makes claims from retrieved literature evidence.",
           },
           title: { type: "string" },
           markdown: { type: "string" },
@@ -437,7 +484,7 @@ export function createSubmitDocumentTool(
       executionClass: "control",
       requiresConfirmation: false,
     },
-    isAvailable: (request) => request.documentOutcomePolicy?.required === true,
+    isAvailable: (request) => request.planContext?.phase !== "planning",
     guidance: {
       matches: (request) => request.documentOutcomePolicy?.required === true,
       instruction:
@@ -452,9 +499,6 @@ export function createSubmitDocumentTool(
       }),
     execute: async (input, context) => {
       const policy = context.request.documentOutcomePolicy;
-      if (!policy?.required) {
-        throw new Error("submit_document is not authorized for this turn");
-      }
       const plan = context.request.planContext;
       const material = resolveMaterialOutput(
         context.request,
@@ -464,6 +508,11 @@ export function createSubmitDocumentTool(
       const { document } =
         plan?.phase === "executing" && !material
           ? await (async () => {
+              if (!policy?.required) {
+                throw new Error(
+                  "The approved Plan does not contain a document deliverable",
+                );
+              }
               if (!plan.activeTaskId) {
                 throw new Error("No active plan task can accept the document");
               }
@@ -495,6 +544,7 @@ export function createSubmitDocumentTool(
       return {
         documentId: document.documentId,
         contentHash: document.contentHash,
+        materialRef: materialRefFromDocument(document),
         visibleMarkdown: document.visibleMarkdown,
       };
     },

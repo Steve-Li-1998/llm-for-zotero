@@ -28,7 +28,7 @@ const ORIGINAL_OPTIONS: Record<OriginalAgentPermissionMode, PermissionOption> =
       fullLabel: "Safe",
       compactLabel: "safe",
       description:
-        "Requested new notes are created directly. Other writes, commands, scripts, and network actions are shown for review first. Literature discovery shows a selection card.",
+        "Every external write, including new-note creation, is shown for review before it runs. Reads do not require review.",
       available: true,
     },
     auto: {
@@ -37,7 +37,7 @@ const ORIGINAL_OPTIONS: Record<OriginalAgentPermissionMode, PermissionOption> =
       fullLabel: "Auto",
       compactLabel: "auto",
       description:
-        "Requested actions run without review. Existing-note edits are applied and then shown as a diff. The agent asks only for genuine ambiguity in the request or for dangerous shell commands.",
+        "Routine reversible changes in this chat's library and exports inside configured directories run without review. Cross-library, destructive, ambiguous, and out-of-scope effects are shown for review.",
       available: true,
     },
     yolo: {
@@ -46,7 +46,7 @@ const ORIGINAL_OPTIONS: Record<OriginalAgentPermissionMode, PermissionOption> =
       fullLabel: "Yolo",
       compactLabel: "yolo",
       description:
-        "The agent acts on its own judgment without asking and may take actions beyond the literal request. Explicit prohibitions, protected items, the database, plan integrity checks, chat-only memory, and the paper selection card before importing discovered papers remain enforced. Also applies to plugin tools called by Claude Code or Codex.",
+        "The Original Agent acts on its own judgment and may take actions beyond the literal request. Configured access, protected targets, database integrity, Plan integrity, chat-only memory, the paper selection card before importing discovered papers, and the change journal remain enforced. Claude Code, Codex, and external MCP callers keep their own permission controls.",
       available: true,
     },
   };

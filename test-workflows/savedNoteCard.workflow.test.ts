@@ -1,8 +1,3 @@
-import {
-  semanticContractFixture,
-  classifiedFixture,
-  semanticResponseFixture,
-} from "../test/helpers/semanticIntent";
 import { assert } from "chai";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
@@ -13,7 +8,7 @@ import {
   setOriginalAgentPermissionMode,
 } from "../src/agent/originalAgentPermissionMode";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
-import type { AgentActionContract, AgentToolContext } from "../src/agent/types";
+import type { AgentToolContext } from "../src/agent/types";
 
 describe("workflow: create then show saved note", function () {
   this.timeout(60000);
@@ -27,7 +22,7 @@ describe("workflow: create then show saved note", function () {
     );
   });
   for (const mode of ["safe", "auto", "yolo"] as const) {
-    it(`creates without confirmation in ${mode}, shows native content, and opens the exact note`, async function () {
+    it(`${mode === "safe" ? "reviews" : "creates"} in ${mode}, shows native content, and opens the exact note`, async function () {
       const api = (Zotero as any).LLMForZotero.api
         .workflowTest as WorkflowTestApi;
       const originalMode = getOriginalAgentPermissionMode();
@@ -49,24 +44,6 @@ describe("workflow: create then show saved note", function () {
             "note_write",
           ),
         );
-        const contract: AgentActionContract = semanticContractFixture({
-          version: 3,
-          id: `saved-note-${mode}`,
-          hardConstraints: [],
-          writeDisposition: "required",
-          interpretationSource: "semantic",
-          obligations: [
-            {
-              id: "create-note",
-              operation: "note_create",
-              proofDomain: "zotero_state",
-              capability: "zotero.notes",
-              coverage: "one",
-              targetKind: "items",
-              parameters: { noteMode: "create" },
-            },
-          ],
-        });
         const context: AgentToolContext = {
           request: {
             conversationKey: parent.id,
@@ -74,14 +51,29 @@ describe("workflow: create then show saved note", function () {
             userText: "Create one child note on this paper",
             activeItemId: parent.id,
             libraryID: parent.libraryID,
-            actionContract: contract,
-            actionProgress: contracts.createProgress(contract),
+            executionContext: {
+              version: 1,
+              executionId: `direct-saved-note-${mode}:${Date.now()}`,
+              conversationKey: parent.id,
+              conversationGeneration: 0,
+              chatLibraryID: parent.libraryID,
+              permissionOwner: "original_agent",
+              workspaceSnapshot: {
+                selectedPapers: [],
+                selectedCollections: [],
+              },
+              configuredAccess: {
+                libraryIDs: [parent.libraryID],
+                outputDirectories: [],
+              },
+            },
           },
           item: parent,
           modelName: "workflow",
           currentAnswerText: "",
+          runId: `direct-saved-note-run-${mode}:${Date.now()}`,
         };
-        const execution = await registry.prepareExecution(
+        let execution = await registry.prepareExecution(
           {
             id: "save-note",
             name: "note_write",
@@ -96,11 +88,14 @@ describe("workflow: create then show saved note", function () {
           context,
           { callerKind: "model" },
         );
-        assert.equal(
-          execution.kind,
-          "result",
-          "creation must never wait for draft approval",
-        );
+        if (mode === "safe") {
+          assert.equal(execution.kind, "confirmation");
+          await parent.reload(undefined, true);
+          assert.isEmpty(parent.getNotes(), "Safe review precedes mutation");
+          if (execution.kind !== "confirmation") return;
+          execution = await execution.execute({ approved: true });
+        }
+        assert.equal(execution.kind, "result");
         if (execution.kind !== "result") return;
         const result = execution.execution.result;
         assert.isTrue(result.ok, JSON.stringify(result.content));
@@ -120,15 +115,12 @@ describe("workflow: create then show saved note", function () {
           "the content heading, not export metadata, must title the native note",
         );
         const panel = await api.renderPanelForItem(parent.id);
-        root = api.renderToolResultForPanel(panel.panelId, result, {
-          documentId: "duplicate-note-document",
-          actionContract: contract,
-        });
+        root = api.renderToolResultForPanel(panel.panelId, result, {});
         assert.exists(root);
         assert.lengthOf(
           root!.querySelectorAll(".llm-plan-container"),
           1,
-          "a restored semantic note-only turn has one card, not a second document",
+          "a restored note-only turn has one card, not a second document",
         );
         const card = root!.querySelector<HTMLElement>(".llm-saved-note-card")!;
         assert.exists(

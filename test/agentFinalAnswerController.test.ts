@@ -194,7 +194,9 @@ describe("AgentFinalAnswerController", function () {
 
   it("returns an uncommitted action-contract correction before other quality gates", async function () {
     const controller = new AgentFinalAnswerController(
-      makeRequest(),
+      makeRequest({
+        actionContract: { obligations: [{ operation: "note_create" }] },
+      } as never),
       {
         evaluateFinal: async () => ({
           kind: "correct" as const,
@@ -222,7 +224,9 @@ describe("AgentFinalAnswerController", function () {
 
   it("returns a kind-matched uncommitted action-contract failure", async function () {
     const controller = new AgentFinalAnswerController(
-      makeRequest(),
+      makeRequest({
+        actionContract: { obligations: [{ operation: "note_create" }] },
+      } as never),
       {
         evaluateFinal: async () => ({
           kind: "fail" as const,
@@ -245,6 +249,74 @@ describe("AgentFinalAnswerController", function () {
         kind: "fail",
         failure: "The action could not be verified.",
       },
+    });
+  });
+
+  it("does not invent action obligations for a fresh direct turn", async function () {
+    let legacyEvaluationCalls = 0;
+    const controller = new AgentFinalAnswerController(
+      makeRequest({
+        executionContext: {
+          version: 1,
+          executionId: "direct-1",
+          conversationKey: 1,
+          conversationGeneration: 0,
+          chatLibraryID: 1,
+          permissionOwner: "original_agent",
+          workspaceSnapshot: {
+            selectedPapers: [],
+            selectedCollections: [],
+          },
+          configuredAccess: { libraryIDs: [1], outputDirectories: [] },
+        },
+      }),
+      {
+        evaluateFinal: async () => {
+          legacyEvaluationCalls += 1;
+          return {
+            kind: "fail" as const,
+            failure: "A semantic action contract is unavailable.",
+          };
+        },
+      },
+      [],
+    );
+
+    const decision = await controller.evaluate({
+      candidateText: "Here is the answer.",
+      canCorrect: true,
+      toolExecutionRecords: [],
+    });
+
+    assert.equal(decision.kind, "accept");
+    assert.equal(legacyEvaluationCalls, 0);
+  });
+
+  it("fails a direct applied write whose concrete effect is unverified", async function () {
+    const controller = new AgentFinalAnswerController(
+      makeRequest(),
+      acceptingActionSession(),
+      [],
+    );
+
+    const decision = await controller.evaluate({
+      candidateText: "Saved.",
+      canCorrect: false,
+      toolExecutionRecords: [
+        {
+          name: "library_mutation",
+          ok: true,
+          mutability: "write",
+          effect: "applied",
+          actionReceipts: [],
+        },
+      ],
+    });
+
+    assert.deepEqual(decision, {
+      kind: "fail",
+      userMessage:
+        "library_mutation ran, but its concrete effect could not be verified. Inspect current state before retrying it.",
     });
   });
 

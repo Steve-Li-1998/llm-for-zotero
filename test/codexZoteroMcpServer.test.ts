@@ -1,9 +1,5 @@
 import { ActionContractService } from "../src/agent/contracts/actionContract";
-import {
-  classifiedFixture,
-  semanticFixture,
-  actionContractFixture,
-} from "./helpers/semanticIntent";
+import { actionContractFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import {
   addZoteroMcpToolActivityObserver,
@@ -170,6 +166,57 @@ describe("Zotero MCP server", function () {
       originalZotero;
   });
 
+  it("carries the host execution context into scoped MCP tool calls", async function () {
+    const executionContext = {
+      version: 1 as const,
+      executionId: "codex-execution-445",
+      conversationKey: 445,
+      conversationGeneration: 0,
+      chatLibraryID: 1,
+      permissionOwner: "external_runtime" as const,
+      workspaceSnapshot: {
+        selectedPapers: [],
+        selectedCollections: [],
+      },
+      configuredAccess: { libraryIDs: [1], outputDirectories: [] },
+    };
+    let observed: AgentToolContext["request"]["executionContext"];
+    const registry = new AgentToolRegistry();
+    const tool = createReadTool("library_read");
+    tool.execute = async (_input, context) => {
+      observed = context.request.executionContext;
+      return { ok: true };
+    };
+    registry.register(tool);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 445,
+      conversationGeneration: 0,
+      libraryID: 1,
+      kind: "global",
+      runtimeAuthority: "codex",
+      executionContext,
+    });
+
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scope.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 445,
+          method: "tools/call",
+          params: { name: "library_read", arguments: {} },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      assert.equal(payload.result.isError, undefined, JSON.stringify(payload));
+      assert.deepEqual(observed, executionContext);
+    } finally {
+      scope.clear();
+    }
+  });
+
   for (const mode of ["safe", "auto", "yolo"]) {
     for (const integrated of [false, true]) {
       for (const name of [
@@ -203,6 +250,11 @@ describe("Zotero MCP server", function () {
             assert.equal(context.executionAuthority, "external_runtime");
             assert.isNotEmpty(context.runId);
             assert.equal(context.request.libraryID, 1);
+            assert.equal(
+              context.request.executionContext?.permissionOwner,
+              "external_runtime",
+            );
+            assert.equal(context.request.executionContext?.chatLibraryID, 1);
             return { content: { applied: true }, effect: "applied" };
           };
           registry.register(tool);
@@ -614,17 +666,19 @@ describe("Zotero MCP server", function () {
     });
   });
 
-  it("shows submit_document only for a host-required document outcome", async function () {
+  it("shows ordinary collaboration tools without a predicted outcome", async function () {
     const registry = new AgentToolRegistry(
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register(createReadTool("library_search"));
     registry.register(createReadTool("submit_document"));
+    registry.register(createReadTool("request_user_input"));
     registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
     const ordinary = registerScopedZoteroMcpScope({
       conversationKey: 7001,
       libraryID: 1,
       kind: "global",
+      requestInteraction: async () => ({ approved: false }),
     });
     const required = registerScopedZoteroMcpScope({
       conversationKey: 7002,
@@ -649,7 +703,8 @@ describe("Zotero MCP server", function () {
           (tool: { name: string }) => tool.name,
         );
       };
-      assert.notInclude(await listedNames(ordinary.token), "submit_document");
+      assert.include(await listedNames(ordinary.token), "submit_document");
+      assert.include(await listedNames(ordinary.token), "request_user_input");
       assert.include(await listedNames(required.token), "submit_document");
     } finally {
       ordinary.clear();
@@ -2057,7 +2112,7 @@ describe("Zotero MCP server", function () {
     );
   });
 
-  it("accepts raw target empty object through MCP semantic validation", async function () {
+  it("uses the active paper when an empty target normalizes to omitted", async function () {
     const paper = {
       libraryID: 1,
       itemId: 71,
@@ -2101,7 +2156,6 @@ describe("Zotero MCP server", function () {
       activeItemId: paper.itemId,
       activeContextItemId: paper.contextItemId,
       userText: "Use the actual PDF/full text to explain the method.",
-      classifiedIntent: classifiedFixture({ retrievalIntent: "topic" }),
       turnPaperScope: {
         libraryID: 1,
         conversationKind: "paper",
@@ -2784,12 +2838,6 @@ describe("Zotero MCP server", function () {
     const scoped = registerScopedZoteroMcpScope(
       {
         profileSignature: "claude-profile",
-        classifiedIntent: classifiedFixture({
-          paperTargetIntent: "all_visible",
-          semantic: semanticFixture({
-            reading: { source: "document_text", coverage: "exhaustive" },
-          }),
-        }),
         conversationKey: 457,
         libraryID: 1,
         kind: "paper",

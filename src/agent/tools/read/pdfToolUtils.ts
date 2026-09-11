@@ -492,7 +492,14 @@ export function resolveDefaultTargets(
               ? [activePaper]
               : allPapers
             : undefined;
-  const implicit = classifiedTargets || [];
+  // Fresh direct-agent turns have no semantic paper-target prediction. An
+  // omitted selector still has one precise meaning in paper chat: the active
+  // paper supplied by the host. Broader scopes must be named explicitly.
+  const implicit =
+    classifiedTargets ||
+    (!context.request.classifiedIntent?.semantic && activePaper
+      ? [activePaper]
+      : []);
   return dedupePaperContextRefs(implicit).slice(0, maxCount);
 }
 

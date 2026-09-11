@@ -1,7 +1,16 @@
 import type { AgentActionContract } from "../contracts/types";
-import type { PlanContract, PlanStep } from "./types";
+import type {
+  PlanContract,
+  PlanEffectSpecification,
+  PlanSkillBinding,
+  PlanStep,
+} from "./types";
 import { decodeActionContract, decodePlanContract } from "./contracts";
-import { decodePlanStep } from "./decoders";
+import {
+  decodePlanEffectSpecification,
+  decodePlanStep,
+  decodeSkillBindings,
+} from "./decoders";
 
 export type PlanAmendmentKind =
   | "research_ceiling"
@@ -44,6 +53,10 @@ export type PlanAmendmentProposal = Readonly<{
   replacementContract?: PlanContract;
   replacementSteps?: readonly PlanStep[];
   replacementActionContract?: AgentActionContract;
+  /** Authoritative concrete effect scope for a v5 successor. */
+  replacementEffectSpecification?: PlanEffectSpecification;
+  /** Exact host-observed skills frozen with a v5 successor. */
+  replacementSkillBindings?: readonly PlanSkillBinding[];
   rationale: string;
   createdAt: number;
 }>;
@@ -199,6 +212,17 @@ export function decodePlanAmendmentProposal(
     );
     if (proposal.replacementActionContract !== undefined) {
       decodeActionContract(proposal.replacementActionContract);
+    }
+    if (proposal.replacementEffectSpecification !== undefined) {
+      decodePlanEffectSpecification(proposal.replacementEffectSpecification);
+      if (proposal.replacementActionContract !== undefined) {
+        throw new Error(
+          "contract_revision cannot carry both legacy and v5 action authority",
+        );
+      }
+    }
+    if (proposal.replacementSkillBindings !== undefined) {
+      decodeSkillBindings(proposal.replacementSkillBindings);
     }
   }
 

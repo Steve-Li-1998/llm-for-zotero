@@ -395,7 +395,7 @@ describe("Codex app-server native client", function () {
     });
     const originalSpawn = CodexAppServerProcess.spawn;
     const restorePrefs = installDirectPathTestPrefs();
-    const processKey = "semantic-native-completion";
+    const processKey = "direct-native-completion";
     CodexAppServerProcess.spawn = async () => proc;
     try {
       const result = await runCodexAppServerNativeTurn({
@@ -442,7 +442,7 @@ describe("Codex app-server native client", function () {
       assert.notInclude(result.text, "Done, the paper was filed");
       assert.isString(result.verificationFailure);
       assert.equal(result.agentRunId, "host-native-run");
-      assert.isTrue(
+      assert.isFalse(
         persisted.some(
           (event) => event.providerType === "agent_semantic_intent",
         ),
@@ -3452,7 +3452,21 @@ describe("Codex app-server native client", function () {
       mineruCacheDir: "/tmp/mineru-cache/native-pinned",
     };
 
+    const executionContext = {
+      version: 1 as const,
+      executionId: "codex-native-context",
+      conversationKey: 1,
+      conversationGeneration: 0,
+      chatLibraryID: 1,
+      permissionOwner: "external_runtime" as const,
+      workspaceSnapshot: {
+        selectedPapers: [],
+        selectedCollections: [],
+      },
+      configuredAccess: { libraryIDs: [1], outputDirectories: [] },
+    };
     const scope = buildCodexNativeScopedMcpScopeForTests({
+      executionContext,
       scope: {
         conversationKey: 1,
         libraryID: 1,
@@ -3505,6 +3519,7 @@ describe("Codex app-server native client", function () {
     assert.equal(scope.model, "gpt-5.5");
     assert.equal(scope.codexPath, "/tmp/codex-native");
     assert.equal(scope.exhaustiveReadBackend, "codex_responses");
+    assert.deepEqual(scope.executionContext, executionContext);
     assert.deepEqual(scope.reasoning, {
       provider: "openai",
       level: "high",

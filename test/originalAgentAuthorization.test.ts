@@ -12,7 +12,6 @@ import type {
   ActionConstraint,
   ActionProposal,
 } from "../src/agent/authorization/types";
-import { semanticFixture } from "./helpers/semanticIntent";
 
 function action(
   operation = "apply_tags",
@@ -77,7 +76,7 @@ const noShell: ActionConstraint = {
   description: "No commands or scripts",
 };
 
-describe("central authorization from semantic authority", function () {
+describe("central authorization from concrete proposals", function () {
   for (const mode of ["safe", "auto", "yolo"] as const) {
     it(`${mode}: permits trusted reads without mutation authority`, function () {
       assert.equal(
@@ -158,7 +157,7 @@ describe("central authorization from semantic authority", function () {
           constraints: [restriction],
           hasMatchingActionIntent: true,
         }).kind,
-        mode === "safe" ? "confirm" : "execute",
+        mode === "yolo" ? "execute" : "confirm",
       );
       assert.equal(
         authorizeOriginalAction(
@@ -176,7 +175,7 @@ describe("central authorization from semantic authority", function () {
         "block",
       );
     });
-    it(`${mode}: uses mode policy for existing notes and preserves requested creation`, function () {
+    it(`${mode}: uses mode policy for existing and new notes`, function () {
       assert.equal(
         authorizeOriginalAction(
           action("note_edit", { capability: "zotero.notes" }),
@@ -192,39 +191,34 @@ describe("central authorization from semantic authority", function () {
           }),
           { mode, hasMatchingActionIntent: true },
         ),
-        { kind: "execute", authority: "requested_note" },
+        mode === "safe"
+          ? {
+              kind: "confirm",
+              reason: "Safe mode reviews every external write before it runs.",
+            }
+          : {
+              kind: "execute",
+              authority: mode === "auto" ? "auto_policy" : "yolo_judgment",
+            },
       );
     });
-    it(`${mode}: prevents discovery or conversational memory from granting persistence`, function () {
-      for (const literature of ["discover", "select_then_import"] as const) {
-        assert.equal(
-          authorizeOriginalAction(
-            action("import_identifiers", {
-              effect: "create",
-              capability: "zotero.import",
-            }),
-            {
-              mode,
-              semantic: semanticFixture({ literature }),
-              hasMatchingActionIntent: true,
+    it(`${mode}: never accepts model-supplied authority or evidence`, function () {
+      const context = {
+        mode,
+        authorized: true,
+        evidenceQuote: "apply this change",
+      } as any;
+      assert.deepEqual(
+        authorizeOriginalAction(action(), context),
+        mode === "safe"
+          ? {
+              kind: "confirm",
+              reason: "Safe mode reviews every external write before it runs.",
+            }
+          : {
+              kind: "execute",
+              authority: mode === "auto" ? "auto_policy" : "yolo_judgment",
             },
-          ).kind,
-          "block",
-        );
-      }
-      assert.equal(
-        authorizeOriginalAction(
-          action("note_create", {
-            effect: "create",
-            capability: "zotero.notes",
-          }),
-          {
-            mode,
-            semantic: semanticFixture({ conversationOnly: true }),
-            hasMatchingActionIntent: true,
-          },
-        ).kind,
-        "block",
       );
     });
     it(`${mode}: plan approval does not bypass integrity or restrictions`, function () {
@@ -245,17 +239,18 @@ describe("central authorization from semantic authority", function () {
         "block",
       );
     });
-    it(`${mode}: effects without an exact semantic or approved-plan match`, function () {
+    it(`${mode}: assesses concrete effects without semantic intent`, function () {
       const expected =
-        mode === "yolo"
-          ? { kind: "execute", authority: "yolo_judgment" }
-          : {
-              kind: "block",
-              reason:
-                "The proposed effect has no matching semantic action authority.",
-            };
+        mode === "safe"
+          ? {
+              kind: "confirm",
+              reason: "Safe mode reviews every external write before it runs.",
+            }
+          : mode === "auto"
+            ? { kind: "execute", authority: "auto_policy" }
+            : { kind: "execute", authority: "yolo_judgment" };
       assert.deepEqual(authorizeOriginalAction(action(), { mode }), expected);
-      assert.deepEqual(
+      assert.equal(
         authorizeOriginalAction(
           action("command_execute", {
             assurance: "unknown",
@@ -263,8 +258,8 @@ describe("central authorization from semantic authority", function () {
             domain: "filesystem",
           }),
           { mode },
-        ),
-        expected,
+        ).kind,
+        mode === "yolo" ? "execute" : "confirm",
       );
     });
     it(`${mode}: judgment never bypasses hard rails`, function () {
@@ -290,28 +285,134 @@ describe("central authorization from semantic authority", function () {
         ).kind,
         "block",
       );
-      assert.equal(
-        authorizeOriginalAction(
-          action("note_create", {
-            effect: "create",
-            capability: "zotero.notes",
-          }),
-          { mode, semantic: semanticFixture({ conversationOnly: true }) },
-        ).kind,
-        "block",
-      );
-      assert.equal(
-        authorizeOriginalAction(
-          action("import_identifiers", {
-            effect: "create",
-            capability: "zotero.import",
-          }),
-          { mode, semantic: semanticFixture({ literature: "discover" }) },
-        ).kind,
-        "block",
-      );
     });
   }
+
+  it("auto reviews cross-library, destructive, ambiguous, and out-of-root proposals", function () {
+    const executionContext = {
+      version: 1 as const,
+      executionId: "run-1",
+      conversationKey: 1,
+      conversationGeneration: 1,
+      chatLibraryID: 1,
+      permissionOwner: "original_agent" as const,
+      workspaceSnapshot: {
+        selectedPapers: [],
+        selectedCollections: [],
+      },
+      configuredAccess: {
+        libraryIDs: [1],
+        outputDirectories: ["/notes"],
+      },
+    };
+    const routine = { ...action(), targetLibraryIDs: [1] };
+    assert.equal(
+      authorizeOriginalAction(routine, {
+        mode: "auto",
+        executionContext,
+      }).kind,
+      "execute",
+    );
+    assert.equal(
+      authorizeOriginalAction(
+        { ...routine, targetLibraryIDs: [2] },
+        {
+          mode: "auto",
+          executionContext,
+        },
+      ).kind,
+      "confirm",
+    );
+    for (const mode of ["safe", "auto", "yolo"] as const) {
+      assert.equal(
+        authorizeOriginalAction(routine, {
+          mode,
+          executionContext: {
+            ...executionContext,
+            chatLibraryID: undefined,
+          },
+        }).kind,
+        "block",
+      );
+    }
+    assert.equal(
+      authorizeOriginalAction(action("trash_items", { effect: "delete" }), {
+        mode: "auto",
+      }).kind,
+      "confirm",
+    );
+    assert.equal(
+      authorizeOriginalAction(
+        action("apply_tags", { riskSignals: ["ambiguous_target"] }),
+        { mode: "auto" },
+      ).kind,
+      "confirm",
+    );
+    assert.equal(
+      authorizeOriginalAction(
+        {
+          ...action("file_write", { domain: "filesystem" }),
+          targets: ["/other/report.md"],
+        },
+        {
+          mode: "auto",
+          executionContext,
+        },
+      ).kind,
+      "confirm",
+    );
+    assert.equal(
+      authorizeOriginalAction(
+        {
+          ...action("file_write", { domain: "filesystem" }),
+          targets: ["/notes/report.md"],
+        },
+        {
+          mode: "auto",
+          executionContext,
+        },
+      ).kind,
+      "execute",
+    );
+  });
+
+  it("derives exclusive replacement risk from the concrete move parameters", function () {
+    const proposal = buildActionProposal({
+      tool: {
+        spec: {
+          name: "move_to_collection",
+          description: "",
+          inputSchema: {},
+          executionClass: "external_effect",
+          requiresConfirmation: false,
+        },
+        validate: (value: unknown) => ({ ok: true, value }),
+        execute: async () => ({}),
+      },
+      input: {},
+      plan: stateChangeInvocationPlan({
+        domains: ["zotero_library"],
+        reason: "Replace memberships",
+      }),
+      typedProposals: [
+        {
+          id: "move:1",
+          proofDomain: "zotero_state",
+          capability: "zotero.collections",
+          operation: "move_to_collection",
+          source: "library_mutation",
+          parameters: { sourceCollectionId: "all" },
+          requestedTargets: ["item:1"],
+          destinationCollectionIds: [2],
+        },
+      ],
+    });
+    assert.include(proposal.riskSignals, "exclusive_replacement");
+    assert.equal(
+      authorizeOriginalAction(proposal, { mode: "auto" }).kind,
+      "confirm",
+    );
+  });
   it("retains decoding of legacy execution restrictions for history", function () {
     assert.deepEqual(
       normalizeStoredActionConstraints([

@@ -31,7 +31,7 @@ export const catalog: Contract[] = [
     "semantic",
     "auto",
     false,
-    "Create a named destination, carry its verified native identity into a move, preserve unrelated memberships, and complete both steps without execution-model rounds.",
+    "Create a named destination, carry its verified native identity into a move, preserve unrelated memberships, and complete both steps with zero preliminary interpretation calls.",
   ),
   contract(
     "semantic.compound-clarified",
@@ -52,14 +52,14 @@ export const catalog: Contract[] = [
     "semantic",
     "auto",
     false,
-    "Paraphrases, multilingual moves, additive filing, real source clarification, and collection deletion execute with native verification and no execution-model rounds.",
+    "Paraphrases, multilingual moves, additive filing, real source clarification, and collection deletion execute through the direct model/tool loop with native verification.",
   ),
   contract(
     "semantic.move",
     "semantic",
     "auto",
     false,
-    "The exact ordinary move request resolves its implicit source, executes once without execution-model rounds, and verifies native source absence and destination presence.",
+    "The exact ordinary move request reaches the main model with zero preliminary interpretation calls, executes once, and verifies native source absence and destination presence.",
   ),
   contract(
     "semantic.compound",
@@ -88,15 +88,6 @@ export const catalog: Contract[] = [
     "auto",
     false,
     "Plan, approve, and execute the complete compound workflow with native evidence.",
-  ),
-  contract(
-    "semantic.transport",
-    "diagnostic",
-    "auto",
-    false,
-    "Read-only diagnostic: measure one semantic interpretation with the configured reasoning and a 180-second bounded transport; never execute its actions.",
-    [],
-    ["semantic-transport", "native-before", "native-after"],
   ),
   contract(
     "semantic.filing",
@@ -252,7 +243,9 @@ export const catalog: Contract[] = [
       "modes",
       mode,
       true,
-      "Exactly one child note is persisted without confirmation, with a saved-note card linking the exact native note.",
+      mode === "safe"
+        ? "Exactly one child note is persisted after Safe review, with a saved-note card linking the exact native note."
+        : "Exactly one child note is persisted without confirmation, with a saved-note card linking the exact native note.",
     ),
     contract(
       `modes.${mode}.metadata`,

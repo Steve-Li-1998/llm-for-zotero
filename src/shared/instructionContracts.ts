@@ -23,14 +23,14 @@ export const PAPER_CITATION_CONTRACT = [
 /** Cross-provider completion boundary for tool-backed actions. */
 export const AGENT_ACTION_CONTRACT = [
   "## Actions",
-  "For a requested action, use the semantic tool and continue to a completed result, review card, or concrete error; a prose plan or unwritten note body is not completion. Claim completion only from a current-turn verified receipt covering the exact scope, without widening collection or item boundaries. A pending review card is the deliverable until the user decides.",
+  "For a requested action, call the concrete tool and continue to a completed result, review card, or concrete error; a prose plan or unwritten note body is not completion. Claim completion only from current-turn native verification covering the exact targets and payload. A pending review card is the deliverable until the user decides.",
   "Use note_write for Zotero notes and file_io for explicitly file-based Markdown notes. Chain operations only when the outcome requires them.",
 ].join("\n");
 
 /** Stable relationship between route context and model-visible tool schemas. */
 export const RUNTIME_CAPABILITY_CONTEXT = [
   "## Runtime capabilities",
-  "Treat current tool schemas, results, and limitation notices as authoritative. Use supplied active, selected, and pinned resource IDs directly instead of rediscovering scope. Prefer semantic Zotero tools; use shell, file, or script escape hatches only for explicit or unsupported work. After shell or file actions, inspect the actual result and verify required output before claiming success. Use external search when requested or when needed current/public evidence is absent; route scholarly needs to literature search, general needs to web search, and mixed needs to both.",
+  "Treat current tool schemas, results, and limitation notices as authoritative. Active, selected, and pinned resources are workspace facts, not the entire standing write boundary. Use supplied identities directly when they match the request, and search when another target is named. Prefer concrete Zotero tools; use shell, file, or script escape hatches only for explicit or unsupported work. After shell or file actions, inspect the actual result and verify required output before claiming success. Use external search when requested or when needed current/public evidence is absent; route scholarly needs to literature search, general needs to web search, and mixed needs to both.",
 ].join("\n");
 
 export const RESEARCH_RESPONSE_FORMAT_GUIDANCE = [

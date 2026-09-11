@@ -255,7 +255,7 @@ describe("semantic tool surface", function () {
     assert.exists(registry.getTool("query_library"));
   });
 
-  it("exposes the semantic built-in surface and hides legacy primitive names", function () {
+  it("exposes the direct-agent built-in surface and hides legacy primitive names", function () {
     const registry = createTestBuiltInRegistry();
     const tools = registry.listToolsForRequest(baseContext.request);
     const names = tools.map((tool) => tool.name).sort();
@@ -275,6 +275,7 @@ describe("semantic tool surface", function () {
       "library_update",
       "literature_review",
       "literature_search",
+      "load_skill",
       "note_write",
       "note_write_batch",
       "paper_read",
@@ -282,6 +283,7 @@ describe("semantic tool surface", function () {
       "revert_changes",
       "run_command",
       "saved_search_update",
+      "submit_document",
       "undo_last_action",
       "workflow_script",
       "zotero_script",
@@ -2912,7 +2914,7 @@ describe("semantic tool surface", function () {
     } catch (error) {
       assert.match(
         error instanceof Error ? error.message : String(error),
-        /requires a resolved semantic reading intent/,
+        /requires compatible legacy turn intent or an approved full-read contract/,
       );
     }
     assert.deepEqual(prepared, []);

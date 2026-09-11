@@ -1,4 +1,3 @@
-import { loadWorkflowMaterial } from "../agent/documents/workflowMaterial";
 import { buildApprovedPlanExecutionInstructions } from "../agent/plans/executionInstructions";
 import { createAbortController } from "../utils/apiHelpers";
 import { readNativeQuestions } from "./nativeQuestions";
@@ -1348,6 +1347,7 @@ export function buildCodexNativeVisibleTurnContextBlockForTests(params: {
 
 function buildCodexNativeScopedMcpScope(params: {
   preparedRequest?: import("../agent/types").AgentRuntimeRequest;
+  executionContext?: import("../agent/types").AgentExecutionContext;
   scope: CodexNativeConversationScope;
   profileSignature: string;
   userText: string;
@@ -1356,8 +1356,6 @@ function buildCodexNativeScopedMcpScope(params: {
   reasoning?: ReasoningConfig;
   planContext?: import("../agent/plans/types").PlanRuntimeContext;
   actionContract?: import("../agent/contracts/types").AgentActionContract;
-  classifiedIntent?: import("../agent/types").ClassifiedTurnIntent;
-  skillRoutingReceipt?: import("../agent/types").AgentRuntimeRequest["skillRoutingReceipt"];
   actionPreparation?: import("../agent/contracts/actionPreparation").ActionPreparation;
   sourceMessageTimestamp?: number;
   skillContext?: CodexNativeSkillContext;
@@ -1394,9 +1392,10 @@ function buildCodexNativeScopedMcpScope(params: {
     codexPath: params.codexPath,
     reasoning: params.reasoning,
     planContext: params.planContext,
+    executionContext:
+      params.preparedRequest?.executionContext || params.executionContext,
     actionContract: params.actionContract,
     actionProgress: params.preparedRequest?.actionProgress,
-    classifiedIntent: params.classifiedIntent || params.actionContract?.intent,
     actionPreparation: params.actionPreparation,
     exhaustiveReadBackend: "codex_responses",
     turnPaperScope: resolvedRequest.turnPaperScope,
@@ -1405,6 +1404,7 @@ function buildCodexNativeScopedMcpScope(params: {
 }
 
 export function buildCodexNativeScopedMcpScopeForTests(params: {
+  executionContext?: import("../agent/types").AgentExecutionContext;
   scope: CodexNativeConversationScope;
   profileSignature: string;
   userText: string;
@@ -1413,8 +1413,6 @@ export function buildCodexNativeScopedMcpScopeForTests(params: {
   reasoning?: ReasoningConfig;
   planContext?: import("../agent/plans/types").PlanRuntimeContext;
   actionContract?: import("../agent/contracts/types").AgentActionContract;
-  classifiedIntent?: import("../agent/types").ClassifiedTurnIntent;
-  skillRoutingReceipt?: import("../agent/types").AgentRuntimeRequest["skillRoutingReceipt"];
   actionPreparation?: import("../agent/contracts/actionPreparation").ActionPreparation;
   sourceMessageTimestamp?: number;
   skillContext?: CodexNativeSkillContext;
@@ -2619,7 +2617,7 @@ function buildNativeDiagnostics(params: {
 }
 
 export async function runCodexAppServerNativeTurn(input: {
-  semanticRequest: import("../agent/types").AgentRuntimeRequest;
+  executionRequest: import("../agent/types").AgentRuntimeRequest;
   eventJournal: import("../agent/store/traceStore").AgentRunEventJournal;
   scope: CodexNativeConversationScope;
   conversationGeneration?: number;
@@ -2666,25 +2664,19 @@ export async function runCodexAppServerNativeTurn(input: {
   const params = {
     ...input,
     get planContext() {
-      return input.semanticRequest.planContext;
+      return input.executionRequest.planContext;
     },
     get actionContract() {
-      return input.semanticRequest.actionContract;
-    },
-    get classifiedIntent() {
-      return input.semanticRequest.classifiedIntent;
+      return input.executionRequest.actionContract;
     },
     get actionPreparation() {
-      return input.semanticRequest.actionPreparation;
-    },
-    get skillRoutingReceipt() {
-      return input.semanticRequest.skillRoutingReceipt;
+      return input.executionRequest.actionPreparation;
     },
     sourceMessageTimestamp:
-      Number(input.semanticRequest.metadata?.sourceMessageTimestamp) ||
+      Number(input.executionRequest.metadata?.sourceMessageTimestamp) ||
       undefined,
   };
-  if (input.semanticRequest.conversationKey !== input.scope.conversationKey)
+  if (input.executionRequest.conversationKey !== input.scope.conversationKey)
     throw new Error(
       "The prepared semantic request belongs to another conversation.",
     );
@@ -2812,7 +2804,7 @@ export async function runCodexAppServerNativeTurn(input: {
       const profileSignature =
         normalizeNonEmptyString(params.scope.profileSignature) ||
         getCodexProfileSignature();
-      const latestUserText = params.semanticRequest.userText;
+      const latestUserText = params.executionRequest.userText;
       const summary = await getCodexConversationSummary(
         params.scope.conversationKey,
       );
@@ -2825,6 +2817,7 @@ export async function runCodexAppServerNativeTurn(input: {
       const hostReceipts: import("../agent/contracts/types").AgentActionReceipt[] =
         [];
       let successfulHostToolResults = 0;
+      let submittedDocument = false;
       let latestPlanLedger: PlanExecutionLedger | undefined;
       const publishHost = async (
         event: import("../agent/types").AgentEvent,
@@ -2841,11 +2834,11 @@ export async function runCodexAppServerNativeTurn(input: {
         }
       };
       const planSession = new PlanExecutionRunSession(
-        params.semanticRequest,
+        params.executionRequest,
         publishHost,
       );
       const scopedMcpScope = buildCodexNativeScopedMcpScope({
-        preparedRequest: params.semanticRequest,
+        preparedRequest: params.executionRequest,
         scope: scopeWithProfile,
         profileSignature,
         userText: latestUserText,
@@ -2854,8 +2847,6 @@ export async function runCodexAppServerNativeTurn(input: {
         reasoning: params.reasoning,
         planContext,
         actionContract: params.actionContract,
-        classifiedIntent:
-          params.classifiedIntent || params.actionContract?.intent,
         actionPreparation: params.actionPreparation,
         sourceMessageTimestamp: params.sourceMessageTimestamp,
         skillContext,
@@ -2882,18 +2873,9 @@ export async function runCodexAppServerNativeTurn(input: {
       const publishAuthority = async () => {
         const authority = scopedMcp
           ? scopedMcp.getState()
-          : params.semanticRequest;
+          : params.executionRequest;
         if (!authority)
           throw new Error("The prepared native scope is no longer current.");
-        if (authority.classifiedIntent?.semantic)
-          await publishHost({
-            type: "provider_event",
-            providerType: "agent_semantic_intent",
-            payload: {
-              intent: authority.classifiedIntent,
-              clarificationHistory: authority.clarificationHistory || [],
-            },
-          });
         if (authority.actionPreparation)
           await publishHost({
             type: "provider_event",
@@ -3047,6 +3029,9 @@ export async function runCodexAppServerNativeTurn(input: {
               if (event.phase === "completed") {
                 hostReceipts.push(...(event.actionReceipts || []));
                 if (event.ok) successfulHostToolResults++;
+                if (event.ok && event.toolName === "submit_document") {
+                  submittedDocument = true;
+                }
               }
               const redactedEvent = redactTerminalValue(event);
               recordCodexNativeReadActivity({
@@ -3315,9 +3300,6 @@ export async function runCodexAppServerNativeTurn(input: {
             ? await resolveCodexNativeSkills({
                 scope: scopeWithProfile,
                 userText: latestUserText,
-                classifiedIntent:
-                  params.classifiedIntent || params.actionContract?.intent,
-                skillRoutingReceipt: params.skillRoutingReceipt,
                 model: params.model,
                 apiBase: params.codexPath,
                 signal: params.signal,
@@ -3330,29 +3312,26 @@ export async function runCodexAppServerNativeTurn(input: {
             : buildCodexNativeSkillRequest({
                 scope: scopeWithProfile,
                 userText: latestUserText,
-                classifiedIntent:
-                  params.classifiedIntent || params.actionContract?.intent,
-                skillRoutingReceipt: params.skillRoutingReceipt,
                 model: params.model,
                 apiBase: params.codexPath,
                 skillContext,
               });
         documentRequest.planContext = planContext;
         documentRequest.actionContract = params.actionContract;
-        documentRequest.classifiedIntent =
-          params.classifiedIntent || params.actionContract?.intent;
+        documentRequest.executionContext =
+          params.executionRequest.executionContext;
         const approvedPlanArtifact =
           planContext?.phase === "executing"
             ? await loadPlanArtifact(planContext.planId, planContext.revision)
             : null;
-        params.semanticRequest.planContext = planContext;
+        params.executionRequest.planContext = planContext;
         approvedExecutionSession = planSession;
         const initialized = await planSession.initialize();
         if (initialized.kind === "failed")
           throw new Error(initialized.userMessage);
-        planContext = params.semanticRequest.planContext;
+        planContext = params.executionRequest.planContext;
         documentRequest.planContext = planContext;
-        documentRequest.actionContract = params.semanticRequest.actionContract;
+        documentRequest.actionContract = params.executionRequest.actionContract;
         scopedMcpScope.planContext = planContext;
         scopedMcpScope.actionContract = documentRequest.actionContract;
         if (scopedMcp)
@@ -3705,17 +3684,15 @@ export async function runCodexAppServerNativeTurn(input: {
         const loadRequiredDocument = async (
           candidate: CodexNativeTurnResult,
         ) =>
-          params.semanticRequest.classifiedIntent?.semantic?.materialOutputs
-            ?.length
-            ? loadWorkflowMaterial(params.semanticRequest)
-            : planContext?.phase === "executing"
-              ? loadLatestPlanDocumentForExecution(planContext.executionId)
-              : candidate.turnId
-                ? loadLatestDocumentForRun(candidate.turnId)
-                : null;
-        let document = documentOutcomePolicy.required
-          ? await loadRequiredDocument(result)
-          : null;
+          planContext?.phase === "executing"
+            ? loadLatestPlanDocumentForExecution(planContext.executionId)
+            : candidate.turnId
+              ? loadLatestDocumentForRun(candidate.turnId)
+              : null;
+        let document =
+          documentOutcomePolicy.required || submittedDocument
+            ? await loadRequiredDocument(result)
+            : null;
         if (documentOutcomePolicy.required && !document) {
           result = await executePreparedThread({
             thread,
@@ -3748,7 +3725,6 @@ export async function runCodexAppServerNativeTurn(input: {
             : {
                 actionContract: params.actionContract,
                 actionPreparation: params.actionPreparation,
-                classifiedIntent: params.classifiedIntent,
               };
         let actionEvaluation = evaluatePreparedActionContract(
           currentAuthority(),
@@ -3774,8 +3750,9 @@ export async function runCodexAppServerNativeTurn(input: {
             skillIds: activatedSkillIds,
             planInstructions,
           });
-          if (documentOutcomePolicy.required)
+          if (documentOutcomePolicy.required || submittedDocument) {
             document = (await loadRequiredDocument(result)) || document;
+          }
           actionEvaluation = evaluatePreparedActionContract(
             currentAuthority(),
             hostReceipts,
@@ -3795,15 +3772,6 @@ export async function runCodexAppServerNativeTurn(input: {
           .filter(Boolean)
           .join("\n");
         const finalScope = scopedMcp?.getState();
-        if (finalScope?.classifiedIntent?.semantic)
-          await publishHost({
-            type: "provider_event",
-            providerType: "agent_semantic_intent",
-            payload: {
-              intent: finalScope.classifiedIntent,
-              clarificationHistory: finalScope.clarificationHistory || [],
-            },
-          });
         if (finalScope?.actionContract && finalScope.actionProgress) {
           finalScope.actionProgress.state = actionEvaluation.state;
           await publishHost({

@@ -59,6 +59,7 @@ type GrantAuthority =
 export class InvocationController {
   private readonly assessor: InvocationAssessor;
   private readonly frozenContract: string;
+  private readonly frozenExecutionContext: string;
   private amendment?: AuthorizedAmendment;
   /** Exact proposal the host authorized on the agent's judgment (yolo only). */
   private judgment?: { proposalDigest: string };
@@ -77,6 +78,9 @@ export class InvocationController {
   ) {
     this.assessor = new InvocationAssessor(tool, context, options, contracts);
     this.frozenContract = canonicalJson(context.request.actionContract || null);
+    this.frozenExecutionContext = canonicalJson(
+      context.request.executionContext || null,
+    );
   }
 
   async prepare(input: unknown): Promise<PreparedToolExecution> {
@@ -98,7 +102,7 @@ export class InvocationController {
       }
       const assessed = await this.assessor.assess(input, false);
       if (
-        this.options.inheritedApproval?.sourceMode === "approval" &&
+        this.options.inheritedApproval &&
         !assessed.scopeFailure &&
         assessed.authorization.kind !== "block"
       )
@@ -457,6 +461,8 @@ export class InvocationController {
     return (
       !this.context.signal?.aborted &&
       (!this.options.isExecutionAllowed || this.options.isExecutionAllowed()) &&
+      canonicalJson(this.context.request.executionContext || null) ===
+        this.frozenExecutionContext &&
       (!checkContract ||
         canonicalJson(this.context.request.actionContract || null) ===
           this.frozenContract)
@@ -534,11 +540,6 @@ export class InvocationController {
       )
     )
       return undefined;
-    const progress = this.context.request.actionProgress;
-    if (!progress || !this.context.checkpointActionProgress)
-      throw new Error(
-        "Action authorization could not be persisted before execution.",
-      );
     const authority = this.grantAuthority(assessed, userApproval);
     const grant = {
       version: 2 as const,
@@ -546,13 +547,34 @@ export class InvocationController {
       proposalDigest: assessed.proposal.payloadDigest,
       toolName: this.call.name,
       authority,
+      planEffectIds: assessed.planEffectIds,
       status: "staged" as "staged" | "executed" | "failed",
       createdAt: Date.now(),
     };
-    const grants = (progress.authorizationGrants ||= []);
+    const progress = this.context.request.actionProgress;
+    const legacyContractGrant = Boolean(
+      this.context.request.actionContract &&
+      progress &&
+      this.context.checkpointActionProgress,
+    );
+    if (!legacyContractGrant) {
+      await recordJournalObservation({
+        actionId: this.context.journalActionScope?.actionId,
+        event: "original_authorization_prepared",
+        objectType: "tool_invocation",
+        objectIds: [this.context.runId!, this.call.id],
+        extra: {
+          grant,
+          libraryID: this.context.request.executionContext?.chatLibraryID,
+          proposal: assessed.proposal,
+        },
+      });
+      return grant;
+    }
+    const grants = (progress!.authorizationGrants ||= []);
     grants.push(grant);
     try {
-      await this.context.checkpointActionProgress();
+      await this.context.checkpointActionProgress!();
     } catch (error) {
       grants.splice(grants.indexOf(grant), 1);
       throw new Error(
@@ -560,6 +582,34 @@ export class InvocationController {
       );
     }
     return grant;
+  }
+
+  private async recordGrantOutcome(
+    grant: Awaited<ReturnType<InvocationController["stageAuthority"]>>,
+    status: "executed" | "failed",
+    extra: Record<string, unknown>,
+  ): Promise<void> {
+    if (!grant || !this.context.runId) return;
+    const external = grant.authority === "external_runtime";
+    await recordJournalObservation({
+      actionId: this.context.journalActionScope?.actionId,
+      event: external
+        ? status === "executed"
+          ? "external_execution_completed"
+          : "external_execution_failed"
+        : status === "executed"
+          ? "original_execution_completed"
+          : "original_execution_failed",
+      objectType: "tool_invocation",
+      objectIds: [this.context.runId, this.call.id],
+      extra: { authority: grant.authority, ...extra },
+    }).catch((error) => {
+      // Mutation receipts remain authoritative. A supplementary audit failure
+      // must not invite replay of an action whose native outcome is already known.
+      Zotero.debug?.(
+        `Execution authorization audit could not be recorded: ${String(error)}`,
+      );
+    });
   }
 
   private async completeAmendment() {
@@ -700,25 +750,11 @@ export class InvocationController {
                   )
                 ? "applied"
                 : undefined;
-        if (this.context.authorization?.kind === "external_runtime" && grant) {
-          await recordJournalObservation({
-            event: "external_execution_completed",
-            objectType: "tool_invocation",
-            objectIds: [this.context.runId!, this.call.id],
-            extra: {
-              authority: grant.authority,
-              effect,
-              actionEvidence: output.actionEvidence,
-              content: output.content,
-            },
-          }).catch((error) => {
-            // The mutation journal and native receipts remain authoritative.
-            // A supplementary audit failure must not invite replay of a saved write.
-            Zotero.debug?.(
-              `External execution audit could not be recorded: ${String(error)}`,
-            );
-          });
-        }
+        await this.recordGrantOutcome(grant, "executed", {
+          effect,
+          actionEvidence: output.actionEvidence,
+          content: output.content,
+        });
         return this.result({
           tool: this.tool,
           input: assessed.input,
@@ -745,14 +781,9 @@ export class InvocationController {
         });
       } catch (error) {
         if (grant) grant.status = "failed";
-        if (this.context.authorization && grant) {
-          await recordJournalObservation({
-            event: "external_execution_failed",
-            objectType: "tool_invocation",
-            objectIds: [this.context.runId!, this.call.id],
-            extra: { authority: "external_runtime", error: String(error) },
-          }).catch(() => undefined);
-        }
+        await this.recordGrantOutcome(grant, "failed", {
+          error: String(error),
+        });
         await this.failAmendment(error);
         return this.result(this.failure(assessed.input, error, assessed));
       }

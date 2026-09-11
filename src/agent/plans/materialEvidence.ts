@@ -58,6 +58,7 @@ export async function attachPlanMaterialEvidence(
       type: "material_integrity",
       materialOutputId: outputId,
       documentId: document.documentId,
+      documentVersion: document.documentVersion,
       contentHash: document.contentHash,
       integrityValidated: true,
     },

@@ -64,7 +64,9 @@ export function buildApprovedPlanExecutionInstructions(
           : "") +
         (task.actionIndexes
           ? `   Fulfill semantic actionIndexes=${JSON.stringify(task.actionIndexes)}.\n`
-          : "") +
+          : task.effectIds
+            ? `   Fulfill approved effectIds=${JSON.stringify(task.effectIds)}.\n`
+            : "") +
         `   Acceptance: ${task.acceptanceCriteria
           .map((criterion) =>
             typeof criterion === "string" ? criterion : criterion.description,

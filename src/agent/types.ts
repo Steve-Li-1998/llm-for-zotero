@@ -45,10 +45,17 @@ import type {
 } from "./contracts/types";
 import type {
   PlanEvent,
+  PlanEffectSpecification,
   PlanRuntimeContext,
   TrustedReadObservation,
 } from "./plans/types";
+import type { ResolvedPlanMaterialBinding } from "./plans/effectAuthorization";
 import type { SkillRoutingReceipt } from "./skills/routingTypes";
+import type { LoadedSkillRecord } from "./skills/loadingTypes";
+import type {
+  ExecutionCheckpoint,
+  ExecutionEvidenceInventory,
+} from "./execution/types";
 
 export type {
   ApprovedPlanGrant,
@@ -83,6 +90,13 @@ export type {
   AgentActionReceipt,
   AgentToolActionDescriptor,
 } from "./contracts/types";
+
+export type {
+  ExecutionCheckpoint,
+  ExecutionCheckpointTask,
+  ExecutionCheckpointTaskUpdate,
+  ExecutionEvidenceInventory,
+} from "./execution/types";
 
 export type AgentRequest = {
   conversationKey: number;
@@ -388,6 +402,10 @@ export type ToolSpec = {
 export type AgentEvent =
   | PlanEvent
   | {
+      type: "execution_checkpoint";
+      checkpoint: ExecutionCheckpoint;
+    }
+  | {
       type: "provider_event";
       providerType?: string;
       sessionId?: string;
@@ -650,8 +668,8 @@ export type ExhaustiveReadBackend =
   | "unavailable";
 
 /**
- * Language-independent turn intent produced by the per-turn classifier LLM
- * call, used as a default (never an override) by retrieval and routing.
+ * Legacy classifier-era intent retained for deterministic decoding of stored
+ * Plans and checkpoints. Fresh ordinary turns leave this absent.
  */
 export type ClassifiedTurnIntent = {
   retrievalIntent: "enumerate" | "verify" | "summarize" | "none";
@@ -670,19 +688,73 @@ export type ClassifiedTurnIntent = {
   actionIntents: AgentActionIntent[];
 };
 
+/**
+ * Host-created facts for one main-agent execution.
+ *
+ * This deliberately contains no predicted operations or model-authored
+ * authority. Concrete tool calls are assessed against these frozen facts at
+ * the invocation boundary.
+ */
+export type AgentExecutionContext = Readonly<{
+  version: 1;
+  executionId: string;
+  conversationKey: number;
+  conversationGeneration: number;
+  chatLibraryID?: number;
+  permissionOwner: "original_agent" | "approved_plan" | "external_runtime";
+  workspaceSnapshot: Readonly<{
+    activePaper?: Readonly<{
+      libraryID: number;
+      itemId: number;
+      contextItemId: number;
+      title: string;
+    }>;
+    selectedPapers: readonly Readonly<{
+      libraryID: number;
+      itemId: number;
+      contextItemId: number;
+      title: string;
+    }>[];
+    selectedCollections: readonly Readonly<{
+      libraryID: number;
+      collectionId: number;
+      name: string;
+    }>[];
+    activeNote?: Readonly<{
+      noteId: number;
+      parentItemId?: number;
+      title: string;
+    }>;
+  }>;
+  configuredAccess: Readonly<{
+    libraryIDs: readonly number[];
+    outputDirectories: readonly string[];
+  }>;
+  approvedPlanBinding?: Readonly<{
+    planId: string;
+    revision: number;
+    approvedDigest: string;
+  }>;
+}>;
+
 export type AgentRuntimeRequestInput = AgentRequest & {
   /** Set by the host entry point, never by model tool arguments. */
   actionEntryPoint?: "action_ui" | "conversation";
   /** Generation captured when this turn started; Clear advances it. */
   conversationGeneration?: number;
-  /** Set by the runtime after per-turn classification; absent on fallback. */
+  /** Host-created execution facts. Fresh UI requests leave this unset. */
+  executionContext?: AgentExecutionContext;
+  /** Latest durable ordinary-work progress. This record never grants authority. */
+  executionCheckpoint?: ExecutionCheckpoint;
+  /** Exact skill instructions loaded or forced by the host for this workflow. */
+  loadedSkillRecords?: LoadedSkillRecord[];
+  /** Legacy stored-artifact compatibility; absent on fresh ordinary turns. */
   classifiedIntent?: ClassifiedTurnIntent;
-  /** Internal per-turn action obligations. Persisted with transcript events. */
+  /** Legacy or approved-Plan obligations; absent on fresh ordinary turns. */
   actionContract?: AgentActionContract;
   /** Mutable completion state kept separate from the immutable contract. */
   actionProgress?: AgentActionProgressLedger;
   actionPreparation?: import("./contracts/actionPreparation").ActionPreparation;
-  semanticProvider?: { kind: "claude"; baseUrl: string };
   clarificationHistory?: Array<{ question: string; answer: string }>;
 
   /** One-shot Plan collaboration state owned by the durable plan store. */
@@ -994,6 +1066,22 @@ export type AgentToolContext = {
   checkpointActionProgress?: () => Promise<void>;
   /** Publish a normalized, durable plan/task projection event. */
   publishPlanEvent?: (event: PlanEvent) => Promise<void>;
+  /** Persist one complete ordinary-work checkpoint through the run trace. */
+  publishExecutionCheckpoint?: (
+    checkpoint: ExecutionCheckpoint,
+  ) => Promise<void>;
+  /** Resolve host-known evidence that ordinary task progress may reference. */
+  loadExecutionEvidence?: () => Promise<ExecutionEvidenceInventory>;
+  /** Host-owned v5 Plan scope resolved from the approved artifact and ledger. */
+  loadApprovedPlanEffectContext?: () => Promise<
+    | Readonly<{
+        specification: PlanEffectSpecification;
+        activeEffectIds: readonly string[];
+        resolvedMaterials: readonly ResolvedPlanMaterialBinding[];
+        resolvedTargetBindings: Readonly<Record<string, readonly string[]>>;
+      }>
+    | undefined
+  >;
 };
 
 export type AgentToolInputValidation<T> =

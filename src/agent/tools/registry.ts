@@ -1,4 +1,3 @@
-import { isSelfContainedSelectionEdit } from "../model/noteEditingPolicy";
 import { defaultInvocationPlan } from "../authorization/invocationPlan";
 import type { ActionContractService } from "../contracts/actionContract";
 import type { PlanAmendmentService } from "../plans/amendments";
@@ -43,6 +42,115 @@ function assertPortableModelToolSchema(spec: ToolSpec): void {
   }
 }
 
+/**
+ * Keep provider-bound schemas structural and compact.
+ *
+ * Tool and operation semantics live in the tool description while JSON Schema
+ * owns accepted fields, required values, enums, and numeric bounds. Repeating
+ * prose on every nested property more than doubled the fixed tool payload for
+ * every model round without strengthening host validation.
+ */
+function compactModelSchema(value: unknown, propertyMap = false): unknown {
+  if (Array.isArray(value))
+    return value.map((entry) => compactModelSchema(entry));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(
+        ([key]) =>
+          propertyMap ||
+          (key !== "description" && key !== "title" && key !== "examples"),
+      )
+      .map(([key, entry]) => [
+        key,
+        compactModelSchema(entry, key === "properties"),
+      ]),
+  );
+}
+
+const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  workflow_script:
+    "Compose tool loops or conditions; each call keeps its permission and receipt boundary.",
+  library_search:
+    "Find or count Zotero items, collections, notes, tags, searches, or libraries.",
+  library_read:
+    "Read Zotero metadata, notes, annotations, attachments, or memberships.",
+  library_retrieve:
+    "Retrieve ranked paper evidence from a library scope with explicit coverage.",
+  paper_read:
+    "Read papers by overview, targeted, full, figures, visual, or visible-page mode.",
+  literature_search:
+    "Search scholarly sources and save candidates; import only on request.",
+  literature_review:
+    "Present ranked saved candidates for selection without import.",
+  library_update:
+    "Change tags, metadata, memberships, parents, or Related links. Move removes its named source.",
+  collection_update: "Create or delete Zotero collections.",
+  note_write:
+    "Create, append, or edit one Zotero note. documentId reuses finalized material.",
+  note_write_batch:
+    "Write notes to explicitly identified items as one checkpointed batch.",
+  saved_search_update: "Create, replace, or delete a Zotero saved search.",
+  library_cite:
+    "Format Zotero CSL citations or bibliographies, or export with a translator.",
+  library_settings: "Read or change supported Zotero settings and sync state.",
+  library_import:
+    "Add Zotero items from identifiers, local files, or explicit manual metadata.",
+  library_delete:
+    "Trash or restore Zotero objects, or merge duplicates into a named master.",
+  attachment_update: "Delete, rename, or relink Zotero attachments.",
+  undo_last_action: "Undo the latest reversible journaled action in this chat.",
+  revert_changes:
+    "Inspect or revert durable actions; use dryRun for conflicts.",
+  annotate_pdf:
+    "Add a PDF highlight and optional comment using PDF-space rectangles.",
+  file_io:
+    "Read or write explicit local files, including partial text and image artifacts.",
+  run_command:
+    "Run an explicit shell command and return its output and exit code.",
+  zotero_script: "Run Zotero JavaScript with declared access and effect.",
+  load_skill:
+    "Load exact instructions for an installed skill ID; this grants no authority.",
+  request_user_input:
+    "Ask up to three questions when required input cannot be found.",
+  submit_document:
+    "Persist validated Markdown and evidence as a versioned material reference.",
+  update_plan: "Create or revise a read-only explicit Plan artifact.",
+  prepare_plan_execution:
+    "Approve and start execution of the exact reviewed Plan revision.",
+  task_update:
+    "Update tracked work; completion requires host-verifiable evidence.",
+  research_update:
+    "Persist verified research claims, relationships, work, and evidence.",
+  amend_plan:
+    "Propose an explicit change to approved Plan scope for renewed review.",
+  approve_research_expansion: "Review a bounded research-scope expansion.",
+  approve_research_mutation:
+    "Review exact effects derived during approved research.",
+};
+
+function modelToolSpec(spec: ToolSpec): ToolSpec {
+  const compactSchema = compactModelSchema(spec.inputSchema) as Record<
+    string,
+    unknown
+  >;
+  const inputSchema =
+    spec.executionClass === "external_effect"
+      ? {
+          ...compactSchema,
+          properties: {
+            ...((compactSchema.properties as Record<string, unknown>) || {}),
+            review: { type: "boolean" },
+          },
+        }
+      : compactSchema;
+  return {
+    ...spec,
+    description: MODEL_TOOL_DESCRIPTIONS[spec.name] || spec.description,
+    inputSchema,
+  };
+}
+
 export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentToolDefinition<any, any>>();
 
@@ -54,6 +162,7 @@ export class AgentToolRegistry {
   async createActionContract(
     request: AgentRuntimeRequest,
   ): Promise<NonNullable<AgentRuntimeRequest["actionContract"]> | null> {
+    if (!request.classifiedIntent?.semantic) return null;
     if (this.actionContracts) {
       return this.actionContracts.createContract(request);
     }
@@ -136,17 +245,9 @@ export class AgentToolRegistry {
   private filterToolsForRequest(
     request: AgentRuntimeRequest,
   ): AgentToolDefinition<any, any>[] {
-    const selectionEdit = isSelfContainedSelectionEdit(request);
-    const noteTools = new Set([
-      "note_write",
-      "library_read",
-      "request_user_input",
-    ]);
     return Array.from(this.tools.values()).filter(
       (tool) =>
-        this.isModelVisibleTool(tool) &&
-        tool.isAvailable?.(request) !== false &&
-        (!selectionEdit || noteTools.has(tool.spec.name)),
+        this.isModelVisibleTool(tool) && tool.isAvailable?.(request) !== false,
     );
   }
 
@@ -171,7 +272,7 @@ export class AgentToolRegistry {
         (tool) =>
           this.isModelVisibleTool(tool) && tool.spec.localAgentOnly !== true,
       )
-      .map((tool) => tool.spec);
+      .map((tool) => modelToolSpec(tool.spec));
   }
 
   listToolDefinitions(): AgentToolDefinition<any, any>[] {
@@ -179,7 +280,9 @@ export class AgentToolRegistry {
   }
 
   listToolsForRequest(request: AgentRuntimeRequest): ToolSpec[] {
-    return this.filterToolsForRequest(request).map((tool) => tool.spec);
+    return this.filterToolsForRequest(request).map((tool) =>
+      modelToolSpec(tool.spec),
+    );
   }
 
   listToolDefinitionsForRequest(
@@ -216,7 +319,29 @@ export class AgentToolRegistry {
         { inputRejected: true },
       );
     }
-    const validation = tool.validate(call.arguments);
+    const suppliedArguments =
+      call.arguments &&
+      typeof call.arguments === "object" &&
+      !Array.isArray(call.arguments)
+        ? (call.arguments as Record<string, unknown>)
+        : undefined;
+    const requestedReview = suppliedArguments?.review === true;
+    const toolArguments = suppliedArguments
+      ? Object.fromEntries(
+          Object.entries(suppliedArguments).filter(([key]) => key !== "review"),
+        )
+      : call.arguments;
+    if (
+      suppliedArguments?.review !== undefined &&
+      typeof suppliedArguments.review !== "boolean"
+    ) {
+      return createSyntheticErrorResult(
+        call,
+        `Invalid tool input for ${call.name}: review must be true or false.`,
+        { inputRejected: true },
+      );
+    }
+    const validation = tool.validate(toolArguments);
     if (!validation.ok) {
       const validationError =
         call.name === "library_search" &&
@@ -235,10 +360,13 @@ export class AgentToolRegistry {
     }
 
     return new InvocationController(
-      call,
+      { ...call, arguments: toolArguments },
       tool,
       context,
-      options,
+      {
+        ...options,
+        forceConfirmation: options.forceConfirmation || requestedReview,
+      },
       this.actionContracts,
       this.planAmendments,
     ).prepare(validation.value);

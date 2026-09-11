@@ -608,20 +608,15 @@ describe("provider permission modes", function () {
         entry.description,
       ]),
     );
-    assert.include(
-      byKey["original:safe"],
-      "Requested new notes are created directly",
-    );
-    assert.include(byKey["original:safe"], "shown for review first");
+    assert.include(byKey["original:safe"], "including new-note creation");
+    assert.include(byKey["original:safe"], "shown for review");
     assert.notInclude(byKey["original:safe"], "filesystem reads");
-    assert.include(byKey["original:auto"], "applied and then shown as a diff");
-    assert.notInclude(byKey["original:auto"], "require review");
+    assert.include(byKey["original:auto"], "this chat's library");
+    assert.include(byKey["original:auto"], "shown for review");
     assert.include(byKey["original:yolo"], "own judgment");
     assert.include(byKey["original:yolo"], "beyond the literal request");
-    assert.include(byKey["original:yolo"], "Claude Code or Codex");
-    // Every rail that still blocks in yolo has to be named, or the option
-    // understates what the mode leaves enforced.
-    assert.include(byKey["original:yolo"], "chat-only memory");
+    assert.include(byKey["original:yolo"], "Claude Code, Codex");
+    assert.include(byKey["original:yolo"], "Configured access");
     assert.include(
       byKey["original:yolo"],
       "paper selection card before importing discovered papers",

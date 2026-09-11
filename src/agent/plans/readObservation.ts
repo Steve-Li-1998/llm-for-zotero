@@ -258,14 +258,14 @@ function zoteroIdentity(source: Candidate): {
   itemKey: string;
   attachmentItemKey?: string;
 } | null {
+  const items = globalThis.Zotero?.Items;
+  if (!items?.get) return null;
   const contextItem = source.contextItemId
-    ? Zotero.Items.get(source.contextItemId)
+    ? items.get(source.contextItemId)
     : null;
-  const bibliographicItem = source.itemId
-    ? Zotero.Items.get(source.itemId)
-    : null;
+  const bibliographicItem = source.itemId ? items.get(source.itemId) : null;
   const parent = contextItem?.parentID
-    ? Zotero.Items.get(Number(contextItem.parentID))
+    ? items.get(Number(contextItem.parentID))
     : null;
   const item = bibliographicItem || parent || contextItem;
   const itemKey = text(item?.key);

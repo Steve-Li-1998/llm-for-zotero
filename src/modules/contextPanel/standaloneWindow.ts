@@ -41,6 +41,10 @@ import {
 } from "./prefHelpers";
 import { buildUI } from "./buildUI";
 import {
+  createHistoryActivityIndicator,
+  observeHistoryActivity,
+} from "./historyActivity";
+import {
   disposeSetupHandlers,
   setupHandlers,
   type ContextPreviewRenderMetrics,
@@ -678,6 +682,7 @@ export function openStandaloneChat(options?: {
   let initialRuntimeModeSeeded = false;
   let standaloneAttachmentGcTimer: number | null = null;
   let unsubscribeStandalonePendingDeletions: (() => void) | null = null;
+  let disposeHistoryActivity: (() => void) | null = null;
   let themeObserver: {
     observe(target: Node, options: MutationObserverInit): void;
     disconnect(): void;
@@ -987,6 +992,7 @@ export function openStandaloneChat(options?: {
       lowerArea.className = "llm-standalone-lower";
 
       const sidebarView = createStandaloneSidebarView(doc, t);
+      disposeHistoryActivity = observeHistoryActivity(sidebarView.list);
       const sidebar = sidebarView.root;
       const sidebarPanel = sidebarView.panel;
       const iconSidebarToggle = sidebarView.toggleButton;
@@ -1941,7 +1947,16 @@ export function openStandaloneChat(options?: {
             deleteBtn.setAttribute("aria-label", t("Delete conversation"));
             deleteBtn.title = t("Delete conversation");
             deleteBtn.dataset.action = "delete";
-            btn.append(titleSpan, renameBtn, deleteBtn);
+            btn.append(
+              createHistoryActivityIndicator(
+                doc,
+                conv.conversationKey,
+                t("Working"),
+              ),
+              titleSpan,
+              renameBtn,
+              deleteBtn,
+            );
             btn.title = conv.title || t("Untitled chat");
             sidebarList.appendChild(btn);
           }
@@ -4261,6 +4276,8 @@ export function openStandaloneChat(options?: {
 
   const cleanupWindow = () => {
     cancelled = true;
+    disposeHistoryActivity?.();
+    disposeHistoryActivity = null;
     unsubscribeStandalonePendingDeletions?.();
     unsubscribeStandalonePendingDeletions = null;
     cleanupStandalonePrefObserver?.();

@@ -92,6 +92,22 @@ export function nextRequestId(): number {
 const pendingRequestIds = new Map<number, number>();
 const cancelledRequestIds = new Map<number, number>();
 const abortControllers = new Map<number, AbortController | null>();
+const requestActivityListeners = new Set<(conversationKey: number) => void>();
+
+export function subscribeRequestActivity(
+  listener: (conversationKey: number) => void,
+): () => void {
+  requestActivityListeners.add(listener);
+  return () => requestActivityListeners.delete(listener);
+}
+
+function notifyRequestActivityChanged(
+  conversationKey: number,
+  wasPending: boolean,
+): void {
+  if (wasPending === isRequestPending(conversationKey)) return;
+  for (const listener of requestActivityListeners) listener(conversationKey);
+}
 
 function normalizeConversationKey(value: unknown): number {
   const key = Math.floor(Number(value || 0));
@@ -197,6 +213,7 @@ export function tryBeginRequest(
   if (!key || requestId <= 0 || pendingRequestIds.has(key)) return false;
   pendingRequestIds.set(key, requestId);
   if (abortController) abortControllers.set(key, abortController);
+  notifyRequestActivityChanged(key, false);
   return true;
 }
 
@@ -219,6 +236,7 @@ export function finishRequest(
   pendingRequestIds.delete(key);
   livePlanExecutions.delete(key);
   abortControllers.delete(key);
+  notifyRequestActivityChanged(key, true);
   return true;
 }
 
@@ -240,6 +258,8 @@ export function transferRequest(
   abortControllers.delete(fromKey);
   pendingRequestIds.set(toKey, requestId);
   if (abortController) abortControllers.set(toKey, abortController);
+  notifyRequestActivityChanged(fromKey, true);
+  notifyRequestActivityChanged(toKey, false);
   return true;
 }
 
@@ -248,6 +268,7 @@ export function setPendingRequestId(
   id: number,
   expectedCurrentId?: number,
 ): void {
+  const wasPending = isRequestPending(conversationKey);
   if (
     id <= 0 &&
     expectedCurrentId !== undefined &&
@@ -263,6 +284,7 @@ export function setPendingRequestId(
       livePlanExecutions.delete(conversationKey);
     pendingRequestIds.set(conversationKey, id);
   }
+  notifyRequestActivityChanged(conversationKey, wasPending);
 }
 
 export function getCancelledRequestId(conversationKey: number): number {
@@ -338,8 +360,7 @@ export function clearConversationOwnedRuntimeState(
   selectedRuntimeModeCache.delete(key);
   draftInputCache.delete(key);
   webChatDraftInputCache.delete(key);
-  pendingRequestIds.delete(key);
-  livePlanExecutions.delete(key);
+  setPendingRequestId(key, 0);
   abortControllers.delete(key);
   autoLockedGlobalConversationKeys.delete(key);
 
@@ -677,7 +698,10 @@ export function clearAllState(): void {
   pinnedPaperKeys.clear();
   recentReaderSelectionCache.clear();
   activePaperConversationByPaper.clear();
+  const pendingKeys = [...pendingRequestIds.keys()];
   pendingRequestIds.clear();
+  for (const key of pendingKeys) notifyRequestActivityChanged(key, true);
+  requestActivityListeners.clear();
   livePlanExecutions.clear();
   cancelledRequestIds.clear();
   abortControllers.clear();

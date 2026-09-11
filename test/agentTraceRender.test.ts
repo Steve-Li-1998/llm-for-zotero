@@ -1186,7 +1186,7 @@ describe("agentTrace render", function () {
   it("phase-anchors every reconstructed continuous progress animation", function () {
     const css = readFileSync("addon/content/zoteroPane.css", "utf8");
     const relevantSelector =
-      /(?:llm-at-(?:row-)?planning|llm-typing-dot|llm-plan-progress-trigger-dot|llm-plan-task-badge-in_progress|llm-compact-marker-pending)/;
+      /(?:llm-at-(?:row-)?planning|llm-text-shimmer|llm-typing-dot|llm-plan-progress-trigger-dot|llm-plan-task-badge-in_progress|llm-compact-marker-pending)/;
     const infiniteRules = Array.from(
       css.matchAll(/animation:[^;]*\binfinite\b[^;]*;/g),
     ).flatMap((match) => {
@@ -1502,6 +1502,51 @@ describe("agentTrace render", function () {
     }
   });
 
+  it("shimmers only the active status words and stops on the retained completed header", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 2_000,
+      runMode: "agent" as const,
+      streaming: true,
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-working-shimmer",
+        seq: 1,
+        eventType: "status",
+        payload: { type: "status", text: "Reading the paper" },
+        createdAt: 1_000,
+      },
+    ];
+    const trace = renderAgentTrace({ doc: fakeDocument, message, events })!;
+    const rendered = trace as unknown as FakeElement;
+    const summary = rendered.findByClass("llm-agent-activity-summary")!;
+    assert.equal(summary.textContent, "Working");
+    assert.isTrue(summary.classList.contains("llm-text-shimmer"));
+    assert.lengthOf(summary.findAllByClass("llm-at-planning-drive-pixel"), 0);
+
+    message.streaming = false;
+    const completed = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+      previous: trace,
+    }) as unknown as FakeElement;
+    assert.strictEqual(
+      completed.findByClass("llm-agent-activity-summary"),
+      summary,
+    );
+    assert.isFalse(summary.classList.contains("llm-text-shimmer"));
+    assert.match(summary.textContent, /^Worked for /);
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    assert.match(css, /\.llm-text-shimmer\s*\{[^}]*llm-planning-text-shimmer/);
+    assert.match(
+      css,
+      /prefers-reduced-motion: reduce[\s\S]*\.llm-text-shimmer/,
+    );
+  });
+
   it("expands activity while streaming and collapses it when complete", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -1543,7 +1588,7 @@ describe("agentTrace render", function () {
     );
     assert.equal(
       workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
-      "Working…",
+      "Working",
     );
 
     message.streaming = false;
@@ -1593,7 +1638,7 @@ describe("agentTrace render", function () {
     }) as unknown as FakeElement;
     assert.equal(
       planning.findByClass("llm-agent-activity-summary")?.textContent,
-      "Planning…",
+      "Planning",
     );
     const planningRow = planning.findByClass("llm-at-row-planning-active");
     assert.isNotNull(planningRow);
@@ -1617,7 +1662,7 @@ describe("agentTrace render", function () {
     }) as unknown as FakeElement;
     assert.equal(
       executing.findByClass("llm-agent-activity-summary")?.textContent,
-      "Executing plan…",
+      "Executing plan",
     );
     assert.isNull(executing.findByClass("llm-at-planning-drive"));
   });
@@ -2282,7 +2327,7 @@ describe("agentTrace render", function () {
     assert.isTrue(workingDetails?.open);
     assert.equal(
       workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
-      "Working…",
+      "Working",
     );
     assert.deepEqual(
       (workingDetails?.findAllByClass("llm-agent-process-message") || [])

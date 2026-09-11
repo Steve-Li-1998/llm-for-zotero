@@ -2226,6 +2226,32 @@
   text-overflow: clip;
 }
 
+.llm-history-activity {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--color-accent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: llm-plan-progress-spin 900ms linear infinite;
+}
+
+.llm-history-activity[hidden] {
+  display: none;
+}
+
+.llm-standalone-conv-item > .llm-history-activity {
+  margin-inline-end: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .llm-history-activity {
+    animation: none;
+  }
+}
+
 .llm-standalone-conv-rename,
 .llm-standalone-conv-delete {
   appearance: none;
@@ -4888,6 +4914,10 @@
   transition: transform 120ms ease;
 }
 
+.llm-agent-activity-summary.llm-text-shimmer::after {
+  color: var(--fill-tertiary);
+}
+
 .llm-agent-activity-details[open] > .llm-agent-activity-summary::after {
   transform: rotate(90deg);
 }
@@ -5639,7 +5669,7 @@ label.llm-search-results-item:hover {
   animation-delay: calc(var(--llm-stable-animation-delay, 0ms) + 270ms);
 }
 
-.llm-at-row-planning-active .llm-at-plan-text {
+.llm-text-shimmer {
   background: linear-gradient(
     90deg,
     var(--fill-tertiary) 35%,
@@ -5677,7 +5707,7 @@ label.llm-search-results-item:hover {
 
 @media (prefers-reduced-motion: reduce) {
   .llm-at-planning-drive-pixel,
-  .llm-at-row-planning-active .llm-at-plan-text {
+  .llm-text-shimmer {
     animation: none;
   }
 
@@ -5686,7 +5716,7 @@ label.llm-search-results-item:hover {
     transform: none;
   }
 
-  .llm-at-row-planning-active .llm-at-plan-text {
+  .llm-text-shimmer {
     background: none;
     color: var(--fill-secondary);
   }

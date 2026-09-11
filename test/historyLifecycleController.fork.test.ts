@@ -169,6 +169,9 @@ class FakeElement {
   querySelector(): FakeElement | null {
     return null;
   }
+  querySelectorAll(): FakeElement[] {
+    return [];
+  }
 
   closest(): FakeElement | null {
     return null;

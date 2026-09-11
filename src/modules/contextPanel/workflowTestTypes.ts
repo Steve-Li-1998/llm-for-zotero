@@ -645,6 +645,10 @@ export type WorkflowTestApi = {
   }) => Promise<WorkflowTestRuntimeGeometry>;
   exerciseStandaloneComposerManualResize: () => Promise<WorkflowTestStandaloneComposerResizeDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
+  withPendingStandaloneSend: (
+    text: string,
+    inspect: () => Promise<void>,
+  ) => Promise<void>;
   startNewStandaloneConversation: () => Promise<WorkflowTestStandaloneDiagnostics>;
   clickStandaloneReasoningOption: (label: string) => Promise<void>;
   getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;

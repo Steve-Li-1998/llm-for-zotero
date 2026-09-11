@@ -257,15 +257,16 @@ function appendAgentActivityDisclosure(params: {
   const summary =
     details.querySelector?.("summary") || doc.createElement("summary");
   summary.className = "llm-agent-activity-summary";
+  summary.classList.toggle("llm-text-shimmer", working);
   const duration = formatAgentActivityDuration(
     resolveAgentActivityDurationMs(message, userMessage, events),
   );
   summary.textContent = working
     ? planPhase === "planning"
-      ? "Planning…"
+      ? "Planning"
       : planPhase === "executing"
-        ? "Executing plan…"
-        : "Working…"
+        ? "Executing plan"
+        : "Working"
     : planPhase === "planning"
       ? `Planned in ${duration}`
       : planPhase === "executing"
@@ -5846,6 +5847,7 @@ export function renderAgentTrace({
     }
     const text = doc.createElement("span");
     text.className = `llm-at-text llm-at-${itemEntry.row.kind}-text`;
+    if (isActivePlanningRow) text.classList.add("llm-text-shimmer");
     text.textContent = itemEntry.row.text;
     if (isExpandable) {
       row.append(icon, text);

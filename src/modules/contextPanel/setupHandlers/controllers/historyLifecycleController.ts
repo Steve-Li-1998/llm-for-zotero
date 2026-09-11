@@ -1,5 +1,6 @@
 import { createElement } from "../../../../utils/domHelpers";
 import { t } from "../../../../utils/i18n";
+import { createHistoryActivityIndicator } from "../../historyActivity";
 import type { ConversationSystem } from "../../../../shared/types";
 import {
   loadTruncatedConversationIndexMatches,
@@ -1410,6 +1411,13 @@ export function createHistoryLifecycleController(
           body.ownerDocument as Document,
           "span",
           "llm-history-item-title",
+        );
+        titleRow.appendChild(
+          createHistoryActivityIndicator(
+            body.ownerDocument as Document,
+            entry.conversationKey,
+            t("Working"),
+          ),
         );
         const displayTitle = formatHistoryRowDisplayTitle(entry.title);
         titleSpan.title = entry.title;

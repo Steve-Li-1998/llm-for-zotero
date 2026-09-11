@@ -3,6 +3,7 @@ import { createNoteConversationItem } from "./noteEditing/conversationItem";
 /* eslint-disable @typescript-eslint/no-require-imports */
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
+import { observeHistoryActivity } from "./historyActivity";
 import { revealLocalPath } from "../../utils/revealLocalPath";
 import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
@@ -4812,6 +4813,9 @@ export function setupHandlers(
     updateSelectedTextPreview();
   };
   activeContextPanelStateSync.set(body, syncConversationPanelState);
+  const disposeHistoryActivity = historyMenu
+    ? observeHistoryActivity(historyMenu)
+    : null;
   const runPanelStateRefreshNow = () => {
     const previousHeight = measureContextPreviewHeight();
     if (!item) {
@@ -8402,6 +8406,7 @@ export function setupHandlers(
     cleanupMineruPaperSourceObservers?.();
     cleanupModelCapabilitySubscription?.();
     cleanupModelCapabilitySubscription = null;
+    disposeHistoryActivity?.();
     disposeConversationTurnNavigator(body);
     disposeChatRendering(body);
     cleanupStreamingScrollListeners();

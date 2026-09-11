@@ -114,6 +114,8 @@ import {
 } from "./standaloneWindow";
 import {
   getWorkflowTestSendSettledSequence,
+  getWorkflowTestSendInterceptor,
+  getWorkflowTestFinalRequestInterceptor,
   setWorkflowTestFinalRequestInterceptor,
   setWorkflowTestSendInterceptor,
   type WorkflowTestFinalRequestSnapshot,
@@ -3694,6 +3696,62 @@ async function seedStandaloneUserMessage(
   return readStandaloneDiagnostics();
 }
 
+async function withPendingStandaloneSend(
+  text: string,
+  inspect: () => Promise<void>,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  const { contentArea, item } = await ensureStandaloneWorkflowPanelReady();
+  const conversationKey = getConversationKey(item);
+  let reachedProvider = false;
+  const previousSendInterceptor = getWorkflowTestSendInterceptor();
+  const previousFinalRequestInterceptor =
+    getWorkflowTestFinalRequestInterceptor();
+  let release = () => {};
+  const providerGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  setWorkflowTestSendInterceptor((opts) => {
+    opts.apiBase = "http://127.0.0.1:9/v1";
+    opts.apiKey = "workflow-test-key";
+    opts.authMode = "api_key";
+    lastSend = opts;
+    return true;
+  });
+  setWorkflowTestFinalRequestInterceptor(async (snapshot) => {
+    lastFinalRequest = snapshot;
+    reachedProvider = true;
+    await providerGate;
+    return true;
+  });
+  try {
+    const input = contentArea.querySelector<HTMLTextAreaElement>("#llm-input")!;
+    input.value = text;
+    const EventCtor = contentArea.ownerDocument.defaultView!.Event;
+    input.dispatchEvent(new EventCtor("input", { bubbles: true }));
+    contentArea.querySelector<HTMLButtonElement>("#llm-send")!.click();
+    const deadline = Date.now() + 10_000;
+    while (!reachedProvider && Date.now() < deadline)
+      await Zotero.Promise.delay(25);
+    if (!reachedProvider || !isRequestPending(conversationKey)) {
+      throw new Error(
+        "Standalone send did not reach the pending provider boundary",
+      );
+    }
+    await inspect();
+  } finally {
+    release();
+    const deadline = Date.now() + 10_000;
+    while (isRequestPending(conversationKey) && Date.now() < deadline) {
+      await Zotero.Promise.delay(25);
+    }
+    setWorkflowTestSendInterceptor(previousSendInterceptor);
+    setWorkflowTestFinalRequestInterceptor(previousFinalRequestInterceptor);
+  }
+  if (isRequestPending(conversationKey))
+    throw new Error("Standalone send did not finish");
+}
+
 async function seedStandaloneConversation(
   turns: Array<{ role: "user" | "assistant"; text: string } & Partial<Message>>,
 ): Promise<WorkflowTestStandaloneDiagnostics> {
@@ -5345,6 +5403,7 @@ export function installWorkflowTestHarness(targetAddon: {
     measureStandaloneRuntimeGeometry,
     exerciseStandaloneComposerManualResize,
     askStandalone,
+    withPendingStandaloneSend,
     startNewStandaloneConversation,
     seedStandaloneUserMessage,
     seedStandaloneConversation,

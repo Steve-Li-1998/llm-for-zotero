@@ -1,5 +1,9 @@
 import { createElement } from "../../../../utils/domHelpers";
 import {
+  createHistoryActivityIndicator,
+  observeHistoryActivity,
+} from "../../historyActivity";
+import {
   formatGlobalHistoryTimestamp,
   getHistoryEntryLabelType,
   groupHistoryEntriesByDay,
@@ -194,6 +198,7 @@ export function createHistorySearchPopupController(
     },
   ) as HTMLButtonElement;
   const results = createElement(doc, "div", "llm-standalone-search-results");
+  const disposeHistoryActivity = observeHistoryActivity(results);
 
   header.append(input, closeButton);
   popup.append(header, results);
@@ -335,7 +340,15 @@ export function createHistorySearchPopupController(
           title.textContent = displayTitle;
         }
 
-        textWrap.append(label, title);
+        textWrap.append(
+          label,
+          createHistoryActivityIndicator(
+            doc,
+            entry.conversationKey,
+            translate("Working"),
+          ),
+          title,
+        );
         if (deps.onDelete && entry.deletable) {
           const deleteButton = createElement(
             doc,
@@ -481,6 +494,7 @@ export function createHistorySearchPopupController(
     },
     isOpen: () => overlay.style.display !== "none",
     destroy: () => {
+      disposeHistoryActivity();
       controller.close();
       overlay.remove();
     },

@@ -9,6 +9,7 @@ import type {
   AgentToolInputValidation,
   AgentToolResult,
   AgentToolReviewResolution,
+  AgentWorkCategory,
 } from "../types";
 import { defaultInvocationPlan } from "../authorization/invocationPlan";
 import { describeLibraryMutationActions } from "../contracts/actionContract";
@@ -135,6 +136,7 @@ export function createDelegatingTool<TResult = unknown>(params: {
   description: string;
   inputSchema: object;
   executionClass: "read" | "control" | "external_effect";
+  workCategory: AgentWorkCategory;
   requiresConfirmation: boolean;
   label: string;
   summaries?: NonNullable<AgentToolDefinition["presentation"]>["summaries"];
@@ -148,6 +150,7 @@ export function createDelegatingTool<TResult = unknown>(params: {
       description: params.description,
       inputSchema: params.inputSchema,
       executionClass: params.executionClass,
+      workCategory: params.workCategory,
       requiresConfirmation: params.requiresConfirmation,
       exposure: "model",
       tier: params.tier || "normal",

@@ -272,6 +272,7 @@ export function getAgentApi() {
      *     description: "Does something custom",
      *     inputSchema: { type: "object", properties: { query: { type: "string" } } },
      *     executionClass: "read",
+     *     workCategory: "retrieval",
      *     requiresConfirmation: false,
      *   },
      *   validate: (args) => {

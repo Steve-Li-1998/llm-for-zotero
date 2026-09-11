@@ -1,41 +1,173 @@
 import { assert } from "chai";
+import { readFileSync, readdirSync, statSync } from "fs";
+import { join, relative } from "path";
 import { resolveAgentWorkCategory } from "../src/agent/workCategory";
+import { createBuiltInToolRegistry } from "../src/agent/tools";
+import { createLibraryBatchTool } from "../src/agent/tools/write/libraryBatch";
+import { createSelfContainedTestTool } from "../src/agent/tools/test/createSelfContainedTestTool";
+import type { AgentWorkCategory } from "../src/agent/types";
+
+const root = process.cwd();
+
+const ALLOWED_WORK_CATEGORIES: readonly AgentWorkCategory[] = [
+  "retrieval",
+  "planning",
+  "generation",
+  "zotero_action",
+  "external_system",
+];
+
+/**
+ * The product meaning every registered tool must claim. A tool missing from
+ * this table is a new tool whose trace meaning nobody decided.
+ */
+const EXPECTED_TOOL_CATEGORIES: Readonly<Record<string, AgentWorkCategory>> = {
+  // Reads: library, paper, PDF, and network lookups that never write.
+  library_search: "retrieval",
+  query_library: "retrieval",
+  library_read: "retrieval",
+  read_library: "retrieval",
+  library_retrieve: "retrieval",
+  library_cite: "retrieval",
+  paper_read: "retrieval",
+  read_paper: "retrieval",
+  search_paper: "retrieval",
+  view_pdf_pages: "retrieval",
+  read_attachment: "retrieval",
+  literature_search: "retrieval",
+  search_literature_online: "retrieval",
+  literature_review: "retrieval",
+  web_search: "retrieval",
+  web_read: "retrieval",
+  tool_result_read: "retrieval",
+  load_skill: "retrieval",
+  // Plan, task, and research bookkeeping.
+  update_plan: "planning",
+  prepare_plan_execution: "planning",
+  amend_plan: "planning",
+  task_update: "planning",
+  research_update: "planning",
+  approve_research_expansion: "planning",
+  approve_research_mutation: "planning",
+  request_user_input: "planning",
+  // Authored deliverables.
+  submit_document: "generation",
+  submit_plan_document: "generation",
+  // Zotero library changes.
+  library_update: "zotero_action",
+  apply_tags: "zotero_action",
+  move_to_collection: "zotero_action",
+  update_metadata: "zotero_action",
+  reparent_items: "zotero_action",
+  relate_items: "zotero_action",
+  tag_update: "zotero_action",
+  set_item_tags: "zotero_action",
+  collection_update: "zotero_action",
+  manage_collections: "zotero_action",
+  note_write: "zotero_action",
+  edit_current_note: "zotero_action",
+  note_write_batch: "zotero_action",
+  write_notes_batch: "zotero_action",
+  saved_search_update: "zotero_action",
+  library_settings: "zotero_action",
+  library_delete: "zotero_action",
+  trash_items: "zotero_action",
+  restore_from_trash: "zotero_action",
+  merge_items: "zotero_action",
+  attachment_update: "zotero_action",
+  manage_attachments: "zotero_action",
+  annotate_pdf: "zotero_action",
+  undo_last_action: "zotero_action",
+  revert_changes: "zotero_action",
+  create_items: "zotero_action",
+  import_identifiers: "zotero_action",
+  // Disk, shell, arbitrary code, and multi-domain imports.
+  workflow_script: "external_system",
+  file_io: "external_system",
+  run_command: "external_system",
+  zotero_script: "external_system",
+  import_local_files: "external_system",
+  library_import: "external_system",
+};
+
+function collectAgentSourceFiles(dir: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const fullPath = join(dir, entry);
+    if (statSync(fullPath).isDirectory()) {
+      files.push(...collectAgentSourceFiles(fullPath));
+    } else if (fullPath.endsWith(".ts")) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
 
 describe("agent work categories", function () {
-  it("keeps the work category separate from lifecycle and effect status", function () {
-    assert.equal(
-      resolveAgentWorkCategory({
-        name: "read_anything",
-        description: "read",
-        inputSchema: { type: "object" },
-        executionClass: "read",
-        requiresConfirmation: false,
-      }),
-      "retrieval",
+  const registry = createBuiltInToolRegistry({
+    zoteroGateway: {} as never,
+    pdfService: {} as never,
+    pdfPageService: {} as never,
+    retrievalService: {} as never,
+  });
+  const registeredSpecs = registry
+    .listToolDefinitions()
+    .map((tool) => tool.spec)
+    .concat(
+      createLibraryBatchTool({
+        actionRegistry: {} as never,
+        toolRegistry: {} as never,
+        zoteroGateway: {} as never,
+      }).spec,
+      createSelfContainedTestTool().spec,
     );
-    assert.equal(
-      resolveAgentWorkCategory({
-        name: "plan_anything",
-        description: "plan",
-        inputSchema: { type: "object" },
-        executionClass: "control",
-        requiresConfirmation: false,
-      }),
-      "planning",
-    );
-    assert.equal(
-      resolveAgentWorkCategory({
-        name: "write_anything",
-        description: "write",
-        inputSchema: { type: "object" },
-        executionClass: "external_effect",
-        requiresConfirmation: true,
-      }),
-      "zotero_action",
-    );
+
+  it("gives every registered tool a category from the allowed set", function () {
+    const missing = registeredSpecs
+      .filter((spec) => !spec.workCategory)
+      .map((spec) => spec.name);
+    assert.deepEqual(missing, [], "tools without a declared work category");
+    const invalid = registeredSpecs
+      .filter(
+        (spec) =>
+          !ALLOWED_WORK_CATEGORIES.includes(
+            spec.workCategory as AgentWorkCategory,
+          ),
+      )
+      .map((spec) => spec.name);
+    assert.deepEqual(invalid, [], "tools with an unknown work category");
   });
 
-  it("uses an explicit contract category without inspecting the tool name", function () {
+  it("labels each tool with the work it actually performs", function () {
+    const actual: Record<string, AgentWorkCategory> = {};
+    for (const spec of registeredSpecs) {
+      if (
+        spec.name === "library_batch" ||
+        spec.name === "self_contained_test_tool"
+      )
+        continue;
+      actual[spec.name] = resolveAgentWorkCategory(spec);
+    }
+    assert.deepEqual(actual, EXPECTED_TOOL_CATEGORIES);
+  });
+
+  it("labels a control-class tool by its effect, not by its lifecycle", function () {
+    const libraryBatch = registeredSpecs.find(
+      (spec) => spec.name === "library_batch",
+    )!;
+    // library_batch is control class because it never consumes an action
+    // contract itself, but every page it applies is a Zotero library change.
+    assert.equal(libraryBatch.executionClass, "control");
+    assert.equal(resolveAgentWorkCategory(libraryBatch), "zotero_action");
+
+    const zoteroScript = registeredSpecs.find(
+      (spec) => spec.name === "zotero_script",
+    )!;
+    assert.equal(zoteroScript.executionClass, "external_effect");
+    assert.equal(resolveAgentWorkCategory(zoteroScript), "external_system");
+  });
+
+  it("returns the declared category without inspecting the tool name", function () {
     assert.equal(
       resolveAgentWorkCategory({
         name: "opaque_a",
@@ -57,6 +189,25 @@ describe("agent work categories", function () {
         requiresConfirmation: true,
       }),
       "external_system",
+    );
+  });
+
+  it("declares a category next to every agent tool spec in the source tree", function () {
+    const undeclared: string[] = [];
+    for (const path of collectAgentSourceFiles(join(root, "src/agent"))) {
+      const lines = readFileSync(path, "utf8").split("\n");
+      lines.forEach((line, index) => {
+        // Only spec literals, never the type declarations that spell the union.
+        if (!/executionClass: "(read|control|external_effect)",$/.test(line))
+          return;
+        if (/workCategory:/.test(lines[index + 1] || "")) return;
+        undeclared.push(`${relative(root, path)}:${index + 1}`);
+      });
+    }
+    assert.deepEqual(
+      undeclared,
+      [],
+      "every executionClass literal must be followed by its workCategory",
     );
   });
 });

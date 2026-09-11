@@ -142,6 +142,7 @@ export function createRequestUserInputTool(
         },
       },
       executionClass: "control",
+      workCategory: "planning",
       requiresConfirmation: true,
       interaction: "user_input",
     },

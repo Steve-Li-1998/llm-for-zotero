@@ -408,6 +408,7 @@ export function createQueryLibraryTool(
         },
       },
       executionClass: "read",
+      workCategory: "retrieval",
       requiresConfirmation: false,
     },
     guidance: {

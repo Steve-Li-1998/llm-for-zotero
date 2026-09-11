@@ -389,9 +389,11 @@ export type ToolSpec = {
    *
    * This is deliberately independent of execution lifecycle and effect
    * status.  It lets trace and recovery readers describe what the Agent was
-   * doing without guessing from a tool name or model prose.
+   * doing without guessing from a tool name or model prose.  Required: an
+   * execution class cannot stand in for it, because control-class tools run
+   * library changes and external-effect tools reach past the library.
    */
-  workCategory?: AgentWorkCategory;
+  workCategory: AgentWorkCategory;
   requiresConfirmation: boolean;
   /**
    * Model-visible tools are advertised to agent/model runtimes and MCP

@@ -371,6 +371,7 @@ export function createTaskUpdateTool(): AgentToolDefinition<
         },
       },
       executionClass: "control",
+      workCategory: "planning",
       requiresConfirmation: false,
     },
     isAvailable: (request) => {

@@ -935,6 +935,7 @@ export function createPaperReadTool(
         },
       },
       executionClass: "read",
+      workCategory: "retrieval",
       requiresConfirmation: false,
       exposure: "model",
       tier: "normal",

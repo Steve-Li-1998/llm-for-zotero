@@ -24,6 +24,7 @@ export function createLiteratureReviewTool(
       description:
         "Show a ranked paper-only import-selection card after literature_search. Select the requested number using saved candidate references and evidence-based relevance reasons. Use this card when the user requests selection or review. Ordinary discovery returns ranked results without importing. Explicit import requests use library_import directly instead.",
       executionClass: "read",
+      workCategory: "retrieval",
       requiresConfirmation: false,
       inputSchema: {
         type: "object",

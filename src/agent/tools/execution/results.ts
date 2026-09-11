@@ -52,6 +52,7 @@ export function createSyntheticErrorResult(
       description: message,
       inputSchema: { type: "object" },
       executionClass: "read",
+      workCategory: "retrieval",
       requiresConfirmation: false,
     },
     validate: () => ({ ok: true, value: {} }),

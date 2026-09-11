@@ -122,6 +122,7 @@ export function createApproveResearchExpansionTool(
         },
       },
       executionClass: "control",
+      workCategory: "planning",
       requiresConfirmation: true,
       interaction: "user_input",
     },

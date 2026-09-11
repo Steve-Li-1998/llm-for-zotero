@@ -340,6 +340,7 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
         },
       },
       executionClass: "control",
+      workCategory: "planning",
       requiresConfirmation: true,
       interaction: "user_input",
     },

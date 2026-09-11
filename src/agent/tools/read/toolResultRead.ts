@@ -317,6 +317,7 @@ export function createToolResultReadTool(): AgentToolDefinition<
         required: ["handle"],
       },
       executionClass: "read",
+      workCategory: "retrieval",
       requiresConfirmation: false,
     },
     isAvailable: (request) =>

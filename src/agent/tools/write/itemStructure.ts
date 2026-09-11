@@ -96,6 +96,7 @@ export function createCreateItemsTool(
         },
       },
       executionClass: "external_effect",
+      workCategory: "zotero_action",
       requiresConfirmation: true,
     },
 
@@ -239,6 +240,7 @@ export function createReparentItemsTool(
         },
       },
       executionClass: "external_effect",
+      workCategory: "zotero_action",
       requiresConfirmation: true,
     },
 
@@ -371,6 +373,7 @@ export function createRelateItemsTool(
         },
       },
       executionClass: "external_effect",
+      workCategory: "zotero_action",
       requiresConfirmation: true,
     },
 

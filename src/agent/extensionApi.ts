@@ -39,6 +39,7 @@
  *          },
  *        },
  *        executionClass: "read",       // "read" | "control" | "external_effect"
+ *        workCategory: "retrieval",    // the product work the trace should show
  *        requiresConfirmation: false,  // set true to show a HITL confirm card
  *      },
  *      validate: (args) => {

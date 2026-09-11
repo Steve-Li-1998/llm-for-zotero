@@ -147,6 +147,7 @@ export function createAmendPlanTool(
         },
       },
       executionClass: "control",
+      workCategory: "planning",
       requiresConfirmation: false,
       interaction: "user_input",
     },

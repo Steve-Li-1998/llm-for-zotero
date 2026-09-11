@@ -43,6 +43,7 @@ export function createTrashItemsTool(
         },
       },
       executionClass: "external_effect",
+      workCategory: "zotero_action",
       requiresConfirmation: true,
     },
 

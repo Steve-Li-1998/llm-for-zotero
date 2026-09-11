@@ -26,6 +26,7 @@ export function createSelfContainedTestTool(): AgentWriteToolDefinition<
         },
       },
       executionClass: "external_effect",
+      workCategory: "external_system",
       requiresConfirmation: true,
     },
     guidance: {

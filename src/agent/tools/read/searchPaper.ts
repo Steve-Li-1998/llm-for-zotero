@@ -100,6 +100,7 @@ export function createSearchPaperTool(
         },
       },
       executionClass: "read",
+      workCategory: "retrieval",
       requiresConfirmation: false,
     },
     presentation: {

@@ -473,6 +473,7 @@ export function createResearchUpdateTool(
         },
       },
       executionClass: "control",
+      workCategory: "planning",
       requiresConfirmation: false,
     },
     isAvailable: (request) => request.planContext?.phase === "executing",

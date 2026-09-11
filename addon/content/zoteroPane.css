@@ -2844,7 +2844,7 @@
 
 /* Conversation turn navigator */
 .llm-chat-shell.llm-turn-navigator-visible .llm-messages {
-  padding-left: 42px;
+  padding-left: 24px;
 }
 
 .llm-turn-navigator {
@@ -2852,9 +2852,9 @@
   z-index: 6;
   top: 50%;
   bottom: auto;
-  left: 6px;
-  width: 30px;
-  min-width: 30px;
+  left: 0;
+  width: 20px;
+  min-width: 20px;
   height: calc(100% - 24px);
   max-height: 420px;
   transform: translateY(-50%);
@@ -2897,14 +2897,14 @@
   -moz-appearance: none;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   flex: 0 0 18px;
-  width: 30px;
+  width: 20px;
   height: 18px;
-  min-width: 30px;
+  min-width: 20px;
   min-height: 18px;
   margin: 0;
-  padding: 0 2px;
+  padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -2955,8 +2955,8 @@
 .llm-turn-navigator-preview {
   position: absolute;
   z-index: 7;
-  left: 42px;
-  width: min(340px, calc(100% - 52px));
+  left: 24px;
+  width: min(340px, calc(100% - 34px));
   box-sizing: border-box;
   padding: 12px 14px;
   border: 1px solid var(--stroke-secondary);

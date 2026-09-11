@@ -202,6 +202,20 @@ describe("durable document note association", function () {
     }
     assert.match(String(failure), message);
   }
+  /** Direct Agent execution context: no semantic contract, only a run identity. */
+  function directContext(runId: string | undefined) {
+    return {
+      request: {
+        conversationKey: 42,
+        libraryID: 1,
+        executionContext: {
+          version: 1,
+          executionId: "direct-execution-42",
+        },
+      },
+      runId,
+    } as any;
+  }
   function addFigure() {
     const bytes = new Uint8Array([1, 2, 3]);
     globals.IOUtils.read = async () => bytes;
@@ -289,16 +303,7 @@ describe("durable document note association", function () {
     });
     assert.isTrue(input.ok);
     if (!input.ok) return;
-    const context = {
-      request: {
-        conversationKey: 42,
-        libraryID: 1,
-        executionContext: {
-          version: 1,
-          executionId: "direct-execution-42",
-        },
-      },
-    } as any;
+    const context = directContext("summary-run");
 
     await tool.planInvocation(input.value, context);
     const proposals = await tool.describeAction!(input.value, context);
@@ -309,6 +314,87 @@ describe("durable document note association", function () {
       proposals[0].parameters?.expectedText || "",
       "Exact durable summary.",
     );
+  });
+  it("binds the note proposal to its destination and note mode", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = directContext("summary-run");
+
+    await tool.planInvocation(input.value, context);
+    const proposals = await tool.describeAction!(input.value, context);
+
+    assert.equal(proposals[0].parameters?.targetItemId, 42);
+    assert.equal(proposals[0].parameters?.noteMode, "create");
+  });
+  it("refuses a direct finalized document that belongs to another run", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+
+    await rejects(
+      tool.planInvocation(input.value, directContext("a-later-run")),
+      /belongs to a different Agent run/,
+    );
+    await rejects(
+      tool.planInvocation(input.value, directContext(undefined)),
+      /belongs to a different Agent run/,
+    );
+  });
+  it("refuses to write a note from a direct document owned by another run", async function () {
+    addFigure();
+    const note = new globals.Zotero.Item("note");
+    note.key = "EXISTING";
+    await note.loadPrimaryData();
+    note.setNote("<p>Original</p>");
+    await note.saveTx();
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+      getActiveNoteSnapshot: () => ({
+        noteId: note.id,
+        title: "Note",
+        libraryID: 1,
+        html: note.getNote(),
+        text: "Original",
+      }),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "edit",
+      targetNoteId: note.id,
+      documentId: document.documentId,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const owning = {
+      ...directContext("summary-run"),
+      journalFallbackApproved: true,
+    };
+
+    await tool.planInvocation(input.value, owning);
+
+    await rejects(
+      tool.execute(input.value, { ...owning, runId: "a-later-run" }),
+      /belongs to a different Agent run/,
+    );
+    assert.equal(note.getNote(), "<p>Original</p>");
+    assert.equal(imageImports, 0);
   });
   it("embeds finalized document figures when replacing an existing note", async function () {
     addFigure();

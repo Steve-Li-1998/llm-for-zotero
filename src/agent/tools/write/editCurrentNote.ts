@@ -403,7 +403,7 @@ async function prepareWorkflowDocumentNote(
 ): Promise<void> {
   if (!input.documentId) return;
   const document = await resolveWorkflowNoteDocument(
-    context.request,
+    context,
     input.documentId,
     input.mode === "create"
       ? input.targetItemId
@@ -1141,7 +1141,7 @@ export function createEditCurrentNoteTool(
           input.documentId && input._documentHasAssets
             ? async () => {
                 const document = await resolveWorkflowNoteDocument(
-                  context.request,
+                  context,
                   input.documentId!,
                   targetNote.id,
                   input.mode,

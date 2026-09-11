@@ -1,5 +1,5 @@
 import { getInterpretedTurnPapers } from "../context/turnPaperScope";
-import type { AgentRuntimeRequest } from "../types";
+import type { AgentRuntimeRequest, AgentToolContext } from "../types";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import {
   actionIsComplete,
@@ -245,11 +245,12 @@ export async function loadWorkflowMaterial(
 
 /** Binds a save proposal to the material receipt and the frozen native parent. */
 export async function resolveWorkflowNoteDocument(
-  request: AgentRuntimeRequest,
+  context: Pick<AgentToolContext, "request" | "runId">,
   documentId: string,
   targetItemId?: number,
   mode: "create" | "edit" | "append" = "create",
 ): Promise<PlanDocument> {
+  const request = context.request;
   const document = await loadPlanDocument(documentId);
   if (!document || document.conversationKey !== request.conversationKey) {
     throw new Error(
@@ -258,16 +259,18 @@ export async function resolveWorkflowNoteDocument(
   }
   const progress = request.actionProgress;
   // Fresh ordinary Agent work has no semantic contract. Its direct document
-  // is still an exact, host-persisted material version; the invocation
-  // controller authorizes the concrete target separately.
+  // is still an exact, host-persisted material version, but only the run that
+  // finalized it may save it; the invocation controller authorizes the
+  // concrete target separately.
   if (!request.actionContract && !progress) {
-    if (
-      !request.executionContext ||
-      document.version !== 2 ||
-      document.origin.kind !== "direct"
-    ) {
+    if (document.version !== 2 || document.origin.kind !== "direct") {
       throw new Error(
-        "The finalized document is not owned by this direct Agent execution.",
+        "The finalized document is not a direct version 2 Agent document.",
+      );
+    }
+    if (!context.runId || document.origin.runId !== context.runId) {
+      throw new Error(
+        `The finalized document belongs to a different Agent run (document run '${document.origin.runId}', current run '${context.runId || "none"}').`,
       );
     }
     return document;

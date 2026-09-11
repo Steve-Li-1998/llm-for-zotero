@@ -7,7 +7,7 @@ import {
   resolveRetryModelInputsForTests,
   type EffectiveRequestConfig,
 } from "../src/modules/contextPanel/chat";
-import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import type {
   ChatAttachment,
   Message,

@@ -1,7 +1,7 @@
 import {
   extractCitationAuthorKey,
   extractCitationYear,
-} from "./citationLabelParser";
+} from "../../services/quotes/citationLabelParser";
 
 export type CitationCandidateConfidence = "high" | "medium" | "low" | "none";
 

@@ -18,14 +18,14 @@ import {
   normalizeQuoteCitations,
   QUOTE_CITATION_PATTERN,
   stripQuoteCitationAnchorsFromDisplayText,
-} from "./quoteCitations";
+} from "../../services/quotes/quoteCitations";
 import {
   buildQuoteRenderPlan,
   getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
   type QuoteRenderOccurrence,
 } from "./quoteRenderPlan";
-import { stripLeadingCitationSeparators } from "./citationText";
+import { stripLeadingCitationSeparators } from "../../services/quotes/citationText";
 import {
   extractCitationAuthorKey,
   extractCitationYear,
@@ -36,7 +36,7 @@ import {
   parseStandaloneCitationLabel,
   stripCitationControlChars,
   stripCitationKeyFromLabel,
-} from "./citationLabelParser";
+} from "../../services/quotes/citationLabelParser";
 import {
   buildAutoNavigableCitationCandidateKeys as buildResolverAutoNavigableCitationCandidateKeys,
   rankCitationResolverCandidate,

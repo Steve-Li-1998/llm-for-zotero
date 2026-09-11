@@ -5,7 +5,7 @@ import {
   buildQuoteRenderPlan,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "../src/modules/contextPanel/quoteRenderPlan";
-import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 
 describe("quoteRenderPlan", function () {
   it("renders a displayed source subspan followed by its standalone anchor only once", function () {

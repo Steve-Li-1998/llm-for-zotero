@@ -14,7 +14,7 @@ import {
 import {
   buildQuoteAnchorPromptBlock,
   buildSelectedTextQuoteCitations,
-} from "./quoteCitations";
+} from "../../services/quotes/quoteCitations";
 import {
   formatSelectedTextLocator,
   renderSelectedTextAnchorContext,

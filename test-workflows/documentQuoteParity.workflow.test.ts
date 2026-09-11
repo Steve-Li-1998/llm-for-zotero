@@ -6,7 +6,7 @@ import {
   buildQuoteCitation,
   buildQuoteSourceIndex,
   finalizeAssistantQuoteCitationsCooperatively,
-} from "../src/modules/contextPanel/quoteCitations";
+} from "../src/services/quotes/quoteCitations";
 
 describe("workflow: document and chat quote parity", function () {
   this.timeout(120000);

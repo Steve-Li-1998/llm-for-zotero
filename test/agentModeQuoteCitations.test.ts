@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import { mergeAgentToolResultQuoteCitations } from "../src/modules/contextPanel/agentMode/agentEngine";
-import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import type { QuoteCitation } from "../src/shared/types";
 
 describe("agent mode quote citations", function () {

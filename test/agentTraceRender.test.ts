@@ -49,7 +49,7 @@ import type {
   AgentRunEventRecord,
 } from "../src/agent/types";
 import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
-import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import {
   isEmbeddableGeneratedImage,
   resolveGeneratedImageAsset,

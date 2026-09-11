@@ -10,7 +10,7 @@ import { normalizeSelectedTextContexts } from "./normalizers";
 import {
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
-} from "./quoteTextSearch";
+} from "../../services/quotes/quoteTextSearch";
 export {
   formatSelectedTextLocator,
   renderSelectedTextAnchorContext,

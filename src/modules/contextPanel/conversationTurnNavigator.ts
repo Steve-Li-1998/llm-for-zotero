@@ -1,6 +1,6 @@
 import { t } from "../../utils/i18n";
 import { stripWebSourceMarkersForDisplay } from "../../webAccess/attribution";
-import { stripQuoteCitationAnchorsFromDisplayText } from "./quoteCitations";
+import { stripQuoteCitationAnchorsFromDisplayText } from "../../services/quotes/quoteCitations";
 import { getMessageQuoteDisplay } from "./quoteRenderPlan";
 import {
   cancelChatNavigation,

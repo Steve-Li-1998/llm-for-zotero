@@ -7,7 +7,7 @@ import {
   scheduleConversationQuoteRevalidation,
   waitForAssistantQuoteValidationForTests,
 } from "../src/modules/contextPanel/chat";
-import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
 import {
   beginQuoteNavigationActivity,

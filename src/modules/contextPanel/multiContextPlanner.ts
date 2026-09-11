@@ -41,7 +41,7 @@ import {
   isPdfContextAttachment,
   isSupportedContextAttachment,
 } from "./contextAttachmentSupport";
-import { mergeQuoteCitations } from "./quoteCitations";
+import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
 import { pdfTextCache } from "./state";
 import { sanitizeText } from "./textUtils";
 import { tokenizeRetrievalDiversity } from "./retrievalTokenizer";

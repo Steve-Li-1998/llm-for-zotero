@@ -22,10 +22,10 @@ import {
   sanitizeInvalidStructuredSourceMarkers,
   withReusableQuoteTextIndexes,
   DISPLAYED_QUOTE_ANCHOR_CACHE_MAX_BYTES,
-} from "../src/modules/contextPanel/quoteCitations";
-import { stripLeadingCitationSeparators } from "../src/modules/contextPanel/citationText";
-import { buildQuoteTextIndex } from "../src/modules/contextPanel/quoteTextNormalization";
-import type { QuoteTextAnchorMatch } from "../src/modules/contextPanel/quoteTextSearch";
+} from "../src/services/quotes/quoteCitations";
+import { stripLeadingCitationSeparators } from "../src/services/quotes/citationText";
+import { buildQuoteTextIndex } from "../src/services/quotes/quoteTextNormalization";
+import type { QuoteTextAnchorMatch } from "../src/services/quotes/quoteTextSearch";
 import { renderMarkdown } from "../src/utils/markdown";
 import { buildQuoteRenderPlan } from "../src/modules/contextPanel/quoteRenderPlan";
 

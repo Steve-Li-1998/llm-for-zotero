@@ -9,15 +9,18 @@ import {
   stripBoundaryEllipsis,
   summarizeQuoteTextSupport,
   type QuoteTextSearchQueryKind,
-} from "./quoteTextSearch";
+} from "../../services/quotes/quoteTextSearch";
 import {
   assessAcademicQuoteAlignment,
   buildQuoteTextIndex,
   findQuoteSourceSpansAllowingLayoutArtifacts,
   type QuoteTextIndex,
-} from "./quoteTextNormalization";
+} from "../../services/quotes/quoteTextNormalization";
 
-export { splitQuoteAtEllipsis, stripBoundaryEllipsis } from "./quoteTextSearch";
+export {
+  splitQuoteAtEllipsis,
+  stripBoundaryEllipsis,
+} from "../../services/quotes/quoteTextSearch";
 
 export type LivePdfPageText = {
   pageIndex: number;

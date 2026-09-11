@@ -8,7 +8,7 @@ import {
   findQuoteSourceSpansAllowingLayoutArtifactsFromIndex,
   normalizeQuoteTextCanonical,
   stripLikelyLayoutNumberArtifacts,
-} from "../src/modules/contextPanel/quoteTextNormalization";
+} from "../src/services/quotes/quoteTextNormalization";
 
 describe("quoteTextNormalization", function () {
   it("keeps repetitive fragment alignment bounded below the state ceiling", function () {

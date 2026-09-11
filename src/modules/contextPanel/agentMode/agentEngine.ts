@@ -115,7 +115,7 @@ import {
   buildSelectedTextQuoteCitations,
   extractQuoteCitationsFromToolContent,
   mergeQuoteCitations,
-} from "../quoteCitations";
+} from "../../../services/quotes/quoteCitations";
 import { synthesizeSelectedTextContexts } from "../normalizers";
 import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
 

@@ -10,7 +10,7 @@ import {
   normalizeCitationLabel,
   normalizeCitationLabelForMatch,
   parseStandaloneCitationLabel,
-} from "../src/modules/contextPanel/citationLabelParser";
+} from "../src/services/quotes/citationLabelParser";
 
 describe("citationLabelParser", function () {
   it("parses standalone source citation labels", function () {

@@ -416,7 +416,7 @@ import {
   withReusableQuoteTextIndexes,
   type QuoteSecondaryEvidence,
   type QuoteSourceText,
-} from "./quoteCitations";
+} from "../../services/quotes/quoteCitations";
 import {
   buildQuoteExpandedMarkdown,
   getMessageQuoteDisplay,

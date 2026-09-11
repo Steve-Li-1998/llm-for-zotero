@@ -14,7 +14,10 @@ import {
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,
 } from "./paperAttribution";
-import { mergeQuoteCitations, normalizeQuoteCitations } from "./quoteCitations";
+import {
+  mergeQuoteCitations,
+  normalizeQuoteCitations,
+} from "../../services/quotes/quoteCitations";
 import { getMessageCitationPaperContexts } from "./citationContexts";
 import { bindDocumentQuotesForDisplay } from "./documentQuoteDisplay";
 import { bindDocumentCitationGroupsForDisplay } from "../../agent/documents/citationService";

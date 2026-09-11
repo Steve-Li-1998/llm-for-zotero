@@ -13,8 +13,8 @@
  */
 
 import { listAgentRunEvents } from "../../agent/store/traceStore";
-import { MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE } from "./quoteCitations";
-import { summarizeQuoteTextSupport } from "./quoteTextSearch";
+import { MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE } from "../../services/quotes/quoteCitations";
+import { summarizeQuoteTextSupport } from "../../services/quotes/quoteTextSearch";
 import { sanitizeText } from "./textUtils";
 
 export type QuoteEvidenceProvenance = {

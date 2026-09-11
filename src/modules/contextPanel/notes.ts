@@ -63,7 +63,7 @@ import {
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
 import { getMessageCitationPaperContexts } from "./citationContexts";
-import { findMatchingTrustedQuoteCitation } from "./quoteCitations";
+import { findMatchingTrustedQuoteCitation } from "../../services/quotes/quoteCitations";
 import {
   buildQuoteExpandedMarkdown,
   getMessageQuoteDisplay,

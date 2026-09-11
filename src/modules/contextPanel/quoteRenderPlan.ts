@@ -8,12 +8,12 @@ import {
   QUOTE_CITATION_PATTERN,
   sanitizeInvalidStructuredSourceMarkers,
   stripQuoteCitationAnchorsFromDisplayText,
-} from "./quoteCitations";
-import { splitQuoteAtEllipsisInOrder } from "./quoteTextSearch";
+} from "../../services/quotes/quoteCitations";
+import { splitQuoteAtEllipsisInOrder } from "../../services/quotes/quoteTextSearch";
 import {
   normalizeWrappedCitationLabel,
   parseStandaloneCitationLabel,
-} from "./citationLabelParser";
+} from "../../services/quotes/citationLabelParser";
 import { resolveQuoteCitationLookupText } from "./quoteNavigationText";
 
 export const QUOTE_RENDER_OCCURRENCE_PATTERN =

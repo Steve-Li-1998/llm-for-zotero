@@ -94,7 +94,7 @@ import {
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
 } from "../modules/contextPanel/normalizers";
-import { normalizeQuoteCitations } from "../modules/contextPanel/quoteCitations";
+import { normalizeQuoteCitations } from "../services/quotes/quoteCitations";
 import { pendingDeletionStore } from "../core/conversations/pendingDeletionStore";
 import {
   initRecentlyDeletedConversationTombstones,

@@ -537,7 +537,11 @@ describe("Zotero MCP server", function () {
         contexts.map((value) => value.libraryID),
         [1, 2],
       );
-      assert.notEqual(contexts[0].runId, contexts[1].runId);
+      assert.equal(
+        contexts[0].runId,
+        contexts[1].runId,
+        "Both writes belong to the same scope-less session",
+      );
       assert.isTrue(
         contexts.every(
           (value) => value.conversationKey === 0 && value.userText === "",
@@ -547,6 +551,64 @@ describe("Zotero MCP server", function () {
       release();
       unrelated.clear();
     }
+  });
+
+  it("gives a scope-less client one run identity for the server's lifetime", async function () {
+    const observed: Array<string | undefined> = [];
+    const registry = new AgentToolRegistry();
+    const tool = createReadTool("library_read");
+    tool.execute = async (_input, context) => {
+      observed.push(context.runId);
+      return { ok: true };
+    };
+    registry.register(tool);
+    const call = (id: number, scopeToken?: string) =>
+      invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: scopeToken
+          ? { [ZOTERO_MCP_SCOPE_HEADER]: scopeToken }
+          : undefined,
+        // Distinct arguments keep the read-dedupe cache out of the way.
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "library_read", arguments: { call: id } },
+        },
+      });
+
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    for (const response of [await call(1), await call(2)])
+      assert.isUndefined(JSON.parse(response[2]).result.isError, response[2]);
+    assert.isNotEmpty(observed[0]);
+    assert.equal(
+      observed[1],
+      observed[0],
+      "A document finalized in one call must still be owned by the run that saves it in the next",
+    );
+
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 4460,
+      libraryID: 1,
+      kind: "global",
+      runtimeAuthority: "codex",
+      runId: "scoped-run",
+    });
+    try {
+      await call(3, scope.token);
+      assert.equal(observed[2], "scoped-run");
+    } finally {
+      scope.clear();
+    }
+
+    unregisterMcpServer();
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    await call(4);
+    assert.notEqual(
+      observed[3],
+      observed[0],
+      "A new server instance starts a new scope-less run",
+    );
   });
 
   it("keeps standalone writes disabled until explicitly enabled", async function () {

@@ -324,6 +324,20 @@ const conversationScopeTokens = new Map<
   { token: string; instanceID?: string }
 >();
 let registeredMcpDeps: McpServerDeps | null = null;
+let scopelessRunId: string | null = null;
+
+/**
+ * A client that registers no scope is still one session, so its calls share a
+ * single run identity for the lifetime of this server instance. Minting one
+ * per call would make each call its own run, and work that spans two calls —
+ * finalizing a document, then saving it as a note — would never be owned by
+ * the run that has to authorize it. Host-driven runtimes carry their own
+ * per-turn run id on the registered scope and never reach this.
+ */
+function scopelessRunIdentity(): string {
+  scopelessRunId ||= createJournalId("mcp-run");
+  return scopelessRunId;
+}
 const mcpReadDedupeCache = new Map<
   string,
   {
@@ -1689,7 +1703,7 @@ function createToolContext(
   zoteroGateway?: ZoteroGateway,
 ): AgentToolContext {
   const { scope, libraryID, activeItemId, activeContextItemId } = callScope;
-  const runId = scope?.runId || createJournalId("mcp-run");
+  const runId = scope?.runId || scopelessRunIdentity();
   const itemLookupId = activeItemId || activeContextItemId;
   const item = itemLookupId
     ? (
@@ -2478,6 +2492,7 @@ async function handleRequest(
 export function registerMcpServer(deps: McpServerDeps): void {
   const capturedDeps = deps;
   registeredMcpDeps = capturedDeps;
+  scopelessRunId = null;
 
   class McpEndpoint {
     supportedMethods = ["POST"];
@@ -2530,5 +2545,6 @@ export function unregisterMcpServer(): void {
     releaseScopedMcpScope(token);
   mcpReadDedupeCache.clear();
   registeredMcpDeps = null;
+  scopelessRunId = null;
   delete Zotero.Server.Endpoints[ZOTERO_MCP_ENDPOINT_PATH];
 }

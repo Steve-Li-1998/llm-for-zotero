@@ -70,7 +70,7 @@ import type {
 } from "../plans/types";
 import { createTrustedReadObservations } from "../plans/readObservation";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
-import { resolveAgentWorkCategory } from "../workCategory";
+import { resolveAgentToolCallWorkCategory } from "../workCategory";
 
 export const ZOTERO_MCP_SERVER_NAME = "llm_for_zotero";
 export const ZOTERO_MCP_ENDPOINT_PATH = "/llm-for-zotero/mcp";
@@ -2068,7 +2068,9 @@ async function handleToolsCall(
   const { scopeArgs, scope } = callScope;
   const tool = deps.toolRegistry.getTool(name);
   const toolLabel = getMcpToolPresentationLabel(deps, name);
-  const workCategory = tool ? resolveAgentWorkCategory(tool.spec) : undefined;
+  const workCategory = tool
+    ? resolveAgentToolCallWorkCategory(tool, scopeArgs.toolArgs)
+    : undefined;
   emitZoteroMcpToolActivity(
     buildMcpToolActivityEvent({
       id,

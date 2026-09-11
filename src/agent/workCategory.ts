@@ -1,4 +1,4 @@
-import type { AgentWorkCategory, ToolSpec } from "./types";
+import type { AgentToolDefinition, AgentWorkCategory, ToolSpec } from "./types";
 
 /**
  * Resolve trace meaning from the tool contract, never from its name or prose.
@@ -11,6 +11,23 @@ export function resolveAgentWorkCategory(
   spec: Pick<ToolSpec, "workCategory">,
 ): AgentWorkCategory {
   return spec.workCategory;
+}
+
+/**
+ * Resolve the category for one call.
+ *
+ * A delegating facade covers several kinds of work behind one spec — importing
+ * a DOI changes only the library, importing a local file reaches the disk — so
+ * the tool may narrow the label from the arguments the model sent. Everything
+ * else keeps its declared category.
+ */
+export function resolveAgentToolCallWorkCategory(
+  tool: Pick<AgentToolDefinition<any, any>, "spec" | "resolveWorkCategory">,
+  args: unknown,
+): AgentWorkCategory {
+  return (
+    tool.resolveWorkCategory?.(args) || resolveAgentWorkCategory(tool.spec)
+  );
 }
 
 /**

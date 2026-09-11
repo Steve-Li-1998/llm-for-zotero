@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from "fs";
 import { join, relative } from "path";
 import {
   CODEX_NATIVE_WORK_KINDS,
+  resolveAgentToolCallWorkCategory,
   resolveAgentWorkCategory,
   resolveCodexNativeWorkCategory,
 } from "../src/agent/workCategory";
@@ -85,13 +86,15 @@ const EXPECTED_TOOL_CATEGORIES: Readonly<Record<string, AgentWorkCategory>> = {
   revert_changes: "zotero_action",
   create_items: "zotero_action",
   import_identifiers: "zotero_action",
+  // The facade's own label; a files-mode call resolves to its delegate's
+  // external_system instead.
+  library_import: "zotero_action",
   // Disk, shell, arbitrary code, and multi-domain imports.
   workflow_script: "external_system",
   file_io: "external_system",
   run_command: "external_system",
   zotero_script: "external_system",
   import_local_files: "external_system",
-  library_import: "external_system",
 };
 
 function collectAgentSourceFiles(dir: string): string[] {
@@ -212,6 +215,46 @@ describe("agent work categories", function () {
       undeclared,
       [],
       "every executionClass literal must be followed by its workCategory",
+    );
+  });
+
+  it("labels a delegating facade by the delegate the call chose", function () {
+    const libraryImport = registry.getTool("library_import")!;
+    assert.equal(
+      resolveAgentToolCallWorkCategory(libraryImport, {
+        kind: "identifiers",
+        identifiers: ["10.1000/example"],
+      }),
+      "zotero_action",
+    );
+    assert.equal(
+      resolveAgentToolCallWorkCategory(libraryImport, {
+        kind: "manual",
+        items: [],
+      }),
+      "zotero_action",
+    );
+    assert.equal(
+      resolveAgentToolCallWorkCategory(libraryImport, {
+        kind: "files",
+        paths: ["/tmp/paper.pdf"],
+      }),
+      "external_system",
+    );
+    // An unusable input never reaches a delegate, so the facade's own
+    // declared category stands.
+    assert.equal(
+      resolveAgentToolCallWorkCategory(libraryImport, { kind: "nonsense" }),
+      libraryImport.spec.workCategory,
+    );
+  });
+
+  it("keeps a plain tool's category when it resolves no delegate", function () {
+    const webSearch = registry.getTool("web_search")!;
+    assert.isUndefined(webSearch.resolveWorkCategory);
+    assert.equal(
+      resolveAgentToolCallWorkCategory(webSearch, { query: "anything" }),
+      "retrieval",
     );
   });
 

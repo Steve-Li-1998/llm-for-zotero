@@ -420,8 +420,10 @@ function createLibraryImportTool(tools: {
     label: "Import to Library",
     description:
       "Add items to Zotero. kind:'identifiers' for DOI/ISBN/arXiv lookups, kind:'files' for local files, kind:'manual' to create items from scratch when neither applies (a book with no DOI, a thesis, a dataset).",
+    // Adding items to Zotero. A files-mode call resolves to import_local_files
+    // and is labelled external_system for that call.
     executionClass: "external_effect",
-    workCategory: "external_system",
+    workCategory: "zotero_action",
     requiresConfirmation: true,
     inputSchema: {
       type: "object",

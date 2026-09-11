@@ -42,6 +42,7 @@ import {
   upsertAgentToolResultHandles,
 } from "../src/agent/store/toolResultHandles";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { createBuiltInToolRegistry } from "../src/agent/tools";
 import { PlanAmendmentService } from "../src/agent/plans/amendments";
 import {
   ActionContractService,
@@ -8165,4 +8166,105 @@ describe("truncated answer continuation with a non-streaming final step", functi
       restoreDb();
     }
   });
+});
+
+describe("delegating facade trace labels", function () {
+  for (const scenario of [
+    {
+      name: "an identifier import",
+      args: { kind: "identifiers", identifiers: ["10.1000/example"] },
+      workCategory: "zotero_action",
+    },
+    {
+      name: "a local-file import",
+      args: { kind: "files", paths: ["/tmp/paper.pdf"] },
+      workCategory: "external_system",
+    },
+  ]) {
+    it(`labels ${scenario.name} by the delegate it chose`, async function () {
+      const restoreDb = installMockDb();
+      const events: AgentEvent[] = [];
+      let steps = 0;
+      try {
+        const registry = createBuiltInToolRegistry({
+          zoteroGateway: {} as never,
+          pdfService: {} as never,
+          pdfPageService: {} as never,
+          retrievalService: {} as never,
+        });
+        const runtime = new AgentRuntime({
+          registry,
+          adapterFactory: () => ({
+            getCapabilities: () => ({
+              streaming: true,
+              toolCalls: true,
+              multimodal: false,
+            }),
+            supportsTools: () => true,
+            async runStep(): Promise<AgentModelStep> {
+              if (steps++ === 0) {
+                const call = {
+                  id: "library-import-1",
+                  name: "library_import",
+                  arguments: scenario.args,
+                };
+                return {
+                  kind: "tool_calls",
+                  calls: [call],
+                  assistantMessage: {
+                    role: "assistant",
+                    content: "",
+                    tool_calls: [call],
+                  },
+                };
+              }
+              return {
+                kind: "final",
+                text: "Done.",
+                assistantMessage: { role: "assistant", content: "Done." },
+              };
+            },
+          }),
+        });
+        await runtime.runTurn({
+          request: {
+            conversationKey: 771201,
+            mode: "agent",
+            userText: "Import this.",
+            model: "test-model",
+            apiKey: "test",
+            apiBase: "",
+            classifiedIntent: {
+              ...classifiedFixture(),
+              semantic: semanticFixture(),
+              retrievalIntent: "none",
+              wantedSections: [],
+              actionIntents: [],
+            },
+          },
+          onEvent: (event) => events.push(event),
+        });
+        const call = events.find(
+          (event) =>
+            event.type === "tool_call" && event.name === "library_import",
+        );
+        const result = events.find(
+          (event) =>
+            event.type === "tool_result" && event.name === "library_import",
+        );
+        assert.isDefined(call, "the facade call must reach the trace");
+        assert.isDefined(result, "the facade result must reach the trace");
+        assert.equal(
+          call?.type === "tool_call" ? call.workCategory : undefined,
+          scenario.workCategory,
+        );
+        assert.equal(
+          result?.type === "tool_result" ? result.workCategory : undefined,
+          scenario.workCategory,
+        );
+      } finally {
+        restoreDb();
+      }
+    });
+  }
 });

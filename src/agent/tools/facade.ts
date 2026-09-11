@@ -165,6 +165,13 @@ export function createDelegatingTool<TResult = unknown>(params: {
       if (!choice.ok) return fail(choice.error);
       return validateDelegate(choice.value);
     },
+    // The trace must name the work this call performs, and the delegate is
+    // already decided by the arguments. Freezing the facade's own category
+    // would label every import as the widest mode it can reach.
+    resolveWorkCategory(args) {
+      const choice = params.chooseDelegate(args);
+      return choice.ok ? choice.value.tool.spec.workCategory : undefined;
+    },
     describeAction: (input, context) =>
       input.delegateTool.describeAction?.(input.delegateInput, context) ||
       describeLibraryMutationActions(input.delegateInput),

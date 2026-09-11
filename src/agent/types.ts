@@ -1242,6 +1242,13 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
     context?: AgentToolContext,
   ) => AgentToolActionDescriptor[] | Promise<AgentToolActionDescriptor[]>;
   validate: (args: unknown) => AgentToolInputValidation<TInput>;
+  /**
+   * Narrow this call's work category when one spec fronts several kinds of
+   * work, as a delegating facade does. Receives the raw model arguments
+   * because the trace labels a call before it is validated; returning
+   * `undefined` keeps the spec's declared category.
+   */
+  resolveWorkCategory?: (args: unknown) => AgentWorkCategory | undefined;
   execute: (
     input: TInput,
     context: AgentToolContext,

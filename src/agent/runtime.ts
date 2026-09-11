@@ -154,7 +154,7 @@ import type {
   AgentUserMessage,
   ResolvedAgentRuntimeRequest,
 } from "./types";
-import { resolveAgentWorkCategory } from "./workCategory";
+import { resolveAgentToolCallWorkCategory } from "./workCategory";
 
 type AgentRuntimeDeps = {
   registry: AgentToolRegistry;
@@ -1583,9 +1583,9 @@ export class AgentRuntime {
           checkpointedWorkflow?: boolean;
         } = {},
       ): Promise<ExecutedToolCall> => {
-        const toolSpec = this.registry.getTool(call.name)?.spec;
-        const workCategory = toolSpec
-          ? resolveAgentWorkCategory(toolSpec)
+        const toolDefinition = this.registry.getTool(call.name);
+        const workCategory = toolDefinition
+          ? resolveAgentToolCallWorkCategory(toolDefinition, call.arguments)
           : undefined;
         const lifecycleError = (): ExecutedToolCall => ({
           toolResult: {

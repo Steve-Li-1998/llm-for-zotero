@@ -11,15 +11,17 @@ import {
 import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
   COLLECTION_RETRIEVAL_MAX_PAPERS,
-  COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
   MAX_FULL_TEXT_PAPER_CONTEXTS,
+} from "./constants";
+import {
+  COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
   PAPER_FOLLOWUP_RETRIEVAL_MAX_CHUNKS,
   PAPER_FOLLOWUP_RETRIEVAL_MIN_CHUNKS,
   RETRIEVAL_MMR_LAMBDA,
   RETRIEVAL_MIN_ACTIVE_PAPER_CHUNKS,
   RETRIEVAL_MIN_OTHER_PAPER_CHUNKS,
   RETRIEVAL_TOP_K_PER_PAPER,
-} from "./constants";
+} from "../../services/retrieval/constants";
 import { normalizePaperContextRefs } from "./normalizers";
 
 import {
@@ -44,13 +46,13 @@ import {
 import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
 import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { sanitizeText } from "./textUtils";
-import { tokenizeRetrievalDiversity } from "./retrievalTokenizer";
+import { tokenizeRetrievalDiversity } from "../../services/retrieval/retrievalTokenizer";
 import {
   buildRetrievalQueryPlan,
   buildRetrievalQueryPlanCacheKey,
   resolveRetrievalQueryPlan,
   type RetrievalQueryPlan,
-} from "./retrievalQueryPlan";
+} from "../../services/retrieval/retrievalQueryPlan";
 import {
   planContextCacheReuse,
   shouldPreferCacheAwareFullContext,

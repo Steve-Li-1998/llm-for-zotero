@@ -13,19 +13,6 @@ export {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
   MAX_SELECTED_PAPER_CONTEXTS,
 } from "../../shared/contextLimits";
-export {
-  CHUNK_OVERLAP,
-  CHUNK_TARGET_LENGTH,
-  COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
-  EMBEDDING_BATCH_SIZE,
-  PAPER_FOLLOWUP_RETRIEVAL_MAX_CHUNKS,
-  PAPER_FOLLOWUP_RETRIEVAL_MIN_CHUNKS,
-  RETRIEVAL_MIN_ACTIVE_PAPER_CHUNKS,
-  RETRIEVAL_MIN_OTHER_PAPER_CHUNKS,
-  RETRIEVAL_MMR_LAMBDA,
-  RETRIEVAL_TOP_K_PER_PAPER,
-  RRF_K,
-} from "../../services/retrieval/constants";
 
 // =============================================================================
 // Constants
@@ -109,8 +96,6 @@ export const BUILTIN_SHORTCUT_FILES = [
   { id: "limitations", label: "Limitations", file: "limitations.txt" },
   { id: "mermaid-diagram", label: "Diagram", file: "mermaid-diagram.txt" },
 ] as const;
-
-export { STOPWORDS } from "../../services/retrieval/stopwords";
 
 export type ModelProfileKey =
   | "primary"

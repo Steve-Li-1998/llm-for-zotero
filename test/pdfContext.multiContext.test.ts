@@ -14,8 +14,8 @@ import {
   readManifest,
   writeMineruCacheFiles,
 } from "../src/services/mineru/mineruCache";
-import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
-import { buildRetrievalQueryPlan } from "../src/modules/contextPanel/retrievalQueryPlan";
+import { tokenizeRetrievalText } from "../src/services/retrieval/retrievalTokenizer";
+import { buildRetrievalQueryPlan } from "../src/services/retrieval/retrievalQueryPlan";
 import { pdfTextCache } from "../src/services/paperContent/contextCache";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 import type { ChunkStat, PdfContext } from "../src/services/paperContent/types";

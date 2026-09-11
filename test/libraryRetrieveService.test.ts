@@ -5,7 +5,7 @@ import {
   QUICKSEARCH_MAX_PROBES,
   buildQuicksearchProbes,
 } from "../src/agent/services/libraryRetrieveService";
-import { buildRetrievalQueryPlan } from "../src/modules/contextPanel/retrievalQueryPlan";
+import { buildRetrievalQueryPlan } from "../src/services/retrieval/retrievalQueryPlan";
 import type {
   EditableArticleMetadataSnapshot,
   LibraryItemTarget,

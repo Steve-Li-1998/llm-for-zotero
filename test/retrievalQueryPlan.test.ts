@@ -8,7 +8,7 @@ import {
   RETRIEVAL_QUERY_VARIANT_DEFAULT_LIMIT,
   resolveRetrievalQueryPlan,
   shouldAutoGenerateQueryVariants,
-} from "../src/modules/contextPanel/retrievalQueryPlan";
+} from "../src/services/retrieval/retrievalQueryPlan";
 
 describe("retrievalQueryPlan", function () {
   it("dedupes and caps query variants while preserving the original query", function () {

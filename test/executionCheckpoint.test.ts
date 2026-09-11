@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   applyExecutionCheckpointUpdates,
+  collectJournalActionIds,
   createEmptyExecutionCheckpoint,
   type ExecutionEvidenceInventory,
 } from "../src/agent/execution/checkpoint";
@@ -44,6 +45,24 @@ const evidence: ExecutionEvidenceInventory = {
 };
 
 describe("ordinary ExecutionCheckpoint", function () {
+  it("collects parent and per-item action identities from nested results", function () {
+    assert.deepEqual(
+      [
+        ...collectJournalActionIds({
+          actionId: "action-parent",
+          result: {
+            actionIds: ["action-child-1"],
+            notes: [
+              { actionId: "action-child-2", status: "created" },
+              { actionId: "", status: "error" },
+            ],
+          },
+        }),
+      ],
+      ["action-parent", "action-child-1", "action-child-2"],
+    );
+  });
+
   it("namespaces model-local IDs and applies a dependent batch atomically", function () {
     const initial = createEmptyExecutionCheckpoint(executionContext, 10);
     const updated = applyExecutionCheckpointUpdates({

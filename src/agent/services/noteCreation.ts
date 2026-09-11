@@ -21,6 +21,13 @@ import type { AgentToolContext } from "../types";
 
 type Creation = {
   context: AgentToolContext;
+  /**
+   * Durable identity of this intended note creation.
+   *
+   * A retry reuses it. A separate user request receives a different identity
+   * even when its finalized content is byte-for-byte equal.
+   */
+  logicalActionId?: string;
   libraryID: number;
   parentItemId?: number;
   collections?: number[];
@@ -35,20 +42,28 @@ const pending = new Map<string, Promise<unknown>>();
 export async function executeNoteCreation(params: Creation) {
   const scope =
     params.context.request.actionContract?.id || params.context.runId;
-  const identity = await sha256Text(
-    JSON.stringify([
-      params.context.request.conversationKey,
-      scope,
-      params.libraryID,
-      params.parentItemId,
-      params.collections || [],
-      canonicalNoteHtml(params.html),
-    ]),
-  );
+  const identity =
+    params.logicalActionId ||
+    (await sha256Text(
+      JSON.stringify([
+        params.context.request.conversationKey,
+        scope,
+        params.libraryID,
+        params.parentItemId,
+        params.collections || [],
+        canonicalNoteHtml(params.html),
+      ]),
+    ));
   const previous = pending.get(identity) || Promise.resolve();
   const operation = previous
     .catch(() => undefined)
-    .then(() => create(params, scope ? `note-create-${identity}` : undefined));
+    .then(() =>
+      create(
+        params,
+        params.logicalActionId ||
+          (scope ? `note-create-${identity}` : undefined),
+      ),
+    );
   pending.set(identity, operation);
   try {
     return await operation;

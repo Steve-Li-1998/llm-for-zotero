@@ -1076,6 +1076,8 @@ export type AgentToolContext = {
   journalToolName?: string;
   /** Internal parent action used by composite tools such as library_batch. */
   journalActionScope?: AgentJournalActionScope;
+  /** Stable prefix allocated by a composite effect owner for child actions. */
+  journalChildActionPrefix?: string;
   /** Host-owned registered operation bridge. Each call retains its own authorization and native receipts. */
   invokeRegisteredOperation?: (
     name: string,

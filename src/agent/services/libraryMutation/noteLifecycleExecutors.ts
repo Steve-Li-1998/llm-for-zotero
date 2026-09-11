@@ -16,12 +16,13 @@ export const noteLifecycleExecutors = {
     const rows: Array<{
       targetItemId: number;
       noteId?: number;
+      actionId?: string;
       title: string;
       status: "created" | "error";
       reason?: string;
     }> = [];
     const createdNoteIds: number[] = [];
-    for (const entry of operation.notes) {
+    for (const [index, entry] of operation.notes.entries()) {
       const target = zoteroGateway.getItem(entry.targetItemId);
       const title = target
         ? String(target.getDisplayTitle?.() || `Item ${entry.targetItemId}`)
@@ -38,6 +39,9 @@ export const noteLifecycleExecutors = {
       try {
         const execution = await executeNoteCreation({
           context,
+          logicalActionId: context.journalChildActionPrefix
+            ? `${context.journalChildActionPrefix}:note:${index + 1}`
+            : undefined,
           libraryID: target.libraryID,
           parentItemId:
             operation.target === "standalone" ? undefined : target.id,
@@ -46,10 +50,15 @@ export const noteLifecycleExecutors = {
           html: renderRawNoteHtml(entry.content),
         });
         const saved = execution.content;
+        const childActionId = (
+          execution.content as unknown as { actionId?: unknown }
+        ).actionId;
         if (saved.noteId) createdNoteIds.push(saved.noteId);
         rows.push({
           targetItemId: entry.targetItemId,
           noteId: saved.noteId,
+          actionId:
+            typeof childActionId === "string" ? childActionId : undefined,
           title,
           status: "created",
         });
@@ -70,6 +79,9 @@ export const noteLifecycleExecutors = {
         result: {
           createdCount: rows.filter((row) => row.status === "created").length,
           failedCount: rows.filter((row) => row.status === "error").length,
+          actionIds: rows.flatMap((row) =>
+            row.actionId ? [row.actionId] : [],
+          ),
           notes: rows,
         },
       },

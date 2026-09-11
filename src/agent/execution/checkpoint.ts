@@ -323,6 +323,42 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/**
+ * Collect only explicit journal-reference fields from a persisted tool result.
+ * The traversal lets composite tools expose per-item actions without copying
+ * their journal payloads into the execution checkpoint.
+ */
+export function collectJournalActionIds(value: unknown): string[] {
+  const actionIds = new Set<string>();
+  const seen = new Set<object>();
+  let visited = 0;
+  const visit = (candidate: unknown, depth: number): void => {
+    if (depth > 12 || visited >= 10_000 || !candidate) return;
+    if (typeof candidate !== "object") return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    visited += 1;
+    if (Array.isArray(candidate)) {
+      for (const entry of candidate) visit(entry, depth + 1);
+      return;
+    }
+    const entry = candidate as Record<string, unknown>;
+    if (typeof entry.actionId === "string" && entry.actionId.trim()) {
+      actionIds.add(entry.actionId.trim());
+    }
+    if (Array.isArray(entry.actionIds)) {
+      for (const actionId of entry.actionIds) {
+        if (typeof actionId === "string" && actionId.trim()) {
+          actionIds.add(actionId.trim());
+        }
+      }
+    }
+    for (const nested of Object.values(entry)) visit(nested, depth + 1);
+  };
+  visit(value, 0);
+  return [...actionIds];
+}
+
 function parseMaterialRef(value: unknown): MaterialRef | null {
   const candidate = record(value);
   if (
@@ -366,15 +402,8 @@ export async function loadExecutionEvidenceForRun(
       }
     }
     const content = record(event.payload.content);
-    const actionId =
-      typeof content?.actionId === "string" ? content.actionId.trim() : "";
-    if (actionId) journalActionIds.add(actionId);
-    if (Array.isArray(content?.actionIds)) {
-      for (const value of content.actionIds) {
-        if (typeof value === "string" && value.trim()) {
-          journalActionIds.add(value.trim());
-        }
-      }
+    for (const actionId of collectJournalActionIds(content)) {
+      journalActionIds.add(actionId);
     }
     const materialRef = parseMaterialRef(content?.materialRef);
     if (materialRef) {

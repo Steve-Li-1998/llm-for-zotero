@@ -84,6 +84,12 @@ export async function executeJournaledStep<T>(params: {
   plan: MutationStepPlan | (() => Promise<MutationStepPlan>);
   prepareAction?: (plan: MutationStepPlan) => JournalActionSeed;
   execute: (plan: MutationStepPlan) => Promise<MutationStepOutcome<T>>;
+  /**
+   * Composite operations can delegate serialization to their concrete child
+   * writes. They still own their journal step, but must not hold the native
+   * mutation queue while a child tries to acquire it.
+   */
+  serializeNativeMutation?: boolean;
   resume?: boolean;
   reconcileAfterError?: (
     plan: MutationStepPlan,
@@ -102,7 +108,7 @@ export async function executeJournaledStep<T>(params: {
   const { context, actionId, sequence } = params;
   const parentScope = context.journalActionScope;
   const stepId = actionId ? `${actionId}:${sequence}` : null;
-  return withActiveJournalAction(actionId, async () => {
+  const executeStep = async () => {
     const plan =
       typeof params.plan === "function" ? await params.plan() : params.plan;
     const action = params.prepareAction?.(plan);
@@ -292,7 +298,10 @@ export async function executeJournaledStep<T>(params: {
       if (failure instanceof MutationNoEffectError) throw failure;
       throw new MutationMayHaveAppliedError(reason, plan.reversibility);
     }
-  });
+  };
+  return params.serializeNativeMutation === false
+    ? executeStep()
+    : withActiveJournalAction(actionId, executeStep);
 }
 
 export type ExternalMutationPlan = MutationStepPlan;

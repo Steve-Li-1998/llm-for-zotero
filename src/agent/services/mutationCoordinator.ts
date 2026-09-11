@@ -99,9 +99,12 @@ async function executeOne(params: {
   sequence: number;
   prepareAction?: (plan: MutationStepPlan) => JournalActionSeed;
 }) {
-  const { service, operation, context } = params;
+  const { service, operation, context, actionId, sequence } = params;
   return executeJournaledStep({
     ...params,
+    // save_notes_batch is a composite: each durable child note reserves its
+    // own identity and owns its own native write interval.
+    serializeNativeMutation: operation.type !== "save_notes_batch",
     plan: async () => {
       const plan = await service.planOperation(operation, context);
       return {
@@ -116,7 +119,17 @@ async function executeOne(params: {
       };
     },
     execute: async () => {
-      const executed = await service.executeOperation(operation, context);
+      const operationContext =
+        actionId && operation.type === "save_notes_batch"
+          ? {
+              ...context,
+              journalChildActionPrefix: `${actionId}:child:${sequence}`,
+            }
+          : context;
+      const executed = await service.executeOperation(
+        operation,
+        operationContext,
+      );
       const inverse = executed.inverse;
       return {
         result: executed.result,

@@ -4902,8 +4902,12 @@ function renderPlanContainer(params: {
     const text = params.doc.createElement("p");
     text.textContent = "Plan execution was interrupted.";
     const resume = params.doc.createElement("button");
+    resume.type = "button";
     resume.className = "llm-plan-action llm-plan-approve";
-    resume.textContent = "Resume execution";
+    const label = params.doc.createElement("span");
+    label.className = "llm-plan-action-label-full";
+    label.textContent = "Resume execution";
+    resume.appendChild(label);
     let disposed = false;
     const onResume = async () => {
       resume.disabled = true;

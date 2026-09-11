@@ -8850,6 +8850,17 @@ label.llm-search-results-item:hover {
   background: transparent;
 }
 
+.llm-plan-recovery-card .llm-plan-action {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  max-height: none;
+  max-width: 100%;
+  line-height: 1.25;
+}
+
 .llm-note-review-card {
   box-shadow: none;
 }
@@ -10023,6 +10034,7 @@ label.llm-search-results-item:hover {
   margin-left: 0;
 }
 
+.llm-plan-recovery-card .llm-plan-approve .llm-plan-action-label-full,
 .llm-plan-review-actions .llm-plan-approve .llm-plan-action-label-full,
 .llm-plan-review-actions .llm-plan-approve .llm-plan-action-label-compact {
   position: relative;

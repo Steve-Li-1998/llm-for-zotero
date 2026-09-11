@@ -1183,6 +1183,49 @@ describe("agentTrace render", function () {
     }
   });
 
+  it("uses the established Plan button shape and centered label for Resume execution", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "", timestamp: 1, runMode: "agent" },
+      allowPlanRecovery: true,
+      events: [
+        {
+          runId: "interrupted-plan",
+          seq: 1,
+          eventType: "plan_execution_updated",
+          createdAt: 1,
+          payload: {
+            type: "plan_execution_updated",
+            ledger: {
+              executionId: "interrupted-plan",
+              status: "interrupted",
+              tasks: [],
+            } as any,
+          },
+        },
+      ],
+    }) as unknown as FakeElement;
+    const recovery = trace.findByClass("llm-plan-recovery-card");
+    assert.exists(recovery);
+    assert.include(
+      collectFakeText(recovery),
+      "Plan execution was interrupted.",
+    );
+    assert.equal(
+      recovery?.findByClass("llm-plan-action-label-full")?.textContent,
+      "Resume execution",
+    );
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const rule =
+      css.match(
+        /\.llm-plan-recovery-card \.llm-plan-action\s*\{[^}]*\}/,
+      )?.[0] || "";
+    assert.include(rule, "appearance: none");
+    assert.include(rule, "align-items: center");
+    assert.include(rule, "justify-content: center");
+    assert.include(rule, "line-height: 1.25");
+  });
+
   it("projects authoritative work categories without inferring from tool names", function () {
     const events: AgentRunEventRecord[] = [
       {

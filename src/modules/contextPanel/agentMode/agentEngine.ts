@@ -31,7 +31,10 @@ import {
   restoreRetryUserSnapshot,
   takeRetryUserSnapshot,
 } from "../retryUserSnapshot";
-import { renderPendingActionCard } from "../agentTrace/render";
+import {
+  isGenericAgentStatusText,
+  renderPendingActionCard,
+} from "../agentTrace/render";
 import {
   createBlockStreamCoalescer,
   type BlockStreamFlushReason,
@@ -443,7 +446,16 @@ export function createAgentTurnEventHandler(
             createdAt: Date.now(),
           });
         }
-        setStatusSafely(event.text, "sending");
+        setStatusSafely(
+          isGenericAgentStatusText(event.text)
+            ? runtimeRequest.planContext?.phase === "planning"
+              ? "Planning"
+              : runtimeRequest.planContext?.phase === "executing"
+                ? "Executing"
+                : "Working"
+            : event.text,
+          "sending",
+        );
         if (isCompactingStatus) {
           assistantMessage.pendingAgentTraceEvents = undefined;
         }

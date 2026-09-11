@@ -37,10 +37,13 @@ function createFinalThenHangingRuntime(
       }) => Promise<void> | void;
     }): Promise<AgentRuntimeOutcome> => {
       await params.onStart?.("run-final-release");
-      await params.onEvent?.({
-        type: "status",
-        text: "Continuing agent (2/24)",
-      });
+      for (const text of [
+        "Continuing agent (2/24)",
+        "Checkpointed agent segment 1; continuing",
+        "Continuing agent (segment 2, 6/32)",
+      ]) {
+        await params.onEvent?.({ type: "status", text });
+      }
       await params.onEvent?.({
         type: "final",
         text: "Final answer.",
@@ -425,6 +428,10 @@ describe("agent engine final UI release", function () {
     assert.deepInclude(pendingWrites, [conversationKey, 0]);
     assert.deepInclude(idleRestores, [conversationKey, 77]);
     assert.include(statuses, "Ready");
+    assert.include(statuses, "Working");
+    assert.isFalse(
+      statuses.some((text) => /Continuing agent|Checkpointed agent/.test(text)),
+    );
   });
 
   it("forwards note-edit selected text contexts into the runtime request", async function () {

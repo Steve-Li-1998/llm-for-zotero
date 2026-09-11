@@ -1147,6 +1147,42 @@ describe("rendered Markdown code block source controls", function () {
 });
 
 describe("agentTrace render", function () {
+  it("hides internal round and segment bookkeeping during streaming and history replay", function () {
+    const statusTexts = [
+      "Running agent",
+      "Continuing agent (2/24)",
+      "Checkpointed agent segment 1; continuing",
+      "Continuing agent (segment 2, 6/32)",
+      "Continuing agent (segment 2, 7/32)",
+      "Reading the methods section",
+    ];
+    const events: AgentRunEventRecord[] = statusTexts.map((text, index) => ({
+      runId: "segment-progress",
+      seq: index + 1,
+      eventType: "status",
+      payload: { type: "status", text },
+      createdAt: index + 1,
+    }));
+    for (const streaming of [true, false]) {
+      const trace = renderAgentTrace({
+        doc: fakeDocument,
+        message: {
+          role: "assistant",
+          text: "",
+          timestamp: 1,
+          runMode: "agent",
+          streaming,
+        },
+        events,
+      }) as unknown as FakeElement;
+      const visible = collectFakeText(trace);
+      for (const internal of statusTexts.slice(0, -1)) {
+        assert.notInclude(visible, internal);
+      }
+      assert.include(visible, "Reading the methods section");
+    }
+  });
+
   it("projects authoritative work categories without inferring from tool names", function () {
     const events: AgentRunEventRecord[] = [
       {

@@ -3788,11 +3788,12 @@ function appendImageArtifactGrid(
   return false;
 }
 
-function isGenericAgentStatusText(text: string): boolean {
+export function isGenericAgentStatusText(text: string): boolean {
   const normalized = text.trim().toLowerCase();
   return (
     normalized === "running agent" ||
-    /^continuing agent \(\d+\/\d+\)$/.test(normalized)
+    /^continuing agent \((?:segment \d+, )?\d+\/\d+\)$/.test(normalized) ||
+    /^checkpointed agent segment \d+; continuing$/.test(normalized)
   );
 }
 

@@ -30,6 +30,7 @@ import {
 } from "../src/modules/contextPanel/prefHelpers";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 import {
   actionFixture,
   classifiedFixture,
@@ -207,6 +208,20 @@ describe("editCurrentNote create tracking", function () {
     nextNoteId = Math.max(nextNoteId, id + 1);
     return note;
   }
+
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Note mutations invalidate cached paper context, which reaches the
+    // panel's retrieval cache through a host surface bridge the plugin
+    // composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
 
   beforeEach(function () {
     prefStore.clear();

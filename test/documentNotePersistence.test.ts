@@ -1,4 +1,5 @@
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 import { assert } from "chai";
 import { createHash } from "node:crypto";
 import {
@@ -21,6 +22,20 @@ describe("durable document note association", function () {
   let failFinalization: boolean;
   let requireAtomicState: boolean;
   let imageImports: number;
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Note mutations invalidate cached paper context, which reaches the
+    // panel's retrieval cache through a host surface bridge the plugin
+    // composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   beforeEach(function () {
     original = globals.Zotero;
     originalIO = globals.IOUtils;

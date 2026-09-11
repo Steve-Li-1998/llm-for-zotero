@@ -1,5 +1,6 @@
 import { noteHtmlMatches } from "../src/utils/noteHtml";
 import { renderRawNoteHtml } from "../src/modules/contextPanel/notes";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 import { nativeNoteGateway } from "./helpers/nativeNoteGateway";
 import { actionContractFixture } from "./helpers/semanticIntent";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
@@ -228,6 +229,8 @@ describe("primitive agent tools", function () {
     noteKind: "standalone" as const,
   });
 
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
   before(function () {
     globalScope.Zotero = {
       ...(originalZotero || {}),
@@ -236,9 +239,15 @@ describe("primitive agent tools", function () {
         set: () => undefined,
       },
     };
+    // Note mutations invalidate cached paper context, which reaches the
+    // panel's retrieval cache through a host surface bridge. This suite stands
+    // in for the plugin surface, so it composes the same invalidator.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
   });
 
   after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
     globalScope.Zotero = originalZotero;
   });
 

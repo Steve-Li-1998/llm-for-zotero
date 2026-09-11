@@ -66,7 +66,7 @@ export function composeHostSurfaces(): () => void {
           undefined,
           params.collections,
         );
-        return { ...result, status: "standalone_created" as const };
+        return { ...result, status: "standalone_created" };
       },
     }),
     configureRetrievalCandidateInvalidator(clearRetrievalCandidateCache),

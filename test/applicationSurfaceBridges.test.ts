@@ -13,10 +13,7 @@ import {
   configureRetrievalCandidateInvalidator,
   invalidateRetrievalCandidates,
 } from "../src/services/retrieval/cacheInvalidation";
-import {
-  configurePdfReaderTextBridge,
-  warmPdfPageTextCache,
-} from "../src/services/pdf/readerTextBridge";
+import { warmPdfPageTextCache } from "../src/services/pdf/readerTextBridge";
 import { composeHostSurfaces } from "../src/modules/contextPanel/hostSurfaces";
 
 const UNCOMPOSED = /adapter is not configured for this application surface/;
@@ -26,12 +23,9 @@ const UNCOMPOSED = /adapter is not configured for this application surface/;
  * the stub inputs used here. Only the bridge's own "nothing is configured"
  * error means the surface was never composed.
  */
-function captureFailure(call: () => unknown): string {
+function captureFailure(call: () => void): string {
   try {
-    const result = call();
-    if (result instanceof Promise) {
-      throw new Error("unexpected async probe");
-    }
+    call();
     return "";
   } catch (error) {
     return String(error);

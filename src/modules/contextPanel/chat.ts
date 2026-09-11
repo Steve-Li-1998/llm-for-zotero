@@ -1603,7 +1603,9 @@ function estimateHistoryContextUsageSnapshot(
   };
 }
 
-export function refreshAllActiveConversationPanels(): void {
+export function refreshActiveConversationPanels(
+  conversationKey?: number,
+): void {
   for (const [body, getItem] of activeContextPanels) {
     if (!(body as Element).isConnected) {
       activeContextPanels.delete(body);
@@ -1611,11 +1613,17 @@ export function refreshAllActiveConversationPanels(): void {
       continue;
     }
     const item = getItem();
-    if (item) refreshChat(body, item);
+    if (!item) continue;
+    if (
+      conversationKey !== undefined &&
+      getConversationKey(item) !== conversationKey
+    )
+      continue;
+    refreshChat(body, item);
   }
 }
 
-subscribeModelProviderGroups(refreshAllActiveConversationPanels);
+subscribeModelProviderGroups(refreshActiveConversationPanels);
 
 function accumulateSessionTokens(
   conversationKey: number,
@@ -1722,7 +1730,8 @@ function applyChatScrollPolicy(
 ): void {
   const conversationKey = getConversationKey(item);
   const snapshot =
-    getChatScrollSnapshot(conversationKey) || buildChatScrollSnapshot(chatBox);
+    getChatScrollSnapshot(conversationKey, chatBox) ||
+    buildChatScrollSnapshot(chatBox);
   applyChatScrollSnapshot(chatBox, snapshot);
   persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
 }
@@ -1825,10 +1834,10 @@ async function publishPersistedPlanDocumentIfPresent(params: {
     documentId: params.documentId || params.planDocumentId,
   });
   if (!document) return;
-  // Delivery may complete the final durable Plan task. Re-render even when
-  // this backend has no local trace-run row so the progress card reloads the
-  // committed ledger instead of remaining at its pre-publication count.
-  refreshAllActiveConversationPanels();
+  // Delivery may complete the final durable Plan task. Refresh this
+  // conversation's views so their progress cards reload the committed ledger,
+  // without rebuilding unrelated chats that the user may be reading.
+  refreshActiveConversationPanels(params.conversationKey);
   const runId = params.agentRunId?.trim();
   if (!runId) return;
   const persistedTrace = await getAgentRunTrace(runId);
@@ -12805,7 +12814,7 @@ export function refreshChat(
     ? settleFollowBottomIntent(conversationKey, chatBox, {
         streaming: conversationHasStreamingMessage(conversationKey),
       })
-    : getChatScrollSnapshot(conversationKey);
+    : getChatScrollSnapshot(conversationKey, chatBox);
   const liveAnchoredSnapshot =
     targetedRerenderRequested && cachedSnapshot?.mode === "manual"
       ? buildAnchoredChatScrollSnapshot(chatBox)

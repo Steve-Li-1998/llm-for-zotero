@@ -257,21 +257,72 @@ function appendAgentActivityDisclosure(params: {
   const summary =
     details.querySelector?.("summary") || doc.createElement("summary");
   summary.className = "llm-agent-activity-summary";
-  summary.classList.toggle("llm-text-shimmer", working);
-  const duration = formatAgentActivityDuration(
-    resolveAgentActivityDurationMs(message, userMessage, events),
+  const durationMs = resolveAgentActivityDurationMs(
+    message,
+    userMessage,
+    events,
   );
-  summary.textContent = working
-    ? planPhase === "planning"
-      ? "Planning"
-      : planPhase === "executing"
-        ? "Executing plan"
-        : "Working"
-    : planPhase === "planning"
-      ? `Planned in ${duration}`
-      : planPhase === "executing"
-        ? `Plan ran for ${duration}`
-        : `Worked for ${duration}`;
+  const view = traceViews.get(wrap)!;
+  if (working) {
+    let label = summary.querySelector(".llm-agent-activity-label");
+    if (!label) {
+      label = doc.createElement("span");
+      label.className = "llm-agent-activity-label llm-text-shimmer";
+      summary.replaceChildren(label);
+    }
+    label.textContent =
+      planPhase === "planning"
+        ? "Planning"
+        : planPhase === "executing"
+          ? "Executing plan"
+          : "Working";
+    if (!view.activityClock) {
+      const elapsed = doc.createElement("span");
+      elapsed.className = "llm-agent-activity-elapsed";
+      elapsed.setAttribute("role", "timer");
+      elapsed.setAttribute("aria-live", "off");
+      summary.appendChild(elapsed);
+      const win = doc.defaultView;
+      const clock = {
+        startedAt: Date.now() - durationMs,
+        paint: () => {
+          const totalSeconds = Math.max(
+            0,
+            Math.floor((Date.now() - clock.startedAt) / 1000),
+          );
+          const seconds = String(totalSeconds % 60);
+          const text =
+            totalSeconds < 60
+              ? `${seconds}s`
+              : `${Math.floor(totalSeconds / 60)}m ${seconds.padStart(2, "0")}s`;
+          if (elapsed.textContent !== text) elapsed.textContent = text;
+        },
+        stop: () => {
+          if (timer !== undefined) win?.clearInterval(timer);
+          view.activityClock = undefined;
+        },
+      };
+      // Only this text node ticks: it must not refresh the transcript or run
+      // scroll restoration. Wall time also catches up after a background pause.
+      const timer = win?.setInterval(() => {
+        if (!elapsed.isConnected) clock.stop();
+        else clock.paint();
+      }, 1000);
+      view.activityClock = clock;
+    }
+    view.activityClock.startedAt = Date.now() - durationMs;
+    view.activityClock.paint();
+  } else {
+    view.activityClock?.stop();
+    const duration = formatAgentActivityDuration(durationMs);
+    summary.replaceChildren();
+    summary.textContent =
+      planPhase === "planning"
+        ? `Planned in ${duration}`
+        : planPhase === "executing"
+          ? `Plan ran for ${duration}`
+          : `Worked for ${duration}`;
+  }
   if (mounted) return;
   details.append(summary, list);
   details.addEventListener("toggle", () => {
@@ -5476,6 +5527,7 @@ function renderPlanDocumentCard(params: {
 
 type TraceItemView = { signature: string; node: HTMLElement };
 type TraceView = {
+  activityClock?: { startedAt: number; paint: () => void; stop: () => void };
   discovery?: { key: string; node: HTMLElement };
   list: HTMLElement;
   items: Map<string, TraceItemView>;
@@ -5501,6 +5553,7 @@ const traceViews = new WeakMap<HTMLElement, TraceView>();
 export function disposeAgentTrace(root: HTMLElement): void {
   const view = traceViews.get(root);
   if (!view) return;
+  view.activityClock?.stop();
   for (const item of view.items.values()) disposeStreamingMarkdown(item.node);
   if (view.plan) disposePlanCard(view.plan.node);
   if (view.document) disposePlanCard(view.document.node);
@@ -5622,6 +5675,7 @@ export function renderAgentTrace({
     wrap.classList.add("llm-agent-activity-with-pending-action");
   }
   if (pending && isPlanningQuestionAction(pending.action)) {
+    view.activityClock?.stop();
     wrap.classList.add("llm-agent-activity-question-card");
     wrap.dataset.llmAssistantTurnReplacement = "true";
     onInterleavedText?.();

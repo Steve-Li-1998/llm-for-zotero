@@ -66,7 +66,7 @@ describe("plugin startup initialization", function () {
     );
     const initialized = startup.indexOf("await initAgentSubsystem();");
     const refreshImport = startup.indexOf('"./modules/contextPanel/chat"');
-    const refresh = startup.indexOf("refreshAllActiveConversationPanels();");
+    const refresh = startup.indexOf("refreshActiveConversationPanels();");
 
     assert.isAtLeast(initialized, 0);
     assert.isAtLeast(refreshImport, 0);

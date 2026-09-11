@@ -4914,7 +4914,11 @@
   transition: transform 120ms ease;
 }
 
-.llm-agent-activity-summary.llm-text-shimmer::after {
+.llm-agent-activity-elapsed {
+  font-family: monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
   color: var(--fill-tertiary);
 }
 

@@ -1025,7 +1025,7 @@ export function restoreChatScrollSnapshotForConversationKey(
   conversationKey: number,
   chatBox: HTMLDivElement,
 ): boolean {
-  const snapshot = getChatScrollSnapshot(conversationKey);
+  const snapshot = getChatScrollSnapshot(conversationKey, chatBox);
   if (!snapshot) return false;
   applyChatScrollSnapshot(chatBox, snapshot);
   persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);

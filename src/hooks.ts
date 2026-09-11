@@ -224,9 +224,9 @@ function scheduleAgentSubsystemStartup(): void {
     const { getAgentApi, initAgentSubsystem } = await import("./agent");
     await initAgentSubsystem();
     addon.api.agent = getAgentApi();
-    const { refreshAllActiveConversationPanels } =
+    const { refreshActiveConversationPanels } =
       await import("./modules/contextPanel/chat");
-    refreshAllActiveConversationPanels();
+    refreshActiveConversationPanels();
     await ensureStartupUserSkillsLoaded();
   });
 }

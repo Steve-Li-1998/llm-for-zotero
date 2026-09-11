@@ -476,6 +476,7 @@ export type WorkflowTestApi = {
     noteHtml: string;
   }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  refreshActiveConversationPanels: (conversationKey?: number) => void;
   exerciseNativePlanReview: typeof import("./nativePlanReviewReplay").exerciseNativePlanReview;
   exerciseNativeQuestionReview: (
     panelId: string,

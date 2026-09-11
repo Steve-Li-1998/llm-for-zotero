@@ -12,6 +12,7 @@ import {
   buildAgentTraceDisplayItems,
   buildAgentTraceMarkdownForRender,
   formatAgentActivityDuration,
+  disposeAgentTrace,
   getPendingActionButtonLayout,
   renderAgentTrace,
   renderAgentTraceDetailsBodyForTests,
@@ -1502,6 +1503,90 @@ describe("agentTrace render", function () {
     }
   });
 
+  it("counts wall-clock elapsed time without trace events and disposes its timer", function () {
+    let now = 71_000;
+    const originalNow = Date.now;
+    Date.now = () => now;
+    const callbacks = new Map<number, () => void>();
+    let nextTimer = 0;
+    const doc = {
+      ...fakeDocument,
+      defaultView: {
+        setInterval: (callback: () => void, delay: number) => {
+          assert.equal(delay, 1000);
+          callbacks.set(++nextTimer, callback);
+          return nextTimer;
+        },
+        clearInterval: (id: number) => callbacks.delete(id),
+      },
+    } as unknown as Document;
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 71_000,
+      waitingAnimationStartedAt: 11_100,
+      streaming: true,
+      runMode: "agent" as const,
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "elapsed-clock",
+        seq: 1,
+        createdAt: 20_000,
+        eventType: "status",
+        payload: { type: "status", text: "Reading the paper" },
+      },
+    ];
+    let trace: HTMLElement | null = null;
+    try {
+      trace = renderAgentTrace({ doc, message, events })!;
+      const root = trace as unknown as FakeElement;
+      const elapsed = root.findByClass("llm-agent-activity-elapsed")!;
+      assert.isNotNull(elapsed);
+      Object.defineProperty(elapsed, "isConnected", { get: () => true });
+      assert.equal(elapsed.textContent, "59s");
+      now += 100;
+      for (const tick of callbacks.values()) tick();
+      assert.equal(elapsed.textContent, "1m 00s");
+      now += 2_300; // A delayed/background callback must catch up to real time.
+      for (const tick of callbacks.values()) tick();
+      assert.equal(elapsed.textContent, "1m 02s");
+      now += 600;
+      for (const tick of callbacks.values()) tick();
+      assert.equal(
+        elapsed.textContent,
+        "1m 02s",
+        "fractional seconds stay hidden",
+      );
+      renderAgentTrace({ doc, message, events, previous: trace });
+      assert.strictEqual(
+        root.findByClass("llm-agent-activity-elapsed"),
+        elapsed,
+      );
+      assert.equal(callbacks.size, 1);
+      message.streaming = false;
+      message.timestamp = now;
+      renderAgentTrace({ doc, message, events, previous: trace });
+      assert.equal(callbacks.size, 0, "completion stops ticking");
+      assert.match(
+        root.findByClass("llm-agent-activity-summary")!.textContent,
+        /^Worked for /,
+      );
+      disposeAgentTrace(trace);
+      trace = renderAgentTrace({
+        doc,
+        message: { ...message, streaming: true },
+        events,
+      })!;
+      assert.equal(callbacks.size, 1);
+      disposeAgentTrace(trace);
+      assert.equal(callbacks.size, 0, "disposing the view clears the timer");
+    } finally {
+      if (trace) disposeAgentTrace(trace);
+      Date.now = originalNow;
+    }
+  });
+
   it("shimmers only the active status words and stops on the retained completed header", function () {
     const message = {
       role: "assistant" as const,
@@ -1522,8 +1607,15 @@ describe("agentTrace render", function () {
     const trace = renderAgentTrace({ doc: fakeDocument, message, events })!;
     const rendered = trace as unknown as FakeElement;
     const summary = rendered.findByClass("llm-agent-activity-summary")!;
-    assert.equal(summary.textContent, "Working");
-    assert.isTrue(summary.classList.contains("llm-text-shimmer"));
+    assert.equal(
+      summary.findByClass("llm-agent-activity-label")?.textContent,
+      "Working",
+    );
+    assert.isTrue(
+      summary
+        .findByClass("llm-agent-activity-label")!
+        .classList.contains("llm-text-shimmer"),
+    );
     assert.lengthOf(summary.findAllByClass("llm-at-planning-drive-pixel"), 0);
 
     message.streaming = false;
@@ -1587,7 +1679,7 @@ describe("agentTrace render", function () {
       )?.open,
     );
     assert.equal(
-      workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      workingTrace.findByClass("llm-agent-activity-label")?.textContent,
       "Working",
     );
 
@@ -1637,7 +1729,7 @@ describe("agentTrace render", function () {
       ],
     }) as unknown as FakeElement;
     assert.equal(
-      planning.findByClass("llm-agent-activity-summary")?.textContent,
+      planning.findByClass("llm-agent-activity-label")?.textContent,
       "Planning",
     );
     const planningRow = planning.findByClass("llm-at-row-planning-active");
@@ -1661,7 +1753,7 @@ describe("agentTrace render", function () {
       ],
     }) as unknown as FakeElement;
     assert.equal(
-      executing.findByClass("llm-agent-activity-summary")?.textContent,
+      executing.findByClass("llm-agent-activity-label")?.textContent,
       "Executing plan",
     );
     assert.isNull(executing.findByClass("llm-at-planning-drive"));
@@ -2326,7 +2418,7 @@ describe("agentTrace render", function () {
       | null;
     assert.isTrue(workingDetails?.open);
     assert.equal(
-      workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      workingTrace.findByClass("llm-agent-activity-label")?.textContent,
       "Working",
     );
     assert.deepEqual(

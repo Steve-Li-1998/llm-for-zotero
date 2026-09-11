@@ -138,51 +138,111 @@ describe("workflow: background conversation activity", function () {
     assert.closeTo(selectedView!.box.scrollTop, selectedView!.scrollTop, 1);
   });
 
-  it("animates the Working words while leaving the disclosure arrow and completed header static", async function () {
-    const timestamp = Date.now();
-    const seed = (streaming: boolean) =>
-      api.seedStandaloneConversation([
-        { role: "user", text: "Read the paper", timestamp: timestamp - 1000 },
-        {
-          role: "assistant",
-          text: "",
-          timestamp,
-          runMode: "agent",
-          streaming,
-          pendingAgentTraceEvents: [
-            {
-              runId: "workflow-working-shimmer",
-              seq: 1,
-              createdAt: timestamp,
-              eventType: "status",
-              payload: { type: "status", text: "Reading the paper" },
-            },
-          ],
-        },
-      ]);
-    await seed(true);
-    const summary = win.document.querySelector<HTMLElement>(
-      ".llm-agent-activity-summary",
-    )!;
-    assert.equal(summary.textContent, "Working");
-    assert.equal(
-      win.getComputedStyle(summary).animationName,
-      "llm-planning-text-shimmer",
-    );
-    assert.equal(
-      win.getComputedStyle(summary, "::after").animationName,
-      "none",
-    );
-    assert.notEqual(
-      win.getComputedStyle(summary, "::after").color,
-      "rgba(0, 0, 0, 0)",
-    );
-    assert.isNull(summary.querySelector(".llm-at-planning-drive"));
-    await seed(false);
-    const completed = win.document.querySelector<HTMLElement>(
-      ".llm-agent-activity-summary",
-    )!;
-    assert.match(completed.textContent || "", /^Worked for /);
-    assert.equal(win.getComputedStyle(completed).animationName, "none");
-  });
+  for (const [label, status] of [
+    ["Working", "Reading the paper"],
+    ["Planning", "Planning the request and reviewing context"],
+    ["Executing plan", "Executing the approved plan"],
+  ]) {
+    it(`counts live elapsed time beside ${label} through redraw and completion`, async function () {
+      const timestamp = Date.now();
+      const seed = (streaming: boolean) =>
+        api.seedStandaloneConversation([
+          { role: "user", text: "Read the paper", timestamp: timestamp - 1000 },
+          {
+            role: "assistant",
+            text: "",
+            timestamp,
+            waitingAnimationStartedAt: timestamp - 12_300,
+            runMode: "agent",
+            streaming,
+            pendingAgentTraceEvents: [
+              {
+                runId: "workflow-working-shimmer",
+                seq: 1,
+                createdAt: timestamp,
+                eventType: "status",
+                payload: { type: "status", text: status },
+              },
+            ],
+          },
+        ]);
+      await seed(true);
+      const summary = win.document.querySelector<HTMLElement>(
+        ".llm-agent-activity-summary",
+      )!;
+      const words = summary.querySelector<HTMLElement>(
+        ".llm-agent-activity-label",
+      )!;
+      const elapsed = summary.querySelector<HTMLElement>(
+        ".llm-agent-activity-elapsed",
+      )!;
+      assert.isNotNull(elapsed, "active status displays elapsed time");
+      assert.equal(words.textContent, label);
+      assert.match(elapsed.textContent!, /^\d+s$/);
+      const initial = Number.parseFloat(elapsed.textContent!);
+      assert.isAtLeast(
+        initial,
+        12,
+        "uses the run start rather than mount time",
+      );
+      assert.equal(
+        win.getComputedStyle(words).animationName,
+        "llm-planning-text-shimmer",
+      );
+      assert.equal(
+        win.getComputedStyle(summary, "::after").animationName,
+        "none",
+      );
+      assert.notEqual(
+        win.getComputedStyle(summary, "::after").color,
+        "rgba(0, 0, 0, 0)",
+      );
+      assert.isNull(summary.querySelector(".llm-at-planning-drive"));
+      assert.equal(win.getComputedStyle(elapsed).animationName, "none");
+      assert.include(
+        win.getComputedStyle(elapsed).fontVariantNumeric,
+        "tabular-nums",
+      );
+      const height = summary.getBoundingClientRect().height;
+      const box = win.document.querySelector<HTMLElement>("#llm-chat-box")!;
+      const scrollTop = box.scrollTop;
+      await Zotero.Promise.delay(1100);
+      assert.isAbove(
+        Number.parseFloat(elapsed.textContent!),
+        initial,
+        "ticks without another model event",
+      );
+      assert.strictEqual(
+        win.document.querySelector(".llm-agent-activity-summary"),
+        summary,
+      );
+      assert.equal(summary.getBoundingClientRect().height, height);
+      assert.equal(box.scrollTop, scrollTop);
+      const beforeRedraw = Number.parseFloat(elapsed.textContent!);
+      api.refreshActiveConversationPanels(
+        (await api.getStandaloneDiagnostics()).conversationKey!,
+      );
+      const remounted = win.document.querySelector<HTMLElement>(
+        ".llm-agent-activity-elapsed",
+      )!;
+      assert.isAtLeast(Number.parseFloat(remounted.textContent!), beforeRedraw);
+      await Zotero.Promise.delay(200);
+      const detachedTime = elapsed.textContent;
+      await Zotero.Promise.delay(200);
+      assert.equal(elapsed.textContent, detachedTime, "detached timer stops");
+      await seed(false);
+      const completed = win.document.querySelector<HTMLElement>(
+        ".llm-agent-activity-summary",
+      )!;
+      assert.match(
+        completed.textContent || "",
+        /^(Worked for|Planned in|Plan ran for) /,
+      );
+      assert.isNull(completed.querySelector(".llm-agent-activity-elapsed"));
+      assert.equal(win.getComputedStyle(completed).animationName, "none");
+      const completedText = completed.textContent;
+      await Zotero.Promise.delay(200);
+      assert.equal(completed.textContent, completedText);
+    });
+  }
 });

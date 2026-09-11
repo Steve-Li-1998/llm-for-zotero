@@ -462,6 +462,24 @@ describe("chat scroll snapshots", function () {
     assert.isFalse(isScrollUpdateSuspended(boxA));
   });
 
+  it("restores each mounted view from its own snapshot of the same conversation", function () {
+    clearChatScrollSnapshotsForTests();
+    const manual = makeChatBox({ scrollTop: 300, scrollHeight: 2000 });
+    const following = makeChatBox({ scrollTop: 1900, scrollHeight: 2000 });
+    const manualBox = manual as unknown as HTMLDivElement;
+    const followingBox = following as unknown as HTMLDivElement;
+    persistChatScrollSnapshotForConversationKey(1, manualBox);
+    setFollowBottomChatScrollSnapshot(1, followingBox);
+
+    // The latest conversation-wide position belongs to the other view.
+    manual.scrollTop = 0;
+    assert.isTrue(restoreChatScrollSnapshotForConversationKey(1, manualBox));
+    assert.equal(manual.scrollTop, 300);
+    assert.equal(getChatScrollSnapshot(1, manualBox)?.mode, "manual");
+    assert.isTrue(restoreChatScrollSnapshotForConversationKey(1, followingBox));
+    assert.equal(getChatScrollSnapshot(1, followingBox)?.mode, "followBottom");
+  });
+
   it("rerenders only quote-validated assistant wrappers", function () {
     const chatSource = readFileSync(
       resolve(here, "../src/modules/contextPanel/chat.ts"),

@@ -90,6 +90,7 @@ import {
   ensureConversationLoaded,
   getConversationKey,
   hasAgentRunTraceForTests,
+  refreshActiveConversationPanels,
   refreshChat,
   setAgentRunTraceLoaderForTests,
   updateContextUsageSnapshotFromProvider,
@@ -5240,6 +5241,7 @@ export function installWorkflowTestHarness(targetAddon: {
     createItemNoteFixture,
     createStandaloneNoteFixture,
     renderPanelForItem,
+    refreshActiveConversationPanels,
     exerciseBackgroundAgentPublication,
     exerciseNativePlanReview: () => {
       assertWorkflowTestEnabled();

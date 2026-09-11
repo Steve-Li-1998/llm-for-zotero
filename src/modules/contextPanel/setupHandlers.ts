@@ -126,8 +126,8 @@ import {
   buildModelPromptWithFileContext,
   resolvePromptText,
   getAttachmentTypeLabel,
-  normalizeSelectedTextSource,
 } from "./textUtils";
+import { normalizeSelectedTextSource } from "../../services/context/normalizers";
 import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import {
   formatActionLabel,
@@ -136,7 +136,7 @@ import {
 import {
   normalizeAttachmentContentHash,
   normalizeSelectedTextPaperContexts,
-} from "./normalizers";
+} from "../../services/context/normalizers";
 import {
   positionMenuBelowButton,
   positionMenuAtPointer,
@@ -351,7 +351,6 @@ import {
   resolveConversationKeyForNoteFocus,
   createGlobalPortalItem,
   createPaperPortalItem,
-  isGlobalPortalItem,
   resolveActiveNoteSession,
   resolveConversationSystemForItem,
   resolveDisplayConversationKind,
@@ -362,6 +361,7 @@ import {
   resolveNoteFocusSystemSwitch,
   resolveShortcutMode,
 } from "./portalScope";
+import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   RUNTIME_CONVERSATION_SYSTEMS,

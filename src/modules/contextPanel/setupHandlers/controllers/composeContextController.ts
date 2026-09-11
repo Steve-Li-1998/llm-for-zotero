@@ -1,4 +1,4 @@
-import { normalizePaperContextRefs } from "../../normalizers";
+import { normalizePaperContextRefs } from "../../../../services/context/normalizers";
 import {
   isTextLikeAttachmentSourceMode,
   resolvePaperContextDisplayMetadata as resolvePaperContextDisplayMetadataShared,

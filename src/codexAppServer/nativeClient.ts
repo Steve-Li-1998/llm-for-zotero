@@ -103,7 +103,7 @@ import {
 } from "./nativeContextLedger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
 import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
-import { renderSelectedTextAnchorContext } from "../modules/contextPanel/selectedTextAnchorFormatting";
+import { renderSelectedTextAnchorContext } from "../services/context/selectedTextAnchorFormatting";
 import {
   CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
   resolveCodexNativeRuntimeCwd,

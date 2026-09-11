@@ -1,5 +1,5 @@
 import type { Message } from "./types";
-import { normalizeAttachmentContentHash } from "./normalizers";
+import { normalizeAttachmentContentHash } from "../../services/context/normalizers";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 

@@ -9,7 +9,7 @@ import {
   isUpstreamGlobalConversationKey,
 } from "./constants";
 import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
-import { normalizePositiveInt } from "./normalizers";
+import { normalizePositiveInt } from "../../services/context/normalizers";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   buildPaperStateKey,
@@ -23,11 +23,11 @@ import {
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
 } from "./state";
+import type { ActiveNoteSession } from "./types";
 import type {
-  ActiveNoteSession,
   GlobalPortalItem,
   PaperPortalItem,
-} from "./types";
+} from "../../services/context/portalItems";
 import type { ConversationSystem } from "../../shared/types";
 import {
   buildDefaultClaudeGlobalConversationKey,
@@ -86,22 +86,11 @@ import {
   resolvePreferredNoteFocusSystem,
 } from "../../services/notes/scope";
 import {
-  getPaperPortalBaseItemID,
-  getPaperPortalSessionVersion,
   isGlobalPortalItem,
   isPaperChatBaseItem,
   isPaperPortalItem,
   resolvePaperPortalBaseItem,
 } from "../../services/context/portalItems";
-
-export {
-  getPaperPortalBaseItemID,
-  getPaperPortalSessionVersion,
-  isGlobalPortalItem,
-  isPaperChatBaseItem,
-  isPaperPortalItem,
-  resolvePaperPortalBaseItem,
-};
 
 export function createGlobalPortalItem(
   libraryID: number,

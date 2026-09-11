@@ -3,9 +3,9 @@ import {
   sanitizeText,
   escapeNoteHtml,
   getCurrentLocalTimestamp,
-  normalizeSelectedTextSource,
 } from "./textUtils";
-import { normalizeAttachmentContentHash } from "./normalizers";
+import { normalizeSelectedTextSource } from "../../services/context/normalizers";
+import { normalizeAttachmentContentHash } from "../../services/context/normalizers";
 import { MAX_SELECTED_IMAGES } from "./constants";
 import {
   getTrackedAssistantNoteForParent,
@@ -44,12 +44,12 @@ import {
   matchAssistantCitationCandidates,
   lookupCachedCitationPage,
 } from "./assistantCitationLinks";
+import { resolveNoteParentItem } from "./portalScope";
 import {
   isGlobalPortalItem,
   isPaperPortalItem,
-  resolveNoteParentItem,
   resolvePaperPortalBaseItem,
-} from "./portalScope";
+} from "../../services/context/portalItems";
 import {
   isClaudeGlobalPortalItem,
   isClaudePaperPortalItem,

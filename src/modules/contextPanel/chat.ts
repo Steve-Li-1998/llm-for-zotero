@@ -318,7 +318,7 @@ import {
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
   normalizeAttachmentContentHash,
-} from "./normalizers";
+} from "../../services/context/normalizers";
 import { positionMenuAtPointer } from "./menuPositioning";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
 import {
@@ -353,12 +353,12 @@ import {
   setSelectedTextContextEntries,
 } from "./contextResolution";
 import {
-  isGlobalPortalItem,
   resolveActiveNoteSession,
   resolveConversationBaseItem,
   resolveConversationSystemForItem,
   resolveDisplayConversationKind,
 } from "./portalScope";
+import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { shouldShowForkActionForAssistantTurn } from "./forkActionVisibility";
 import { buildChatHistoryNotePayload } from "./notes";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";

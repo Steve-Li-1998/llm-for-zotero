@@ -58,7 +58,7 @@ import { renderAssistantGeneratedImagesInto } from "../generatedImageRender";
 import {
   normalizePaperContextRefs,
   normalizeSelectedTextSources,
-} from "../normalizers";
+} from "../../../services/context/normalizers";
 import {
   planDocumentCitationSourceHref as citationSourceHref,
   getPlanDocumentItemTitle as itemTitle,

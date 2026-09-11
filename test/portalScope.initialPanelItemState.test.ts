@@ -3,14 +3,16 @@
 import { assert } from "chai";
 import { after, before, beforeEach, describe, it } from "mocha";
 import {
-  isGlobalPortalItem,
-  isPaperPortalItem,
   resolveActiveNoteSession,
   resolveInitialPanelItemState,
   resolveNoteFocusSystemSwitch,
   resolvePaperChatSourceItem,
   resolvePreferredConversationSystem,
 } from "../src/modules/contextPanel/portalScope";
+import {
+  isGlobalPortalItem,
+  isPaperPortalItem,
+} from "../src/services/context/portalItems";
 import { createClaudePaperPortalItem } from "../src/claudeCode/portal";
 import {
   createCodexPaperPortalItem,

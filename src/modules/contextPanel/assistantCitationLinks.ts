@@ -10,7 +10,7 @@ import {
 import {
   normalizePaperContextRefs,
   normalizeSelectedTextPaperContexts,
-} from "./normalizers";
+} from "../../services/context/normalizers";
 import {
   findMatchingTrustedQuoteCitation,
   MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE,

@@ -116,7 +116,7 @@ import {
   extractQuoteCitationsFromToolContent,
   mergeQuoteCitations,
 } from "../../../services/quotes/quoteCitations";
-import { synthesizeSelectedTextContexts } from "../normalizers";
+import { synthesizeSelectedTextContexts } from "../../../services/context/normalizers";
 import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
 
 function readUsageNumber(record: Record<string, unknown>, key: string): number {

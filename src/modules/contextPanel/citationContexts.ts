@@ -1,4 +1,4 @@
-import { normalizePaperContextRefs } from "./normalizers";
+import { normalizePaperContextRefs } from "../../services/context/normalizers";
 import { sanitizeText } from "./textUtils";
 import type { PaperContextRef } from "./types";
 

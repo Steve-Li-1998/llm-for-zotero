@@ -25,7 +25,7 @@ import {
   selectedPaperPreviewExpandedCache,
 } from "../state";
 import { buildPaperKey } from "../../../services/paperContent/pdfContext";
-import { normalizePaperContextRefs } from "../normalizers";
+import { normalizePaperContextRefs } from "../../../services/context/normalizers";
 import { sanitizeText } from "../textUtils";
 
 /** Builds the flat composite key for override maps. */

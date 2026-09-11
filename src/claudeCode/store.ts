@@ -15,7 +15,7 @@ import {
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
-} from "../modules/contextPanel/normalizers";
+} from "../services/context/normalizers";
 import { normalizeQuoteCitations } from "../services/quotes/quoteCitations";
 import type { StoredChatMessage } from "../utils/chatStore";
 import {

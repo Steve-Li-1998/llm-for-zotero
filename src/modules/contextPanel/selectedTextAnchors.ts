@@ -6,7 +6,7 @@ import type {
 import { ensurePDFTextCached } from "../../services/paperContent/pdfContext";
 import { warmPageTextCacheForAttachment } from "./livePdfSelectionLocator";
 import type { LivePdfPageText } from "./livePdfSelectionLocator";
-import { normalizeSelectedTextContexts } from "./normalizers";
+import { normalizeSelectedTextContexts } from "../../services/context/normalizers";
 import {
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
@@ -14,7 +14,7 @@ import {
 export {
   formatSelectedTextLocator,
   renderSelectedTextAnchorContext,
-} from "./selectedTextAnchorFormatting";
+} from "../../services/context/selectedTextAnchorFormatting";
 import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { sanitizeText } from "./textUtils";
 

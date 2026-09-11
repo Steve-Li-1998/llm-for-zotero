@@ -11,7 +11,7 @@ import {
   normalizePositiveInt,
   normalizeSelectedTextContexts,
   normalizeSelectedTextSource,
-} from "./normalizers";
+} from "../../services/context/normalizers";
 import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
 import {
   selectedTextCache,
@@ -33,10 +33,10 @@ import {
   getZoteroTabsState,
 } from "../../services/pdf/zoteroReaderTabs";
 import {
-  isGlobalPortalItem,
   resolveActiveNoteSession,
   resolveDisplayConversationKind,
 } from "./portalScope";
+import { isGlobalPortalItem } from "../../services/context/portalItems";
 import {
   formatPaperCitationLabel,
   resolvePaperContextRefFromAttachment,

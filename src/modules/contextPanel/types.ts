@@ -254,32 +254,6 @@ export type MultiContextPlan = {
   modelImages?: string[];
 };
 
-export type GlobalPortalItem = {
-  __llmGlobalPortalItem: true;
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
-};
-
-export type PaperPortalItem = {
-  __llmPaperPortalItem: true;
-  __llmPaperPortalBaseItemID: number;
-  __llmPaperPortalSessionVersion: number;
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
-};
-
 export type ClaudeGlobalPortalItem = {
   __llmClaudeGlobalPortalItem: true;
   __llmClaudeConversationKind: "global";

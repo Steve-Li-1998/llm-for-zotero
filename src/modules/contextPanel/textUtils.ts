@@ -1,5 +1,5 @@
 import { SELECTED_TEXT_MAX_LENGTH } from "./constants";
-import { synthesizeSelectedTextContexts } from "./normalizers";
+import { synthesizeSelectedTextContexts } from "../../services/context/normalizers";
 import type {
   PaperContextRef,
   ResolvedSelectedTextAnchor,
@@ -18,11 +18,10 @@ import {
 import {
   formatSelectedTextLocator,
   renderSelectedTextAnchorContext,
-} from "./selectedTextAnchorFormatting";
+} from "../../services/context/selectedTextAnchorFormatting";
 import { t } from "../../utils/i18n";
 import { escapeNoteHtml, sanitizeText } from "../../utils/textSanitization";
 export { escapeNoteHtml, sanitizeText };
-export { normalizeSelectedTextSource } from "./normalizers";
 
 export const DEFAULT_SELECTED_TEXT_PROMPT =
   "Please explain this selected text.";

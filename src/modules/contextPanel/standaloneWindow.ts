@@ -24,8 +24,8 @@ import {
   resolveShortcutMode,
   createGlobalPortalItem,
   createPaperPortalItem,
-  isGlobalPortalItem,
 } from "./portalScope";
+import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   applyPanelFontScale,

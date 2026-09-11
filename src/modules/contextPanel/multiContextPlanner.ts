@@ -22,7 +22,7 @@ import {
   RETRIEVAL_MIN_OTHER_PAPER_CHUNKS,
   RETRIEVAL_TOP_K_PER_PAPER,
 } from "../../services/retrieval/constants";
-import { normalizePaperContextRefs } from "./normalizers";
+import { normalizePaperContextRefs } from "../../services/context/normalizers";
 
 import {
   formatPaperSourceLabel,
@@ -74,7 +74,7 @@ import {
 } from "../../shared/exhaustiveDocumentReader";
 import { resolveFullReadPaperTargets } from "../../shared/fullReadTargetResolver";
 import { resolveNormalChatFigureInputs } from "./normalChatFigureInputs";
-import { renderSelectedTextPageFallbackContext } from "./selectedTextAnchorFormatting";
+import { renderSelectedTextPageFallbackContext } from "../../services/context/selectedTextAnchorFormatting";
 import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────

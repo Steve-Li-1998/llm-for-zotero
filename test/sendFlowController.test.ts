@@ -1,4 +1,4 @@
-import { createNoteConversationItem } from "../src/modules/contextPanel/noteEditing/conversationItem";
+import { createNoteConversationItem } from "../src/services/notes/conversationItem";
 import { getConversationKey } from "../src/modules/contextPanel/conversationIdentity";
 import {
   selectedPaperContextCache,

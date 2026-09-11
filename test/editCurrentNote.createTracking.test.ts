@@ -21,9 +21,9 @@ import {
 import {
   createAssistantResponseNote,
   createNoteFromChatHistory,
-  normalizeNoteSourceText,
-  stripNoteHtml,
 } from "../src/modules/contextPanel/notes";
+import { normalizeNoteSourceText } from "../src/services/notes/noteRendering";
+import { stripNoteHtml } from "../src/services/notes/noteSnapshot";
 import {
   getTrackedAssistantNoteForParent,
   rememberAssistantNoteForParent,

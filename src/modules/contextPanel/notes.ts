@@ -32,12 +32,10 @@ import type {
   SelectedTextSource,
 } from "./types";
 import {
-  readNoteSnapshot,
   stripNoteHtml,
   stripNoteMarkup,
   decodeNoteHtmlEntities,
-  type NoteSnapshot,
-} from "./noteSnapshot";
+} from "../../services/notes/noteSnapshot";
 import {
   extractStandalonePaperSourceLabel,
   extractInlineCitationMentions,
@@ -72,7 +70,7 @@ import {
   buildGeneratedImagesHtmlForNote,
   formatGeneratedImagesMarkdownForNote,
   normalizeEmbeddableGeneratedImages,
-} from "./noteImages";
+} from "../../services/notes/noteImages";
 import {
   containsVisualFigureFences,
   replaceVisualFigureFencesWithNoteImages,
@@ -83,24 +81,13 @@ import {
   persistVerifiedNoteHtml,
   type CreatedZoteroNoteReceipt,
   type NotePersistenceSaveOptions,
-} from "./notePersistence";
+} from "../../services/notePersistence";
 import {
   appendNoteHtml,
-  isLikelyHtmlNoteContent,
   normalizeNoteSourceText,
   renderRawNoteHtml,
 } from "../../services/notes/noteRendering";
 import { resolveParentItemForNoteTarget } from "../../services/notes/noteTarget";
-
-export {
-  appendNoteHtml,
-  isLikelyHtmlNoteContent,
-  normalizeNoteSourceText,
-  renderRawNoteHtml,
-  resolveParentItemForNoteTarget,
-};
-
-export { readNoteSnapshot, stripNoteHtml, type NoteSnapshot };
 
 async function renderRawNoteHtmlForSave(
   contentText: string,

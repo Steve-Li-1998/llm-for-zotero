@@ -1,4 +1,4 @@
-import { createNoteConversationItem } from "../modules/contextPanel/noteEditing/conversationItem";
+import { createNoteConversationItem } from "../services/notes/conversationItem";
 declare const Zotero: any;
 
 import type {

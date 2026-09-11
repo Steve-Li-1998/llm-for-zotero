@@ -1,7 +1,7 @@
 import {
   createNoteConversationItem,
   getNoteConversation,
-} from "./noteEditing/conversationItem";
+} from "../../services/notes/conversationItem";
 import {
   buildDefaultUpstreamGlobalConversationKey,
   GLOBAL_CONVERSATION_KEY_BASE,
@@ -84,7 +84,7 @@ import {
   resolveNoteEditingScope,
   resolveNoteEditingTitle,
   resolvePreferredNoteFocusSystem,
-} from "./noteEditing";
+} from "../../services/notes/scope";
 import {
   getPaperPortalBaseItemID,
   getPaperPortalSessionVersion,

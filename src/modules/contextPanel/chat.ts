@@ -361,7 +361,7 @@ import {
 } from "./portalScope";
 import { shouldShowForkActionForAssistantTurn } from "./forkActionVisibility";
 import { buildChatHistoryNotePayload } from "./notes";
-import { readNoteSnapshot } from "./noteSnapshot";
+import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { getWorkflowTestFinalRequestInterceptor } from "./workflowTestHooks";

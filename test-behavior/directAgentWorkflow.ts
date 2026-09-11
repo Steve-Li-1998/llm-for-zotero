@@ -5,7 +5,7 @@ import {
   loadPlanDocumentOutbox,
   loadDocumentActionState,
 } from "../src/agent/documents/store";
-import { stripZoteroNoteWrapper } from "../src/modules/contextPanel/notePersistence";
+import { stripZoteroNoteWrapper } from "../src/services/notePersistence";
 import { assertExact, check } from "./core";
 import { snapshot, itemKey, collectionKey, onlyChanges } from "./native";
 import type { JourneyContext } from "./journeys";

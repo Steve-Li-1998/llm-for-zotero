@@ -31,11 +31,9 @@ import {
   prependNativeSkillMention,
   resolveSkillDirectiveText,
 } from "../../../../agent/skills";
-import {
-  buildNoteEditingTurnContext,
-  resolveNoteEditingScope,
-} from "../../noteEditing";
-import { readNoteSnapshot } from "../../noteSnapshot";
+import { buildNoteEditingTurnContext } from "../../noteEditing";
+import { resolveNoteEditingScope } from "../../../../services/notes/scope";
+import { readNoteSnapshot } from "../../../../services/notes/noteSnapshot";
 import {
   getPlanningRuntimeContext,
   restorePendingPlanExecution,

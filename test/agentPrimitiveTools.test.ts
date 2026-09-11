@@ -1,5 +1,5 @@
 import { noteHtmlMatches } from "../src/utils/noteHtml";
-import { renderRawNoteHtml } from "../src/modules/contextPanel/notes";
+import { renderRawNoteHtml } from "../src/services/notes/noteRendering";
 import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 import { nativeNoteGateway } from "./helpers/nativeNoteGateway";
 import { actionContractFixture } from "./helpers/semanticIntent";

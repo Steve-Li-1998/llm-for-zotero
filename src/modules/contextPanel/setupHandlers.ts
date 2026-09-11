@@ -1,5 +1,5 @@
 import { copyNoteEditingSelectedTextContext } from "./noteEditing/selectionController";
-import { createNoteConversationItem } from "./noteEditing/conversationItem";
+import { createNoteConversationItem } from "../../services/notes/conversationItem";
 /* eslint-disable @typescript-eslint/no-require-imports */
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
@@ -285,7 +285,7 @@ import {
   retainPinnedTextState as retainPinnedTextState_,
 } from "./contexts/textContextState";
 import { optimizeImageDataUrl } from "./screenshot";
-import { readNoteSnapshot } from "./notes";
+import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import {
   persistAttachmentBlob,
   extractManagedBlobHash,

@@ -13,7 +13,7 @@ import {
 } from "../../services/paperContent/contextAttachmentSupport";
 import { setPaperModeOverride } from "./contexts/paperContextState";
 import { isSamePaperContextRef } from "./modeBehavior";
-import { readNoteSnapshot } from "./notes";
+import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import {
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,

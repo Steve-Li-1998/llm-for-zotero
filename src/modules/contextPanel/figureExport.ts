@@ -4,7 +4,7 @@ import {
   importNoteImageAsset,
   type NoteImageImporter,
   type NoteImageImportInput,
-} from "./noteImages";
+} from "../../services/notes/noteImages";
 
 export type SvgRasterizer = (
   doc: Document,

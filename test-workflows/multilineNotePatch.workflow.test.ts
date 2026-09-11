@@ -6,7 +6,7 @@ import {
 } from "../src/agent/store/changeJournal";
 import { revertActions } from "../src/agent/services/changeReverter";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
-import { stripZoteroNoteWrapper } from "../src/modules/contextPanel/notePersistence";
+import { stripZoteroNoteWrapper } from "../src/services/notePersistence";
 
 describe("workflow: multiline note patch review and undo", function () {
   this.timeout(60000);

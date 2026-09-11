@@ -3,7 +3,7 @@ import { listJournalActions } from "../../../agent/store/changeJournal";
 import { readRecoveryText } from "../../../agent/store/journalRecoveryBlobStore";
 import type { AgentNoteChangeResultCard } from "../../../agent/types";
 import { createDocumentCardLayout } from "../documentCard";
-import { normalizeNoteSourceText } from "../notes";
+import { normalizeNoteSourceText } from "../../../services/notes/noteRendering";
 import { navigatePlanDocumentCitationSource } from "../planDocumentPresentation";
 import { renderDiffPreviewField } from "./diffPreviewField";
 

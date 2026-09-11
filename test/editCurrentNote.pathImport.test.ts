@@ -1,5 +1,5 @@
 import { noteHtmlMatches } from "../src/utils/noteHtml";
-import { renderRawNoteHtml } from "../src/modules/contextPanel/notes";
+import { renderRawNoteHtml } from "../src/services/notes/noteRendering";
 import { nativeNoteGateway } from "./helpers/nativeNoteGateway";
 import { assert } from "chai";
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";

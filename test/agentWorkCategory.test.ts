@@ -14,6 +14,12 @@ import type { AgentWorkCategory } from "../src/agent/types";
 
 const root = process.cwd();
 
+/**
+ * Spec literals the source guard must see. A drop means the scan stopped
+ * inspecting sites, not that the sites became correct.
+ */
+const EXPECTED_SPEC_LITERAL_SITES = 56;
+
 const ALLOWED_WORK_CATEGORIES: readonly AgentWorkCategory[] = [
   "retrieval",
   "planning",
@@ -201,16 +207,25 @@ describe("agent work categories", function () {
 
   it("declares a category next to every agent tool spec in the source tree", function () {
     const undeclared: string[] = [];
+    let inspected = 0;
     for (const path of collectAgentSourceFiles(join(root, "src/agent"))) {
       const lines = readFileSync(path, "utf8").split("\n");
       lines.forEach((line, index) => {
         // Only spec literals, never the type declarations that spell the union.
         if (!/executionClass: "(read|control|external_effect)",$/.test(line))
           return;
+        inspected += 1;
         if (/workCategory:/.test(lines[index + 1] || "")) return;
         undeclared.push(`${relative(root, path)}:${index + 1}`);
       });
     }
+    // Without this the guard passes vacuously: a trailing comment, a wrapped
+    // line, or a reordered field would drop sites from scope unnoticed.
+    assert.equal(
+      inspected,
+      EXPECTED_SPEC_LITERAL_SITES,
+      "the source scan lost or gained spec literals; update the count deliberately",
+    );
     assert.deepEqual(
       undeclared,
       [],

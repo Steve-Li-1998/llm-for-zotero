@@ -3,7 +3,6 @@ import { buildPaperDisplayLabels } from "../shared/paperDisplayLabels";
 import { listScopeSnapshotItems } from "./research/store";
 import { resolvePreparedActionReview } from "./tools/execution/review";
 import { ensureModelCapabilities } from "../modelCapabilities";
-import { readAttachmentBytes } from "../services/attachmentStorage";
 import {
   areConversationWritesFrozen,
   getConversationWriteGeneration,
@@ -44,7 +43,6 @@ import {
 import {
   buildAgentSemanticCheckpoint,
   compactAgentTranscript,
-  readAgentSemanticCheckpointRootGoal,
 } from "./context/transcriptCompactor";
 import { AgentRunContinuationSession } from "./continuation/runContinuationSession";
 import {
@@ -57,15 +55,8 @@ import { loadWorkflowCheckpoint } from "./contracts/workflowCheckpoint";
 import { resolveDocumentOutcomePolicy } from "./documents/outcomePolicy";
 import { loadWorkflowMaterial } from "./documents/workflowMaterial";
 import { AgentFinalAnswerController } from "./finalization/finalAnswerController";
-import type {
-  AgentAdapterToolCallResult,
-  AgentAdapterToolContentItem,
-  AgentModelAdapter,
-} from "./model/adapter";
-import {
-  normalizeAgentContentInputs,
-  resolveCapabilitiesContentInputs,
-} from "./model/contentCapabilities";
+import type { AgentModelAdapter } from "./model/adapter";
+import { resolveCapabilitiesContentInputs } from "./model/contentCapabilities";
 import { buildAnswerContinuationInstruction } from "./model/completion";
 import { MAX_ANSWER_CONTINUATIONS, resolveAgentLimits } from "./model/limits";
 import {
@@ -75,7 +66,13 @@ import {
   renderAgentPromptEnvelope,
 } from "./model/messageBuilder";
 import { resolvePlanSkillRoutingReceipt } from "./model/semanticSkillRouting";
-import { encodeBytesBase64 } from "./model/shared";
+import {
+  buildAdapterToolCallResult,
+  buildArtifactFollowupMessage,
+  filterFollowupMessageForCapabilities,
+  type ToolWorkflowDelivery,
+  type ToolWorkflowOutcome,
+} from "./model/toolArtifactDelivery";
 import { createTrustedReadObservations } from "./plans/readObservation";
 import { PlanExecutionRunSession } from "./plans/runSession";
 import { loadPlanArtifact } from "./plans/store";
@@ -91,10 +88,7 @@ import {
   getMatchedSkillIds,
   loadSkill,
 } from "./skills";
-import {
-  listJournalActions,
-  type JournalActionWithSteps,
-} from "./store/changeJournal";
+import { listJournalActions } from "./store/changeJournal";
 import { recordAgentTurn } from "./store/conversationMemory";
 import { sha256Text } from "./store/journalRecoveryBlobStore";
 import {
@@ -122,24 +116,36 @@ import {
 } from "./store/transcriptStore";
 import { AgentToolRegistry } from "./tools/registry";
 import { latestExecutionCheckpoint } from "./execution/checkpoint";
+import { createAgentExecutionContext } from "./execution/context";
+import {
+  buildInterruptedRunRecoveryMessage,
+  buildTranscriptUserMessage,
+  isCurrentTurnUserTranscriptMessage,
+  isManualCompactRequest,
+  readLatestTranscriptGoal,
+} from "./execution/transcriptRecovery";
+import {
+  buildSyntheticToolCall,
+  buildToolProgressFingerprint,
+  filterTransientRecoveryTool,
+  isUserDeniedToolResult,
+  readToolError,
+  setToolResultReadAvailability,
+} from "./execution/toolResultLifecycle";
 import type { PreparedActionCall } from "./tools/workflowSteps";
 import type {
   AgentAssistantMessage,
   AgentActionReceipt,
   AgentConfirmationResolution,
-  AgentContentInputCapabilities,
   AgentEvent,
   AgentInheritedApproval,
   AgentModelCapabilities,
-  AgentModelContentPart,
   AgentModelMessage,
   AgentModelStep,
   AgentPendingAction,
-  AgentRunRecord,
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
-  AgentToolArtifact,
   AgentToolCall,
   AgentToolContext,
   AgentToolEffect,
@@ -166,561 +172,8 @@ function createRunId(): string {
   return `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function createExecutionContext(
-  request: AgentRuntimeRequest,
-  executionId: string,
-): NonNullable<AgentRuntimeRequest["executionContext"]> {
-  const activePaper = request.turnPaperScope.papers.find((entry) =>
-    entry.roles.includes("active"),
-  )?.paper;
-  const selectedPapers = request.turnPaperScope.papers
-    .filter((entry) => entry.roles.includes("selected"))
-    .map(({ paper }) => ({
-      libraryID: paper.libraryID,
-      itemId: paper.itemId,
-      contextItemId: paper.contextItemId,
-      title: paper.title,
-    }));
-  const notesDirectory = getNotesDirectoryConfig();
-  return {
-    version: 1,
-    executionId,
-    conversationKey: request.conversationKey,
-    conversationGeneration: request.conversationGeneration || 0,
-    chatLibraryID:
-      request.libraryID || request.turnPaperScope.libraryID || undefined,
-    permissionOwner:
-      request.planContext?.phase === "executing"
-        ? "approved_plan"
-        : "original_agent",
-    workspaceSnapshot: {
-      ...(activePaper
-        ? {
-            activePaper: {
-              libraryID: activePaper.libraryID,
-              itemId: activePaper.itemId,
-              contextItemId: activePaper.contextItemId,
-              title: activePaper.title,
-            },
-          }
-        : {}),
-      selectedPapers,
-      selectedCollections: request.turnPaperScope.collections.map(
-        (collection) => ({
-          libraryID: collection.libraryID,
-          collectionId: collection.collectionId,
-          name: collection.name,
-        }),
-      ),
-      ...(request.activeNoteContext
-        ? {
-            activeNote: {
-              noteId: request.activeNoteContext.noteId,
-              parentItemId: request.activeNoteContext.parentItemId,
-              title: request.activeNoteContext.title,
-            },
-          }
-        : {}),
-    },
-    configuredAccess: {
-      libraryIDs:
-        request.libraryID || request.turnPaperScope.libraryID
-          ? [request.libraryID || request.turnPaperScope.libraryID]
-          : [],
-      outputDirectories: notesDirectory?.directoryPath
-        ? [notesDirectory.directoryPath]
-        : [],
-    },
-    ...(request.planContext?.phase === "executing"
-      ? {
-          approvedPlanBinding: {
-            planId: request.planContext.planId,
-            revision: request.planContext.revision,
-            approvedDigest: request.planContext.approvedDigest,
-          },
-        }
-      : {}),
-  };
-}
-
 function createConfirmationRequestId(): string {
   return `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-async function toDataUrl(
-  storedPath: string,
-  mimeType: string,
-): Promise<string> {
-  const bytes = await readAttachmentBytes(storedPath);
-  return `data:${mimeType};base64,${encodeBytesBase64(bytes)}`;
-}
-
-function summarizeArtifacts(artifacts: AgentToolArtifact[]): string {
-  const imagePages = artifacts
-    .filter(
-      (artifact): artifact is Extract<AgentToolArtifact, { kind: "image" }> => {
-        return artifact.kind === "image";
-      },
-    )
-    .map(
-      (artifact) =>
-        artifact.pageLabel ||
-        (Number.isFinite(artifact.pageIndex)
-          ? `${artifact.pageIndex! + 1}`
-          : ""),
-    );
-  const fileTitles = artifacts
-    .filter(
-      (
-        artifact,
-      ): artifact is Extract<AgentToolArtifact, { kind: "file_ref" }> => {
-        return artifact.kind === "file_ref";
-      },
-    )
-    .map((artifact) => artifact.title || artifact.name);
-  const parts: string[] = [];
-  if (imagePages.length) {
-    parts.push(
-      `Prepared PDF page image${imagePages.length === 1 ? "" : "s"} (${
-        imagePages
-          .filter(Boolean)
-          .map((entry) => `p${entry}`)
-          .join(", ") ||
-        `${imagePages.length} page${imagePages.length === 1 ? "" : "s"}`
-      }) for visual inspection.`,
-    );
-  }
-  if (fileTitles.length) {
-    parts.push(
-      `Prepared the PDF file${fileTitles.length === 1 ? "" : "s"} ${fileTitles
-        .map((entry) => `"${entry}"`)
-        .join(", ")} for direct reading.`,
-    );
-  }
-  parts.push(
-    "Use the attached pages or PDF directly when answering. Do not ask the user to re-upload them.",
-  );
-  return parts.join(" ");
-}
-
-type OmittedContentInputCounts = {
-  images: number;
-  pdfDocuments: number;
-  nativeFiles: number;
-};
-
-function hasOmittedContentInputs(counts: OmittedContentInputCounts): boolean {
-  return counts.images > 0 || counts.pdfDocuments > 0 || counts.nativeFiles > 0;
-}
-
-function summarizeUnsupportedContentInputs(
-  counts: OmittedContentInputCounts,
-  modelName?: string,
-): string {
-  const omitted: string[] = [];
-  const unsupportedKinds: string[] = [];
-  if (counts.images) {
-    omitted.push(
-      `${counts.images} image input${counts.images === 1 ? "" : "s"}`,
-    );
-    unsupportedKinds.push("image input");
-  }
-  if (counts.pdfDocuments) {
-    omitted.push(
-      `${counts.pdfDocuments} PDF/document input${
-        counts.pdfDocuments === 1 ? "" : "s"
-      }`,
-    );
-    unsupportedKinds.push("PDF/document input");
-  }
-  if (counts.nativeFiles) {
-    omitted.push(
-      `${counts.nativeFiles} native file input${
-        counts.nativeFiles === 1 ? "" : "s"
-      }`,
-    );
-    unsupportedKinds.push("native file input");
-  }
-  const target = (modelName || "The selected model").trim();
-  const omittedLabel = omitted.length ? omitted.join(" and ") : "artifacts";
-  const unsupportedLabel = unsupportedKinds.length
-    ? unsupportedKinds.join(" or ")
-    : "that content type";
-  return (
-    `${omittedLabel} prepared by the tool were not attached because ${target} does not support ${unsupportedLabel}. ` +
-    "Use the tool result text, MinerU manifest/full.md content, captions, and surrounding extracted text instead. " +
-    "If direct visual or document inspection is required, say that a model with the needed content-input support is required."
-  );
-}
-
-function isPdfFileRefPart(
-  part: Extract<AgentModelContentPart, { type: "file_ref" }>,
-): boolean {
-  return part.file_ref.mimeType.trim().toLowerCase() === "application/pdf";
-}
-
-function supportsFileRefPart(
-  part: Extract<AgentModelContentPart, { type: "file_ref" }>,
-  contentInputs: AgentContentInputCapabilities,
-): boolean {
-  if (contentInputs.nativeFiles) return true;
-  return isPdfFileRefPart(part) && contentInputs.pdfDocuments;
-}
-
-function countOmittedFileRefPart(
-  part: Extract<AgentModelContentPart, { type: "file_ref" }>,
-  counts: OmittedContentInputCounts,
-): void {
-  if (isPdfFileRefPart(part)) {
-    counts.pdfDocuments += 1;
-  } else {
-    counts.nativeFiles += 1;
-  }
-}
-
-async function buildArtifactFollowupMessage(
-  result: AgentToolResult,
-  options: {
-    contentInputs?: AgentContentInputCapabilities;
-    modelName?: string;
-  } = {},
-): Promise<AgentModelMessage | null> {
-  const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
-  if (!artifacts.length || !result.ok) return null;
-  const contentInputs = normalizeAgentContentInputs(options.contentInputs);
-  const parts: AgentModelContentPart[] = [];
-  const attachedArtifacts: AgentToolArtifact[] = [];
-  const omitted: OmittedContentInputCounts = {
-    images: 0,
-    pdfDocuments: 0,
-    nativeFiles: 0,
-  };
-  for (const artifact of artifacts) {
-    if (artifact.kind === "image") {
-      if (!contentInputs.images) {
-        omitted.images += 1;
-        continue;
-      }
-      if (!artifact.storedPath || !artifact.mimeType) continue;
-      try {
-        const url = await toDataUrl(artifact.storedPath, artifact.mimeType);
-        attachedArtifacts.push(artifact);
-        parts.push({
-          type: "image_url",
-          image_url: {
-            url,
-            detail: "high",
-          },
-        });
-      } catch (error) {
-        ztoolkit.log(
-          "LLM Agent: Failed to load image artifact",
-          artifact,
-          error,
-        );
-      }
-      continue;
-    }
-    const fileRefPart: Extract<AgentModelContentPart, { type: "file_ref" }> = {
-      type: "file_ref",
-      file_ref: {
-        name: artifact.name,
-        mimeType: artifact.mimeType,
-        storedPath: artifact.storedPath,
-        contentHash: artifact.contentHash,
-      },
-    };
-    if (!supportsFileRefPart(fileRefPart, contentInputs)) {
-      countOmittedFileRefPart(fileRefPart, omitted);
-      continue;
-    }
-    attachedArtifacts.push(artifact);
-    parts.push(fileRefPart);
-  }
-  const textParts: string[] = [];
-  if (attachedArtifacts.length) {
-    textParts.push(summarizeArtifacts(attachedArtifacts));
-  }
-  if (hasOmittedContentInputs(omitted)) {
-    textParts.push(
-      summarizeUnsupportedContentInputs(omitted, options.modelName),
-    );
-  }
-  if (textParts.length) {
-    parts.unshift({
-      type: "text",
-      text: textParts.join("\n\n"),
-    });
-  }
-  if (parts.length === 1 && parts[0].type === "text") {
-    return {
-      role: "user",
-      content: parts[0].text,
-    };
-  }
-  return parts.length
-    ? {
-        role: "user",
-        content: parts,
-      }
-    : null;
-}
-
-function filterFollowupMessageForCapabilities(
-  message: AgentModelMessage | null,
-  capabilities: AgentModelCapabilities,
-  modelName?: string,
-): AgentModelMessage | null {
-  if (!message) return null;
-  if (message.role === "tool") return message;
-  if (typeof message.content === "string") return message;
-
-  const contentInputs = resolveCapabilitiesContentInputs(capabilities);
-  const parts: AgentModelContentPart[] = [];
-  const omitted: OmittedContentInputCounts = {
-    images: 0,
-    pdfDocuments: 0,
-    nativeFiles: 0,
-  };
-  for (const part of message.content) {
-    if (part.type === "text") {
-      if (part.text.trim()) parts.push(part);
-      continue;
-    }
-    if (part.type === "image_url") {
-      if (contentInputs.images) {
-        parts.push(part);
-      } else {
-        omitted.images += 1;
-      }
-      continue;
-    }
-    if (supportsFileRefPart(part, contentInputs)) {
-      parts.push(part);
-    } else {
-      countOmittedFileRefPart(part, omitted);
-    }
-  }
-
-  if (hasOmittedContentInputs(omitted)) {
-    parts.push({
-      type: "text",
-      text: summarizeUnsupportedContentInputs(omitted, modelName),
-    });
-  }
-
-  const hasNonTextPart = parts.some((part) => part.type !== "text");
-  if (!hasNonTextPart) {
-    return {
-      ...message,
-      content: parts
-        .filter(
-          (part): part is Extract<AgentModelContentPart, { type: "text" }> =>
-            part.type === "text",
-        )
-        .map((part) => part.text)
-        .filter(Boolean)
-        .join("\n\n"),
-    };
-  }
-  return parts.length
-    ? {
-        ...message,
-        content: parts,
-      }
-    : null;
-}
-
-type ToolWorkflowDelivery = {
-  callId: string;
-  name: string;
-  content: unknown;
-  followupMessages: AgentModelMessage[];
-};
-
-type ToolWorkflowOutcome = {
-  failed?: boolean;
-  toolResult: AgentToolResult;
-  delivery?: ToolWorkflowDelivery;
-  stopRun?: boolean;
-  finalText?: string;
-  documentId?: string;
-  preserveToolOnlyTranscript?: boolean;
-};
-
-function stringifyToolDeliveryContent(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (content === null || content === undefined) {
-    return "";
-  }
-  try {
-    return JSON.stringify(content, null, 2);
-  } catch {
-    return String(content);
-  }
-}
-
-function pushAdapterTextItem(
-  target: AgentAdapterToolContentItem[],
-  text: string,
-): void {
-  if (!text) return;
-  target.push({ type: "inputText", text });
-}
-
-function pushAdapterMessageItems(
-  target: AgentAdapterToolContentItem[],
-  message: AgentModelMessage,
-): void {
-  if (typeof message.content === "string") {
-    pushAdapterTextItem(target, message.content);
-    return;
-  }
-  for (const part of message.content) {
-    if (part.type === "text") {
-      pushAdapterTextItem(target, part.text);
-      continue;
-    }
-    if (part.type === "image_url") {
-      target.push({
-        type: "inputImage",
-        imageUrl: part.image_url.url,
-      });
-      continue;
-    }
-    pushAdapterTextItem(target, `[Prepared file: ${part.file_ref.name}]`);
-  }
-}
-
-function buildAdapterToolCallResult(
-  outcome: ToolWorkflowOutcome,
-): AgentAdapterToolCallResult {
-  const contentItems: AgentAdapterToolContentItem[] = [];
-  if (outcome.delivery) {
-    pushAdapterTextItem(
-      contentItems,
-      stringifyToolDeliveryContent(outcome.delivery.content),
-    );
-    for (const followupMessage of outcome.delivery.followupMessages) {
-      pushAdapterMessageItems(contentItems, followupMessage);
-    }
-  } else if (outcome.finalText) {
-    pushAdapterTextItem(contentItems, outcome.finalText);
-  } else {
-    pushAdapterTextItem(
-      contentItems,
-      stringifyToolDeliveryContent(outcome.toolResult.content),
-    );
-  }
-  if (!contentItems.length) {
-    pushAdapterTextItem(
-      contentItems,
-      outcome.toolResult.ok ? "Tool completed successfully." : "Tool failed.",
-    );
-  }
-  return {
-    contentItems,
-    success: outcome.toolResult.ok,
-  };
-}
-
-function isManualCompactRequest(request: AgentRuntimeRequest): boolean {
-  return /^\/compact(?:\s|$)/i.test((request.userText || "").trim());
-}
-
-function buildTranscriptUserMessage(
-  request: AgentRuntimeRequest,
-): AgentModelMessage {
-  return {
-    role: "user",
-    content: `User request:\n${request.userText || ""}`,
-  };
-}
-
-function transcriptContentToPlainText(
-  content: AgentModelMessage["content"],
-): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => (part.type === "text" ? part.text : ""))
-    .join("\n");
-}
-
-function normalizeTranscriptUserText(value: string): string {
-  return value
-    .replace(/^User request:\s*/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isCurrentTurnUserTranscriptMessage(
-  message: AgentModelMessage | undefined,
-  request: AgentRuntimeRequest,
-): boolean {
-  if (!message || message.role !== "user") return false;
-  return (
-    normalizeTranscriptUserText(
-      transcriptContentToPlainText(message.content),
-    ) === normalizeTranscriptUserText(request.userText || "")
-  );
-}
-
-function readLatestTranscriptGoal(
-  messages: readonly AgentModelMessage[],
-): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "user") continue;
-    const checkpointGoal = readAgentSemanticCheckpointRootGoal(message);
-    if (checkpointGoal) {
-      return checkpointGoal.length > 600
-        ? `${checkpointGoal.slice(0, 597)}...`
-        : checkpointGoal;
-    }
-    const goal = normalizeTranscriptUserText(
-      transcriptContentToPlainText(message.content),
-    );
-    if (!goal) continue;
-    return goal.length > 600 ? `${goal.slice(0, 597)}...` : goal;
-  }
-  return undefined;
-}
-
-function buildInterruptedRunRecoveryMessage(params: {
-  run: AgentRunRecord;
-  actions: JournalActionWithSteps[];
-  priorGoal?: string;
-}): AgentModelMessage {
-  const actions = [...params.actions].sort(
-    (left, right) =>
-      left.createdAt - right.createdAt ||
-      left.actionId.localeCompare(right.actionId),
-  );
-  const lines = [
-    `Recovery note for interrupted run ${params.run.runId}.`,
-    "Do not automatically repeat any prior write.",
-  ];
-  if (params.priorGoal) lines.push(`Prior goal: ${params.priorGoal}`);
-  if (actions.length) {
-    lines.push("Recorded journal actions:");
-    for (const action of actions) {
-      lines.push(
-        `- actionId=${action.actionId}; status=${action.status}; affectedCount=${action.affectedCount}; reversibility=${action.reversibility}`,
-      );
-    }
-  } else {
-    lines.push("No journaled writes were recorded.");
-  }
-  lines.push(
-    "Any unfinished confirmation was discarded and must be proposed and approved again.",
-  );
-  return {
-    role: "user",
-    content: lines.join("\n"),
-  };
 }
 
 type ExecutedToolCall = {
@@ -729,80 +182,6 @@ type ExecutedToolCall = {
   input?: unknown;
   documentEvidenceRefs?: unknown[];
 };
-
-function buildSyntheticToolCall(name: string, args: unknown): AgentToolCall {
-  return {
-    id: `synthetic-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name,
-    arguments: args,
-  };
-}
-
-function readToolError(result: AgentToolResult): string {
-  return result.content &&
-    typeof result.content === "object" &&
-    "error" in result.content
-    ? String((result.content as { error: unknown }).error || "")
-    : "";
-}
-
-function isUserDeniedToolResult(result: AgentToolResult): boolean {
-  return readToolError(result).toLowerCase() === "user denied action";
-}
-
-function setToolResultReadAvailability(
-  request: AgentRuntimeRequest,
-  available: boolean,
-): void {
-  const metadata = { ...(request.metadata || {}) };
-  if (available) {
-    metadata.agentToolResultReadAvailable = true;
-  } else {
-    delete metadata.agentToolResultReadAvailable;
-  }
-  request.metadata = metadata;
-}
-
-function filterTransientRecoveryTool<T extends { name: string }>(
-  tools: T[],
-): T[] {
-  return tools.filter((tool) => tool.name !== TOOL_RESULT_READ_TOOL_NAME);
-}
-
-function stabilizeProgressValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeProgressValue);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const stable: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    if (record[key] !== undefined) {
-      stable[key] = stabilizeProgressValue(record[key]);
-    }
-  }
-  return stable;
-}
-
-function buildToolProgressFingerprint(record: {
-  name: string;
-  effect?: AgentToolEffect;
-  input?: unknown;
-  content?: unknown;
-}): string {
-  try {
-    return JSON.stringify(
-      stabilizeProgressValue({
-        name: record.name,
-        effect: record.effect,
-        input: record.input,
-        content: record.content,
-      }),
-    );
-  } catch {
-    return `${record.name}:${String(record.effect || "read")}:${String(
-      record.input,
-    )}:${String(record.content)}`;
-  }
-}
 
 export class AgentRuntime {
   private readonly registry: AgentToolRegistry;
@@ -882,7 +261,7 @@ export class AgentRuntime {
     }
     if (options.signal?.aborted)
       throw new Error("Agent preparation was cancelled.");
-    request.executionContext ||= createExecutionContext(
+    request.executionContext ||= createAgentExecutionContext(
       request,
       `execution-${request.conversationKey}-${request.conversationGeneration}-${this.now()}`,
     );
@@ -957,7 +336,7 @@ export class AgentRuntime {
       request.conversationKey,
     );
     const runId = createRunId();
-    request.executionContext ||= createExecutionContext(request, runId);
+    request.executionContext ||= createAgentExecutionContext(request, runId);
     const writeAllowed = () =>
       !areConversationWritesFrozen(request.conversationKey) &&
       (request.conversationGeneration === undefined ||

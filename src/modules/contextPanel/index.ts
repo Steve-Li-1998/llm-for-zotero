@@ -76,7 +76,10 @@ import {
   createNoteEditingSelectionTrackingLifecycle,
   type NoteEditingSelectionTrackingLifecycle,
 } from "./noteEditing/selectionTrackingLifecycle";
-import { ensurePDFTextCached, ensureNoteTextCached } from "./pdfContext";
+import {
+  ensurePDFTextCached,
+  ensureNoteTextCached,
+} from "../../services/paperContent/pdfContext";
 import { getPageLabelForIndex } from "./livePdfSelectionLocator";
 import {
   getFirstSelectionFromReader,

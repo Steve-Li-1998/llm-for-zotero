@@ -3,7 +3,7 @@ import type {
   ResolvedSelectedTextAnchor,
   SelectedTextContext,
 } from "../../shared/types";
-import { ensurePDFTextCached } from "./pdfContext";
+import { ensurePDFTextCached } from "../../services/paperContent/pdfContext";
 import { warmPageTextCacheForAttachment } from "./livePdfSelectionLocator";
 import type { LivePdfPageText } from "./livePdfSelectionLocator";
 import { normalizeSelectedTextContexts } from "./normalizers";
@@ -15,7 +15,7 @@ export {
   formatSelectedTextLocator,
   renderSelectedTextAnchorContext,
 } from "./selectedTextAnchorFormatting";
-import { pdfTextCache } from "./state";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { sanitizeText } from "./textUtils";
 
 export const SELECTED_TEXT_ANCHOR_MAX_CHARS = 6_500;

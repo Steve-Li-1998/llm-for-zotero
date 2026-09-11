@@ -8,7 +8,7 @@ import {
   buildPaperRetrievalCandidates,
   ensurePDFTextCached,
   renderEvidencePack,
-} from "../src/modules/contextPanel/pdfContext";
+} from "../src/services/paperContent/pdfContext";
 import {
   buildManifest,
   readManifest,
@@ -16,12 +16,9 @@ import {
 } from "../src/modules/contextPanel/mineruCache";
 import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
 import { buildRetrievalQueryPlan } from "../src/modules/contextPanel/retrievalQueryPlan";
-import { pdfTextCache } from "../src/modules/contextPanel/state";
-import type {
-  ChunkStat,
-  PaperContextRef,
-  PdfContext,
-} from "../src/modules/contextPanel/types";
+import { pdfTextCache } from "../src/services/paperContent/contextCache";
+import type { PaperContextRef } from "../src/modules/contextPanel/types";
+import type { ChunkStat, PdfContext } from "../src/services/paperContent/types";
 
 const encoder = new TextEncoder();
 

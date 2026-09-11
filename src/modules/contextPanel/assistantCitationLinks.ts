@@ -6,7 +6,7 @@ import {
   resolvePaperContextDisplayRef,
   resolvePaperContextRefFromAttachment,
   type PaperContextDisplayCache,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   normalizePaperContextRefs,
   normalizeSelectedTextPaperContexts,
@@ -48,7 +48,7 @@ import {
   resolveContextSourceItem,
 } from "./contextResolution";
 import { persistPendingChatScrollRestoreForElement } from "./chatScrollSnapshots";
-import { isPdfContextAttachment } from "./contextAttachmentSupport";
+import { isPdfContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import {
   buildCitationQuoteHash,
   clearCitationPageCache,

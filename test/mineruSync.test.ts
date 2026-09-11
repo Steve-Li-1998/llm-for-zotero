@@ -14,7 +14,7 @@ import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
 } from "../src/modules/contextPanel/mineruCache";
-import { pdfTextCache } from "../src/modules/contextPanel/state";
+import { pdfTextCache } from "../src/services/paperContent/contextCache";
 import {
   buildMineruSyncPackageBytes,
   cleanSyncedMineruPackages,

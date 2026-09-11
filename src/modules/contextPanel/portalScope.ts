@@ -8,7 +8,7 @@ import {
   PAPER_CONVERSATION_KEY_BASE,
   isUpstreamGlobalConversationKey,
 } from "./constants";
-import { isSupportedContextAttachment } from "./contextAttachmentSupport";
+import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import { normalizePositiveInt } from "./normalizers";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {

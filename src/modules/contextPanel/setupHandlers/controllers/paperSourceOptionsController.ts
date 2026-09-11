@@ -1,11 +1,11 @@
 import type { PaperContentSourceMode } from "../../types";
 import type { PdfSupport } from "../../../../providers";
-import { resolveContextAttachmentSupport } from "../../contextAttachmentSupport";
+import { resolveContextAttachmentSupport } from "../../../../services/paperContent/contextAttachmentSupport";
 import {
   getContextSourceModeBadgeLabel,
   getContextSourceModeDescriptor,
   getContextSourceModeHumanLabel,
-} from "../../contextSourceModes";
+} from "../../../../services/paperContent/contextSourceModes";
 import { sanitizeText } from "../../textUtils";
 import type { PaperContextRef } from "../../types";
 

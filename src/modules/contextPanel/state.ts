@@ -21,7 +21,6 @@ import {
   pdfTextLoadingTasks,
 } from "../../services/paperContent/contextCache";
 import { TTLMap } from "../../utils/ttlMap";
-export { pdfTextCache, pdfTextLoadingTasks };
 import { clearMermaidSvgCache } from "./mermaidSvgCache";
 import type { ConversationForkLink } from "../../shared/conversationForkLinks";
 import type { WebSourceAnchor } from "../../webAccess/types";

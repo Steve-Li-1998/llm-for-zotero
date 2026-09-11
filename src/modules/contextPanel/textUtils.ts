@@ -10,7 +10,7 @@ import {
   buildPaperQuoteCitationGuidance,
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   buildQuoteAnchorPromptBlock,
   buildSelectedTextQuoteCitations,

@@ -108,7 +108,7 @@ import {
   fetchCopilotModelList,
   callEmbeddings,
 } from "../utils/llmClient";
-import { resetEmbeddingFailedFlags } from "./contextPanel/pdfContext";
+import { resetEmbeddingFailedFlags } from "../services/paperContent/pdfContext";
 import { clearRetrievalCandidateCache } from "./contextPanel/multiContextPlanner";
 import {
   DEFAULT_COPILOT_API_BASE,

@@ -13,7 +13,7 @@ import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
 } from "./contextPanel/mineruCache";
-import { invalidateCachedContextText } from "./contextPanel/pdfContext";
+import { invalidateCachedContextText } from "../services/paperContent/pdfContext";
 import {
   setItemProcessing,
   setItemCached,

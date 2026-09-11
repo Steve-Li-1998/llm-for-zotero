@@ -26,7 +26,7 @@ import {
   formatPaperSourceLabel,
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromNote,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   buildFullPaperContext,
   buildTruncatedFullPaperContext,
@@ -36,13 +36,13 @@ import {
   ensurePDFTextCached,
   ensureNoteTextCached,
   buildEvidencePack,
-} from "./pdfContext";
+} from "../../services/paperContent/pdfContext";
 import {
   isPdfContextAttachment,
   isSupportedContextAttachment,
-} from "./contextAttachmentSupport";
+} from "../../services/paperContent/contextAttachmentSupport";
 import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
-import { pdfTextCache } from "./state";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { sanitizeText } from "./textUtils";
 import { tokenizeRetrievalDiversity } from "./retrievalTokenizer";
 import {
@@ -163,13 +163,15 @@ import type {
   AdvancedModelParams,
   CollectionContextRef,
   MultiContextPlan,
-  PaperContextCandidate,
   PaperContextRef,
-  PdfContext,
   QuoteCitation,
   ResolvedSelectedTextAnchor,
   TagContextRef,
 } from "./types";
+import type {
+  PaperContextCandidate,
+  PdfContext,
+} from "../../services/paperContent/types";
 
 type PlannerPaperEntry = {
   order: number;

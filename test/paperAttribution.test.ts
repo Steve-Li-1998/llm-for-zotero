@@ -5,7 +5,7 @@ import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
   resolvePaperContextDisplayRef,
-} from "../src/modules/contextPanel/paperAttribution";
+} from "../src/services/paperContent/paperAttribution";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 const globalScope = globalThis as typeof globalThis & { Zotero?: any };

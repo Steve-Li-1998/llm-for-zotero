@@ -1,5 +1,5 @@
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
-import type { ContextAttachmentSupport } from "./contextAttachmentTypes";
+import type { ContextAttachmentSupport } from "../../services/paperContent/contextAttachmentTypes";
 import type {
   SelectedTextSource,
   ChatAttachmentCategory,
@@ -26,26 +26,6 @@ import type {
   LibraryChatCoverageReceipt,
   LibraryChatReadStrategyDiagnostics,
 } from "../../shared/libraryChatReadStrategy";
-import type {
-  ChunkStat,
-  DocumentReferenceConfidence,
-  DocumentReferenceEvidence,
-  PaperContextCandidate,
-  PdfChunkKind,
-  PdfChunkMeta,
-  PdfContext,
-} from "../../services/paperContent/types";
-
-export type {
-  ChunkStat,
-  DocumentReferenceConfidence,
-  DocumentReferenceEvidence,
-  PaperContextCandidate,
-  PdfChunkKind,
-  PdfChunkMeta,
-  PdfContext,
-};
-
 export type {
   SelectedTextSource,
   ChatAttachmentCategory,

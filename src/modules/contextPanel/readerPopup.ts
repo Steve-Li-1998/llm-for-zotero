@@ -1,4 +1,4 @@
-import { resolvePaperContextRefFromAttachment } from "./paperAttribution";
+import { resolvePaperContextRefFromAttachment } from "../../services/paperContent/paperAttribution";
 import type { PaperContextRef } from "./types";
 
 export function resolveReaderPopupPaperContext(

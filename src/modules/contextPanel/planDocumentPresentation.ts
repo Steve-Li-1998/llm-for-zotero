@@ -13,7 +13,7 @@ import {
   formatPaperSourceLabel,
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   mergeQuoteCitations,
   normalizeQuoteCitations,

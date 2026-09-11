@@ -17,8 +17,8 @@ import {
   selectedTagContextCache,
 } from "../../state";
 import { getSelectedTextContextEntries } from "../../contextResolution";
-import { resolveContextAttachmentSupportFromMetadata } from "../../contextAttachmentSupport";
-import { getContextSourceModeBadgeLabel } from "../../contextSourceModes";
+import { resolveContextAttachmentSupportFromMetadata } from "../../../../services/paperContent/contextAttachmentSupport";
+import { getContextSourceModeBadgeLabel } from "../../../../services/paperContent/contextSourceModes";
 import {
   browseAllItemCandidates,
   normalizePaperSearchText,

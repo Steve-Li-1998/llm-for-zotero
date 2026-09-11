@@ -5,7 +5,7 @@ import type {
   CodexGlobalPortalItem,
   CodexPaperPortalItem,
 } from "../modules/contextPanel/types";
-import { isSupportedContextAttachment } from "../modules/contextPanel/contextAttachmentSupport";
+import { isSupportedContextAttachment } from "../services/paperContent/contextAttachmentSupport";
 
 export function createCodexGlobalPortalItem(
   libraryID: number,

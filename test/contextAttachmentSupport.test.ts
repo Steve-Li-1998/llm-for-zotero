@@ -6,7 +6,7 @@ import {
   isSupportedContextAttachment,
   resolveContextAttachmentSupport,
   resolveContextAttachmentSupportFromMetadata,
-} from "../src/modules/contextPanel/contextAttachmentSupport";
+} from "../src/services/paperContent/contextAttachmentSupport";
 
 function attachment(input: {
   contentType?: string;

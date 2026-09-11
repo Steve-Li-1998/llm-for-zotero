@@ -37,7 +37,7 @@ import type {
   AgentToolContext,
 } from "../src/agent/types";
 import type { PaperContextRef } from "../src/shared/types";
-import type { PdfContext } from "../src/modules/contextPanel/types";
+import type { PdfContext } from "../src/services/paperContent/types";
 import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 

@@ -3,11 +3,9 @@ import {
   readDocumentsExhaustively,
   type ExhaustiveBatchInput,
 } from "../src/shared/exhaustiveDocumentReader";
-import type {
-  PaperContextRef,
-  PdfContext,
-} from "../src/modules/contextPanel/types";
-import { buildChunkMetadata } from "../src/modules/contextPanel/pdfContext";
+import type { PaperContextRef } from "../src/modules/contextPanel/types";
+import type { PdfContext } from "../src/services/paperContent/types";
+import { buildChunkMetadata } from "../src/services/paperContent/pdfContext";
 import { estimateTextTokens } from "../src/utils/modelInputCap";
 
 function buildPaper(): {

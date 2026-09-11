@@ -15,15 +15,12 @@ import { estimateTextTokens } from "../src/utils/modelInputCap";
 import {
   buildChunkMetadata,
   buildPaperKey,
-} from "../src/modules/contextPanel/pdfContext";
+} from "../src/services/paperContent/pdfContext";
 import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
 import { buildRetrievalQueryPlan } from "../src/modules/contextPanel/retrievalQueryPlan";
-import { pdfTextCache } from "../src/modules/contextPanel/state";
-import type {
-  ChunkStat,
-  PaperContextRef,
-  PdfContext,
-} from "../src/modules/contextPanel/types";
+import { pdfTextCache } from "../src/services/paperContent/contextCache";
+import type { PaperContextRef } from "../src/modules/contextPanel/types";
+import type { ChunkStat, PdfContext } from "../src/services/paperContent/types";
 
 function tokenize(text: string): string[] {
   return tokenizeRetrievalText(text);

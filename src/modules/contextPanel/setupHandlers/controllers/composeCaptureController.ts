@@ -12,7 +12,7 @@ import {
   getActiveReaderForSelectedTab,
   getActiveReaderSelectionText,
 } from "../../contextResolution";
-import { resolvePaperContextRefFromAttachment } from "../../paperAttribution";
+import { resolvePaperContextRefFromAttachment } from "../../../../services/paperContent/paperAttribution";
 import { getCurrentSelectionPageLocationFromReader } from "../../livePdfSelectionLocator";
 import { includeReaderSelectedText } from "../../readerTextInclusion";
 import {

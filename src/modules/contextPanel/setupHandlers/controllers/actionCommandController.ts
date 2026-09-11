@@ -8,7 +8,7 @@ import type { ModelProfileOverride } from "../../../../modelCapabilities";
 import { getAgentModeEnabled } from "../../prefHelpers";
 import { formatActionLabel } from "../../actionStatusText";
 import { renderPendingActionCard } from "../../agentTrace/render";
-import { buildPaperKey } from "../../pdfContext";
+import { buildPaperKey } from "../../../../services/paperContent/pdfContext";
 import {
   resolvePaperScopedDefaultInput,
   type PaperScopedActionProfile,

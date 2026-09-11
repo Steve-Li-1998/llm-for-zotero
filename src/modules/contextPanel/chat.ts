@@ -284,10 +284,10 @@ import {
   setInlineEditInputSection,
   setInlineEditSavedDraft,
   selectedRuntimeModeCache,
-  pdfTextCache,
   type ResponseActionKind,
   type ResponseActionTarget,
 } from "./state";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { agentRunTraceCache, agentRunTraceLoadingTasks } from "./agentState";
 import {
   sanitizeText,
@@ -340,12 +340,12 @@ import {
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,
   type PaperContextDisplayCache,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   buildPaperKey,
   ensureNoteTextCached,
   ensurePDFTextCached,
-} from "./pdfContext";
+} from "../../services/paperContent/pdfContext";
 import { resolveProviderCapabilities } from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
@@ -467,7 +467,7 @@ import {
 } from "./queuedFollowUps";
 import { getConversationKey } from "./conversationIdentity";
 import { recordContextCacheTelemetry } from "../../contextCache/manager";
-import { resolveContextAttachmentSupportFromMetadata } from "./contextAttachmentSupport";
+import { resolveContextAttachmentSupportFromMetadata } from "../../services/paperContent/contextAttachmentSupport";
 import { createLocalPdfResourceResolver } from "./setupHandlers/controllers/localPdfResourceResolver";
 import {
   clearPaperContentSourceOverride,

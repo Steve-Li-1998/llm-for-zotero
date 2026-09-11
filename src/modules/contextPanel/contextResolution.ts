@@ -52,12 +52,12 @@ import {
 import {
   formatPaperCitationLabel,
   resolvePaperContextRefFromAttachment,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   isPdfContextAttachment,
   resolveContextAttachmentSupport,
   isSupportedContextAttachment,
-} from "./contextAttachmentSupport";
+} from "../../services/paperContent/contextAttachmentSupport";
 import { createContextIcon } from "./contextIcons";
 import {
   getFirstSelectionFromReader,

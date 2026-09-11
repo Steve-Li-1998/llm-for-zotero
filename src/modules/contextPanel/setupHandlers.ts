@@ -113,12 +113,12 @@ import {
   setInlineEditCleanup,
   setInlineEditInputSection,
   setInlineEditSavedDraft,
-  pdfTextCache,
   addAutoLockedGlobalConversationKey,
   removeAutoLockedGlobalConversationKey,
   isAutoLockedGlobalConversation,
   getConversationWriteGeneration,
 } from "./state";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
 import {
   sanitizeText,
   setStatus,
@@ -234,7 +234,7 @@ import {
 import {
   isTextLikeAttachmentSourceMode,
   resolvePaperContextRefFromAttachment,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   filterManualPaperContextsAgainstAutoLoaded,
   isSamePaperContextRef,
@@ -246,9 +246,9 @@ import {
   shouldRenderSkillSlashMenu,
 } from "./slashMenuBehavior";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
-import { buildPaperKey } from "./pdfContext";
-import { isSupportedContextAttachment } from "./contextAttachmentSupport";
-import { getContextSourceModeCssClassName } from "./contextSourceModes";
+import { buildPaperKey } from "../../services/paperContent/pdfContext";
+import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
+import { getContextSourceModeCssClassName } from "../../services/paperContent/contextSourceModes";
 import {
   getPaperModeOverride,
   setPaperModeOverride,

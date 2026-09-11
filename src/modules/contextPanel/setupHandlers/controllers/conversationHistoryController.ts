@@ -1,5 +1,5 @@
 import type { ConversationSystem } from "../../../../shared/types";
-import { resolveContextAttachmentSupportFromMetadata } from "../../contextAttachmentSupport";
+import { resolveContextAttachmentSupportFromMetadata } from "../../../../services/paperContent/contextAttachmentSupport";
 import { sanitizeText } from "../../textUtils";
 
 export const GLOBAL_HISTORY_TITLE_MAX_LENGTH = 64;

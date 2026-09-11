@@ -24,7 +24,7 @@ import {
   selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
 } from "../state";
-import { buildPaperKey } from "../pdfContext";
+import { buildPaperKey } from "../../../services/paperContent/pdfContext";
 import { normalizePaperContextRefs } from "../normalizers";
 import { sanitizeText } from "../textUtils";
 

@@ -18,7 +18,7 @@ import {
   isManagedBlobPath,
   removeAttachmentFile,
 } from "../../attachmentStorage";
-import { buildPaperKey } from "../../pdfContext";
+import { buildPaperKey } from "../../../../services/paperContent/pdfContext";
 import { navigateSelectedTextContextToPage as navigateSelectedTextContextToReader } from "../../selectedTextContextNavigation";
 import {
   clearSelectedPaperState,

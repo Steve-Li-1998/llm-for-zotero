@@ -13,11 +13,11 @@ import {
   beginQuoteNavigationActivity,
   resetQuoteValidationActivityForTests,
 } from "../src/modules/contextPanel/quoteValidationActivity";
+import { chatHistory } from "../src/modules/contextPanel/state";
 import {
-  chatHistory,
   pdfTextCache,
   pdfTextLoadingTasks,
-} from "../src/modules/contextPanel/state";
+} from "../src/services/paperContent/contextCache";
 import type {
   Message,
   PaperContextRef,

@@ -13,7 +13,7 @@ import {
   readMineruSourceProvenance,
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
-} from "../src/modules/contextPanel/mineruCache";
+} from "../src/services/mineru/mineruCache";
 import { pdfTextCache } from "../src/services/paperContent/contextCache";
 import {
   buildMineruSyncPackageBytes,
@@ -31,7 +31,7 @@ import {
   repairSyncedMineruCacheForAttachment,
   restoreSyncedMineruCacheForAttachment,
   shouldIncludeMineruCachePackageEntry,
-} from "../src/modules/contextPanel/mineruSync";
+} from "../src/services/mineru/sync";
 import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
   PDF_FIGURE_CROP_CACHE_VERSION,

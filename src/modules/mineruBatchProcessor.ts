@@ -7,7 +7,7 @@ import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
   getMineruCacheDir,
-} from "./contextPanel/mineruCache";
+} from "../services/mineru/mineruCache";
 import { invalidateCachedContextText } from "../services/paperContent/pdfContext";
 import {
   setItemProcessing,
@@ -22,7 +22,7 @@ import {
   getMineruAvailabilityForAttachment,
   publishMineruCachePackageForAttachment,
   type MineruAvailabilityStatus,
-} from "./contextPanel/mineruSync";
+} from "../services/mineru/sync";
 import { normalizeMineruTagName } from "./mineruTagIndex";
 import {
   getMineruParseEligibility,

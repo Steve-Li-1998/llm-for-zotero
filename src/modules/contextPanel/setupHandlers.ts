@@ -2618,11 +2618,11 @@ export function setupHandlers(
   const mineruAvailableIds = new Set<number>();
   const pendingMineruAvailabilityChecks = new Map<number, Promise<void>>();
   let mineruChipStyleDepsPromise: Promise<{
-    getMineruAvailabilityForAttachmentId: typeof import("./mineruSync").getMineruAvailabilityForAttachmentId;
+    getMineruAvailabilityForAttachmentId: typeof import("../../services/mineru/sync").getMineruAvailabilityForAttachmentId;
   }> | null = null;
   const loadMineruChipStyleDeps = () => {
     if (!mineruChipStyleDepsPromise) {
-      mineruChipStyleDepsPromise = import("./mineruSync").then(
+      mineruChipStyleDepsPromise = import("../../services/mineru/sync").then(
         (mineruSync) => ({
           getMineruAvailabilityForAttachmentId:
             mineruSync.getMineruAvailabilityForAttachmentId,
@@ -3536,7 +3536,7 @@ export function setupHandlers(
 
     try {
       const { ensureMineruCacheDirForAttachment } =
-        await import("./mineruSync");
+        await import("../../services/mineru/sync");
       const cacheDir = await ensureMineruCacheDirForAttachment(attachment);
       if (!cacheDir) {
         if (status) {

@@ -9,13 +9,13 @@ import {
 import {
   hasCachedMineruMd,
   writeMineruCacheFiles,
-} from "../src/modules/contextPanel/mineruCache";
+} from "../src/services/mineru/mineruCache";
 import {
   clearAllStatuses,
   getMineruStatus,
   setItemCached,
 } from "../src/modules/mineruProcessingStatus";
-import { MINERU_SYNC_ATTACHMENT_TITLE_PREFIX } from "../src/modules/contextPanel/mineruSync";
+import { MINERU_SYNC_ATTACHMENT_TITLE_PREFIX } from "../src/services/mineru/sync";
 import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 const encoder = new TextEncoder();

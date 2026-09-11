@@ -5,7 +5,7 @@ import {
   getManifestFigureBaseLabel,
   resolveMineruFigureBlocksForQuery,
   type MineruContentListEntry,
-} from "../src/modules/contextPanel/mineruFigureBlocks";
+} from "../src/services/mineru/mineruFigureBlocks";
 
 describe("mineruFigureBlocks", function () {
   function build(fullMd: string, contentList: MineruContentListEntry[] = []) {

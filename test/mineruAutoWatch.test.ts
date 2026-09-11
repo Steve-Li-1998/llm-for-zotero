@@ -20,7 +20,7 @@ import {
   hasCachedMineruMd,
   readCachedMineruMd,
   writeMineruCacheFiles,
-} from "../src/modules/contextPanel/mineruCache";
+} from "../src/services/mineru/mineruCache";
 import { pdfTextCache } from "../src/services/paperContent/contextCache";
 import { clearMineruEligibilityCacheForTests } from "../src/modules/mineruParseEligibility";
 import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";

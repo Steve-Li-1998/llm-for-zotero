@@ -206,7 +206,7 @@ import {
 import {
   cleanSyncedMineruPackages,
   repairMineruSyncPackages,
-} from "./contextPanel/mineruSync";
+} from "../services/mineru/sync";
 import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
 import {
   getClaudeAutoCompactThresholdPercent,

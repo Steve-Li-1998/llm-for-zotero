@@ -215,7 +215,7 @@ export {
   copyGeneratedImageToClipboard,
   renderAssistantGeneratedImagesInto,
 } from "./generatedImageRender";
-import { ensureMineruCacheDirForAttachment } from "./mineruSync";
+import { ensureMineruCacheDirForAttachment } from "../../services/mineru/sync";
 import type {
   Message,
   ChatRuntimeMode,

@@ -16,7 +16,7 @@ import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
   type MineruCacheFile,
-} from "../src/modules/contextPanel/mineruCache";
+} from "../src/services/mineru/mineruCache";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

@@ -13,7 +13,7 @@ import {
   buildManifest,
   readManifest,
   writeMineruCacheFiles,
-} from "../src/modules/contextPanel/mineruCache";
+} from "../src/services/mineru/mineruCache";
 import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
 import { buildRetrievalQueryPlan } from "../src/modules/contextPanel/retrievalQueryPlan";
 import { pdfTextCache } from "../src/services/paperContent/contextCache";

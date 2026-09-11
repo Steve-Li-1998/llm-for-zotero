@@ -66,9 +66,7 @@ import {
   applySelectedTextPreview,
   getSelectedTextContextEntries,
   type SelectedTextPageLocation,
-  resolveContextSourceItem,
 } from "./contextResolution";
-import { configureContextSelectionBridge } from "../../services/context/contextSelectionBridge";
 import {
   clearNoteEditingSelectedText,
   getNoteFocusConversationKey,
@@ -79,18 +77,7 @@ import {
   type NoteEditingSelectionTrackingLifecycle,
 } from "./noteEditing/selectionTrackingLifecycle";
 import { ensurePDFTextCached, ensureNoteTextCached } from "./pdfContext";
-import {
-  getPageLabelForIndex,
-  verifyCompleteQuoteInLivePdfJs,
-  warmPageTextCache,
-  warmPageTextCacheForAttachment,
-} from "./livePdfSelectionLocator";
-import { configurePdfReaderTextBridge } from "../../services/pdf/readerTextBridge";
-import {
-  createNoteFromAssistantText,
-  createStandaloneNoteFromAssistantText,
-} from "./notes";
-import { configureAssistantNoteWriter } from "../../services/notes/assistantNoteWriterBridge";
+import { getPageLabelForIndex } from "./livePdfSelectionLocator";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
@@ -148,44 +135,6 @@ import {
   notifyStandaloneItemChanged,
   renderStandalonePlaceholder,
 } from "./standaloneWindow";
-
-configurePdfReaderTextBridge({
-  warmPageTextCache,
-  warmPageTextCacheForAttachment,
-  verifyCompleteQuote: verifyCompleteQuoteInLivePdfJs,
-});
-configureContextSelectionBridge({
-  getActiveAttachment: getActiveContextAttachmentFromTabs,
-  resolveContextItem: (item) => resolveContextSourceItem(item).contextItem,
-});
-configureAssistantNoteWriter({
-  writeItemNote: (params) =>
-    createNoteFromAssistantText(
-      params.item,
-      params.content,
-      params.modelName,
-      undefined,
-      {
-        appendToTrackedNote: params.appendToTrackedNote,
-        rememberCreatedNote: params.appendToTrackedNote,
-        generatedImages: params.generatedImages,
-      },
-    ),
-  writeStandaloneNote: async (params) => {
-    const result = await createStandaloneNoteFromAssistantText(
-      params.libraryID,
-      params.content,
-      params.modelName,
-      undefined,
-      undefined,
-      params.generatedImages,
-      undefined,
-      undefined,
-      params.collections,
-    );
-    return { ...result, status: "standalone_created" };
-  },
-});
 
 // =============================================================================
 // Public API

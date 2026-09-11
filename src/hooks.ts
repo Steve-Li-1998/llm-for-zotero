@@ -12,6 +12,7 @@ import {
   unregisterReaderSelectionTracking,
   openStandaloneChat,
 } from "./modules/contextPanel";
+import { composeHostSurfaces } from "./modules/contextPanel/hostSurfaces";
 import { resolveActiveLibraryID } from "./utils/zoteroLibraryScope";
 import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
 import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
@@ -45,6 +46,7 @@ type ConversationStoreReadiness = {
 };
 
 let startupUserSkillsLoadTask: Promise<void> | null = null;
+let disposeHostSurfaces: (() => void) | null = null;
 
 function getStartupPrefKey(key: string): string {
   return `${config.prefsPrefix}.${key}`;
@@ -304,6 +306,12 @@ function scheduleDeferredStartupWork(
 }
 
 async function onStartup() {
+  // Host surface composition comes first. Services and agent code reach
+  // panel-owned capabilities through bridges that throw when nothing is
+  // configured, so every later startup step - stores, the MCP server, any
+  // agent path - must run against a composed surface.
+  disposeHostSurfaces = composeHostSurfaces();
+
   await measureStartupPhase("Zotero readiness", () =>
     Promise.all([
       Zotero.initializationPromise,
@@ -500,6 +508,8 @@ async function onShutdown(): Promise<void> {
   }
   clearQueuedFollowUpState();
   clearAllState();
+  disposeHostSurfaces?.();
+  disposeHostSurfaces = null;
   // Remove addon object
   addon.data.alive = false;
   // @ts-expect-error - Plugin instance is not typed

@@ -13,6 +13,41 @@ import {
   configureRetrievalCandidateInvalidator,
   invalidateRetrievalCandidates,
 } from "../src/services/retrieval/cacheInvalidation";
+import {
+  configurePdfReaderTextBridge,
+  warmPdfPageTextCache,
+} from "../src/services/pdf/readerTextBridge";
+import { composeHostSurfaces } from "../src/modules/contextPanel/hostSurfaces";
+
+const UNCOMPOSED = /adapter is not configured for this application surface/;
+
+/**
+ * A composed bridge reaches the panel implementation, which is free to fail on
+ * the stub inputs used here. Only the bridge's own "nothing is configured"
+ * error means the surface was never composed.
+ */
+function captureFailure(call: () => unknown): string {
+  try {
+    const result = call();
+    if (result instanceof Promise) {
+      throw new Error("unexpected async probe");
+    }
+    return "";
+  } catch (error) {
+    return String(error);
+  }
+}
+
+async function captureAsyncFailure(
+  call: () => Promise<unknown>,
+): Promise<string> {
+  try {
+    await call();
+    return "";
+  } catch (error) {
+    return String(error);
+  }
+}
 
 describe("application surface bridges", function () {
   it("fails loudly when an uncomposed UI surface is asked for the selected context", function () {
@@ -89,6 +124,98 @@ describe("application surface bridges", function () {
       );
     } finally {
       reset();
+    }
+  });
+});
+
+describe("host surface composition", function () {
+  it("composes every bridge at startup and clears them all on shutdown", async function () {
+    const dispose = composeHostSurfaces();
+    try {
+      assert.notMatch(
+        captureFailure(() => getSelectedContextAttachment()),
+        UNCOMPOSED,
+      );
+      assert.notMatch(
+        captureFailure(() =>
+          resolveSelectedContextItem({ id: 4 } as Zotero.Item),
+        ),
+        UNCOMPOSED,
+      );
+      assert.notMatch(
+        captureFailure(() => invalidateRetrievalCandidates(4)),
+        UNCOMPOSED,
+      );
+      assert.notMatch(
+        await captureAsyncFailure(() => warmPdfPageTextCache(null)),
+        UNCOMPOSED,
+      );
+      assert.notMatch(
+        await captureAsyncFailure(() =>
+          writeAssistantItemNote({
+            item: {} as Zotero.Item,
+            content: "answer",
+            modelName: "model",
+          }),
+        ),
+        UNCOMPOSED,
+      );
+      assert.notMatch(
+        await captureAsyncFailure(() =>
+          writeAssistantStandaloneNote({
+            libraryID: 1,
+            content: "answer",
+            modelName: "model",
+          }),
+        ),
+        UNCOMPOSED,
+      );
+    } finally {
+      dispose();
+    }
+
+    assert.match(
+      captureFailure(() => getSelectedContextAttachment()),
+      UNCOMPOSED,
+    );
+    assert.match(
+      captureFailure(() =>
+        resolveSelectedContextItem({ id: 4 } as Zotero.Item),
+      ),
+      UNCOMPOSED,
+    );
+    assert.match(
+      captureFailure(() => invalidateRetrievalCandidates(4)),
+      UNCOMPOSED,
+    );
+    assert.match(
+      await captureAsyncFailure(() => warmPdfPageTextCache(null)),
+      UNCOMPOSED,
+    );
+    assert.match(
+      await captureAsyncFailure(() =>
+        writeAssistantItemNote({
+          item: {} as Zotero.Item,
+          content: "answer",
+          modelName: "model",
+        }),
+      ),
+      UNCOMPOSED,
+    );
+  });
+
+  it("restores the surface that was configured before composition", function () {
+    const probe = { id: 7 } as Zotero.Item;
+    const restoreProbe = configureContextSelectionBridge({
+      getActiveAttachment: () => probe,
+      resolveContextItem: () => probe,
+    });
+    const disposeComposition = composeHostSurfaces();
+    try {
+      disposeComposition();
+      assert.equal(getSelectedContextAttachment(), probe);
+    } finally {
+      restoreProbe();
     }
   });
 });

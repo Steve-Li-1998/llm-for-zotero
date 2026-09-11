@@ -452,6 +452,7 @@ import type {
   AgentToolArtifact,
   AgentWorkCategory,
 } from "../../agent/types";
+import { resolveCodexNativeWorkCategory } from "../../agent/workCategory";
 import {
   sendAgentTurn,
   retryAgentTurn,
@@ -6976,7 +6977,7 @@ function createCodexNativeActivityTraceController(
         args: webSearch?.args || (query ? { query } : undefined),
         ok: phase === "completed" ? !failed : undefined,
         text: failed && phase === "completed" ? "Web search failed" : verb,
-        workCategory: "retrieval",
+        workCategory: resolveCodexNativeWorkCategory("web_search"),
       });
       return Boolean(updated);
     }
@@ -7007,7 +7008,7 @@ function createCodexNativeActivityTraceController(
               ? `Generated image: ${status || "failed"}`
               : "Generated image"
             : "Generating image",
-        workCategory: "generation",
+        workCategory: resolveCodexNativeWorkCategory("image_generation"),
       });
       return Boolean(updated) || changedImage;
     }
@@ -7024,7 +7025,7 @@ function createCodexNativeActivityTraceController(
         args: path ? { path } : undefined,
         ok: phase === "completed" ? !failed : undefined,
         text: phase === "completed" ? "Viewed image" : "Viewing image",
-        workCategory: "retrieval",
+        workCategory: resolveCodexNativeWorkCategory("image_view"),
       });
       return Boolean(updated);
     }
@@ -7059,7 +7060,7 @@ function createCodexNativeActivityTraceController(
               : "Ran command"
             : "Running command",
         codeBlock: command || undefined,
-        workCategory: "external_system",
+        workCategory: resolveCodexNativeWorkCategory("command"),
       });
       return Boolean(updated);
     }
@@ -7081,7 +7082,7 @@ function createCodexNativeActivityTraceController(
               ? "File changes failed"
               : "Updated files"
             : "Updating files",
-        workCategory: "external_system",
+        workCategory: resolveCodexNativeWorkCategory("file_changes"),
       });
       return Boolean(updated);
     }

@@ -1,7 +1,11 @@
 import { assert } from "chai";
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join, relative } from "path";
-import { resolveAgentWorkCategory } from "../src/agent/workCategory";
+import {
+  CODEX_NATIVE_WORK_KINDS,
+  resolveAgentWorkCategory,
+  resolveCodexNativeWorkCategory,
+} from "../src/agent/workCategory";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import { createLibraryBatchTool } from "../src/agent/tools/write/libraryBatch";
 import { createSelfContainedTestTool } from "../src/agent/tools/test/createSelfContainedTestTool";
@@ -208,6 +212,40 @@ describe("agent work categories", function () {
       undeclared,
       [],
       "every executionClass literal must be followed by its workCategory",
+    );
+  });
+
+  it("maps every Codex native activity kind the chat panel renders", function () {
+    assert.deepEqual(
+      CODEX_NATIVE_WORK_KINDS.map((kind) => [
+        kind,
+        resolveCodexNativeWorkCategory(kind),
+      ]),
+      [
+        ["web_search", "retrieval"],
+        ["image_generation", "generation"],
+        ["image_view", "retrieval"],
+        ["command", "external_system"],
+        ["file_changes", "external_system"],
+      ],
+    );
+  });
+
+  it("leaves the chat panel no second work-category taxonomy", function () {
+    const chat = readFileSync(
+      join(root, "src/modules/contextPanel/chat.ts"),
+      "utf8",
+    );
+    const literals = chat.match(/workCategory:\s*"/g) || [];
+    assert.deepEqual(literals, [], "chat.ts must not hard-code categories");
+    const used = Array.from(
+      chat.matchAll(/resolveCodexNativeWorkCategory\("([a-z_]+)"\)/g),
+      (match) => match[1],
+    );
+    assert.deepEqual(
+      Array.from(new Set(used)).sort(),
+      Array.from(CODEX_NATIVE_WORK_KINDS).sort(),
+      "the mapping table must be exhaustive over the kinds chat.ts handles",
     );
   });
 });

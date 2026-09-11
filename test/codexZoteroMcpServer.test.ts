@@ -1,6 +1,9 @@
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { actionContractFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
+import { DatabaseSync } from "node:sqlite";
+import { createSubmitDocumentTool } from "../src/agent/tools/plan/submitPlanDocument";
+import { initPlanDocumentStore } from "../src/agent/documents/store";
 import {
   addZoteroMcpToolActivityObserver,
   getOrCreateZoteroMcpBearerToken,
@@ -609,6 +612,90 @@ describe("Zotero MCP server", function () {
       observed[0],
       "A new server instance starts a new scope-less run",
     );
+  });
+
+  it("lets a scope-less client finalize more than one document", async function () {
+    const zotero = globalThis.Zotero as unknown as { DB: unknown };
+    const journalDb = zotero.DB;
+    const db = new DatabaseSync(":memory:");
+    zotero.DB = {
+      queryAsync: async (sql: string, params: unknown[] = []) => {
+        const statement = db.prepare(sql);
+        const values = params.map((value) =>
+          value === undefined ? null : value,
+        ) as never[];
+        if (/^\s*(SELECT|PRAGMA|WITH)/i.test(sql))
+          return statement.all(...values);
+        statement.run(...values);
+        return [];
+      },
+      executeTransaction: async (task: () => Promise<unknown>) => {
+        db.exec("BEGIN");
+        try {
+          const result = await task();
+          db.exec("COMMIT");
+          return result;
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
+      },
+    };
+    try {
+      await initPlanDocumentStore();
+      const registry = new AgentToolRegistry();
+      registry.register(createSubmitDocumentTool({} as never));
+      registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+      const submit = async (id: number, title: string, markdown: string) => {
+        const response = await invokeMcpEndpoint({
+          token: getOrCreateZoteroMcpBearerToken(),
+          body: {
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: {
+              name: "submit_document",
+              arguments: {
+                title,
+                markdown,
+                citations: [],
+                quotes: [],
+                assets: [],
+                groundingReviewed: "passed",
+                groundingIssues: [],
+              },
+            },
+          },
+        });
+        const payload = JSON.parse(response[2]);
+        assert.isUndefined(payload.result?.isError, response[2]);
+        const body = JSON.parse(payload.result.content[0].text);
+        assert.isTrue(body.ok, response[2]);
+        return body.result as {
+          documentId: string;
+          contentHash: string;
+          visibleMarkdown: string;
+        };
+      };
+
+      const first = await submit(1, "First", "# First\n\nThe first document.");
+      const second = await submit(
+        2,
+        "Second",
+        "# Second\n\nThe second document.",
+      );
+
+      assert.notEqual(
+        second.documentId,
+        first.documentId,
+        "A second submission must not hand back the first document",
+      );
+      assert.notEqual(second.contentHash, first.contentHash);
+      assert.include(second.visibleMarkdown, "The second document.");
+    } finally {
+      zotero.DB = journalDb;
+      db.close();
+    }
   });
 
   it("keeps standalone writes disabled until explicitly enabled", async function () {

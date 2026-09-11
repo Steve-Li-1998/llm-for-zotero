@@ -4,9 +4,11 @@ import type { AgentRuntimeRequest, AgentToolArtifact } from "../types";
 import type { DocumentCitationEvidence } from "./citationService";
 import { finalizeDocument, persistFinalizedDocument } from "./finalizer";
 import {
+  directDocumentId,
   loadLatestDocumentForRun,
   loadPlanDocument,
   loadPlanDocumentOutbox,
+  nextDirectDocumentSequence,
 } from "./store";
 import type {
   DocumentCoverageItem,
@@ -22,6 +24,16 @@ import {
   resolveMaterialOutput,
 } from "./workflowMaterial";
 import { ToolInputRejection } from "../tools/execution/failure";
+
+/** The already stored document, with the outbox record that published it. */
+async function storedDocumentResult(document: PlanDocument): Promise<{
+  document: PlanDocument;
+  outbox: PlanDocumentOutboxRecord;
+}> {
+  const outbox = await loadPlanDocumentOutbox(document.documentId);
+  if (!outbox) throw new Error("The document exists without its outbox");
+  return { document, outbox };
+}
 function directDocumentSpec(params: {
   request: AgentRuntimeRequest;
   policy: DocumentOutcomePolicy;
@@ -212,16 +224,15 @@ export class DirectDocumentFinalizer {
     const prior = stableDocumentId
       ? await loadPlanDocument(stableDocumentId)
       : await loadLatestDocumentForRun(params.runId);
-    if (prior) {
-      if (prior.conversationKey !== params.request.conversationKey)
-        throw new Error(
-          "The finalized material belongs to another conversation.",
-        );
-      const priorOutbox = await loadPlanDocumentOutbox(prior.documentId);
-      if (!priorOutbox)
-        throw new Error("The document exists without its outbox");
-      return { document: prior, outbox: priorOutbox };
-    }
+    if (prior && prior.conversationKey !== params.request.conversationKey)
+      throw new Error(
+        "The finalized material belongs to another conversation.",
+      );
+    // A workflow material output has one frozen identity, so its stored
+    // version is the answer. A direct run has no such identity: it may author
+    // several documents, and whether this submission is a retry of the stored
+    // one is only known once its content hash is computed below.
+    if (prior && stableDocumentId) return storedDocumentResult(prior);
     if (material) assertMaterialReady(params.request, material, this.gateway);
     const now = params.now ?? Date.now();
     const title = params.input.title.trim();
@@ -257,7 +268,12 @@ export class DirectDocumentFinalizer {
     const coverageItems = researchGrounded
       ? coverageFromObservations(observations)
       : [];
-    const documentId = stableDocumentId || `${params.runId}:document:1`;
+    const documentId =
+      stableDocumentId ||
+      directDocumentId(
+        params.runId,
+        await nextDirectDocumentSequence(params.runId),
+      );
     const finalized = await finalizeDocument({
       gateway: this.gateway,
       input: params.input,
@@ -293,6 +309,12 @@ export class DirectDocumentFinalizer {
           }),
       },
     });
+    // The stored document is this submission only when its content is
+    // identical: a retry keeps the identity the run already published.
+    // Different content is a new document, never a silent substitution of
+    // older content for the input the model just submitted.
+    if (prior && prior.contentHash === finalized.document.contentHash)
+      return storedDocumentResult(prior);
     await persistFinalizedDocument(finalized);
     return finalized;
   }

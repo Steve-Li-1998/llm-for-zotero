@@ -413,6 +413,40 @@ export async function loadLatestDocumentForRun(
   return documentId ? loadPlanDocument(documentId) : null;
 }
 
+function directDocumentIdPrefix(runId: string): string {
+  return `${runId}:document:`;
+}
+
+/** Document id a direct run's nth submission owns. */
+export function directDocumentId(runId: string, sequence: number): string {
+  return `${directDocumentIdPrefix(runId)}${sequence}`;
+}
+
+/**
+ * Next free sequence for a direct run, past every document it already owns.
+ * A run authors as many documents as the work needs, and each keeps its own
+ * durable identity.
+ */
+export async function nextDirectDocumentSequence(
+  runId: string,
+): Promise<number> {
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT document_id AS documentId FROM ${PLAN_DOCUMENTS_TABLE}
+     WHERE run_id = ?`,
+    [runId],
+  )) as Array<{ documentId?: unknown }> | undefined;
+  const prefix = directDocumentIdPrefix(runId);
+  return (rows || []).reduce((next, row) => {
+    const documentId = typeof row.documentId === "string" ? row.documentId : "";
+    const sequence = documentId.startsWith(prefix)
+      ? Number(documentId.slice(prefix.length))
+      : 0;
+    return Number.isSafeInteger(sequence) && sequence >= next
+      ? sequence + 1
+      : next;
+  }, 1);
+}
+
 export async function nextPlanDocumentVersion(params: {
   planId: string;
   planRevision: number;

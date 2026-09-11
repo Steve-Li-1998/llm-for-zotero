@@ -1,5 +1,10 @@
 import { assert } from "chai";
+import { DatabaseSync } from "node:sqlite";
 import { DirectDocumentFinalizer } from "../src/agent/documents/directFinalization";
+import {
+  initPlanDocumentStore,
+  loadPlanDocument,
+} from "../src/agent/documents/store";
 import type {
   DocumentOutcomePolicy,
   PlanCitationCluster,
@@ -607,6 +612,75 @@ describe("DirectDocumentFinalizer", function () {
       now: 301,
     });
     assert.include(cited.document.visibleMarkdown, "## References");
+  });
+  it("reuses a run's document only for identical content and sequences new content", async function () {
+    const policy: DocumentOutcomePolicy = {
+      required: true,
+      documentKind: "guide",
+      integrityPolicy: "authored",
+      trigger: "document_intent",
+    };
+    const zotero = (globalThis as any).Zotero;
+    const fakeDB = zotero.DB;
+    const db = new DatabaseSync(":memory:");
+    zotero.DB = {
+      queryAsync: async (sql: string, params: unknown[] = []) => {
+        const statement = db.prepare(sql);
+        const values = params.map((value) =>
+          value === undefined ? null : value,
+        ) as never[];
+        if (/^\s*(SELECT|PRAGMA|WITH)/i.test(sql))
+          return statement.all(...values);
+        statement.run(...values);
+        return [];
+      },
+      executeTransaction: async (task: () => Promise<unknown>) => {
+        db.exec("BEGIN");
+        try {
+          const result = await task();
+          db.exec("COMMIT");
+          return result;
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
+      },
+    };
+    try {
+      await initPlanDocumentStore();
+      const submit = (markdown?: string, now?: number) =>
+        finalizer.finalize({
+          request: request(policy),
+          runId: "session-run",
+          input: input(markdown ? { markdown } : undefined),
+          now,
+        });
+
+      const first = await submit(undefined, 400);
+      const retried = await submit(undefined, 401);
+      assert.equal(first.document.documentId, "session-run:document:1");
+      assert.equal(retried.document.documentId, first.document.documentId);
+      assert.equal(retried.document.contentHash, first.document.contentHash);
+
+      const second = await submit(
+        "# Representational drift\n\nA second, different guide.",
+        402,
+      );
+      assert.equal(second.document.documentId, "session-run:document:2");
+      assert.notEqual(second.document.contentHash, first.document.contentHash);
+
+      assert.equal(
+        (await loadPlanDocument(first.document.documentId))?.visibleMarkdown,
+        first.document.visibleMarkdown,
+      );
+      assert.equal(
+        (await loadPlanDocument(second.document.documentId))?.visibleMarkdown,
+        second.document.visibleMarkdown,
+      );
+    } finally {
+      zotero.DB = fakeDB;
+      db.close();
+    }
   });
   it("rejects citation expansion past the final byte limit before persisting a document", async function () {
     const max = 2 * 1024 * 1024;

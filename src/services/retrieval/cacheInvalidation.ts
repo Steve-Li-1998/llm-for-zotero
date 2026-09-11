@@ -1,16 +1,17 @@
+import { createSurfaceBridge } from "../surfaceBridge";
+
 export type RetrievalCandidateInvalidator = (contextItemId?: number) => void;
 
-let activeInvalidator: RetrievalCandidateInvalidator | null = null;
+const bridge = createSurfaceBridge<RetrievalCandidateInvalidator>(
+  "retrieval candidate invalidator",
+);
 
 export function configureRetrievalCandidateInvalidator(
-  invalidator: RetrievalCandidateInvalidator,
+  invalidator: RetrievalCandidateInvalidator | null,
 ): () => void {
-  activeInvalidator = invalidator;
-  return () => {
-    if (activeInvalidator === invalidator) activeInvalidator = null;
-  };
+  return bridge.configure(invalidator);
 }
 
 export function invalidateRetrievalCandidates(contextItemId?: number): void {
-  activeInvalidator?.(contextItemId);
+  bridge.require()(contextItemId);
 }

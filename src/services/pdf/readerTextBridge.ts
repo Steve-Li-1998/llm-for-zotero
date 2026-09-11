@@ -1,3 +1,5 @@
+import { createSurfaceBridge } from "../surfaceBridge";
+
 export type PdfReaderPageText = {
   pageIndex: number;
   pageLabel?: string;
@@ -54,31 +56,20 @@ export type PdfReaderTextAdapter = {
   ) => Promise<PdfQuoteVerification>;
 };
 
-let activeAdapter: PdfReaderTextAdapter | null = null;
+const bridge = createSurfaceBridge<PdfReaderTextAdapter>(
+  "Zotero PDF reader text",
+);
 
 export function configurePdfReaderTextBridge(
   adapter: PdfReaderTextAdapter | null,
 ): () => void {
-  const previous = activeAdapter;
-  activeAdapter = adapter;
-  return () => {
-    if (activeAdapter === adapter) activeAdapter = previous;
-  };
-}
-
-function requireAdapter(): PdfReaderTextAdapter {
-  if (!activeAdapter) {
-    throw new Error(
-      "The Zotero PDF reader text adapter is not configured for this application surface.",
-    );
-  }
-  return activeAdapter;
+  return bridge.configure(adapter);
 }
 
 export function warmPdfPageTextCache(
   reader: any,
 ): Promise<PdfReaderTextCache | null> {
-  return requireAdapter().warmPageTextCache(reader);
+  return bridge.require().warmPageTextCache(reader);
 }
 
 export function warmPdfPageTextCacheForAttachment(
@@ -87,10 +78,9 @@ export function warmPdfPageTextCacheForAttachment(
     PdfReaderTextAdapter["warmPageTextCacheForAttachment"]
   >[1],
 ): Promise<PdfReaderTextCache | null> {
-  return requireAdapter().warmPageTextCacheForAttachment(
-    contextItemId,
-    options,
-  );
+  return bridge
+    .require()
+    .warmPageTextCacheForAttachment(contextItemId, options);
 }
 
 export function verifyCompleteQuoteInLivePdf(
@@ -99,10 +89,7 @@ export function verifyCompleteQuoteInLivePdf(
   quoteText: string,
   options?: Parameters<PdfReaderTextAdapter["verifyCompleteQuote"]>[3],
 ): Promise<PdfQuoteVerification> {
-  return requireAdapter().verifyCompleteQuote(
-    reader,
-    contextItemId,
-    quoteText,
-    options,
-  );
+  return bridge
+    .require()
+    .verifyCompleteQuote(reader, contextItemId, quoteText, options);
 }

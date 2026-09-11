@@ -9,13 +9,35 @@ import {
   writeAssistantItemNote,
   writeAssistantStandaloneNote,
 } from "../src/services/notes/assistantNoteWriterBridge";
+import {
+  configureRetrievalCandidateInvalidator,
+  invalidateRetrievalCandidates,
+} from "../src/services/retrieval/cacheInvalidation";
 
 describe("application surface bridges", function () {
-  it("treats an uncomposed UI surface as having no selected context", function () {
+  it("fails loudly when an uncomposed UI surface is asked for the selected context", function () {
     const restore = configureContextSelectionBridge(null);
     try {
-      assert.isNull(getSelectedContextAttachment());
-      assert.isNull(resolveSelectedContextItem({ id: 4 } as Zotero.Item));
+      assert.throws(
+        () => getSelectedContextAttachment(),
+        "The context selection adapter is not configured for this application surface.",
+      );
+      assert.throws(
+        () => resolveSelectedContextItem({ id: 4 } as Zotero.Item),
+        "The context selection adapter is not configured for this application surface.",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("fails loudly when an uncomposed UI surface invalidates retrieval candidates", function () {
+    const restore = configureRetrievalCandidateInvalidator(null);
+    try {
+      assert.throws(
+        () => invalidateRetrievalCandidates(7),
+        "The retrieval candidate invalidator adapter is not configured for this application surface.",
+      );
     } finally {
       restore();
     }

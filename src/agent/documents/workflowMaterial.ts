@@ -250,7 +250,28 @@ export async function resolveWorkflowNoteDocument(
   targetItemId?: number,
   mode: "create" | "edit" | "append" = "create",
 ): Promise<PlanDocument> {
+  const document = await loadPlanDocument(documentId);
+  if (!document || document.conversationKey !== request.conversationKey) {
+    throw new Error(
+      "The finalized workflow document identity or content has changed.",
+    );
+  }
   const progress = request.actionProgress;
+  // Fresh ordinary Agent work has no semantic contract. Its direct document
+  // is still an exact, host-persisted material version; the invocation
+  // controller authorizes the concrete target separately.
+  if (!request.actionContract && !progress) {
+    if (
+      !request.executionContext ||
+      document.version !== 2 ||
+      document.origin.kind !== "direct"
+    ) {
+      throw new Error(
+        "The finalized document is not owned by this direct Agent execution.",
+      );
+    }
+    return document;
+  }
   const receipt = progress?.materialOutputs?.find(
     (entry) => entry.documentId === documentId,
   );
@@ -267,11 +288,6 @@ export async function resolveWorkflowNoteDocument(
   )
     throw new Error(
       "The note must use the finalized workflow document and its exact authorized destination.",
-    );
-  const document = await loadPlanDocument(documentId);
-  if (!document || document.conversationKey !== request.conversationKey)
-    throw new Error(
-      "The finalized workflow document identity or content has changed.",
     );
   assertMaterialRefMatches(document, receipt);
   return document;

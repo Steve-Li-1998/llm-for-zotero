@@ -277,6 +277,39 @@ describe("durable document note association", function () {
       "Exact durable summary.",
     );
   });
+  it("allows a direct finalized document to enter the shared note lifecycle without semantic state", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = {
+      request: {
+        conversationKey: 42,
+        libraryID: 1,
+        executionContext: {
+          version: 1,
+          executionId: "direct-execution-42",
+        },
+      },
+    } as any;
+
+    await tool.planInvocation(input.value, context);
+    const proposals = await tool.describeAction!(input.value, context);
+
+    assert.equal(proposals[0].parameters?.documentId, document.documentId);
+    assert.equal(proposals[0].parameters?.contentHash, document.contentHash);
+    assert.include(
+      proposals[0].parameters?.expectedText || "",
+      "Exact durable summary.",
+    );
+  });
   it("embeds finalized document figures when replacing an existing note", async function () {
     addFigure();
     const note = new globals.Zotero.Item("note");

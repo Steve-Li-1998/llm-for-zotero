@@ -10,7 +10,7 @@ import {
   isContextSourceModeReaderNavigable,
   isContextSourceModeTextLikeAttachment,
 } from "../../../../services/paperContent/contextSourceModes";
-import { sanitizeText } from "../../textUtils";
+import { sanitizeText } from "../../../../utils/textSanitization";
 import type {
   PaperContextRef,
   PaperContextSendMode,

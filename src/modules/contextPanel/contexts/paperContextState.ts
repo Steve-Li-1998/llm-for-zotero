@@ -26,7 +26,7 @@ import {
 } from "../state";
 import { buildPaperKey } from "../../../services/paperContent/pdfContext";
 import { normalizePaperContextRefs } from "../../../services/context/normalizers";
-import { sanitizeText } from "../textUtils";
+import { sanitizeText } from "../../../utils/textSanitization";
 
 /** Builds the flat composite key for override maps. */
 function overrideKey(itemId: number, paperContext: PaperContextRef): string {

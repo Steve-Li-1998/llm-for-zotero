@@ -120,13 +120,13 @@ import {
 } from "./state";
 import { pdfTextCache } from "../../services/paperContent/contextCache";
 import {
-  sanitizeText,
   setStatus,
   buildQuestionWithSelectedTextContexts,
   buildModelPromptWithFileContext,
   resolvePromptText,
   getAttachmentTypeLabel,
 } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import { normalizeSelectedTextSource } from "../../services/context/normalizers";
 import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import {
@@ -291,7 +291,7 @@ import {
   extractManagedBlobHash,
   isManagedBlobPath,
   removeAttachmentFile,
-} from "./attachmentStorage";
+} from "../../services/attachmentStorage";
 import { conversationRepository } from "../../core/conversations/repository";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import {

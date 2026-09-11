@@ -53,7 +53,7 @@ import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import {
   isEmbeddableGeneratedImage,
   resolveGeneratedImageAsset,
-} from "../src/modules/contextPanel/generatedImageAssets";
+} from "../src/services/images/generatedImageAssets";
 import {
   getStableAnimationDelay,
   STABLE_ANIMATION_DELAY_PROPERTY,

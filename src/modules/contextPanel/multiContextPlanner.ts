@@ -45,7 +45,7 @@ import {
 } from "../../services/paperContent/contextAttachmentSupport";
 import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
 import { pdfTextCache } from "../../services/paperContent/contextCache";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import { tokenizeRetrievalDiversity } from "../../services/retrieval/retrievalTokenizer";
 import {
   buildRetrievalQueryPlan,

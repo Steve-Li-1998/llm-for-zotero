@@ -199,7 +199,7 @@ import {
   isRenderableGeneratedImageSrc,
   normalizeGeneratedChatImages,
 } from "../../shared/generatedImages";
-import { isEmbeddableGeneratedImage } from "./generatedImageAssets";
+import { isEmbeddableGeneratedImage } from "../../services/images/generatedImageAssets";
 import { copyTextToClipboard } from "./clipboard";
 import {
   capturePanelOperationLease,
@@ -290,7 +290,6 @@ import {
 import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { agentRunTraceCache, agentRunTraceLoadingTasks } from "./agentState";
 import {
-  sanitizeText,
   formatTime,
   setStatus,
   setTokenUsage,
@@ -300,6 +299,7 @@ import {
   buildModelPromptWithFileContext,
   resolvePromptText,
 } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import {
   createContextIcon,
   createSelectedTextSourceIcon,
@@ -362,7 +362,7 @@ import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { shouldShowForkActionForAssistantTurn } from "./forkActionVisibility";
 import { buildChatHistoryNotePayload } from "./notes";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
-import { extractManagedBlobHash } from "./attachmentStorage";
+import { extractManagedBlobHash } from "../../services/attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { getWorkflowTestFinalRequestInterceptor } from "./workflowTestHooks";
 import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
@@ -7785,7 +7785,7 @@ async function renderRetryPdfPaperImages(params: {
   if (remaining <= 0) return [];
   const [{ renderAllPdfPages }, { readAttachmentBytes }] = await Promise.all([
     import("../../agent/services/pdfPageService"),
-    import("./attachmentStorage"),
+    import("../../services/attachmentStorage"),
   ]);
   const images: string[] = [];
   for (const contextItemId of contextItemIds) {
@@ -7903,7 +7903,7 @@ async function resolveRetryModelInputs(params: {
       { readAttachmentBytes },
     ] = await Promise.all([
       import("../../utils/pdfUploadPreprocessor"),
-      import("./attachmentStorage"),
+      import("../../services/attachmentStorage"),
     ]);
     const provider = detectPdfUploadProvider(apiBase);
     for (const attachment of pdfPaperAttachments) {

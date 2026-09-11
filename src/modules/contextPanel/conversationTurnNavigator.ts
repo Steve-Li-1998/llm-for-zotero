@@ -7,7 +7,7 @@ import {
   navigateChatToMessage,
   withScrollGuard,
 } from "./chatScrollSnapshots";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import type { Message } from "./types";
 
 export const SIDEBAR_TURN_NAVIGATOR_MIN_WIDTH_PX = 400;

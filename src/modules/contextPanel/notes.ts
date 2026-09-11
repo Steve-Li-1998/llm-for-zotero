@@ -1,9 +1,6 @@
 import { renderMarkdownForNote } from "../../utils/markdown";
-import {
-  sanitizeText,
-  escapeNoteHtml,
-  getCurrentLocalTimestamp,
-} from "./textUtils";
+import { getCurrentLocalTimestamp } from "./textUtils";
+import { sanitizeText, escapeNoteHtml } from "../../utils/textSanitization";
 import { normalizeSelectedTextSource } from "../../services/context/normalizers";
 import { normalizeAttachmentContentHash } from "../../services/context/normalizers";
 import { MAX_SELECTED_IMAGES } from "./constants";
@@ -16,7 +13,7 @@ import {
   ensureAttachmentBlobFromPath,
   extractManagedBlobHash,
   isManagedBlobPath,
-} from "./attachmentStorage";
+} from "../../services/attachmentStorage";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import {
   ATTACHMENT_GC_MIN_AGE_MS,

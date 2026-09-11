@@ -1,5 +1,5 @@
 import type { AgentRunEventRecord } from "../../../agent/types";
-import { sanitizeText } from "../textUtils";
+import { sanitizeText } from "../../../utils/textSanitization";
 
 type CodexToolActivityPayload = Extract<
   AgentRunEventRecord["payload"],

@@ -1,5 +1,5 @@
 import { collectReaderSelectionDocuments } from "./readerSelection";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import { clearCitationPageCache } from "./citationNavigationCache";
 import {
   findLargestUniqueQuoteTextAnchorMatch,

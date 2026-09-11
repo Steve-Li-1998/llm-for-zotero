@@ -37,6 +37,3 @@ export {
   clearSelectedTextState,
   retainPinnedTextState,
 } from "./textContextState";
-
-// ── Utilities ──
-export { TTLMap } from "./ttlMap";

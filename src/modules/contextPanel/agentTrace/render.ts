@@ -81,7 +81,7 @@ import {
   disposeStreamingMarkdown,
   renderStreamingMarkdownInto,
 } from "../streamingMarkdown";
-import { sanitizeText } from "../textUtils";
+import { sanitizeText } from "../../../utils/textSanitization";
 import type { Message, PaperContextRef } from "../types";
 import { createWebFaviconImage } from "../webFavicon";
 import { renderDiffPreviewField } from "./diffPreviewField";

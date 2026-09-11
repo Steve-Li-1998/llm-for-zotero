@@ -20,7 +20,7 @@ import {
   openStandaloneMermaidWindow,
   openStandaloneSvgWindow,
 } from "./standaloneMermaidWindow";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import {
   copySvgFigureAsPngToClipboard,
   isMermaidFigureFenceLanguage,

@@ -1,4 +1,5 @@
-import { sanitizeText, setStatus } from "./textUtils";
+import { setStatus } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,

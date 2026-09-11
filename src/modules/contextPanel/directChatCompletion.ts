@@ -6,7 +6,7 @@ import {
   type ReasoningEvent,
   type UsageStats,
 } from "../../utils/llmClient";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 
 export const EMPTY_OUTPUT_LIMIT_MESSAGE =
   "The model used its available output on reasoning before producing an answer. Try Continue, lower reasoning effort, or choose another model.";

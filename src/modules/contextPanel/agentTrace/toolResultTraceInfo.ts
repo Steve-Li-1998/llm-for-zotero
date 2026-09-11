@@ -2,7 +2,7 @@ import type {
   AgentRunEventRecord,
   AgentTraceDetail,
 } from "../../../agent/types";
-import { sanitizeText } from "../textUtils";
+import { sanitizeText } from "../../../utils/textSanitization";
 
 type ToolResultPayload = Extract<
   AgentRunEventRecord["payload"],

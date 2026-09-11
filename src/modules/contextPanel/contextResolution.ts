@@ -1,9 +1,9 @@
 import {
-  sanitizeText,
   normalizeSelectedText,
   isLikelyCorruptedSelectedText,
   setStatus,
 } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import {
   buildNoteContextIdentityKey,
   normalizeNoteContextRef,

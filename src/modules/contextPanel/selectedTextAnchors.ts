@@ -16,7 +16,7 @@ export {
   renderSelectedTextAnchorContext,
 } from "../../services/context/selectedTextAnchorFormatting";
 import { pdfTextCache } from "../../services/paperContent/contextCache";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 
 export const SELECTED_TEXT_ANCHOR_MAX_CHARS = 6_500;
 export const SELECTED_TEXT_ANCHORS_MAX_TOTAL_CHARS = 12_000;

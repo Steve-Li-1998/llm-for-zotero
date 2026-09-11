@@ -1,7 +1,7 @@
 import type { Message } from "./types";
 import type { WebSourceAnchor } from "../../webAccess/types";
 import { stripWebSourceMarkersForDisplay } from "../../webAccess/attribution";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import {
   buildQuoteDisplayMarkdown,
   buildQuoteExpandedMarkdown,

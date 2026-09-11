@@ -17,7 +17,7 @@ import { getActiveReaderForSelectedTab } from "../../../../services/pdf/zoteroRe
 import {
   isManagedBlobPath,
   removeAttachmentFile,
-} from "../../attachmentStorage";
+} from "../../../../services/attachmentStorage";
 import { buildPaperKey } from "../../../../services/paperContent/pdfContext";
 import { navigateSelectedTextContextToPage as navigateSelectedTextContextToReader } from "../../selectedTextContextNavigation";
 import {

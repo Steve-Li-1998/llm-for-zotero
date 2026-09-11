@@ -1,5 +1,4 @@
 import type { ActionProposal } from "../../authorization/types";
-import { createUnverifiedReceipt } from "../../contracts/actionEvaluation";
 import type {
   AgentActionEvidence,
   AgentInvocationPlan,
@@ -68,7 +67,8 @@ export function createSyntheticErrorResult(
         name: call.name,
         ok: false,
         ...(options.inputRejected ? { inputRejected: true as const } : {}),
-        actionReceipts: [createUnverifiedReceipt({ reason: message })],
+        // No invocation ran, so this rejection cannot report an action receipt.
+        actionReceipts: [],
         content: { error: message },
       },
     },

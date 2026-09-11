@@ -42,6 +42,7 @@ import {
 } from "../src/agent/mcp/server";
 import { getCodexProfileSignature } from "../src/codexAppServer/constants";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { createResearchUpdateTool } from "../src/agent/tools/plan/researchUpdate";
 import { createUpdatePlanTool } from "../src/agent/tools/plan/updatePlan";
 import { assert } from "chai";
 import { DatabaseSync } from "node:sqlite";
@@ -2035,6 +2036,85 @@ describe("transactional Plan task transitions", function () {
     const ledger = await loadPlanExecutionLedger("execution-1");
     assert.equal(ledger?.tasks[0].status, "completed");
     assert.equal(ledger?.activeTaskId, second.taskId);
+  });
+
+  it("keeps an approved Plan running after a research call is rejected before execution", async function () {
+    const ledger = {
+      ...execution(),
+      effectSpecificationDigest: "sha256:effects",
+    };
+    await savePlanExecutionLedger(ledger);
+    await savePlanArtifact({
+      version: 5,
+      skillBindings: [],
+      planId: ledger.planId,
+      conversationKey: ledger.conversationKey,
+      provider: "original",
+      revision: ledger.revision,
+      digest: ledger.planDigest,
+      status: "approved",
+      contract: { deliverable: { kind: "answer" } },
+      contractDigest: "sha256:contract",
+      effectSpecification: {
+        version: 1,
+        effects: [],
+        deferredEffects: [],
+        constraints: [],
+      },
+      steps: ledger.tasks.map((task) => ({
+        planStepId: task.planStepId,
+        content: task.content,
+        activeForm: task.activeForm,
+        acceptanceCriteria: task.acceptanceCriteria,
+        expectedEffect: task.expectedEffect,
+        completionRequirements: task.completionRequirements,
+      })),
+      createdAt: 1,
+      updatedAt: 1,
+      approvedAt: 1,
+    });
+    const request = resolvedAgentRequest({
+      conversationKey: ledger.conversationKey,
+      mode: "agent",
+      userText: "Execute the approved review",
+      libraryID: 1,
+      planContext: {
+        phase: "executing",
+        planId: ledger.planId,
+        revision: ledger.revision,
+        executionId: ledger.executionId,
+        approvedDigest: ledger.planDigest,
+        activeTaskId: ledger.activeTaskId,
+        provider: "original",
+      },
+    });
+    const registry = new AgentToolRegistry();
+    registry.register(createResearchUpdateTool({} as never));
+    const rejected = await registry.prepareExecution(
+      { id: "invalid-research", name: "research_update", arguments: {} },
+      { request, item: null, currentAnswerText: "", modelName: "test-model" },
+    );
+    assert.equal(rejected.kind, "result");
+    if (rejected.kind !== "result") return;
+    assert.isFalse(rejected.execution.result.ok);
+    assert.isTrue(rejected.execution.result.inputRejected);
+    assert.include(
+      String((rejected.execution.result.content as any).error),
+      "Invalid tool input",
+    );
+    const session = new PlanExecutionRunSession(request, async () => {});
+    await session.recordToolResult({
+      toolName: "research_update",
+      executionClass: rejected.execution.tool.spec.executionClass,
+      input: rejected.execution.input,
+      result: rejected.execution.result,
+      runId: "run-invalid-research",
+    });
+    const persisted = await loadPlanExecutionLedger(ledger.executionId);
+    assert.equal(persisted?.status, "running");
+    assert.equal(persisted?.tasks[0].status, "in_progress");
+    assert.deepEqual(persisted?.tasks[0].evidenceIds, []);
+    assert.isEmpty(rejected.execution.result.actionReceipts);
   });
 
   it("rolls back evidence and progress when the transition write fails", async function () {

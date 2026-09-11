@@ -334,8 +334,6 @@ export type CodexPaperPortalItem = {
   isRegularItem: () => boolean;
 };
 
-export type { ZoteroTabsState } from "../../services/pdf/zoteroReaderTabs";
-
 // ── Send flow options ─────────────────────────────────────────────────────
 
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";

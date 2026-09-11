@@ -162,7 +162,7 @@ import { resizeTextareaToContent } from "./textareaSizing";
 import {
   getActiveReaderForSelectedTab,
   getAllOpenReaders,
-} from "./contextResolution";
+} from "../../services/pdf/zoteroReaderTabs";
 export {
   isScrollUpdateSuspended,
   withScrollGuard,

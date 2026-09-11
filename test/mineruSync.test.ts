@@ -36,7 +36,7 @@ import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
   PDF_FIGURE_CROP_CACHE_VERSION,
   buildPdfFigureCropManifestHash,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
+} from "../src/services/pdf/pdfFigureCropCache";
 import { createReadLibraryTool } from "../src/agent/tools/read/readLibrary";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";

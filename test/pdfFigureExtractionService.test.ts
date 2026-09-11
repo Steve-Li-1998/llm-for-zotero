@@ -6,7 +6,7 @@ import {
   PDF_FIGURE_CROP_CACHE_VERSION,
   buildPdfFigureCropManifestHash,
   buildPdfFigureCropPdfFingerprint,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
+} from "../src/services/pdf/pdfFigureCropCache";
 import type { AgentToolContext } from "../src/agent/types";
 import { createSubmitDocumentTool } from "../src/agent/tools/plan/submitPlanDocument";
 import { createTrustedReadObservations } from "../src/agent/plans/readObservation";

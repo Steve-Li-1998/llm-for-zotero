@@ -59,14 +59,16 @@ import {
 import { persistPendingChatScrollRestoreFromBody } from "./chatScrollSnapshots";
 import {
   getActiveContextAttachmentFromTabs,
-  getActiveReaderForSelectedTab,
-  refreshLastKnownSelectedTabId,
   getItemSelectionCacheKeys,
   resolvePanelContextLifecycleState,
   applySelectedTextPreview,
   getSelectedTextContextEntries,
   type SelectedTextPageLocation,
 } from "./contextResolution";
+import {
+  getActiveReaderForSelectedTab,
+  refreshLastKnownSelectedTabId,
+} from "../../services/pdf/zoteroReaderTabs";
 import {
   clearNoteEditingSelectedText,
   getNoteFocusConversationKey,

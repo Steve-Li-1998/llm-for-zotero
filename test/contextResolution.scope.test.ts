@@ -1,11 +1,11 @@
 import { assert } from "chai";
 import { createCodexGlobalPortalItem } from "../src/codexAppServer/portal";
+import { resolveContextSourceItem } from "../src/modules/contextPanel/contextResolution";
 import {
   getActiveReaderForSelectedTab,
   getLastKnownSelectedTabId,
   refreshLastKnownSelectedTabId,
-  resolveContextSourceItem,
-} from "../src/modules/contextPanel/contextResolution";
+} from "../src/services/pdf/zoteroReaderTabs";
 
 describe("context resolution scope boundaries", function () {
   const globalScope = globalThis as any;

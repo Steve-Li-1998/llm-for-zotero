@@ -24,7 +24,7 @@ import {
   PDF_FIGURE_CROP_CACHE_VERSION,
   buildPdfFigureCropManifestHash,
   buildPdfFigureCropPdfFingerprint,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
+} from "../src/services/pdf/pdfFigureCropCache";
 import { CodexAppServerProcess } from "../src/utils/codexAppServerProcess";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 

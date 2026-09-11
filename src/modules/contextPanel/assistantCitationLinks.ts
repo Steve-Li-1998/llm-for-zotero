@@ -43,10 +43,8 @@ import {
   type CitationResolverCandidate,
   type RankedCitationCandidate,
 } from "./citationCandidateResolver";
-import {
-  getActiveReaderForSelectedTab,
-  resolveContextSourceItem,
-} from "./contextResolution";
+import { resolveContextSourceItem } from "./contextResolution";
+import { getActiveReaderForSelectedTab } from "../../services/pdf/zoteroReaderTabs";
 import { persistPendingChatScrollRestoreForElement } from "./chatScrollSnapshots";
 import { isPdfContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import {

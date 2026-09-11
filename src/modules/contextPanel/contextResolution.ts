@@ -30,20 +30,8 @@ import type {
 } from "./types";
 import {
   getActiveReaderForSelectedTab,
-  getAllOpenReaders,
-  getLastKnownSelectedTabId,
   getZoteroTabsState,
-  refreshLastKnownSelectedTabId,
-  selectZoteroTab,
 } from "../../services/pdf/zoteroReaderTabs";
-
-export {
-  getActiveReaderForSelectedTab,
-  getAllOpenReaders,
-  getLastKnownSelectedTabId,
-  refreshLastKnownSelectedTabId,
-  selectZoteroTab,
-};
 import {
   isGlobalPortalItem,
   resolveActiveNoteSession,

@@ -5,30 +5,30 @@ import {
   type LibraryIndexSnapshot,
 } from "../../services/libraryIndexService";
 import {
-  createNoteFromAssistantText,
-  createStandaloneNoteFromAssistantText,
   normalizeNoteSourceText,
-  readNoteSnapshot,
   renderRawNoteHtml,
+} from "../../services/notes/noteRendering";
+import {
+  readNoteSnapshot,
   stripNoteHtml,
-} from "../../modules/contextPanel/notes";
+} from "../../services/notes/noteSnapshot";
 import {
   importNoteImageAsset,
   type NoteImageImportInput,
-} from "../../modules/contextPanel/noteImages";
+} from "../../services/notes/noteImages";
 import {
-  getActiveContextAttachmentFromTabs,
-  resolveContextSourceItem,
-} from "../../modules/contextPanel/contextResolution";
-import { resolvePaperContextRefFromAttachment } from "../../modules/contextPanel/paperAttribution";
-import { invalidateCachedContextText } from "../../modules/contextPanel/pdfContext";
-import { pdfTextCache } from "../../modules/contextPanel/state";
+  getSelectedContextAttachment,
+  resolveSelectedContextItem,
+} from "../../services/context/contextSelectionBridge";
+import { resolvePaperContextRefFromAttachment } from "../../services/paperContent/paperAttribution";
+import { invalidateCachedContextText } from "../../services/paperContent/pdfContext";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { joinLocalPath } from "../../utils/localPath";
-import { ensureMineruCacheDirForAttachment } from "../../modules/contextPanel/mineruSync";
+import { ensureMineruCacheDirForAttachment } from "../../services/mineru/sync";
 import {
   persistVerifiedNoteHtml,
   type CreatedZoteroNoteReceipt,
-} from "../../modules/contextPanel/notePersistence";
+} from "../../services/notePersistence";
 import type { AgentRuntimeRequest } from "../types";
 import { getTurnPapers } from "../context/requestTurnPaperScope";
 import type {
@@ -41,7 +41,7 @@ import {
   isGlobalPortalItem,
   isPaperPortalItem,
   resolvePaperPortalBaseItem,
-} from "../../modules/contextPanel/portalScope";
+} from "../../services/context/portalItems";
 import {
   refusalFor,
   type LibraryOperation,
@@ -53,6 +53,10 @@ import type {
   EditableArticleMetadataPatch,
   EditableArticleMetadataSnapshot,
 } from "./libraryMutation/valueTypes";
+import {
+  writeAssistantItemNote,
+  writeAssistantStandaloneNote,
+} from "../../services/notes/assistantNoteWriterBridge";
 export type {
   BatchTagAssignment,
   EditableArticleCreator,
@@ -1691,9 +1695,9 @@ export class ZoteroGateway {
     item: Zotero.Item | null | undefined,
   ): Zotero.Item | null {
     if (item) {
-      return resolveContextSourceItem(item).contextItem;
+      return resolveSelectedContextItem(item);
     }
-    return getActiveContextAttachmentFromTabs();
+    return getSelectedContextAttachment();
   }
 
   getActivePaperContext(
@@ -3944,17 +3948,13 @@ export class ZoteroGateway {
         Number.isFinite(params.libraryID) && (params.libraryID as number) > 0
           ? Math.floor(params.libraryID as number)
           : params.item?.libraryID || 0;
-      const created = await createStandaloneNoteFromAssistantText(
+      const created = await writeAssistantStandaloneNote({
         libraryID,
-        params.content,
-        params.modelName,
-        undefined,
-        undefined,
-        params.generatedImages,
-        undefined,
-        undefined,
-        params.collections,
-      );
+        content: params.content,
+        modelName: params.modelName,
+        generatedImages: params.generatedImages,
+        collections: params.collections,
+      });
       return {
         status: "standalone_created",
         noteId: created.noteId,
@@ -3967,17 +3967,13 @@ export class ZoteroGateway {
     if (!params.item) {
       throw new Error("No Zotero item is active for item-note creation");
     }
-    return createNoteFromAssistantText(
-      params.item,
-      params.content,
-      params.modelName,
-      undefined,
-      {
-        appendToTrackedNote: params.appendToTrackedNote === true,
-        rememberCreatedNote: params.appendToTrackedNote === true,
-        generatedImages: params.generatedImages,
-      },
-    );
+    return writeAssistantItemNote({
+      item: params.item,
+      content: params.content,
+      modelName: params.modelName,
+      appendToTrackedNote: params.appendToTrackedNote === true,
+      generatedImages: params.generatedImages,
+    });
   }
 
   getPaperNotes(params: {

@@ -18,8 +18,8 @@ import type {
   TagContextRef,
 } from "../../shared/types";
 import type { ReasoningConfig } from "../../shared/llm";
-import { readNoteSnapshot } from "../../modules/contextPanel/noteSnapshot";
-import { extractQuoteCitationsFromToolContent } from "../../modules/contextPanel/quoteCitations";
+import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
+import { extractQuoteCitationsFromToolContent } from "../../services/quotes/quoteCitations";
 import type { AgentToolRegistry } from "../tools/registry";
 import type { AgentActionReceipt } from "../contracts/types";
 import type { ZoteroGateway } from "../services/zoteroGateway";

@@ -1,20 +1,22 @@
 import { executeNoteCreation } from "../../services/noteCreation";
 import { executePreparedNoteChange } from "./preparedNoteChange";
-import { importLocalImagesIntoNote } from "../../../modules/contextPanel/noteImages";
+import { importLocalImagesIntoNote } from "../../../services/notes/noteImages";
 import {
   isLikelyHtmlNoteContent,
   normalizeNoteSourceText,
-  readNoteSnapshot,
   renderRawNoteHtml,
-  resolveParentItemForNoteTarget,
+} from "../../../services/notes/noteRendering";
+import {
+  readNoteSnapshot,
   stripNoteHtml,
   type NoteSnapshot,
-} from "../../../modules/contextPanel/notes";
+} from "../../../services/notes/noteSnapshot";
+import { resolveParentItemForNoteTarget } from "../../../services/notes/noteTarget";
 import {
   replaceTextContentInHtml,
   replaceNoteSelectionHtml,
 } from "../../../utils/noteEdit";
-import { synthesizeSelectedTextContexts } from "../../../modules/contextPanel/normalizers";
+import { synthesizeSelectedTextContexts } from "../../../services/context/normalizers";
 import { noteHtmlMatches } from "../../../utils/noteHtml";
 import { stateChangeInvocationPlan } from "../../authorization/invocationPlan";
 import {

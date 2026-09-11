@@ -2,31 +2,31 @@ import type { SemanticDecisions } from "../model/semanticDecisions";
 import {
   ensureAttachmentBlobFromPath,
   persistAttachmentBlob,
-} from "../../modules/contextPanel/attachmentStorage";
+} from "../../services/attachmentStorage";
 import {
   getActiveReaderForSelectedTab,
   getLastKnownSelectedTabId,
   selectZoteroTab,
-} from "../../modules/contextPanel/contextResolution";
+} from "../../services/pdf/zoteroReaderTabs";
 import {
   PDF_PAGE_MODEL_RENDER_SCALE,
   capturePdfPageToBytes,
-} from "../../modules/contextPanel/pdfJsPageRenderer";
+} from "../../services/pdf/pdfJsPageRenderer";
 import type { ChatAttachment, PaperContextRef } from "../../shared/types";
 import {
-  warmPageTextCache,
-  warmPageTextCacheForAttachment,
-} from "../../modules/contextPanel/livePdfSelectionLocator";
+  warmPdfPageTextCache as warmPageTextCache,
+  warmPdfPageTextCacheForAttachment as warmPageTextCacheForAttachment,
+} from "../../services/pdf/readerTextBridge";
 import type {
   PdfFigureBox,
   PdfFigureCandidateSource,
   PdfFigureRect,
-} from "../../modules/contextPanel/pdfFigureGeometry";
+} from "../../services/pdf/pdfFigureGeometry";
 import {
   getPdfFigureCropImageDirForCacheDir,
   type ExtractedPdfFigure,
   type ExpectedPdfFigure,
-} from "../../modules/contextPanel/pdfFigureCropCache";
+} from "../../services/pdf/pdfFigureCropCache";
 import type { AgentRuntimeRequest, AgentToolArtifact } from "../types";
 import { PdfService, resolveContextItemFromPaperContext } from "./pdfService";
 import { ZoteroGateway } from "./zoteroGateway";

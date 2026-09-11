@@ -3,7 +3,7 @@ import { buildPaperDisplayLabels } from "../shared/paperDisplayLabels";
 import { listScopeSnapshotItems } from "./research/store";
 import { resolvePreparedActionReview } from "./tools/execution/review";
 import { ensureModelCapabilities } from "../modelCapabilities";
-import { readAttachmentBytes } from "../modules/contextPanel/attachmentStorage";
+import { readAttachmentBytes } from "../services/attachmentStorage";
 import {
   areConversationWritesFrozen,
   getConversationWriteGeneration,

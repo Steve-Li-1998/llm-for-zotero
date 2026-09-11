@@ -74,6 +74,7 @@ import { resolveFullReadPaperTargets } from "../../shared/fullReadTargetResolver
 import { resolveNormalChatFigureInputs } from "./normalChatFigureInputs";
 import { renderSelectedTextPageFallbackContext } from "./selectedTextAnchorFormatting";
 import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
+import { configureRetrievalCandidateInvalidator } from "../../services/retrieval/cacheInvalidation";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────
 // Caches chunk candidates returned by buildPaperRetrievalCandidates so that
@@ -135,6 +136,8 @@ export function clearRetrievalCandidateCache(contextItemId?: number): void {
     if (key.includes(needle)) retrievalCandidateCache.delete(key);
   }
 }
+
+configureRetrievalCandidateInvalidator(clearRetrievalCandidateCache);
 
 /**
  * Builds a richer retrieval query by appending a short excerpt of the most

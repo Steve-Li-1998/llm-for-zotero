@@ -73,8 +73,8 @@ import type {
   ResolvedSelectedTextAnchor,
   SelectedTextContext,
 } from "../shared/types";
-import { synthesizeSelectedTextContexts } from "../modules/contextPanel/normalizers";
-import { formatSelectedTextLocator } from "../modules/contextPanel/selectedTextAnchorFormatting";
+import { synthesizeSelectedTextContexts } from "../services/context/normalizers";
+import { formatSelectedTextLocator } from "../services/context/selectedTextAnchorFormatting";
 import {
   buildTurnContextEnvelope,
   renderTurnContextEnvelopeForModel,

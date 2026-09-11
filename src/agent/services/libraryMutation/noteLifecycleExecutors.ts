@@ -1,5 +1,5 @@
 import { executeNoteCreation } from "../noteCreation";
-import { renderRawNoteHtml } from "../../../modules/contextPanel/notes";
+import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
 import { buildSaveNoteInverse } from "./forwardExecutionSupport";
 

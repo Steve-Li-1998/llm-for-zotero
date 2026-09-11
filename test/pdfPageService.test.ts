@@ -5,7 +5,7 @@ import {
   resolveAddonRootUri,
   resolveRenderablePdfPage,
 } from "../src/agent/services/pdfPageService";
-import { renderPdfPageToBytes } from "../src/modules/contextPanel/pdfJsPageRenderer";
+import { renderPdfPageToBytes } from "../src/services/pdf/pdfJsPageRenderer";
 
 describe("pdfPageService", function () {
   const globalScope = globalThis as typeof globalThis & {

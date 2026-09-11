@@ -22,11 +22,11 @@ import type { ProviderCapabilities } from "../../providers";
 import { buildNotesDirectoryConfigSection } from "../../utils/notesDirectoryConfig";
 import { NOTE_EDITING_QUOTE_BLOCK_GUIDANCE } from "../../shared/quoteGuidance";
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
-import { formatPaperSourceLabel } from "../../modules/contextPanel/paperAttribution";
+import { formatPaperSourceLabel } from "../../services/paperContent/paperAttribution";
 import {
   buildQuoteAnchorPromptBlock,
   buildSelectedTextQuoteCitations,
-} from "../../modules/contextPanel/quoteCitations";
+} from "../../services/quotes/quoteCitations";
 import {
   buildAgentStableResourceContextBlock,
   type AgentResourceContextPlan,
@@ -46,11 +46,11 @@ import {
   hasAgentContentInputs,
   normalizeAgentContentInputs,
 } from "./contentCapabilities";
-import { synthesizeSelectedTextContexts } from "../../modules/contextPanel/normalizers";
+import { synthesizeSelectedTextContexts } from "../../services/context/normalizers";
 import {
   formatSelectedTextLocator,
   renderSelectedTextAnchorContext,
-} from "../../modules/contextPanel/selectedTextAnchorFormatting";
+} from "../../services/context/selectedTextAnchorFormatting";
 import {
   buildInstructionInventory,
   type InstructionInventory,

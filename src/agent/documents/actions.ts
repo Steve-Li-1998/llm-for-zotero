@@ -3,9 +3,9 @@ import { sha256Text } from "../store/journalRecoveryBlobStore";
 import {
   createFinalizedZoteroNote,
   stripZoteroNoteWrapper,
-} from "../../modules/contextPanel/notePersistence";
-import { importNoteImageAsset } from "../../modules/contextPanel/noteImages";
-import { escapeNoteHtml } from "../../modules/contextPanel/textUtils";
+} from "../../services/notePersistence";
+import { importNoteImageAsset } from "../../services/notes/noteImages";
+import { escapeNoteHtml } from "../../utils/textSanitization";
 import { loadPlanArtifact } from "../plans/store";
 import {
   prepareDocumentMarkdownExport,
@@ -31,7 +31,7 @@ export async function finalizeDocumentNoteHtml(
     saveOptions,
   }: {
     noteId: number;
-    saveOptions?: import("../../modules/contextPanel/notePersistence").NotePersistenceSaveOptions;
+    saveOptions?: import("../../services/notePersistence").NotePersistenceSaveOptions;
   },
 ): Promise<{ html: string; warnings: string[] }> {
   const blocks: string[] = [];

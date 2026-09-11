@@ -7,7 +7,7 @@
  * helpers without duplicating code.
  */
 import type { ChatAttachment, PaperContextRef } from "../../../shared/types";
-import { readAttachmentBytes } from "../../../modules/contextPanel/attachmentStorage";
+import { readAttachmentBytes } from "../../../services/attachmentStorage";
 import type {
   AgentModelContentPart,
   AgentRuntimeRequest,

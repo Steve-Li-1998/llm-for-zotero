@@ -1,7 +1,7 @@
 import type { AgentSavedNoteResultCard } from "../../types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { innermostToolResult } from "../../contracts/toolResultEnvelope";
-import type { CreatedZoteroNoteReceipt } from "../../../modules/contextPanel/notePersistence";
+import type { CreatedZoteroNoteReceipt } from "../../../services/notePersistence";
 
 /** Project a verified creation onto a read-only result, never a proposed draft. */
 export function buildSavedNoteResultCards(

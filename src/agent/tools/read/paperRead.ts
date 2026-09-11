@@ -19,12 +19,12 @@ import { joinLocalPath } from "../../../utils/localPath";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "../../../modules/contextPanel/paperAttribution";
-import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../modules/contextPanel/mineruCache";
+} from "../../../services/paperContent/paperAttribution";
+import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../services/mineru/mineruCache";
 import {
   buildQuoteCitation,
   mergeQuoteCitations,
-} from "../../../modules/contextPanel/quoteCitations";
+} from "../../../services/quotes/quoteCitations";
 import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 import {
   PAPER_TARGET_SELECTOR_SCHEMA,

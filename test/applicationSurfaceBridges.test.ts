@@ -1,0 +1,72 @@
+import { assert } from "chai";
+import {
+  configureContextSelectionBridge,
+  getSelectedContextAttachment,
+  resolveSelectedContextItem,
+} from "../src/services/context/contextSelectionBridge";
+import {
+  configureAssistantNoteWriter,
+  writeAssistantItemNote,
+  writeAssistantStandaloneNote,
+} from "../src/services/notes/assistantNoteWriterBridge";
+
+describe("application surface bridges", function () {
+  it("treats an uncomposed UI surface as having no selected context", function () {
+    const restore = configureContextSelectionBridge(null);
+    try {
+      assert.isNull(getSelectedContextAttachment());
+      assert.isNull(resolveSelectedContextItem({ id: 4 } as Zotero.Item));
+    } finally {
+      restore();
+    }
+  });
+
+  it("exposes panel-selected context through a narrow runtime contract", function () {
+    const attachment = { id: 9 } as Zotero.Item;
+    const reset = configureContextSelectionBridge({
+      getActiveAttachment: () => attachment,
+      resolveContextItem: (item) => (item.id === 4 ? attachment : null),
+    });
+    try {
+      assert.equal(getSelectedContextAttachment(), attachment);
+      assert.equal(
+        resolveSelectedContextItem({ id: 4 } as Zotero.Item),
+        attachment,
+      );
+    } finally {
+      reset();
+    }
+  });
+
+  it("routes formatted assistant-note writes through the composed writer", async function () {
+    const reset = configureAssistantNoteWriter({
+      writeItemNote: async () => ({ status: "created", noteId: 11 }),
+      writeStandaloneNote: async (params) => ({
+        status: "standalone_created",
+        noteId: 12,
+        collections: params.collections,
+      }),
+    });
+    try {
+      assert.deepEqual(
+        await writeAssistantItemNote({
+          item: { id: 4 } as Zotero.Item,
+          content: "answer",
+          modelName: "model",
+        }),
+        { status: "created", noteId: 11 },
+      );
+      assert.deepEqual(
+        await writeAssistantStandaloneNote({
+          libraryID: 1,
+          content: "answer",
+          modelName: "model",
+          collections: [3],
+        }),
+        { status: "standalone_created", noteId: 12, collections: [3] },
+      );
+    } finally {
+      reset();
+    }
+  });
+});

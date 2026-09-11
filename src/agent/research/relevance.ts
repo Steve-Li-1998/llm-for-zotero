@@ -1,7 +1,7 @@
 import {
   tokenizeRetrievalQuery,
   tokenizeRetrievalText,
-} from "../../modules/contextPanel/retrievalTokenizer";
+} from "../../services/retrieval/retrievalTokenizer";
 
 /**
  * Host relevance of every corpus paper to the approved question, from the

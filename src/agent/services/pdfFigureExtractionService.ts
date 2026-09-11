@@ -2,7 +2,7 @@ import {
   getManifestFigureBaseLabel,
   pruneMineruSourceImagesWhenFigureCropsReady,
   type MineruManifest,
-} from "../../modules/contextPanel/mineruCache";
+} from "../../services/mineru/mineruCache";
 import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
   PDF_FIGURE_CROP_CACHE_VERSION,
@@ -17,7 +17,7 @@ import {
   type ExpectedPdfFigure,
   type ExtractedPdfFigure,
   type PdfFigureCropCache,
-} from "../../modules/contextPanel/pdfFigureCropCache";
+} from "../../services/pdf/pdfFigureCropCache";
 import { joinLocalPath } from "../../utils/localPath";
 import type { PaperReadFigureExtractionResult } from "../tools/read/paperRead";
 import type { PdfTarget } from "../tools/read/pdfToolUtils";

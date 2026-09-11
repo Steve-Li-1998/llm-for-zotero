@@ -4,7 +4,7 @@ import {
   verifyNativeNoteHtml,
   type FinalizedNoteBuildContext,
   type FinalizedNoteBuildResult,
-} from "../../modules/contextPanel/notePersistence";
+} from "../../services/notePersistence";
 import { canonicalNoteHtml } from "../../utils/noteHtml";
 import { executeExternalMutation } from "./externalMutationCoordinator";
 import {

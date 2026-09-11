@@ -1,16 +1,16 @@
-import { ensurePDFTextCached } from "../../modules/contextPanel/pdfContext";
-import { pdfTextCache } from "../../modules/contextPanel/state";
+import { ensurePDFTextCached } from "../../services/paperContent/pdfContext";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
 import {
   isPdfContextAttachment,
   isSupportedContextAttachment,
-} from "../../modules/contextPanel/contextAttachmentSupport";
+} from "../../services/paperContent/contextAttachmentSupport";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
   resolvePaperContextRefFromAttachment,
-} from "../../modules/contextPanel/paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import type { PaperContextRef } from "../../shared/types";
-import type { PdfContext } from "../../modules/contextPanel/types";
+import type { PdfContext } from "../../services/paperContent/types";
 
 function getFirstPdfChildAttachment(
   item: Zotero.Item | null | undefined,

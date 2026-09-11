@@ -1,3 +1,1 @@
-export function stripLeadingCitationSeparators(value: string): string {
-  return (value || "").replace(/^[\s,;]+/, "").trim();
-}
+export * from "../../services/quotes/citationText";

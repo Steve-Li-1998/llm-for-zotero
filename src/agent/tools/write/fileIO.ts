@@ -17,7 +17,7 @@ import type { PaperContextRef } from "../../../shared/types";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "../../../modules/contextPanel/paperAttribution";
+} from "../../../services/paperContent/paperAttribution";
 import { ok, fail, validateObject } from "../shared";
 import { getLocalParentPath } from "../../../utils/localPath";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
@@ -27,7 +27,7 @@ import {
 } from "../../store/journalRecoveryBlobStore";
 import { FILE_IO_CONTENT_FIELDS } from "../../toolArgumentFields";
 import { isMalformedToolArgumentsDiagnostic } from "../../toolArgumentDiagnostics";
-import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../modules/contextPanel/mineruCache";
+import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../services/mineru/mineruCache";
 import { collectRequestPaperContexts } from "../requestPaperContexts";
 
 type FileIOInput = {

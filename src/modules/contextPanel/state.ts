@@ -1,7 +1,6 @@
 import type { PlanExecutionLedger } from "../../agent/plans/types";
 import type {
   Message,
-  PdfContext,
   ReasoningProviderKind,
   ReasoningLevelSelection,
   CustomShortcut,
@@ -17,7 +16,12 @@ import type {
   PaperContentSourceMode,
   GeneratedChatImage,
 } from "./types";
-import { TTLMap } from "./contexts/ttlMap";
+import {
+  pdfTextCache,
+  pdfTextLoadingTasks,
+} from "../../services/paperContent/contextCache";
+import { TTLMap } from "../../utils/ttlMap";
+export { pdfTextCache, pdfTextLoadingTasks };
 import { clearMermaidSvgCache } from "./mermaidSvgCache";
 import type { ConversationForkLink } from "../../shared/conversationForkLinks";
 import type { WebSourceAnchor } from "../../webAccess/types";
@@ -57,10 +61,6 @@ export const selectedReasoningProviderCache = new Map<
 >();
 export const selectedRuntimeModeCache = new Map<number, ChatRuntimeMode>();
 
-// 30-minute TTL, sized above multi-paper retrieval caps to avoid evicting
-// body text while a folder/tag synthesis pass is still assembling evidence.
-export const pdfTextCache = new TTLMap<number, PdfContext>(30 * 60 * 1000, 100);
-export const pdfTextLoadingTasks = new Map<number, Promise<void>>();
 export const shortcutTextCache = new Map<string, string>();
 export const shortcutMoveModeState = new WeakMap<Element, boolean>();
 export const shortcutRenderItemState = new WeakMap<

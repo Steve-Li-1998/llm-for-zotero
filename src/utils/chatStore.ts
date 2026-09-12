@@ -98,6 +98,14 @@ import {
   deleteConversationForkLinksForInstanceInTransaction,
   initConversationForkLinksStore,
 } from "../shared/conversationForkLinks";
+import {
+  normalizeCatalogTimestamp,
+  normalizeConversationKey,
+  normalizeLibraryID,
+  normalizeLimit,
+  normalizeOptionalLimit,
+  normalizePaperItemID,
+} from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
 import {
   messageJoinCondition,
@@ -314,24 +322,6 @@ async function migrateLegacyChatStore(): Promise<void> {
   );
 }
 
-function normalizeConversationKey(conversationKey: number): number | null {
-  if (!Number.isFinite(conversationKey)) return null;
-  const normalized = Math.floor(conversationKey);
-  return normalized > 0 ? normalized : null;
-}
-
-function normalizeLibraryID(libraryID: number): number | null {
-  if (!Number.isFinite(libraryID)) return null;
-  const normalized = Math.floor(libraryID);
-  return normalized > 0 ? normalized : null;
-}
-
-function normalizePaperItemID(paperItemID: number): number | null {
-  if (!Number.isFinite(paperItemID)) return null;
-  const normalized = Math.floor(paperItemID);
-  return normalized > 0 ? normalized : null;
-}
-
 function normalizeSessionVersion(sessionVersion: number): number | null {
   if (!Number.isFinite(sessionVersion)) return null;
   const normalized = Math.floor(sessionVersion);
@@ -347,20 +337,6 @@ function normalizeConversationTitleSeed(value: string): string {
     .trim();
   if (!normalized) return "";
   return normalized.slice(0, 64);
-}
-
-function normalizeLimit(limit: number, fallback: number): number {
-  if (!Number.isFinite(limit)) return fallback;
-  return Math.max(1, Math.floor(limit));
-}
-
-function normalizeOptionalLimit(
-  limit: number | null | undefined,
-): number | null {
-  if (limit === null) return null;
-  if (!Number.isFinite(Number(limit))) return null;
-  const normalized = Math.floor(Number(limit));
-  return normalized > 0 ? normalized : null;
 }
 
 function normalizeStoredAttachments(
@@ -517,12 +493,6 @@ const CHAT_MESSAGE_COPY_COLUMNS = [
   "context_tokens",
   "context_window",
 ] as const;
-
-function normalizeCatalogTimestamp(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
-  return Math.floor(parsed);
-}
 
 function buildUpstreamConversationID(params: {
   conversationKey: number;

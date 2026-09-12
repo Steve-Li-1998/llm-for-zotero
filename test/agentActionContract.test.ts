@@ -239,9 +239,14 @@ function requestWithIntents(
   return resolvedAgentRequest(input);
 }
 
+/**
+ * A stand-in for whichever library mutation tool a case needs. It declares no
+ * effectOperations on purpose: it is never registered, and it fronts every
+ * operation in this file, so a declaration here would be a fiction the
+ * adapter check would rightly refuse.
+ */
 function mutationTool(): AgentToolDefinition<any, unknown> {
   return {
-    effectOperations: ["settings_update"],
     spec: {
       name: "library_update",
       description: "test",

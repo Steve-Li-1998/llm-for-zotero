@@ -159,6 +159,14 @@ export function describeLibraryMutationActions(
  * its adapter, so these tools declare this function instead of relying on the
  * implicit fallback, and their adapter no longer appears and disappears with
  * the shape of the input.
+ *
+ * It has two branches, and a tool that names it owns both. When the validated
+ * input carries no library mutation operation this falls through to
+ * `explicitReadActions`, which describes `read_full` for an input with
+ * `mode: "full"`. A tool whose schema can reach that branch must declare
+ * `read_full` in its `effectOperations`; none of the current callers can, and
+ * `prepareActionExecution` refuses the descriptor if one ever does without
+ * declaring it.
  */
 export function describeLibraryMutationInput(
   input: unknown,
@@ -363,10 +371,21 @@ export async function prepareActionExecution(
     (operations.length
       ? describeLibraryMutationActions(input)
       : explicitReadActions(input));
+  // The registry validates the definition's declared operations against the
+  // catalog, but registration has no input and so cannot see what the adapter
+  // actually produces. This is the other half: the declaration is only worth
+  // anything if a descriptor outside it is refused. Tools that declare nothing
+  // are reads and controls, which own no effect to declare.
+  const declared = tool.effectOperations;
   for (const proposal of proposals) {
     if (!operationAuthorityIsConsistent(proposal)) {
       throw new Error(
         `Typed action adapter rejected an inconsistent authority triple for ${proposal.operation}.`,
+      );
+    }
+    if (declared && !declared.includes(proposal.operation)) {
+      throw new Error(
+        `Typed action adapter for ${tool.spec.name} described "${proposal.operation}", which it never declared: effectOperations is [${declared.join(", ")}].`,
       );
     }
   }

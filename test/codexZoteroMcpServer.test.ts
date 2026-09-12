@@ -18,7 +18,11 @@ import {
 } from "../src/agent/mcp/server";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
-import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
+import type {
+  AgentActionOperation,
+  AgentToolContext,
+  AgentToolDefinition,
+} from "../src/agent/types";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import {
@@ -52,6 +56,13 @@ function testWriteDescriptor(name: string) {
   ];
 }
 
+/** The operations testWriteDescriptor can produce for a given fixture name. */
+function testWriteOperations(name: string): AgentActionOperation[] {
+  return name === "zotero_script"
+    ? ["zotero_script_execute"]
+    : ["settings_update"];
+}
+
 function createReadTool(name: string): AgentToolDefinition<unknown, unknown> {
   return {
     spec: {
@@ -69,7 +80,7 @@ function createReadTool(name: string): AgentToolDefinition<unknown, unknown> {
 
 function createWriteTool(name: string): AgentToolDefinition<unknown, unknown> {
   return {
-    effectOperations: ["settings_update"],
+    effectOperations: testWriteOperations(name),
     spec: {
       name,
       description: `Write tool ${name}`,
@@ -1477,7 +1488,7 @@ describe("Zotero MCP server", function () {
       );
       for (const name of ["run_command", "file_io", "zotero_script"]) {
         registry.register({
-          effectOperations: ["settings_update"],
+          effectOperations: testWriteOperations(name),
           spec: {
             name,
             description: `Native access tool ${name}`,
@@ -1619,7 +1630,7 @@ describe("Zotero MCP server", function () {
     );
     for (const name of ["run_command", "file_io", "zotero_script"]) {
       registry.register({
-        effectOperations: ["settings_update"],
+        effectOperations: testWriteOperations(name),
         spec: {
           name,
           description: `Native access tool ${name}`,
@@ -3183,7 +3194,7 @@ describe("Zotero MCP server", function () {
     );
     for (const name of ["run_command", "file_io"]) {
       registry.register({
-        effectOperations: ["settings_update"],
+        effectOperations: testWriteOperations(name),
         spec: {
           name,
           description: `Policy-controlled tool ${name}`,
@@ -3679,7 +3690,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
-      effectOperations: ["settings_update"],
+      effectOperations: ["zotero_script_execute"],
       spec: {
         name: "zotero_script",
         description: "Run Zotero script",

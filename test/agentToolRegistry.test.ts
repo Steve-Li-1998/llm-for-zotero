@@ -1787,7 +1787,7 @@ describe("AgentToolRegistry", function () {
     options: { withPendingAction?: boolean } = {},
   ) {
     registry.register({
-      effectOperations: ["settings_update"],
+      effectOperations: ["apply_tags"],
       spec: {
         name: "judgment_tags",
         description: "fixture",
@@ -1899,7 +1899,7 @@ describe("AgentToolRegistry", function () {
     let targets = ["item:41"],
       writes = 0;
     registry.register({
-      effectOperations: ["settings_update"],
+      effectOperations: ["apply_tags"],
       spec: {
         name: "judgment_tags",
         description: "fixture",
@@ -2192,6 +2192,69 @@ describe("AgentToolRegistry", function () {
       } as never);
       assert.isDefined(registry.getTool("control_shaped_like_library_batch"));
       assert.isDefined(registry.getTool("plain_read"));
+    });
+
+    it("refuses a described operation the tool never declared", async function () {
+      const registry = new AgentToolRegistry(
+        new ActionContractService({} as never),
+      );
+      registry.register({
+        ...effectDefinition(),
+        spec: { ...effectDefinition().spec, name: "drifting_effect" },
+        effectOperations: ["settings_update"],
+        describeAction: () => [
+          {
+            id: "annotation_write:1",
+            proofDomain: "zotero_state" as const,
+            capability: "zotero.annotations" as const,
+            operation: "annotation_write" as const,
+            source: "zotero_native" as const,
+            requestedTargets: [],
+            destinationCollectionIds: [],
+          },
+        ],
+        planInvocation: () =>
+          stateChangeInvocationPlan({ reason: "Drifted test effect." }),
+      });
+
+      const prepared = await registry.prepareExecution(
+        { id: "drift", name: "drifting_effect", arguments: {} },
+        baseContext,
+      );
+      assert.equal(prepared.kind, "result");
+      if (prepared.kind !== "result") return;
+      assert.isFalse(prepared.execution.result.ok);
+      assert.include(
+        JSON.stringify(prepared.execution.result.content),
+        'Typed action adapter for drifting_effect described \\"annotation_write\\", which it never declared: effectOperations is [settings_update].',
+      );
+    });
+
+    it("refuses the shared library-mutation adapter's read_full branch when the tool never declared it", async function () {
+      const registry = new AgentToolRegistry(
+        new ActionContractService({} as never),
+      );
+      registry.register({
+        ...effectDefinition(),
+        spec: { ...effectDefinition().spec, name: "full_read_effect" },
+        effectOperations: ["settings_update"],
+        describeAction: describeLibraryMutationInput,
+        validate: () => ({ ok: true as const, value: { mode: "full" } }),
+        planInvocation: () =>
+          stateChangeInvocationPlan({ reason: "Full-read test effect." }),
+      });
+
+      const prepared = await registry.prepareExecution(
+        { id: "full-read", name: "full_read_effect", arguments: {} },
+        baseContext,
+      );
+      assert.equal(prepared.kind, "result");
+      if (prepared.kind !== "result") return;
+      assert.isFalse(prepared.execution.result.ok);
+      assert.include(
+        JSON.stringify(prepared.execution.result.content),
+        'Typed action adapter for full_read_effect described \\"read_full\\", which it never declared: effectOperations is [settings_update].',
+      );
     });
 
     it("keeps every production external_effect tool declaring its operations", function () {

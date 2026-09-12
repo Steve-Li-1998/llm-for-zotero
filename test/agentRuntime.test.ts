@@ -3201,7 +3201,10 @@ describe("AgentRuntime", function () {
         name: "zotero_script" | "run_command",
       ) => {
         registry.register({
-          effectOperations: ["zotero_script_execute"],
+          effectOperations:
+            name === "zotero_script"
+              ? ["zotero_script_execute"]
+              : ["command_execute"],
           spec: {
             name,
             description: name,
@@ -4672,7 +4675,7 @@ describe("AgentRuntime", function () {
       const conversationKey = 704;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
-        effectOperations: ["settings_update"],
+        effectOperations: ["command_execute"],
         spec: {
           name: "confirmation_write",
           description: "write",
@@ -4894,7 +4897,7 @@ describe("AgentRuntime", function () {
       let writes = 0;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
-        effectOperations: ["settings_update"],
+        effectOperations: ["command_execute"],
         spec: {
           name: "recovery_write",
           description: "write",
@@ -5065,7 +5068,7 @@ describe("AgentRuntime", function () {
       let writes = 0;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
-        effectOperations: ["settings_update"],
+        effectOperations: ["command_execute"],
         spec: {
           name: "changed_key_write",
           description: "write",
@@ -7556,7 +7559,7 @@ describe("shallow guard round-limit safety", function () {
       await initAgentChangeJournal();
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
-        effectOperations: ["settings_update"],
+        effectOperations: ["command_execute"],
         spec: {
           name: "library_update",
           description: "update",

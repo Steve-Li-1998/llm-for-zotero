@@ -372,7 +372,6 @@ import {
   conversationHasStreamingMessage,
   finalizeAssistantMessageQuoteCitations,
   resetAssistantQuoteDisplay,
-  setQuoteValidationChatRefresher,
   validateLoadedConversationQuoteMessages,
 } from "./quoteValidation/scheduling";
 import { applyStableAnimationPhase } from "./stableAnimationPhase";
@@ -10470,11 +10469,6 @@ function updateMountedAssistantViews(
 export type RefreshChatOptions = {
   rerenderAssistantMessages?: ReadonlySet<Message>;
 };
-
-// The background quote validator re-renders the messages it changed. It owns
-// no renderer and must not import this module back, so the renderer hands
-// itself over here, once, as this module is evaluated.
-setQuoteValidationChatRefresher(refreshChat);
 
 export function refreshChat(
   body: Element,

@@ -11,6 +11,7 @@ import { isQuoteValidationPreempted } from "../quoteValidationActivity";
 import { activeContextPanels, chatHistory } from "../state";
 import type { Message } from "../types";
 import type { QuoteCitation } from "../../../shared/types";
+import { refreshQuoteValidatedConversation } from "./chatRefreshBridge";
 import {
   applyAssistantMessageQuoteGate,
   collectLivePdfQuoteSecondaryEvidence,
@@ -27,28 +28,6 @@ import {
   warmQuoteSourceCachesForPaperContexts,
   type AssistantQuoteFinalizationOptions,
 } from "./sourceEvidence";
-
-/**
- * How the validator asks the panel to re-render the messages it changed.
- *
- * chat.ts owns the renderer, and the renderer imports this module, so the
- * dependency can only run one way: chat.ts hands its refresher in at startup
- * and the validator calls it back. Until it does, validation still runs and
- * still updates the messages; only the repaint waits for the next render.
- */
-export type QuoteValidationChatRefresher = (
-  body: Element,
-  item: Zotero.Item,
-  options: { rerenderAssistantMessages: ReadonlySet<Message> },
-) => void;
-
-let refreshConversationChat: QuoteValidationChatRefresher = () => {};
-
-export function setQuoteValidationChatRefresher(
-  refresh: QuoteValidationChatRefresher,
-): void {
-  refreshConversationChat = refresh;
-}
 
 const quoteValidationSignatures = new WeakMap<Message, string>();
 type PendingQuoteValidation = {
@@ -72,7 +51,7 @@ function refreshConversationAfterQuoteValidation(
     if (!body.isConnected) continue;
     const item = getItem?.() || null;
     if (!item || getConversationKey(item) !== conversationKey) continue;
-    refreshConversationChat(body, item, {
+    refreshQuoteValidatedConversation(body, item, {
       rerenderAssistantMessages: changedMessages,
     });
   }

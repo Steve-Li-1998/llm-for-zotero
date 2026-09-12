@@ -20,7 +20,9 @@ import {
   warmPageTextCache,
   warmPageTextCacheForAttachment,
 } from "./livePdfSelectionLocator";
+import { refreshChat } from "./chat";
 import { clearRetrievalCandidateCache } from "./multiContextPlanner";
+import { configureQuoteValidationChatRefresher } from "./quoteValidation/chatRefreshBridge";
 import {
   createNoteFromAssistantText,
   createStandaloneNoteFromAssistantText,
@@ -70,6 +72,10 @@ export function composeHostSurfaces(): () => void {
       },
     }),
     configureRetrievalCandidateInvalidator(clearRetrievalCandidateCache),
+    // The background quote validator repaints the messages it changed; only
+    // the chat renderer can do that, and it imports the validator, so the
+    // dependency is composed here rather than registered at import time.
+    configureQuoteValidationChatRefresher(refreshChat),
   ];
   return () => {
     for (const dispose of [...disposers].reverse()) dispose();

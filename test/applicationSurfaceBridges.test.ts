@@ -14,9 +14,23 @@ import {
   invalidateRetrievalCandidates,
 } from "../src/services/retrieval/cacheInvalidation";
 import { warmPdfPageTextCache } from "../src/services/pdf/readerTextBridge";
+import { refreshQuoteValidatedConversation } from "../src/modules/contextPanel/quoteValidation/chatRefreshBridge";
 import { composeHostSurfaces } from "../src/modules/contextPanel/hostSurfaces";
 
 const UNCOMPOSED = /adapter is not configured for this application surface/;
+
+/** Stub arguments for the quote-validation refresh bridge. */
+function refresh(): [
+  Element,
+  Zotero.Item,
+  { rerenderAssistantMessages: ReadonlySet<never> },
+] {
+  return [
+    {} as Element,
+    { id: 4 } as Zotero.Item,
+    { rerenderAssistantMessages: new Set<never>() },
+  ];
+}
 
 /**
  * A composed bridge reaches the panel implementation, which is free to fail on
@@ -141,6 +155,10 @@ describe("host surface composition", function () {
         UNCOMPOSED,
       );
       assert.notMatch(
+        captureFailure(() => refreshQuoteValidatedConversation(...refresh())),
+        UNCOMPOSED,
+      );
+      assert.notMatch(
         await captureAsyncFailure(() => warmPdfPageTextCache(null)),
         UNCOMPOSED,
       );
@@ -180,6 +198,10 @@ describe("host surface composition", function () {
     );
     assert.match(
       captureFailure(() => invalidateRetrievalCandidates(4)),
+      UNCOMPOSED,
+    );
+    assert.match(
+      captureFailure(() => refreshQuoteValidatedConversation(...refresh())),
       UNCOMPOSED,
     );
     assert.match(

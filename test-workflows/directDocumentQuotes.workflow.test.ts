@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { loadPlanDocument } from "../src/agent/documents/store";
 import { normalizeExecutionOutput } from "../src/agent/tools/execution/results";

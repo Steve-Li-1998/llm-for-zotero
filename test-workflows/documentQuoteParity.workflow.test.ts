@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import type { PlanDocument } from "../src/agent/documents/types";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";

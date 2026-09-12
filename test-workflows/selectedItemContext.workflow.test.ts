@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { isConversationKeyForKind } from "../src/shared/conversationKeySpace";
 import type {

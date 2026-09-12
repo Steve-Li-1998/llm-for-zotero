@@ -164,11 +164,8 @@ export {
   withScrollGuard,
 } from "./chatScrollSnapshots";
 
-import {
-  createBlockStreamCoalescer,
-  type BlockStreamCoalescer,
-  type BlockStreamFlushReason,
-} from "./blockStreamCoalescer";
+import { type BlockStreamFlushReason } from "./blockStreamCoalescer";
+import { createStreamingResponse } from "./streamingResponse";
 import {
   getStreamInterruptionLabel,
   resolveStreamInterruptionOutcome,
@@ -6573,15 +6570,19 @@ export async function retryLatestAssistantResponse(
   }
 
   refreshChatSafely();
-  let responseStreamCoalescer: BlockStreamCoalescer | null = null;
-  const flushResponseStream = (reason: BlockStreamFlushReason) => {
-    responseStreamCoalescer?.flushNow(reason);
-  };
+  // Streaming flushes only mutate this assistant message, so re-render just
+  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+  // not in the DOM yet.
+  const streamingResponse = createStreamingResponse({
+    message: assistantMessage,
+    refreshMessage: () => refreshAssistantMessageSafely(assistantMessage),
+    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, body),
+  });
   let streamedReasoningSummary: string | undefined;
   let streamedReasoningDetails: string | undefined;
 
   const restoreOriginalTurn = () => {
-    responseStreamCoalescer?.cancel();
+    streamingResponse.rollback();
     restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
     restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
     refreshChatSafely();
@@ -6627,7 +6628,7 @@ export async function retryLatestAssistantResponse(
     );
   };
   const finalizeCancelledAssistant = async () => {
-    flushResponseStream("cancel");
+    streamingResponse.flush("cancel");
     // The turn never reached finish(), so the trace's own buffers are still
     // holding commentary the model sent. Deliver it before the store write.
     codexActivityTrace?.flushBufferedProgress("cancel");
@@ -6815,13 +6816,7 @@ export async function retryLatestAssistantResponse(
       return;
     }
 
-    // Streaming flushes only mutate this assistant message, so re-render just
-    // its bubble; refreshChat falls back to a full rebuild if the wrapper is
-    // not in the DOM yet.
-    const queueRefresh = createQueuedRefresh(
-      () => refreshAssistantMessageSafely(assistantMessage),
-      body,
-    );
+    const queueRefresh = streamingResponse.queueRefresh;
     codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
@@ -6887,20 +6882,10 @@ export async function retryLatestAssistantResponse(
     });
     renderContextUsageSnapshot(body, ui.tokenUsageEl, estimatedContextSnapshot);
 
-    responseStreamCoalescer = createBlockStreamCoalescer({
-      onBlock: (chunk) => {
-        assistantMessage.text += chunk;
-        queueRefresh();
-      },
-    });
-    const handleDelta = (delta: string) => {
-      const chunk = sanitizeText(delta);
-      if (!chunk) return;
-      responseStreamCoalescer?.pushText(chunk);
-    };
+    streamingResponse.start();
     const handleReasoning = createStreamReasoningHandler({
       assistantMessage,
-      flushResponseStream,
+      flushResponseStream: streamingResponse.flush,
       queueRefresh,
       onReasoningCaptured: () => {
         streamedReasoningSummary = assistantMessage.reasoningSummary;
@@ -7012,9 +6997,9 @@ export async function retryLatestAssistantResponse(
               item,
               assistantMessage,
               codexActivityTrace,
-              flushResponseStream,
+              flushResponseStream: streamingResponse.flush,
               setStatusSafely,
-              handleDelta,
+              handleDelta: streamingResponse.push,
               handleReasoning,
               handleUsage,
               conversationKey,
@@ -7046,7 +7031,7 @@ export async function retryLatestAssistantResponse(
             ...requestParams,
             systemMessages,
           },
-          onDelta: handleDelta,
+          onDelta: streamingResponse.push,
           onReasoning: handleReasoning,
           onUsage: handleUsage,
         });
@@ -7059,7 +7044,7 @@ export async function retryLatestAssistantResponse(
       return;
     }
 
-    flushResponseStream("final");
+    streamingResponse.flush("final");
     const hasGeneratedOutput = normalizeGeneratedChatImages(
       assistantMessage.generatedImages,
     ).length;
@@ -7068,7 +7053,7 @@ export async function retryLatestAssistantResponse(
       modelOutcome.completion.reason === "output_limit";
     const responseText =
       sanitizeText(modelOutcome.text) ||
-      responseStreamCoalescer?.getFullText() ||
+      streamingResponse.getStreamedText() ||
       "";
     const visibleResponseText = continueIncomplete
       ? appendContinuationText(assistantSnapshot.text, responseText)
@@ -7163,11 +7148,11 @@ export async function retryLatestAssistantResponse(
     // Preserve whatever streamed during the retry before the drop. Only fall
     // back to restoring the previous answer when nothing new streamed. The
     // message-text fallback covers content that was flushed out of a
-    // coalescer torn down before the throw (same chain as the send path).
+    // stream torn down before the throw (same chain as the send path).
     const partialText = sanitizeText(
-      responseStreamCoalescer?.getFullText() || assistantMessage.text || "",
+      streamingResponse.getStreamedText() || assistantMessage.text || "",
     );
-    responseStreamCoalescer?.cancel();
+    streamingResponse.dispose();
     const outcome = resolveStreamInterruptionOutcome({
       partialText,
       errorMessage: errMsg,
@@ -9534,12 +9519,16 @@ export async function sendQuestion(
       effectiveStorageSystem,
     );
   };
-  let responseStreamCoalescer: BlockStreamCoalescer | null = null;
-  const flushResponseStream = (reason: BlockStreamFlushReason) => {
-    responseStreamCoalescer?.flushNow(reason);
-  };
+  // Streaming flushes only mutate this assistant message, so re-render just
+  // its bubble; refreshChat falls back to a full rebuild if the wrapper is
+  // not in the DOM yet.
+  const streamingResponse = createStreamingResponse({
+    message: assistantMessage,
+    refreshMessage: () => refreshAssistantMessageSafely(assistantMessage),
+    createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, body),
+  });
   const markCancelled = async () => {
-    flushResponseStream("cancel");
+    streamingResponse.flush("cancel");
     // Same reason as the retry flow: finish() never ran, so flush the trace's
     // buffered commentary before persistAssistantOnce writes the turn.
     codexActivityTrace?.flushBufferedProgress("cancel");
@@ -9800,13 +9789,7 @@ export async function sendQuestion(
 
     if (await stopInactiveRequest()) return;
 
-    // Streaming flushes only mutate this assistant message, so re-render just
-    // its bubble; refreshChat falls back to a full rebuild if the wrapper is
-    // not in the DOM yet.
-    const queueRefresh = createQueuedRefresh(
-      () => refreshAssistantMessageSafely(assistantMessage),
-      body,
-    );
+    const queueRefresh = streamingResponse.queueRefresh;
     codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
@@ -9814,12 +9797,7 @@ export async function sendQuestion(
       codexActivityTrace,
       opts.forcedSkillIds,
     );
-    responseStreamCoalescer = createBlockStreamCoalescer({
-      onBlock: (chunk) => {
-        assistantMessage.text += chunk;
-        queueRefresh();
-      },
-    });
+    streamingResponse.start();
 
     if (await stopInactiveRequest()) return;
 
@@ -9875,14 +9853,9 @@ export async function sendQuestion(
     });
     renderContextUsageSnapshot(body, ui.tokenUsageEl, estimatedContextSnapshot);
 
-    const handleDelta = (delta: string) => {
-      const chunk = sanitizeText(delta);
-      if (!chunk) return;
-      responseStreamCoalescer?.pushText(chunk);
-    };
     const handleReasoning = createStreamReasoningHandler({
       assistantMessage,
-      flushResponseStream,
+      flushResponseStream: streamingResponse.flush,
       queueRefresh,
     });
     const handleUsage = createStreamUsageHandler({
@@ -9987,9 +9960,9 @@ export async function sendQuestion(
               item,
               assistantMessage,
               codexActivityTrace,
-              flushResponseStream,
+              flushResponseStream: streamingResponse.flush,
               setStatusSafely,
-              handleDelta,
+              handleDelta: streamingResponse.push,
               handleReasoning,
               handleUsage,
               conversationKey,
@@ -10018,7 +9991,7 @@ export async function sendQuestion(
             ...requestParams,
             systemMessages,
           },
-          onDelta: handleDelta,
+          onDelta: streamingResponse.push,
           onReasoning: handleReasoning,
           onUsage: handleUsage,
         });
@@ -10039,7 +10012,7 @@ export async function sendQuestion(
       return;
     }
 
-    flushResponseStream("final");
+    streamingResponse.flush("final");
     const hasGeneratedOutput = normalizeGeneratedChatImages(
       assistantMessage.generatedImages,
     ).length;
@@ -10133,11 +10106,12 @@ export async function sendQuestion(
       : technicalErrMsg;
     const retryHint = resolveMultimodalRetryHint(errMsg, imageCount);
     // Preserve whatever streamed before the connection dropped instead of
-    // discarding it. getFullText() includes the last, not-yet-flushed chunk.
+    // discarding it. The streamed text includes the last, not-yet-flushed
+    // chunk.
     const partialText = sanitizeText(
-      responseStreamCoalescer?.getFullText() || assistantMessage.text || "",
+      streamingResponse.getStreamedText() || assistantMessage.text || "",
     );
-    responseStreamCoalescer?.cancel();
+    streamingResponse.dispose();
     const outcome = resolveStreamInterruptionOutcome({
       partialText,
       errorMessage: errMsg,

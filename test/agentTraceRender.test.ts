@@ -3383,6 +3383,179 @@ describe("agentTrace render", function () {
     assert.include(actionTexts, "Generated document: Untitled draft");
   });
 
+  /** One `batch_item_outcome` event, as the runtime persists it. */
+  function batchItemEvent(
+    seq: number,
+    payload: {
+      itemKey: string;
+      status: "pending" | "saved" | "failed";
+      written?: boolean;
+      noteId?: number;
+      error?: string;
+    },
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-batch",
+      seq,
+      eventType: "batch_item_outcome",
+      payload: {
+        type: "batch_item_outcome",
+        batchId: "batch-note_write_batch-1",
+        itemKey: payload.itemKey,
+        materialRef: {
+          documentId: `run-batch:document:${seq}`,
+          documentVersion: 1,
+          contentHash: `sha256:note-${seq}`,
+        },
+        status: payload.status,
+        noteId: payload.noteId,
+        error: payload.error,
+        callId: "note-batch-1",
+      } as AgentRunEventRecord["payload"],
+      createdAt: seq,
+    };
+  }
+
+  /** Adds `written` the way the runtime does; older events simply lack it. */
+  function withWritten(
+    entry: AgentRunEventRecord,
+    written: boolean,
+  ): AgentRunEventRecord {
+    return {
+      ...entry,
+      payload: { ...entry.payload, written } as AgentRunEventRecord["payload"],
+    };
+  }
+
+  function traceActionTexts(events: AgentRunEventRecord[]): string[] {
+    return buildAgentTraceDisplayItems(events, null)
+      .items.filter(
+        (
+          item,
+        ): item is Extract<
+          ReturnType<typeof buildAgentTraceDisplayItems>["items"][number],
+          { type: "action" }
+        > => item.type === "action",
+      )
+      .map((item) => item.row.text);
+  }
+
+  it("names every item a note batch reported", function () {
+    const events = [
+      withWritten(
+        batchItemEvent(1, { itemKey: "item:1", status: "saved", noteId: 501 }),
+        true,
+      ),
+      withWritten(
+        batchItemEvent(2, {
+          itemKey: "item:2",
+          status: "failed",
+          error: "Zotero refused the note write",
+        }),
+        false,
+      ),
+      withWritten(
+        batchItemEvent(3, { itemKey: "item:3", status: "saved", noteId: 503 }),
+        true,
+      ),
+    ];
+
+    const actionTexts = traceActionTexts(events);
+
+    assert.deepEqual(actionTexts.slice(-3), [
+      "Saved note for item 1",
+      "Note write failed for item 2",
+      "Saved note for item 3",
+    ]);
+  });
+
+  it("separates a note this call wrote from one it found already saved", function () {
+    // What a resumed batch announces: every row it holds, only one of which
+    // this call actually wrote.
+    const events = [
+      withWritten(
+        batchItemEvent(1, { itemKey: "item:1", status: "saved", noteId: 501 }),
+        false,
+      ),
+      withWritten(
+        batchItemEvent(2, { itemKey: "item:2", status: "saved", noteId: 502 }),
+        true,
+      ),
+      withWritten(
+        batchItemEvent(3, { itemKey: "item:3", status: "pending" }),
+        false,
+      ),
+    ];
+
+    const actionTexts = traceActionTexts(events);
+
+    assert.deepEqual(actionTexts.slice(-3), [
+      "Already saved: item 1",
+      "Saved note for item 2",
+      "Note not written yet for item 3",
+    ]);
+  });
+
+  it("does not claim a note was just written when the event predates the field", function () {
+    // Events persisted before the batch reported `written` say only that the
+    // row is saved. Reading a missing field as false would relabel every note
+    // of an old run as one the call skipped, and reading it as true would
+    // claim a write that may have happened turns earlier.
+    const events = [
+      batchItemEvent(1, { itemKey: "item:1", status: "saved", noteId: 501 }),
+      batchItemEvent(2, { itemKey: "item:2#2", status: "saved", noteId: 502 }),
+    ];
+
+    const actionTexts = traceActionTexts(events);
+
+    assert.deepEqual(actionTexts.slice(-2), [
+      "Note recorded for item 1",
+      "Note recorded for item 2 (note 2)",
+    ]);
+  });
+
+  it("names a batch item the row key does not describe", function () {
+    const events = [
+      withWritten(
+        batchItemEvent(1, { itemKey: "standalone-7", status: "saved" }),
+        true,
+      ),
+    ];
+
+    assert.deepEqual(traceActionTexts(events).slice(-1), [
+      "Saved note for standalone-7",
+    ]);
+  });
+
+  it("renders the batch item rows into the trace", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "", timestamp: 1, runMode: "agent" },
+      events: [
+        withWritten(
+          batchItemEvent(1, {
+            itemKey: "item:1",
+            status: "saved",
+            noteId: 501,
+          }),
+          true,
+        ),
+        withWritten(
+          batchItemEvent(2, {
+            itemKey: "item:2",
+            status: "failed",
+            error: "Zotero refused the note write",
+          }),
+          false,
+        ),
+      ],
+    }) as unknown as FakeElement;
+
+    const text = collectFakeText(trace);
+    assert.include(text, "Saved note for item 1");
+    assert.include(text, "Note write failed for item 2");
+  });
+
   it("asks for permission to save the named material as a note", function () {
     const action: AgentPendingAction = {
       toolName: "edit_current_note",

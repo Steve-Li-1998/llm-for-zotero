@@ -3535,6 +3535,72 @@ function readMaterialAnnouncement(
   };
 }
 
+type BatchItemOutcomePayload = Extract<
+  AgentRunEventRecord["payload"],
+  { type: "batch_item_outcome" }
+>;
+
+/**
+ * What one item of a note batch is called in the trace.
+ *
+ * The durable row key is the only name the announcement carries, so the row
+ * reads it instead of inventing one: `item:42` is the item the note was
+ * written onto, and a second note onto the same item is `item:42#2`. A key of
+ * any other shape is shown as it stands rather than mangled into a number.
+ */
+function batchItemLabel(itemKey: string): string {
+  const parsed = /^item:(\d+)(?:#(\d+))?$/u.exec(itemKey);
+  if (!parsed) return itemKey;
+  return parsed[2]
+    ? `item ${parsed[1]} (note ${parsed[2]})`
+    : `item ${parsed[1]}`;
+}
+
+/**
+ * Whether the announcing call is the one that wrote this note.
+ *
+ * A resumed batch announces every row it holds, so `saved` alone does not mean
+ * this call wrote anything. Events persisted before the batch reported it
+ * carry no `written` field, and the row has to treat that as unknown rather
+ * than pick a side: reading the absence as `false` would relabel every note of
+ * an older run as one the call skipped.
+ */
+function readBatchItemWritten(
+  payload: BatchItemOutcomePayload,
+): boolean | undefined {
+  const written = (payload as { written?: unknown }).written;
+  return typeof written === "boolean" ? written : undefined;
+}
+
+/**
+ * One row per announced batch item, read from the event and nothing else.
+ *
+ * Fifty notes written under one approval are fifty separate outcomes, and the
+ * tool result can only say how many of each there were. The row names the item
+ * and what became of its note, so the trace stays the record of what happened
+ * to each one.
+ */
+function batchItemOutcomeRow(
+  payload: BatchItemOutcomePayload,
+): AgentTraceSummaryRow {
+  const itemKey = readAgentTraceText(payload.itemKey);
+  const label = itemKey ? batchItemLabel(itemKey) : "an item";
+  if (payload.status === "failed")
+    return { kind: "skip", icon: "!", text: `Note write failed for ${label}` };
+  if (payload.status === "pending")
+    return {
+      kind: "skip",
+      icon: "…",
+      text: `Note not written yet for ${label}`,
+    };
+  const written = readBatchItemWritten(payload);
+  if (written === undefined)
+    return { kind: "ok", icon: "✓", text: `Note recorded for ${label}` };
+  return written
+    ? { kind: "ok", icon: "✓", text: `Saved note for ${label}` }
+    : { kind: "ok", icon: "✓", text: `Already saved: ${label}` };
+}
+
 /**
  * What a note write proved about the Zotero state it claims to have changed.
  *
@@ -4524,6 +4590,12 @@ function appendSharedAgentTraceEvent(
       });
       return true;
     }
+    case "batch_item_outcome":
+      ctx.items.push({
+        type: "action",
+        row: batchItemOutcomeRow(entry.payload),
+      });
+      return true;
     case "confirmation_required":
       ctx.pendingActions.set(entry.payload.requestId, entry.payload.action);
       ctx.items.push({

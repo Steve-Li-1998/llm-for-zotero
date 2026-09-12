@@ -407,6 +407,49 @@ class OneShotInnerHtmlFailureElement extends FakeElement {
   }
 }
 
+type AgentTraceTestItem = ReturnType<
+  typeof buildAgentTraceDisplayItems
+>["items"][number];
+
+/**
+ * Every display item in reading order, stage groups opened out.
+ *
+ * A stage nests the rows it produced, so an assertion about the rows reads
+ * this view; the stage's own heading stays in the list where it sits.
+ */
+function flattenTraceItems(
+  items: readonly AgentTraceTestItem[],
+): AgentTraceTestItem[] {
+  const flat: AgentTraceTestItem[] = [];
+  for (const item of items) {
+    flat.push(item);
+    if (item.type === "stage") flat.push(...flattenTraceItems(item.children));
+  }
+  return flat;
+}
+
+/** Every action row, inside a stage group or not. */
+function traceActionItems(
+  items: readonly AgentTraceTestItem[],
+): Extract<AgentTraceTestItem, { type: "action" }>[] {
+  return flattenTraceItems(items).filter(
+    (item): item is Extract<AgentTraceTestItem, { type: "action" }> =>
+      item.type === "action",
+  );
+}
+
+/** What the reader reads, top to bottom: stage headings and their rows. */
+function traceRowTexts(items: readonly AgentTraceTestItem[]): string[] {
+  return flattenTraceItems(items)
+    .filter(
+      (
+        item,
+      ): item is Extract<AgentTraceTestItem, { type: "action" | "stage" }> =>
+        item.type === "action" || item.type === "stage",
+    )
+    .map((item) => (item.type === "stage" ? item.label : item.row.text));
+}
+
 const fakeDocument = {
   createElement: (tagName: string) => new FakeElement(tagName),
   createElementNS: (_namespace: string, tagName: string) =>
@@ -450,12 +493,7 @@ function getCodexTraceActionTexts(events: AgentRunEventRecord[]): string[] {
     runMode: "agent",
     modelProviderLabel: "Codex",
   });
-  return items
-    .filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action",
-    )
-    .map((item) => item.row.text);
+  return traceRowTexts(items);
 }
 
 function createFakeCodeBlockShell(options?: {
@@ -1266,7 +1304,7 @@ describe("agentTrace render", function () {
       },
     ];
     const projection = buildAgentTraceDisplayItems(events);
-    const action = projection.items.find(
+    const action = flattenTraceItems(projection.items).find(
       (item) =>
         item.type === "action" && item.detailKey === "tool-call:category-call",
     );
@@ -1304,7 +1342,7 @@ describe("agentTrace render", function () {
       runMode: "agent",
       modelProviderLabel: "Codex",
     });
-    const action = projection.items.find(
+    const action = flattenTraceItems(projection.items).find(
       (item) =>
         item.type === "action" &&
         item.detailKey === "codex:native-category-call",
@@ -2366,7 +2404,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const visible = items.map((item) =>
+    const visible = flattenTraceItems(items).map((item) =>
       item.type === "action"
         ? item.row.text
         : item.type === "message"
@@ -2557,14 +2595,15 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(runningEvents, null, message);
-    const firstAgentIndex = items.findIndex(
+    const ordered = flattenTraceItems(items);
+    const firstAgentIndex = ordered.findIndex(
       (item) =>
         item.type === "message" && item.text.includes("simple-paper-QA"),
     );
-    const toolIndex = items.findIndex(
+    const toolIndex = ordered.findIndex(
       (item) => item.type === "action" && item.detailKey === "codex:tool-1",
     );
-    const secondAgentIndex = items.findIndex(
+    const secondAgentIndex = ordered.findIndex(
       (item) => item.type === "message" && item.text.includes("final answer"),
     );
     assert.isAtLeast(firstAgentIndex, 0);
@@ -3342,12 +3381,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Generated summary: Representational drift");
     assert.notMatch(
@@ -3377,12 +3411,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Generated document: Untitled draft");
   });
@@ -3432,16 +3461,7 @@ describe("agentTrace render", function () {
   }
 
   function traceActionTexts(events: AgentRunEventRecord[]): string[] {
-    return buildAgentTraceDisplayItems(events, null)
-      .items.filter(
-        (
-          item,
-        ): item is Extract<
-          ReturnType<typeof buildAgentTraceDisplayItems>["items"][number],
-          { type: "action" }
-        > => item.type === "action",
-      )
-      .map((item) => item.row.text);
+    return traceRowTexts(buildAgentTraceDisplayItems(events, null).items);
   }
 
   it("names every item a note batch reported", function () {
@@ -3619,12 +3639,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(
       actionTexts,
@@ -3669,12 +3684,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(
       actionTexts,
@@ -3726,12 +3736,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Saved note");
     assert.include(actionTexts, "Zotero state verified");
@@ -3783,12 +3788,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Saved note");
     assert.include(actionTexts, "Zotero state checked (text match)");
@@ -3836,12 +3836,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Note write failed");
     assert.notInclude(actionTexts, "Zotero state verified");
@@ -3889,12 +3884,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.notInclude(actionTexts, "Note write failed");
   });
@@ -3954,12 +3944,9 @@ describe("agentTrace render", function () {
 
   function traceChipLabels(events: AgentRunEventRecord[]): string[] {
     const { items } = buildAgentTraceDisplayItems(events, null);
-    return items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .flatMap((item) => (item.chips || []).map((chip) => chip.label));
+    return traceActionItems(items).flatMap((item) =>
+      (item.chips || []).map((chip) => chip.label),
+    );
   }
 
   it("names what a result's receipts proved, one chip per result", function () {
@@ -4096,10 +4083,7 @@ describe("agentTrace render", function () {
     ] as unknown as AgentRunEventRecord[];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actions = items.filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action",
-    );
+    const actions = traceActionItems(items);
     assert.include(
       actions.map((item) => item.row.text),
       "Zotero state verified",
@@ -4147,16 +4131,18 @@ describe("agentTrace render", function () {
     ] as unknown as AgentRunEventRecord[];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actions = items.filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action",
-    );
+    const actions = traceActionItems(items);
     assert.include(
       actions.map((item) => item.row.text),
       "Zotero state verified",
     );
+    // The write's own row heads its stage, so its weaker proof is named there.
     assert.deepEqual(
-      actions.flatMap((item) => (item.chips || []).map((chip) => chip.label)),
+      flattenTraceItems(items).flatMap((item) =>
+        item.type === "stage"
+          ? (item.chips || []).map((chip) => chip.label)
+          : [],
+      ),
       ["Unverified"],
     );
   });
@@ -4282,9 +4268,8 @@ describe("agentTrace render", function () {
     })) as unknown as AgentRunEventRecord[];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const effectRows = items.filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action" && item.row.kind === "tool",
+    const effectRows = traceActionItems(items).filter(
+      (item) => item.row.kind === "tool",
     );
     assert.lengthOf(
       effectRows,
@@ -4355,9 +4340,8 @@ describe("agentTrace render", function () {
     })) as unknown as AgentRunEventRecord[];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const effectRows = items.filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action" && item.row.kind === "tool",
+    const effectRows = traceActionItems(items).filter(
+      (item) => item.row.kind === "tool",
     );
     assert.lengthOf(effectRows, 1);
     assert.deepEqual(
@@ -4451,12 +4435,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(
       actionTexts,
@@ -4527,12 +4506,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.notMatch(actionTexts.join("\n"), /Retry available/);
   });
@@ -4566,12 +4540,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items, isInterleaved } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.isFalse(
       isInterleaved,
@@ -4783,12 +4752,7 @@ describe("agentTrace render", function () {
       runMode: "agent",
       modelProviderLabel: "Codex",
     });
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.notInclude(actionTexts, "Using Query Library");
     assert.include(actionTexts, "Used Query Library");
@@ -4839,12 +4803,7 @@ describe("agentTrace render", function () {
       runMode: "agent",
       modelProviderLabel: "Codex",
     });
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.equal(
       actionTexts.filter((text) => text === "Used Run Command").length,
@@ -4902,6 +4861,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -4950,6 +4910,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -4978,6 +4939,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Completed",
       "Completed",
     ]);
@@ -5007,6 +4969,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Completed",
       "Completed",
     ]);
@@ -5035,6 +4998,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Completed",
     ]);
   });
@@ -5081,6 +5045,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -5118,6 +5083,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -5159,6 +5125,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
       "Used Read Paper",
     ]);
@@ -5258,6 +5225,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -5315,6 +5283,7 @@ describe("agentTrace render", function () {
     );
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -6651,12 +6620,7 @@ describe("agentTrace render", function () {
       runMode: "agent",
       modelProviderLabel: "Codex",
     });
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Using Zotero MCP tool");
   });
@@ -7093,7 +7057,7 @@ describe("agentTrace render", function () {
       },
     );
     assert.isFalse(
-      items.some(
+      flattenTraceItems(items).some(
         (item) => item.type === "action" && item.row.text === "Running agent",
       ),
     );
@@ -7758,12 +7722,7 @@ describe("agentTrace render", function () {
           item.type === "message",
       )
       .map((item) => item.text);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.notInclude(
       messageTexts.join("\n"),
@@ -8098,7 +8057,7 @@ describe("agentTrace render", function () {
         item.type === "inline_text" &&
         item.text === "I'm reading the parsed paper text.",
     );
-    const toolIndex = items.findIndex(
+    const toolIndex = flattenTraceItems(items).findIndex(
       (item) => item.type === "action" && item.row.kind === "tool",
     );
     const finalIndex = items.findIndex(
@@ -8112,8 +8071,8 @@ describe("agentTrace render", function () {
           item.type === "message",
       )
       .map((item) => item.text);
-    const doneActions = items.filter(
-      (item) => item.type === "action" && item.row.kind === "done",
+    const doneActions = traceActionItems(items).filter(
+      (item) => item.row.kind === "done",
     );
 
     assert.isTrue(isInterleaved);
@@ -8755,12 +8714,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.notInclude(actionTexts, "Completed Unknown tool");
     assert.include(actionTexts, "Response ready");
@@ -8831,12 +8785,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const rows = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row);
+    const rows = traceActionItems(items).map((item) => item.row);
     const rowTexts = rows.map((row) => row.text);
     const codeBlocks = rows.map((row) => row.codeBlock);
 
@@ -8925,10 +8874,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actions = items.filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action",
-    );
+    const actions = traceActionItems(items);
     const detailText = JSON.stringify(actions.map((item) => item.details));
     const rowText = actions.map((item) => item.row.text).join("\n");
 
@@ -8984,10 +8930,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actions = items.filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action",
-    );
+    const actions = traceActionItems(items);
     const detailText = JSON.stringify(actions.map((item) => item.details));
 
     assert.include(detailText, "[redacted");
@@ -9030,12 +8973,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Using Skill: graphwalk");
     assert.include(actionTexts, "Using Skill: write-note");
@@ -9063,12 +9001,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Invoked Skill: evidence-based-qa");
     assert.notInclude(actionTexts, "Using Skill: evidence-based-qa");
@@ -9093,13 +9026,12 @@ describe("agentTrace render", function () {
       },
     ];
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const rows = items.flatMap((item) =>
-      item.type === "action" ? [item.row.text] : [],
-    );
+    const rows = traceRowTexts(items);
     // The trace always opens with the request row; the judgment write must add
     // exactly one visible row after it.
     assert.deepEqual(rows, [
       "Request received",
+      "Agent activity",
       "Judgment Tags completed (agent's own call)",
     ]);
   });
@@ -9184,4 +9116,482 @@ describe("new research progress presentation", function () {
       assert.include(serialized, "(Smith, 2024)");
       assert.isTrue(result.items.some((item) => item.type === "inline_text"));
     });
+});
+
+describe("agent trace stage grouping", function () {
+  type StageTestItem = ReturnType<
+    typeof buildAgentTraceDisplayItems
+  >["items"][number];
+
+  const noteReceipt = {
+    version: 2,
+    id: "note_create:new:unmatched:result",
+    proposalId: "note_create:new",
+    proofDomain: "zotero_state",
+    capability: "zotero.notes",
+    operation: "note_create",
+    verification: "verified",
+    status: "applied",
+    requestedTargets: ["item:41"],
+    appliedTargets: ["item:41"],
+    alreadySatisfiedTargets: [],
+    rejectedTargets: [],
+    reasons: [],
+    verifiedFacts: ["created_note:item:77", "native_note:77:html_sha256:abc"],
+    materialRef: {
+      documentId: "run-journey:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:material",
+    },
+  } as unknown as Extract<
+    AgentRunEventRecord["payload"],
+    { type: "tool_result" }
+  >["actionReceipts"][number];
+
+  function stageEvent(
+    seq: number,
+    payload: Extract<AgentRunEventRecord["payload"], { type: "agent_stage" }>,
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-journey",
+      seq,
+      eventType: "agent_stage",
+      payload,
+      createdAt: seq,
+    };
+  }
+
+  function event(
+    seq: number,
+    payload: AgentRunEventRecord["payload"],
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-journey",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq,
+    };
+  }
+
+  function stages(items: readonly StageTestItem[]) {
+    return items.filter(
+      (item): item is Extract<StageTestItem, { type: "stage" }> =>
+        item.type === "stage",
+    );
+  }
+
+  function rowTexts(items: readonly StageTestItem[]): string[] {
+    return items
+      .filter(
+        (item): item is Extract<StageTestItem, { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+  }
+
+  /** The Phase 1 journey: read the paper, write the summary, save the note. */
+  function journeyEvents(): AgentRunEventRecord[] {
+    return [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "r1",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "r1",
+        name: "paper_read",
+        args: { itemId: 5 },
+        toolLabel: "Read Paper",
+        workCategory: "retrieval",
+      }),
+      stageEvent(3, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "completed",
+        callId: "r1",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+      }),
+      event(4, {
+        type: "tool_result",
+        callId: "r1",
+        name: "paper_read",
+        ok: true,
+        actionReceipts: [],
+        content: { sections: [] },
+        toolLabel: "Read Paper",
+        workCategory: "retrieval",
+      }),
+      stageEvent(5, {
+        type: "agent_stage",
+        stage: "generation",
+        status: "completed",
+        materialRef: {
+          documentId: "run-journey:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+      }),
+      event(6, {
+        type: "material_finalized",
+        materialRef: {
+          documentId: "run-journey:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+        materialKind: "summary",
+        materialTitle: "Representational drift",
+      }),
+      stageEvent(7, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "started",
+        callId: "w1",
+        toolName: "note_write",
+        toolLabel: "Note Write",
+      }),
+      event(8, {
+        type: "tool_call",
+        callId: "w1",
+        name: "note_write",
+        args: { documentId: "run-journey:document:1" },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+      stageEvent(9, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "completed",
+        callId: "w1",
+        toolName: "note_write",
+        toolLabel: "Note Write",
+        receiptIds: [noteReceipt.id],
+      }),
+      event(10, {
+        type: "tool_result",
+        callId: "w1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: [noteReceipt],
+        content: { noteId: 77, documentId: "run-journey:document:1" },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+    ];
+  }
+
+  it("groups the journey's rows under the stage that produced them", function () {
+    const { items } = buildAgentTraceDisplayItems(journeyEvents(), null);
+    const groups = stages(items);
+
+    assert.deepEqual(
+      groups.map((group) => group.label),
+      [
+        "Read evidence",
+        "Generated summary: Representational drift",
+        "Saved note",
+      ],
+    );
+    assert.deepEqual(
+      groups.map((group) => group.stage),
+      ["retrieval", "generation", "zotero_action"],
+    );
+    assert.include(rowTexts(groups[0].children), "Using Paper Read");
+    assert.include(rowTexts(groups[2].children), "Zotero state verified");
+    assert.notInclude(
+      rowTexts(items),
+      "Generated summary: Representational drift",
+      "the material announcement heads its stage instead of repeating inside it",
+    );
+  });
+
+  it("reports the worst verification its children proved on the stage itself", function () {
+    const { items } = buildAgentTraceDisplayItems(journeyEvents(), null);
+    const zoteroStage = stages(items).find(
+      (group) => group.stage === "zotero_action",
+    );
+
+    assert.deepEqual(
+      (zoteroStage?.chips || []).map((chip) => chip.label),
+      ["Verified"],
+    );
+  });
+
+  it("reports a run recorded before work categories as one agent activity group", function () {
+    const events: AgentRunEventRecord[] = [
+      event(1, {
+        type: "tool_call",
+        callId: "old-1",
+        name: "query_library",
+        args: { query: "drift" },
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "old-2",
+        name: "read_paper",
+        args: { itemId: 3 },
+      }),
+    ];
+
+    const groups = stages(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.lengthOf(groups, 1);
+    assert.equal(groups[0].label, "Agent activity");
+    assert.isTrue(groups[0].projected);
+    assert.deepEqual(rowTexts(groups[0].children), [
+      "Using Query Library",
+      "Using Read Paper",
+    ]);
+  });
+
+  it("keeps consecutive calls of one stage in a single group", function () {
+    const events: AgentRunEventRecord[] = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "a",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "a",
+        name: "query_library",
+        args: {},
+        workCategory: "retrieval",
+      }),
+      stageEvent(3, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "completed",
+        callId: "a",
+      }),
+      event(4, {
+        type: "tool_result",
+        callId: "a",
+        name: "query_library",
+        ok: true,
+        actionReceipts: [],
+        content: {},
+        workCategory: "retrieval",
+      }),
+      stageEvent(5, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "b",
+      }),
+      event(6, {
+        type: "tool_call",
+        callId: "b",
+        name: "search_paper",
+        args: {},
+        workCategory: "retrieval",
+      }),
+      stageEvent(7, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "completed",
+        callId: "b",
+      }),
+      event(8, {
+        type: "tool_result",
+        callId: "b",
+        name: "search_paper",
+        ok: true,
+        actionReceipts: [],
+        content: {},
+        workCategory: "retrieval",
+      }),
+    ];
+
+    const groups = stages(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.lengthOf(groups, 1);
+    assert.equal(groups[0].status, "completed");
+    assert.deepEqual(rowTexts(groups[0].children), [
+      "Using Query Library",
+      "Using Search Paper",
+    ]);
+  });
+
+  it("leaves a stage nothing closed open", function () {
+    const events: AgentRunEventRecord[] = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "planning",
+        status: "started",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "p1",
+        name: "amend_plan",
+        args: {},
+        workCategory: "planning",
+      }),
+    ];
+
+    const groups = stages(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.lengthOf(groups, 1);
+    assert.equal(groups[0].status, "started");
+    assert.equal(groups[0].label, "Planning");
+  });
+
+  it("merges repeated planning starts into one open planning stage", function () {
+    const events: AgentRunEventRecord[] = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "planning",
+        status: "started",
+      }),
+      event(2, {
+        type: "plan_scope_amended",
+        mode: "plan",
+        amendmentId: "amend-1",
+        authority: "user",
+        previousItemCount: 2,
+        newItemCount: 3,
+        rationale: "one more paper",
+      } as AgentRunEventRecord["payload"]),
+      stageEvent(3, {
+        type: "agent_stage",
+        stage: "planning",
+        status: "started",
+      }),
+      event(4, {
+        type: "plan_scope_amended",
+        mode: "plan",
+        amendmentId: "amend-2",
+        authority: "user",
+        previousItemCount: 3,
+        newItemCount: 4,
+        rationale: "one more still",
+      } as AgentRunEventRecord["payload"]),
+    ];
+
+    const groups = stages(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.lengthOf(groups, 1);
+    assert.equal(groups[0].status, "started");
+    assert.lengthOf(groups[0].children, 2);
+  });
+
+  it("keeps reasoning and streamed text outside stage groups and in order", function () {
+    const events: AgentRunEventRecord[] = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "a",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "a",
+        name: "query_library",
+        args: {},
+        workCategory: "retrieval",
+      }),
+      event(3, {
+        type: "reasoning",
+        round: 1,
+        stepId: "step-1",
+        stepLabel: "Thinking",
+        summary: "Looking at the library",
+      }),
+      stageEvent(4, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "b",
+      }),
+      event(5, {
+        type: "tool_call",
+        callId: "b",
+        name: "search_paper",
+        args: {},
+        workCategory: "retrieval",
+      }),
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const shape = items.map((item) => item.type);
+
+    assert.deepEqual(shape.slice(2), ["stage", "reasoning", "stage"]);
+  });
+
+  it("renders each stage as one disclosure holding its rows", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      agentRunId: "run-journey",
+      streaming: false,
+    };
+    const root = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: journeyEvents(),
+    }) as unknown as FakeElement;
+
+    const stageNodes = root.findAllByClass("llm-agent-process-stage");
+    assert.lengthOf(stageNodes, 3);
+    assert.deepEqual(
+      stageNodes.map((node) => node.getAttribute("data-stage")),
+      ["retrieval", "generation", "zotero_action"],
+    );
+    assert.deepEqual(
+      stageNodes.map(
+        (node) =>
+          node.findByClass("llm-agent-process-stage-label")?.textContent,
+      ),
+      [
+        "Read evidence",
+        "Generated summary: Representational drift",
+        "Saved note",
+      ],
+    );
+    assert.equal(stageNodes[0].tagName, "details");
+    const evidenceRows = stageNodes[2]
+      .findAllByClass("llm-at-text")
+      .map((node) => node.textContent);
+    assert.include(evidenceRows, "Zotero state verified");
+    disposeAgentTrace(root as unknown as HTMLElement);
+  });
+
+  it("keeps a stage's node across an incremental re-render", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      agentRunId: "run-journey",
+      streaming: false,
+    };
+    const events = journeyEvents();
+    const first = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: events.slice(0, 4),
+    }) as unknown as FakeElement;
+    const firstStage = first.findByClass("llm-agent-process-stage");
+    const second = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+      previous: first as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+
+    assert.strictEqual(
+      second.findByClass("llm-agent-process-stage"),
+      firstStage,
+      "the retrieval stage keeps its node when later stages arrive",
+    );
+    disposeAgentTrace(second as unknown as HTMLElement);
+  });
 });

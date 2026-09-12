@@ -43,6 +43,7 @@ import type {
   AgentTraceChip,
   AgentTraceDetail,
   AgentTraceRequestSummary,
+  AgentStage,
   AgentWorkCategory,
   PlanArtifact,
   PlanExecutionLedger,
@@ -133,6 +134,36 @@ type AgentTraceSummaryRow = {
   codeBlock?: string;
 };
 
+type AgentStagePayload = Extract<
+  AgentRunEventRecord["payload"],
+  { type: "agent_stage" }
+>;
+type AgentStageStatus = AgentStagePayload["status"];
+
+/**
+ * What each stage is called for the reader.
+ *
+ * The stage vocabulary is the agent's own `AgentWorkCategory`; these are the
+ * product words for it, kept here because they are presentation and nowhere
+ * else in the system needs them. `external_system` is the category's name and
+ * "External action" is the reader's.
+ */
+const AGENT_STAGE_LABELS: Readonly<Record<AgentStage, string>> = {
+  retrieval: "Read evidence",
+  planning: "Planning",
+  generation: "Generated material",
+  zotero_action: "Zotero action",
+  external_system: "External action",
+};
+
+/**
+ * The label for a run that declared no stage at all.
+ *
+ * Such a trace predates the work-category contract, so its one projected
+ * stage covers everything the run did and must not claim to be any of them.
+ */
+const UNDIFFERENTIATED_AGENT_STAGE_LABEL = "Agent activity";
+
 const agentTraceActionExpandedCache = new Map<string, boolean>();
 const agentActivityExpandedCache = new WeakMap<
   Message,
@@ -153,6 +184,24 @@ type AgentTraceDisplayItem =
       details?: AgentTraceDetail[];
       detailKey?: string;
       workCategory?: AgentWorkCategory;
+      /**
+       * The row that announces what its whole stage produced: the material a
+       * generation stage finalized, or the material write a Zotero action
+       * landed. Its stage names itself after it rather than repeating it.
+       */
+      stageHeadline?: boolean;
+    }
+  | {
+      type: "stage";
+      /** Stable across re-renders so the retained view keeps this node. */
+      key: string;
+      stage: AgentStage;
+      status: AgentStageStatus;
+      label: string;
+      chips?: AgentTraceChip[];
+      /** Reconstructed for a trace recorded before stages existed. */
+      projected?: boolean;
+      children: AgentTraceDisplayItem[];
     }
   | {
       type: "card_list";
@@ -4490,6 +4539,7 @@ function appendLegacyAgentTraceEvent(
             },
           ),
           workCategory: entry.payload.workCategory,
+          ...(materialWrite ? { stageHeadline: true } : {}),
         });
         if (materialEvidence) {
           ctx.items.push({
@@ -4664,6 +4714,7 @@ function appendSharedAgentTraceEvent(
           icon: "\u2713",
           text: `Generated ${announced.announcement.kind}: ${announced.announcement.title}`,
         },
+        stageHeadline: true,
       });
       return true;
     }
@@ -4705,7 +4756,8 @@ function appendSharedAgentTraceEvent(
       return true;
     }
     case "final": {
-      const alreadyCompleted = ctx.items.some(
+      const alreadyCompleted = someAgentTraceDisplayItem(
+        ctx.items,
         (item) => item.type === "action" && item.row.kind === "done",
       );
       if (!alreadyCompleted) {
@@ -4879,6 +4931,197 @@ function appendMaterialOutcomeFooter(ctx: AgentTraceAdapterContext): void {
   }
 }
 
+/**
+ * Items a stage group holds.
+ *
+ * A stage groups the work the agent did; the answer it streamed, the thinking
+ * it reported and the messages it wrote are not work steps, so they stay at
+ * the top level and end the stage they interrupt rather than being folded
+ * into it out of order.
+ */
+const STAGE_GROUPED_ITEM_TYPES: ReadonlySet<AgentTraceDisplayItem["type"]> =
+  new Set(["action", "card_list", "image_grid"]);
+
+type OpenTraceStage = {
+  item: Extract<AgentTraceDisplayItem, { type: "stage" }>;
+  /** Receipts the stage's own events proved, for its summary chip. */
+  receipts: AgentActionReceipt[];
+  /**
+   * A close arrived for this stage. The close is emitted immediately before
+   * the event it describes, so the stage stays open until it has taken that
+   * event's rows.
+   */
+  awaitingClose: boolean;
+};
+
+function traceStageLabel(payload: AgentStagePayload): string {
+  return payload.undifferentiated
+    ? UNDIFFERENTIATED_AGENT_STAGE_LABEL
+    : AGENT_STAGE_LABELS[payload.stage];
+}
+
+function readTraceEventReceipts(
+  payload: AgentRunEventRecord["payload"],
+): AgentActionReceipt[] {
+  if (payload.type === "tool_result") return payload.actionReceipts || [];
+  if (payload.type === "codex_tool_activity")
+    return payload.actionReceipts || [];
+  return [];
+}
+
+/**
+ * Groups the rows a run produced under the stage that produced them.
+ *
+ * The reducer below pushes rows onto one flat array, as it always has; this
+ * moves each event's rows into the stage that was open when the event
+ * arrived. Nothing here reads a tool name: a stage opens, closes and is
+ * labelled entirely from the `agent_stage` events the run recorded (or that
+ * the compatibility projection reconstructed for it).
+ */
+function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
+  let open: OpenTraceStage | null = null;
+  let closed: OpenTraceStage | null = null;
+  /** Whether a top-level row has separated the last closed stage from now. */
+  let interrupted = false;
+
+  const close = (): void => {
+    const stage = open;
+    open = null;
+    if (!stage) return;
+    // The row that announces what the stage produced becomes its heading, so
+    // the group names its own outcome instead of repeating it one line down.
+    const headlineIndex = stage.item.children.findIndex(
+      (child) => child.type === "action" && child.stageHeadline,
+    );
+    if (headlineIndex >= 0) {
+      const [headline] = stage.item.children.splice(headlineIndex, 1);
+      if (headline.type === "action") stage.item.label = headline.row.text;
+    }
+    const chips = buildAgentTraceVerificationChips(stage.receipts);
+    if (chips.length) stage.item.chips = chips;
+    closed = stage;
+    interrupted = false;
+  };
+
+  const openStage = (payload: AgentStagePayload, seq: number): void => {
+    // Two stages of one kind with nothing visible between them are one stage
+    // to the reader, so the second reopens the first instead of repeating it.
+    if (closed && !interrupted && closed.item.stage === payload.stage) {
+      open = closed;
+      closed = null;
+      open.awaitingClose = false;
+      open.item.status = payload.status;
+      return;
+    }
+    const item: Extract<AgentTraceDisplayItem, { type: "stage" }> = {
+      type: "stage",
+      key: `stage:${seq}`,
+      stage: payload.stage,
+      status: payload.status,
+      label: traceStageLabel(payload),
+      ...(payload.projected ? { projected: true } : {}),
+      children: [],
+    };
+    open = { item, receipts: [], awaitingClose: false };
+    items.push(item);
+  };
+
+  return {
+    onStageEvent(payload: AgentStagePayload, seq: number): void {
+      if (payload.status === "started") {
+        if (open?.item.stage === payload.stage) {
+          open.awaitingClose = false;
+          open.item.status = "started";
+          return;
+        }
+        close();
+        openStage(payload, seq);
+        return;
+      }
+      if (open?.item.stage !== payload.stage) {
+        close();
+        openStage(payload, seq);
+      }
+      if (!open) return;
+      open.item.status = payload.status;
+      open.awaitingClose = true;
+    },
+    noteEvent(entry: AgentRunEventRecord): void {
+      if (!open) return;
+      open.receipts.push(...readTraceEventReceipts(entry.payload));
+    },
+    /** Move the rows this event produced into the stage that was open. */
+    routeProducedItems(producedFrom: number): void {
+      if (items.length <= producedFrom) return;
+      const produced = items.slice(producedFrom);
+      const groupable = produced.every((item) =>
+        STAGE_GROUPED_ITEM_TYPES.has(item.type),
+      );
+      if (!open || !groupable) {
+        close();
+        interrupted = true;
+        return;
+      }
+      items.length = producedFrom;
+      open.item.children.push(...produced);
+      if (open.awaitingClose) close();
+    },
+    finish(): void {
+      close();
+    },
+  };
+}
+
+/** Whether any item, inside a stage group or not, satisfies `predicate`. */
+function someAgentTraceDisplayItem(
+  items: readonly AgentTraceDisplayItem[],
+  predicate: (item: AgentTraceDisplayItem) => boolean,
+): boolean {
+  return items.some((item) =>
+    item.type === "stage"
+      ? predicate(item) || someAgentTraceDisplayItem(item.children, predicate)
+      : predicate(item),
+  );
+}
+
+/** Rewrite every reader-facing string with the run's paper display labels. */
+function projectPaperReferencesOntoTraceItems(
+  items: readonly AgentTraceDisplayItem[],
+  labels: Map<string, string>,
+): AgentTraceDisplayItem[] {
+  return items.map((item): AgentTraceDisplayItem => {
+    if (item.type === "inline_text")
+      return { ...item, text: projectPaperReferences(item.text, labels) };
+    if (item.type === "reasoning")
+      return {
+        ...item,
+        summary: item.summary
+          ? projectPaperReferences(item.summary, labels)
+          : undefined,
+        details: item.details
+          ? projectPaperReferences(item.details, labels)
+          : undefined,
+      };
+    if (item.type === "message")
+      return { ...item, text: projectPaperReferences(item.text, labels) };
+    if (item.type === "action")
+      return {
+        ...item,
+        row: {
+          ...item.row,
+          text: projectPaperReferences(item.row.text, labels),
+        },
+      };
+    if (item.type === "stage")
+      return {
+        ...item,
+        label: projectPaperReferences(item.label, labels),
+        children: projectPaperReferencesOntoTraceItems(item.children, labels),
+      };
+    return item;
+  });
+}
+
 function buildAgentTraceDisplayItemsCanonical(
   events: AgentRunEventRecord[],
   userMessage: Message | null | undefined,
@@ -4960,8 +5203,13 @@ function buildAgentTraceDisplayItemsCanonical(
     detailKey: "request",
   });
 
+  const stageGrouper = createTraceStageGrouper(items);
   for (let index = 0; index < compactedEvents.length; index += 1) {
     const entry = compactedEvents[index];
+    if (entry.payload.type === "agent_stage") {
+      stageGrouper.onStageEvent(entry.payload, entry.seq);
+      continue;
+    }
     const itemCountBeforeEvent = items.length;
     const handled =
       appendCodexAgentTraceEvent(adapterContext, entry) ||
@@ -4974,7 +5222,10 @@ function buildAgentTraceDisplayItemsCanonical(
     ) {
       markLatestInlineTextAsIntermediate(adapterContext, itemCountBeforeEvent);
     }
+    stageGrouper.noteEvent(entry);
+    stageGrouper.routeProducedItems(itemCountBeforeEvent);
   }
+  stageGrouper.finish();
 
   appendMaterialOutcomeFooter(adapterContext);
 
@@ -5010,37 +5261,75 @@ function buildAgentTraceDisplayItemsCanonical(
 
   const labels = researchDisplayLabels(events);
   const presentedItems = labels
-    ? displayItems.map((item): AgentTraceDisplayItem => {
-        if (item.type === "inline_text")
-          return { ...item, text: projectPaperReferences(item.text, labels) };
-        if (item.type === "reasoning")
-          return {
-            ...item,
-            summary: item.summary
-              ? projectPaperReferences(item.summary, labels)
-              : undefined,
-            details: item.details
-              ? projectPaperReferences(item.details, labels)
-              : undefined,
-          };
-        if (item.type === "message")
-          return { ...item, text: projectPaperReferences(item.text, labels) };
-        if (item.type === "action")
-          return {
-            ...item,
-            row: {
-              ...item.row,
-              text: projectPaperReferences(item.row.text, labels),
-            },
-          };
-        return item;
-      })
+    ? projectPaperReferencesOntoTraceItems(displayItems, labels)
     : displayItems;
   return {
     items: presentedItems,
     isInterleaved,
     inlineTextReplacesAssistantText,
   };
+}
+
+/** How a stage's heading reports where the stage got to. */
+const AGENT_STAGE_STATUS_ICONS: Readonly<Record<AgentStageStatus, string>> = {
+  started: "\u2026",
+  completed: "\u2713",
+  failed: "!",
+};
+
+/**
+ * One stage group: a heading naming the stage and a body holding its rows.
+ *
+ * A stage with no rows of its own (a material announcement that became the
+ * heading, for instance) is a plain row rather than an empty disclosure.
+ */
+function renderAgentTraceStageShell(
+  doc: Document,
+  item: Extract<AgentTraceDisplayItem, { type: "stage" }>,
+  runId: string,
+): HTMLElement {
+  const expandable = item.children.length > 0;
+  const node = doc.createElement(expandable ? "details" : "div") as HTMLElement;
+  node.className = `llm-agent-process-stage${
+    expandable ? " llm-agent-process-stage-expandable" : ""
+  }`;
+  node.setAttribute("data-stage", item.stage);
+  node.setAttribute("data-stage-status", item.status);
+  const row = doc.createElement("div") as HTMLDivElement;
+  row.className = "llm-at-row llm-at-row-stage";
+  const icon = doc.createElement("span") as HTMLSpanElement;
+  icon.className = "llm-at-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = AGENT_STAGE_STATUS_ICONS[item.status];
+  const label = doc.createElement("span") as HTMLSpanElement;
+  label.className = "llm-at-text llm-agent-process-stage-label";
+  label.textContent = item.label;
+  row.append(icon, label);
+  const chips = renderAgentTraceChips(doc, item.chips);
+  if (!expandable) {
+    node.appendChild(row);
+    if (chips) node.appendChild(chips);
+    return node;
+  }
+  const expansionKey = `${runId}:${item.key}`;
+  const remembered = agentTraceActionExpandedCache.get(expansionKey);
+  (node as HTMLDetailsElement).open = remembered === undefined || remembered;
+  const summary = doc.createElement("summary") as HTMLElement;
+  summary.className =
+    "llm-agent-process-action-summary llm-agent-process-stage-summary";
+  summary.appendChild(row);
+  if (chips) summary.appendChild(chips);
+  node.appendChild(summary);
+  const body = doc.createElement("div") as HTMLDivElement;
+  body.className = "llm-agent-activity-list llm-agent-process-stage-body";
+  node.appendChild(body);
+  node.addEventListener("toggle", () => {
+    agentTraceActionExpandedCache.set(
+      expansionKey,
+      Boolean((node as HTMLDetailsElement).open),
+    );
+  });
+  return node;
 }
 
 function renderAgentTraceChips(
@@ -6049,248 +6338,284 @@ export function renderAgentTrace({
   const hasFinalResponse = events.some(
     (entry) => entry.payload.type === "final",
   );
-  let cursor = list.firstChild;
   const nextViews = new Map<string, TraceItemView>();
-  let currentKey = "";
-  let currentSignature = "";
-  const place = (node: HTMLElement) => {
-    if (node !== cursor) list.insertBefore(node, cursor);
-    cursor = node.nextSibling;
-    nextViews.set(currentKey, { signature: currentSignature, node });
-  };
-  for (const [itemIndex, itemEntry] of processItems.entries()) {
-    currentKey =
-      itemEntry.type === "reasoning"
-        ? `reasoning:${itemEntry.key}`
-        : itemEntry.type === "action" && itemEntry.detailKey
-          ? `action:${itemEntry.detailKey}`
-          : `${itemEntry.type}:${itemIndex}`;
-    currentSignature = JSON.stringify(itemEntry);
-    if (
-      itemEntry.type === "inline_text" ||
-      (itemEntry.type === "message" && itemEntry.markdown)
-    )
-      currentSignature += `:${view.formattingVersion || 0}`;
-    const old = view.items.get(currentKey);
-    if (old?.signature === currentSignature) {
-      place(old.node);
-      continue;
-    }
-    if (old && itemEntry.type === "inline_text" && message.streaming) {
-      renderStreamingMarkdownInto(
-        old.node,
-        buildAgentTraceMarkdownForRender(itemEntry.text, message),
-        doc,
-        () => {},
-      );
-      place(old.node);
-      continue;
-    }
-    if (old && itemEntry.type === "reasoning") {
-      const target = old.node.querySelector<HTMLElement>(
-        ".llm-agent-reasoning-text",
-      );
-      if (target) {
-        updateReasoningText(
-          target,
-          itemEntry.summary || itemEntry.details || "",
+  // Stage groups nest their rows, so placement walks one container at a time
+  // and recurses into a stage's body with the same retained-view cache.
+  const renderTraceItemsInto = (
+    container: HTMLElement,
+    itemsToRender: readonly AgentTraceDisplayItem[],
+    keyPrefix: string,
+  ): void => {
+    let cursor: ChildNode | null = container.firstChild;
+    let currentKey = "";
+    let currentSignature = "";
+    const place = (node: HTMLElement) => {
+      if (node !== cursor) container.insertBefore(node, cursor);
+      cursor = node.nextSibling;
+      nextViews.set(currentKey, { signature: currentSignature, node });
+    };
+    for (const [itemIndex, itemEntry] of itemsToRender.entries()) {
+      currentKey =
+        keyPrefix +
+        (itemEntry.type === "reasoning"
+          ? `reasoning:${itemEntry.key}`
+          : itemEntry.type === "stage"
+            ? itemEntry.key
+            : itemEntry.type === "action" && itemEntry.detailKey
+              ? `action:${itemEntry.detailKey}`
+              : `${itemEntry.type}:${itemIndex}`);
+      if (itemEntry.type === "stage") {
+        // The group's own signature covers its heading only: a row arriving
+        // inside it must not rebuild the disclosure the reader has open.
+        currentSignature = JSON.stringify({
+          key: itemEntry.key,
+          stage: itemEntry.stage,
+          status: itemEntry.status,
+          label: itemEntry.label,
+          chips: itemEntry.chips,
+          expandable: itemEntry.children.length > 0,
+        });
+        const previousStage = view.items.get(currentKey);
+        const stageNode =
+          previousStage?.signature === currentSignature
+            ? previousStage.node
+            : renderAgentTraceStageShell(doc, itemEntry, runId);
+        place(stageNode);
+        const body = stageNode.querySelector<HTMLElement>(
+          ".llm-agent-process-stage-body",
         );
-        const label = old.node.querySelector("summary");
-        if (label && label.textContent !== itemEntry.label)
-          label.textContent = itemEntry.label;
+        if (body)
+          renderTraceItemsInto(body, itemEntry.children, `${currentKey}/`);
+        continue;
+      }
+      currentSignature = JSON.stringify(itemEntry);
+      if (
+        itemEntry.type === "inline_text" ||
+        (itemEntry.type === "message" && itemEntry.markdown)
+      )
+        currentSignature += `:${view.formattingVersion || 0}`;
+      const old = view.items.get(currentKey);
+      if (old?.signature === currentSignature) {
         place(old.node);
         continue;
       }
-    }
-    if (itemEntry.type === "inline_text") {
-      const inlineEl = doc.createElement("div");
-      inlineEl.className = "llm-agent-inline-text";
-      const inlineText = buildAgentTraceMarkdownForRender(
-        itemEntry.text,
-        message,
-      );
-      try {
-        renderRenderedMarkdownInto(inlineEl, inlineText, doc);
-      } catch {
-        inlineEl.textContent = inlineText;
+      if (old && itemEntry.type === "inline_text" && message.streaming) {
+        renderStreamingMarkdownInto(
+          old.node,
+          buildAgentTraceMarkdownForRender(itemEntry.text, message),
+          doc,
+          () => {},
+        );
+        place(old.node);
+        continue;
       }
-      place(inlineEl);
-      continue;
-    }
-
-    if (itemEntry.type === "message") {
-      const messageEl = doc.createElement("div");
-      messageEl.className = `llm-agent-process-message llm-agent-process-message-${itemEntry.tone}`;
-      if (itemEntry.markdown) {
-        messageEl.classList.add("llm-agent-process-message-markdown");
-        const markdownText = buildAgentTraceMarkdownForRender(
+      if (old && itemEntry.type === "reasoning") {
+        const target = old.node.querySelector<HTMLElement>(
+          ".llm-agent-reasoning-text",
+        );
+        if (target) {
+          updateReasoningText(
+            target,
+            itemEntry.summary || itemEntry.details || "",
+          );
+          const label = old.node.querySelector("summary");
+          if (label && label.textContent !== itemEntry.label)
+            label.textContent = itemEntry.label;
+          place(old.node);
+          continue;
+        }
+      }
+      if (itemEntry.type === "inline_text") {
+        const inlineEl = doc.createElement("div");
+        inlineEl.className = "llm-agent-inline-text";
+        const inlineText = buildAgentTraceMarkdownForRender(
           itemEntry.text,
           message,
         );
         try {
-          renderRenderedMarkdownInto(messageEl, markdownText, doc);
+          renderRenderedMarkdownInto(inlineEl, inlineText, doc);
         } catch {
-          messageEl.textContent = markdownText;
+          inlineEl.textContent = inlineText;
         }
-      } else {
-        messageEl.textContent = itemEntry.text;
-      }
-      place(messageEl);
-      continue;
-    }
-
-    if (itemEntry.type === "card_list") {
-      const papers = itemEntry.cards.filter(
-        (card) => card.kind !== "saved_note" && card.kind !== "note_change",
-      );
-      if (papers.length) place(renderResultCardList(doc, papers));
-      continue;
-    }
-
-    if (itemEntry.type === "image_grid") {
-      const container = doc.createElement("div") as HTMLDivElement;
-      container.className = "llm-agent-image-artifacts";
-      const rendered = renderAssistantGeneratedImagesInto(
-        container,
-        itemEntry.images,
-        doc,
-        {
-          wrapClassName: "llm-agent-image-artifacts-grid",
-          frameClassName: "llm-agent-image-artifact-frame",
-        },
-      );
-      if (rendered) place(container);
-      continue;
-    }
-
-    if (itemEntry.type === "reasoning") {
-      const details = doc.createElement("details") as HTMLDetailsElement;
-      details.className = "llm-agent-reasoning";
-      const expansionKey = `${runId}:${itemEntry.key}`;
-      details.open = Boolean(agentReasoningExpandedCache.get(expansionKey));
-
-      const summary = doc.createElement("summary") as HTMLElement;
-      summary.className = "llm-agent-reasoning-summary";
-      summary.textContent = itemEntry.label;
-      let reasoningToggleHandled = false;
-      const toggleReasoning = (event: Event) => {
-        if (reasoningToggleHandled) return;
-        reasoningToggleHandled = true;
-        event.preventDefault();
-        event.stopPropagation();
-        const next = !details.open;
-        details.open = next;
-        agentReasoningExpandedCache.set(expansionKey, next);
-        doc.defaultView?.setTimeout(() => {
-          reasoningToggleHandled = false;
-        }, 0);
-      };
-      summary.addEventListener("pointerdown", toggleReasoning);
-      summary.addEventListener("mousedown", toggleReasoning);
-      summary.addEventListener("click", (event: Event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      });
-      summary.addEventListener("keydown", (event: KeyboardEvent) => {
-        if (event.key === "Enter" || event.key === " ") {
-          toggleReasoning(event);
-        }
-      });
-      details.appendChild(summary);
-
-      const bodyWrap = doc.createElement("div") as HTMLDivElement;
-      bodyWrap.className = "llm-agent-reasoning-body";
-
-      // Show only summary — details from most models duplicate the summary
-      const reasoningText = itemEntry.summary || itemEntry.details;
-      if (reasoningText) {
-        const summaryBlock = doc.createElement("div") as HTMLDivElement;
-        summaryBlock.className = "llm-agent-reasoning-block";
-        const text = doc.createElement("div") as HTMLDivElement;
-        text.className = "llm-agent-reasoning-text";
-        text.textContent = reasoningText;
-        summaryBlock.appendChild(text);
-        bodyWrap.appendChild(summaryBlock);
+        place(inlineEl);
+        continue;
       }
 
-      // Details section removed — most models duplicate summary in details
+      if (itemEntry.type === "message") {
+        const messageEl = doc.createElement("div");
+        messageEl.className = `llm-agent-process-message llm-agent-process-message-${itemEntry.tone}`;
+        if (itemEntry.markdown) {
+          messageEl.classList.add("llm-agent-process-message-markdown");
+          const markdownText = buildAgentTraceMarkdownForRender(
+            itemEntry.text,
+            message,
+          );
+          try {
+            renderRenderedMarkdownInto(messageEl, markdownText, doc);
+          } catch {
+            messageEl.textContent = markdownText;
+          }
+        } else {
+          messageEl.textContent = itemEntry.text;
+        }
+        place(messageEl);
+        continue;
+      }
 
-      details.appendChild(bodyWrap);
-      place(details);
-      continue;
-    }
+      if (itemEntry.type === "card_list") {
+        const papers = itemEntry.cards.filter(
+          (card) => card.kind !== "saved_note" && card.kind !== "note_change",
+        );
+        if (papers.length) place(renderResultCardList(doc, papers));
+        continue;
+      }
 
-    const actionDetails = buildAgentTraceActionDetails(itemEntry);
-    const isExpandable = actionDetails.length > 0;
-    const actionWrap = doc.createElement(
-      isExpandable ? "details" : "div",
-    ) as HTMLElement;
-    actionWrap.className = `llm-agent-process-action${
-      isExpandable ? " llm-agent-process-action-expandable" : ""
-    }`;
-    if (itemEntry.workCategory) {
-      actionWrap.setAttribute("data-work-category", itemEntry.workCategory);
-    }
-    const expansionKey = `${runId}:action:${itemEntry.detailKey || itemIndex}`;
-    if (isExpandable) {
-      (actionWrap as HTMLDetailsElement).open = Boolean(
-        agentTraceActionExpandedCache.get(expansionKey),
-      );
-    }
-    const row = doc.createElement("div");
-    row.className = `llm-at-row llm-at-row-${itemEntry.row.kind}`;
-    const isActivePlanningRow =
-      message.streaming === true &&
-      tracePlanPhase === "planning" &&
-      itemEntry.row.kind === "plan" &&
-      /^planning\b/i.test(itemEntry.row.text.trim());
-    if (isActivePlanningRow) {
-      row.classList.add("llm-at-row-planning-active");
-    }
-    const icon = isActivePlanningRow
-      ? createPlanningDriveIcon(doc)
-      : doc.createElement("span");
-    if (!isActivePlanningRow) {
-      icon.className = `llm-at-icon${
-        itemEntry.row.iconName ? ` llm-at-icon-${itemEntry.row.iconName}` : ""
+      if (itemEntry.type === "image_grid") {
+        const container = doc.createElement("div") as HTMLDivElement;
+        container.className = "llm-agent-image-artifacts";
+        const rendered = renderAssistantGeneratedImagesInto(
+          container,
+          itemEntry.images,
+          doc,
+          {
+            wrapClassName: "llm-agent-image-artifacts-grid",
+            frameClassName: "llm-agent-image-artifact-frame",
+          },
+        );
+        if (rendered) place(container);
+        continue;
+      }
+
+      if (itemEntry.type === "reasoning") {
+        const details = doc.createElement("details") as HTMLDetailsElement;
+        details.className = "llm-agent-reasoning";
+        const expansionKey = `${runId}:${itemEntry.key}`;
+        details.open = Boolean(agentReasoningExpandedCache.get(expansionKey));
+
+        const summary = doc.createElement("summary") as HTMLElement;
+        summary.className = "llm-agent-reasoning-summary";
+        summary.textContent = itemEntry.label;
+        let reasoningToggleHandled = false;
+        const toggleReasoning = (event: Event) => {
+          if (reasoningToggleHandled) return;
+          reasoningToggleHandled = true;
+          event.preventDefault();
+          event.stopPropagation();
+          const next = !details.open;
+          details.open = next;
+          agentReasoningExpandedCache.set(expansionKey, next);
+          doc.defaultView?.setTimeout(() => {
+            reasoningToggleHandled = false;
+          }, 0);
+        };
+        summary.addEventListener("pointerdown", toggleReasoning);
+        summary.addEventListener("mousedown", toggleReasoning);
+        summary.addEventListener("click", (event: Event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        summary.addEventListener("keydown", (event: KeyboardEvent) => {
+          if (event.key === "Enter" || event.key === " ") {
+            toggleReasoning(event);
+          }
+        });
+        details.appendChild(summary);
+
+        const bodyWrap = doc.createElement("div") as HTMLDivElement;
+        bodyWrap.className = "llm-agent-reasoning-body";
+
+        // Show only summary — details from most models duplicate the summary
+        const reasoningText = itemEntry.summary || itemEntry.details;
+        if (reasoningText) {
+          const summaryBlock = doc.createElement("div") as HTMLDivElement;
+          summaryBlock.className = "llm-agent-reasoning-block";
+          const text = doc.createElement("div") as HTMLDivElement;
+          text.className = "llm-agent-reasoning-text";
+          text.textContent = reasoningText;
+          summaryBlock.appendChild(text);
+          bodyWrap.appendChild(summaryBlock);
+        }
+
+        // Details section removed — most models duplicate summary in details
+
+        details.appendChild(bodyWrap);
+        place(details);
+        continue;
+      }
+
+      const actionDetails = buildAgentTraceActionDetails(itemEntry);
+      const isExpandable = actionDetails.length > 0;
+      const actionWrap = doc.createElement(
+        isExpandable ? "details" : "div",
+      ) as HTMLElement;
+      actionWrap.className = `llm-agent-process-action${
+        isExpandable ? " llm-agent-process-action-expandable" : ""
       }`;
-      icon.setAttribute("aria-hidden", "true");
-      if (!itemEntry.row.iconName) icon.textContent = itemEntry.row.icon;
-    }
-    const text = doc.createElement("span");
-    text.className = `llm-at-text llm-at-${itemEntry.row.kind}-text`;
-    if (isActivePlanningRow) text.classList.add("llm-text-shimmer");
-    text.textContent = itemEntry.row.text;
-    if (isExpandable) {
-      row.append(icon, text);
-
-      const summary = doc.createElement("summary") as HTMLElement;
-      summary.className = "llm-agent-process-action-summary";
-      summary.appendChild(row);
-      const chips = renderAgentTraceChips(doc, itemEntry.chips);
-      if (chips) summary.appendChild(chips);
-      actionWrap.appendChild(summary);
-      actionWrap.appendChild(renderAgentTraceDetailsBody(doc, actionDetails));
-      actionWrap.addEventListener("toggle", () => {
-        const open = Boolean((actionWrap as HTMLDetailsElement).open);
-        agentTraceActionExpandedCache.set(expansionKey, open);
-      });
-    } else {
-      row.append(icon, text);
-      actionWrap.appendChild(row);
-      const chips = renderAgentTraceChips(doc, itemEntry.chips);
-      if (chips) {
-        actionWrap.appendChild(chips);
+      if (itemEntry.workCategory) {
+        actionWrap.setAttribute("data-work-category", itemEntry.workCategory);
       }
-    }
+      const expansionKey = `${runId}:action:${itemEntry.detailKey || itemIndex}`;
+      if (isExpandable) {
+        (actionWrap as HTMLDetailsElement).open = Boolean(
+          agentTraceActionExpandedCache.get(expansionKey),
+        );
+      }
+      const row = doc.createElement("div");
+      row.className = `llm-at-row llm-at-row-${itemEntry.row.kind}`;
+      const isActivePlanningRow =
+        message.streaming === true &&
+        tracePlanPhase === "planning" &&
+        itemEntry.row.kind === "plan" &&
+        /^planning\b/i.test(itemEntry.row.text.trim());
+      if (isActivePlanningRow) {
+        row.classList.add("llm-at-row-planning-active");
+      }
+      const icon = isActivePlanningRow
+        ? createPlanningDriveIcon(doc)
+        : doc.createElement("span");
+      if (!isActivePlanningRow) {
+        icon.className = `llm-at-icon${
+          itemEntry.row.iconName ? ` llm-at-icon-${itemEntry.row.iconName}` : ""
+        }`;
+        icon.setAttribute("aria-hidden", "true");
+        if (!itemEntry.row.iconName) icon.textContent = itemEntry.row.icon;
+      }
+      const text = doc.createElement("span");
+      text.className = `llm-at-text llm-at-${itemEntry.row.kind}-text`;
+      if (isActivePlanningRow) text.classList.add("llm-text-shimmer");
+      text.textContent = itemEntry.row.text;
+      if (isExpandable) {
+        row.append(icon, text);
 
-    place(actionWrap);
-  }
-  while (cursor) {
-    const next = cursor.nextSibling;
-    list.removeChild(cursor);
-    cursor = next;
-  }
+        const summary = doc.createElement("summary") as HTMLElement;
+        summary.className = "llm-agent-process-action-summary";
+        summary.appendChild(row);
+        const chips = renderAgentTraceChips(doc, itemEntry.chips);
+        if (chips) summary.appendChild(chips);
+        actionWrap.appendChild(summary);
+        actionWrap.appendChild(renderAgentTraceDetailsBody(doc, actionDetails));
+        actionWrap.addEventListener("toggle", () => {
+          const open = Boolean((actionWrap as HTMLDetailsElement).open);
+          agentTraceActionExpandedCache.set(expansionKey, open);
+        });
+      } else {
+        row.append(icon, text);
+        actionWrap.appendChild(row);
+        const chips = renderAgentTraceChips(doc, itemEntry.chips);
+        if (chips) {
+          actionWrap.appendChild(chips);
+        }
+      }
+
+      place(actionWrap);
+    }
+    while (cursor) {
+      const next = cursor.nextSibling;
+      container.removeChild(cursor);
+      cursor = next;
+    }
+  };
+  renderTraceItemsInto(list, processItems, "");
   for (const [key, old] of view.items) {
     if (nextViews.get(key)?.node !== old.node)
       disposeStreamingMarkdown(old.node);

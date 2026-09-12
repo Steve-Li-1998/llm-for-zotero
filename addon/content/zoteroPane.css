@@ -5145,6 +5145,35 @@
   display: none;
 }
 
+.llm-agent-process-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.llm-agent-process-stage-expandable {
+  display: block;
+}
+
+.llm-agent-process-stage-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.llm-agent-process-stage-summary::-webkit-details-marker {
+  display: none;
+}
+
+.llm-agent-process-stage-body {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 1px solid
+    color-mix(in srgb, var(--stroke-secondary) 72%, transparent);
+}
+
 .llm-agent-process-chips {
   display: flex;
   flex-wrap: wrap;

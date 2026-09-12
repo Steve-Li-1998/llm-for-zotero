@@ -658,6 +658,16 @@ export type AgentSystemMessage = {
 export type AgentUserMessage = {
   role: "user";
   content: string | AgentModelContentPart[];
+  /**
+   * Host state the model should see this turn and never again.
+   *
+   * The transcript and its checkpoints are durable; a transient message is
+   * recomputed from durable evidence at every turn start, so persisting it
+   * would stack duplicates and keep serving a stale copy after the state it
+   * described has changed.  Providers never see this field: adapters build
+   * their payload from `role` and `content` alone.
+   */
+  transient?: true;
 };
 
 export type AgentAssistantMessage = {

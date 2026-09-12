@@ -8668,6 +8668,11 @@ describe("finalized material announcement", function () {
       const blockIndex = second.promptMessages.findIndex((message) =>
         String(message.content).includes(BLOCK_HEADER),
       );
+      assert.isTrue(
+        (second.promptMessages[blockIndex] as { transient?: boolean })
+          .transient,
+        "the block is marked transient, so no checkpoint can copy it into the transcript",
+      );
       const block = String(second.promptMessages[blockIndex]?.content);
       assert.include(
         block,

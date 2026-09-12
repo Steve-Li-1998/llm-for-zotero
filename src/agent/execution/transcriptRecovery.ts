@@ -80,7 +80,11 @@ export function buildFinalizedMaterialRecoveryMessage(
   materialOutcomes: readonly MaterialOutcomeEntry[] | undefined,
 ): AgentModelMessage | null {
   const lines = formatMaterialOutcomeRecoveryLines(materialOutcomes || []);
-  return lines.length ? { role: "user", content: lines.join("\n") } : null;
+  // Transient: the ledger behind it is recomputed at every turn start, so this
+  // message must never be copied into the transcript or one of its checkpoints.
+  return lines.length
+    ? { role: "user", content: lines.join("\n"), transient: true }
+    : null;
 }
 
 export function buildInterruptedRunRecoveryMessage(params: {

@@ -235,6 +235,24 @@ function buildSummaryMessage(
   };
 }
 
+/**
+ * Messages a durable artifact may be built from.
+ *
+ * System messages are re-rendered every turn, and a transient host message is
+ * recomputed from durable evidence every turn; copying either into a
+ * checkpoint would preserve a stale snapshot of something the host already
+ * owns.
+ */
+function durableTranscriptMessages(
+  messages: readonly AgentModelMessage[],
+): AgentModelMessage[] {
+  return messages.filter(
+    (message) =>
+      message.role !== "system" &&
+      !(message.role === "user" && message.transient),
+  );
+}
+
 export function buildAgentSemanticCheckpoint(params: {
   messages: AgentModelMessage[];
   summaryTokens: number;
@@ -245,9 +263,7 @@ export function buildAgentSemanticCheckpoint(params: {
   checkpoint: AgentUserMessage & { content: string };
   handleRecords: AgentToolResultHandleRecord[];
 } {
-  const messages = params.messages.filter(
-    (message) => message.role !== "system",
-  );
+  const messages = durableTranscriptMessages(params.messages);
   const generated = buildDroppedToolHandleRecords({
     messages,
     conversationKey: params.conversationKey,
@@ -321,9 +337,7 @@ export function compactAgentTranscript(params: {
   conversationKey?: number;
   resourceSignature?: string;
 }): AgentTranscriptCompactionResult {
-  const messages = params.messages.filter(
-    (message) => message.role !== "system",
-  );
+  const messages = durableTranscriptMessages(params.messages);
   if (messages.length <= params.budget.policy.minRecentMessages + 1) {
     return {
       compacted: false,

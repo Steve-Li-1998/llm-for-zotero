@@ -46,6 +46,7 @@ export type {
 } from "./actionOperationEvidence";
 export {
   describeLibraryMutationActions,
+  describeLibraryMutationInput,
   extractLibraryMutationOperations,
 } from "./actionOperationEvidence";
 

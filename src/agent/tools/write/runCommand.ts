@@ -1028,6 +1028,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
         destinationCollectionIds: [],
       },
     ],
+    effectOperations: ["command_execute"],
     spec: {
       name: "run_command",
       description:

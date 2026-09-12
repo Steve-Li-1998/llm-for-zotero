@@ -9,6 +9,7 @@
  * nothing removed a previous batch's choices.
  */
 import type { AgentWriteToolDefinition } from "../../types";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import {
   LibraryMutationService,
   type SetItemTagsOperation,
@@ -27,6 +28,8 @@ export function createUpdateLibraryTagTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["update_library_tag"],
     spec: {
       name: "tag_update",
       description:
@@ -173,6 +176,8 @@ export function createSetItemTagsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["set_item_tags"],
     spec: {
       name: "set_item_tags",
       description:

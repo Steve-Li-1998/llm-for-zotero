@@ -379,6 +379,7 @@ describe("central authorization from concrete proposals", function () {
   it("derives exclusive replacement risk from the concrete move parameters", function () {
     const proposal = buildActionProposal({
       tool: {
+        effectOperations: ["settings_update"],
         spec: {
           name: "move_to_collection",
           description: "",

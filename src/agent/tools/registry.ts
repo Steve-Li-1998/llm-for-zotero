@@ -1,5 +1,6 @@
 import { defaultInvocationPlan } from "../authorization/invocationPlan";
 import type { ActionContractService } from "../contracts/actionContract";
+import { operationCatalogEntry } from "../contracts/operationCatalog";
 import type { PlanAmendmentService } from "../plans/amendments";
 import { isMalformedToolArgumentsDiagnostic } from "../toolArgumentDiagnostics";
 import type {
@@ -37,6 +38,48 @@ function assertPortableModelToolSchema(spec: ToolSpec): void {
     if (Object.prototype.hasOwnProperty.call(schema, keyword)) {
       throw new Error(
         `Tool "${spec.name}" has an incompatible model-visible inputSchema: root-level "${keyword}" is not portable across providers. Move alternatives into properties and enforce cross-field rules in validate().`,
+      );
+    }
+  }
+}
+
+/**
+ * An external effect may only be registered when the host can name, before any
+ * input exists, exactly which operations it can perform.
+ *
+ * The per-invocation refusal in `InvocationAssessor.assess` still guards the
+ * call itself, but it only fires once a model has chosen arguments and only
+ * when the tool's own plan reports an impact. A tool misregistered here would
+ * otherwise ship and fail at call time — or never be checked at all, if its
+ * `planInvocation` reports `read_only`.
+ *
+ * `describeAction` output depends on the input, so registration validates the
+ * definition's static `effectOperations` instead. `OPERATION_CATALOG` owns the
+ * capability and proof domain for each operation, so a declared operation that
+ * is absent from it has no proof domain and cannot be authorized or verified.
+ * `AgentActionOperation` already makes an unknown operation a compile error;
+ * this repeats the check at runtime for definitions that reach the registry
+ * from the plugin extension API without passing through the compiler.
+ */
+function assertTypedActionAdapter(tool: AgentToolDefinition<any, any>): void {
+  // Exempt by class: `control` tools (library_batch, workflow_script) own no
+  // effect of their own — every child call re-enters this registry.
+  if (tool.spec.executionClass !== "external_effect") return;
+  const name = tool.spec.name;
+  if (!tool.describeAction) {
+    throw new Error(
+      `Tool "${name}" is registered as external_effect without a typed action adapter: add describeAction so the host can freeze its exact operation, capability, proof domain, and targets.`,
+    );
+  }
+  if (!tool.effectOperations?.length) {
+    throw new Error(
+      `Tool "${name}" is registered as external_effect without effectOperations: declare every operation its describeAction can produce.`,
+    );
+  }
+  for (const operation of tool.effectOperations) {
+    if (!operationCatalogEntry(operation)) {
+      throw new Error(
+        `Tool "${name}" declares effect operation "${operation}", which is not in the operation catalog: add its capability and proof domain to OPERATION_CATALOG before registering the tool.`,
       );
     }
   }
@@ -253,6 +296,7 @@ export class AgentToolRegistry {
 
   register<TInput, TResult>(tool: AgentToolDefinition<TInput, TResult>): void {
     assertPortableModelToolSchema(tool.spec);
+    assertTypedActionAdapter(tool);
     const registered = tool.planInvocation
       ? tool
       : {

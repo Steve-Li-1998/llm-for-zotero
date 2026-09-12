@@ -607,6 +607,7 @@ export function createFileIOTool(): AgentWriteToolDefinition<
         },
       ];
     },
+    effectOperations: ["file_write"],
     spec: {
       name: "file_io",
       description:

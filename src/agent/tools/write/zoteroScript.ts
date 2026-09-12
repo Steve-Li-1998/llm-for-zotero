@@ -1220,6 +1220,7 @@ export function createZoteroScriptTool(
               destinationCollectionIds: [],
             },
           ],
+    effectOperations: ["zotero_script_execute"],
     spec: {
       name: "zotero_script",
       description:

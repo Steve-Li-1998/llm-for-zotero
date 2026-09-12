@@ -470,6 +470,7 @@ export function createWriteNotesBatchTool(
   }
 
   return {
+    effectOperations: ["save_notes_batch"],
     spec: {
       name: "write_notes_batch",
       description:

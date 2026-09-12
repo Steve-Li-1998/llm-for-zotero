@@ -92,6 +92,7 @@ export function createRevertChangesTool(
               destinationCollectionIds: [],
             },
           ],
+    effectOperations: ["revert"],
     spec: {
       name: "revert_changes",
       description:

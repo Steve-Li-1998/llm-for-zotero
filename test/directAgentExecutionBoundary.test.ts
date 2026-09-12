@@ -59,6 +59,7 @@ describe("direct-agent execution boundary", function () {
     );
     let writes = 0;
     registry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "direct_tag",
         description: "fixture",
@@ -128,6 +129,7 @@ describe("direct-agent execution boundary", function () {
     );
     let writes = 0;
     registry.register({
+      effectOperations: ["note_create"],
       spec: {
         name: "direct_note",
         description: "fixture",
@@ -191,6 +193,7 @@ describe("direct-agent execution boundary", function () {
     );
     let writes = 0;
     registry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "reviewed_tag",
         description: "fixture",
@@ -358,6 +361,7 @@ describe("direct-agent execution boundary", function () {
         new ActionContractService({} as never),
       );
       registry.register({
+        effectOperations: ["apply_tags"],
         spec: {
           name: "planned_tag",
           description: "fixture",

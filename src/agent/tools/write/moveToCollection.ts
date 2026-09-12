@@ -1,4 +1,5 @@
 import type { AgentWriteToolDefinition } from "../../types";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import {
   buildPagedReviewActionConfig,
   buildPageSizeSelectField,
@@ -37,6 +38,8 @@ export function createMoveToCollectionTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["move_to_collection", "remove_from_collection"],
     spec: {
       name: "move_to_collection",
       description:

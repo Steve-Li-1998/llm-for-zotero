@@ -468,6 +468,7 @@ export function createEditCurrentNoteTool(
         destinationCollectionIds: input.collections || [],
       },
     ],
+    effectOperations: ["note_create", "note_edit", "note_append"],
     spec: {
       name: "edit_current_note",
       description:

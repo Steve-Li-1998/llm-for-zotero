@@ -69,6 +69,7 @@ function createReadTool(name: string): AgentToolDefinition<unknown, unknown> {
 
 function createWriteTool(name: string): AgentToolDefinition<unknown, unknown> {
   return {
+    effectOperations: ["settings_update"],
     spec: {
       name,
       description: `Write tool ${name}`,
@@ -1476,6 +1477,7 @@ describe("Zotero MCP server", function () {
       );
       for (const name of ["run_command", "file_io", "zotero_script"]) {
         registry.register({
+          effectOperations: ["settings_update"],
           spec: {
             name,
             description: `Native access tool ${name}`,
@@ -1617,6 +1619,7 @@ describe("Zotero MCP server", function () {
     );
     for (const name of ["run_command", "file_io", "zotero_script"]) {
       registry.register({
+        effectOperations: ["settings_update"],
         spec: {
           name,
           description: `Native access tool ${name}`,
@@ -2705,6 +2708,7 @@ describe("Zotero MCP server", function () {
       },
     });
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Update library",
@@ -3105,6 +3109,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Apply tags",
@@ -3178,6 +3183,7 @@ describe("Zotero MCP server", function () {
     );
     for (const name of ["run_command", "file_io"]) {
       registry.register({
+        effectOperations: ["settings_update"],
         spec: {
           name,
           description: `Policy-controlled tool ${name}`,
@@ -3257,6 +3263,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "note_write",
         description: "Edit or create notes",
@@ -3367,6 +3374,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "note_write",
         description: "Edit active note",
@@ -3601,6 +3609,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Apply tags",
@@ -3670,6 +3679,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "zotero_script",
         description: "Run Zotero script",

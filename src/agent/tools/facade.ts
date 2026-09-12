@@ -142,9 +142,21 @@ export function createDelegatingTool<TResult = unknown>(params: {
   summaries?: NonNullable<AgentToolDefinition["presentation"]>["summaries"];
   tier?: "normal" | "advanced";
   guidance?: AgentToolDefinition<DelegatedInput<any>, TResult>["guidance"];
+  /**
+   * Every tool this facade can route to. The facade performs no effect of its
+   * own, so its declared effect operations are exactly the union of theirs;
+   * adding a delegate therefore widens the facade automatically and cannot
+   * leave the declaration behind.
+   */
+  delegates: AgentToolDefinition<any, any>[];
   chooseDelegate: (args: unknown) => AgentToolInputValidation<DelegateChoice>;
 }): AgentToolDefinition<DelegatedInput<any>, TResult> {
   return {
+    effectOperations: [
+      ...new Set(
+        params.delegates.flatMap((tool) => tool.effectOperations || []),
+      ),
+    ],
     spec: {
       name: params.name,
       description: params.description,

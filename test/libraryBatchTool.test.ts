@@ -225,6 +225,7 @@ describe("library_batch", function () {
     };
     const toolRegistry = new AgentToolRegistry();
     toolRegistry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "batch_test_write",
         description: "Apply one test page",

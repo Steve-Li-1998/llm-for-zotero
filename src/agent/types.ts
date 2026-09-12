@@ -1381,6 +1381,15 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
     input: TInput,
     context?: AgentToolContext,
   ) => AgentToolActionDescriptor[] | Promise<AgentToolActionDescriptor[]>;
+  /**
+   * Every operation this tool's `describeAction` can produce.
+   *
+   * Registration has no input, so the descriptors themselves cannot be
+   * inspected there. This static list is what the registry validates against
+   * `OPERATION_CATALOG`, which owns each operation's capability and proof
+   * domain. Required for `executionClass: "external_effect"`.
+   */
+  effectOperations?: readonly AgentActionOperation[];
   validate: (args: unknown) => AgentToolInputValidation<TInput>;
   /**
    * Narrow this call's work category when one spec fronts several kinds of

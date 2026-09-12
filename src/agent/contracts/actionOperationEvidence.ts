@@ -150,6 +150,24 @@ export function describeLibraryMutationActions(
   });
 }
 
+/**
+ * The shared adapter for tools whose validated input already carries canonical
+ * library mutation operations.
+ *
+ * `prepareActionExecution` applies exactly this rule when a definition declares
+ * no `describeAction`. Registration now requires every external effect to name
+ * its adapter, so these tools declare this function instead of relying on the
+ * implicit fallback, and their adapter no longer appears and disappears with
+ * the shape of the input.
+ */
+export function describeLibraryMutationInput(
+  input: unknown,
+): AgentToolActionDescriptor[] {
+  return extractLibraryMutationOperations(input).length
+    ? describeLibraryMutationActions(input)
+    : explicitReadActions(input);
+}
+
 function explicitReadActions(input: unknown): AgentActionProposal[] {
   if (
     input &&

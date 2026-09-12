@@ -7,6 +7,7 @@ import {
   LibraryMutationService,
   type MergeItemsOperation,
 } from "../../services/libraryMutationService";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import type { AgentWriteToolDefinition } from "../../types";
 import {
@@ -34,6 +35,8 @@ export function createMergeItemsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["merge_items"],
     spec: {
       name: "merge_items",
       description:

@@ -102,6 +102,7 @@ import { stateChangeInvocationPlan } from "../src/agent/authorization/invocation
 
 function registerZeroEffectLibraryUpdate(registry: AgentToolRegistry): void {
   registry.register({
+    effectOperations: ["move_to_collection"],
     spec: {
       name: "library_update",
       description: "update",
@@ -1049,6 +1050,7 @@ describe("AgentRuntime", function () {
         ),
       );
       registry.register({
+        effectOperations: ["note_create"],
         spec: {
           name: "mutate_library",
           description: "mutate",
@@ -3199,6 +3201,7 @@ describe("AgentRuntime", function () {
         name: "zotero_script" | "run_command",
       ) => {
         registry.register({
+          effectOperations: ["zotero_script_execute"],
           spec: {
             name,
             description: name,
@@ -3588,6 +3591,7 @@ describe("AgentRuntime", function () {
       );
       const noteWrites: unknown[] = [];
       registry.register({
+        effectOperations: ["note_create", "save_note"],
         spec: {
           name: "note_write",
           description: "write note",
@@ -4668,6 +4672,7 @@ describe("AgentRuntime", function () {
       const conversationKey = 704;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
+        effectOperations: ["settings_update"],
         spec: {
           name: "confirmation_write",
           description: "write",
@@ -4889,6 +4894,7 @@ describe("AgentRuntime", function () {
       let writes = 0;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
+        effectOperations: ["settings_update"],
         spec: {
           name: "recovery_write",
           description: "write",
@@ -5059,6 +5065,7 @@ describe("AgentRuntime", function () {
       let writes = 0;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
+        effectOperations: ["settings_update"],
         spec: {
           name: "changed_key_write",
           description: "write",
@@ -6790,6 +6797,7 @@ describe("AgentRuntime", function () {
         );
         let writes = 0;
         registry.register({
+          effectOperations: ["apply_tags"],
           spec: {
             name: "tag_related",
             description: "tag a related paper",
@@ -6909,6 +6917,7 @@ describe("AgentRuntime", function () {
       let requestedWrites = 0;
       let judgmentWrites = 0;
       registry.register({
+        effectOperations: ["note_create"],
         spec: {
           name: "mutate_library",
           description: "mutate",
@@ -6939,6 +6948,7 @@ describe("AgentRuntime", function () {
         },
       });
       registry.register({
+        effectOperations: ["apply_tags"],
         spec: {
           name: "tag_related",
           description: "tag a related paper",
@@ -7546,6 +7556,7 @@ describe("shallow guard round-limit safety", function () {
       await initAgentChangeJournal();
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
+        effectOperations: ["settings_update"],
         spec: {
           name: "library_update",
           description: "update",
@@ -7682,6 +7693,7 @@ describe("shallow guard round-limit safety", function () {
         ),
       );
       registry.register({
+        effectOperations: ["apply_tags"],
         spec: {
           name: "library_update",
           description: "update",
@@ -8281,6 +8293,7 @@ describe("finalized material announcement", function () {
       await initAgentChangeJournal();
       const registry = new AgentToolRegistry();
       registry.register({
+        effectOperations: ["save_notes_batch"],
         spec: {
           name: "note_write_batch",
           description: "Write a note onto each of many items",
@@ -8442,6 +8455,7 @@ describe("finalized material announcement", function () {
       await initAgentChangeJournal();
       const registry = new AgentToolRegistry();
       registry.register({
+        effectOperations: ["save_notes_batch"],
         spec: {
           name: "note_write_batch",
           description: "Write a note onto each of many items",

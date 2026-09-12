@@ -54,6 +54,7 @@ describe("Original Agent permission gate", function () {
     );
     let ran = false;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_batch",
         description: "batch",
@@ -138,6 +139,7 @@ describe("Original Agent permission gate", function () {
     );
     let ran = false;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "update",

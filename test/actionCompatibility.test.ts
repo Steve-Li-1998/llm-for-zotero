@@ -42,6 +42,7 @@ function createStubTool<TInput extends Record<string, unknown>, TResult>(
     },
     ...(spec.executionClass === "external_effect"
       ? {
+          effectOperations: ["settings_update" as const],
           planInvocation: async () =>
             stateChangeInvocationPlan({
               domains: ["zotero_library"],

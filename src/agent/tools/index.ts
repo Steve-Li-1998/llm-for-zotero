@@ -352,6 +352,7 @@ function createLibraryUpdateTool(tools: {
             : "Library updated",
     },
     guidance: LIBRARY_UPDATE_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with kind");
@@ -471,6 +472,7 @@ function createLibraryImportTool(tools: {
       onSuccess: "Import completed",
     },
     guidance: LIBRARY_IMPORT_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with kind");
@@ -546,6 +548,7 @@ function createLibraryDeleteTool(tools: {
       onSuccess: "Library delete/restore/merge completed",
     },
     guidance: LIBRARY_DELETE_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with mode");

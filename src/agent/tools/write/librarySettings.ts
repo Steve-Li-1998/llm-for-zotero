@@ -46,6 +46,7 @@ export function createLibrarySettingsTool(
             },
           ]
         : [],
+    effectOperations: ["settings_update"],
     spec: {
       name: "library_settings",
       description:

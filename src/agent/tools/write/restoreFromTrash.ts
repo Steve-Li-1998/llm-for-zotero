@@ -6,6 +6,7 @@
  * trashed in an earlier session — could not be recovered by asking.
  */
 import type { AgentWriteToolDefinition } from "../../types";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import {
   LibraryMutationService,
   type RestoreFromTrashOperation,
@@ -42,6 +43,8 @@ export function createRestoreFromTrashTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["restore_from_trash"],
     spec: {
       name: "restore_from_trash",
       description:

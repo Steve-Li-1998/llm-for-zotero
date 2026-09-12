@@ -241,6 +241,7 @@ function requestWithIntents(
 
 function mutationTool(): AgentToolDefinition<any, unknown> {
   return {
+    effectOperations: ["settings_update"],
     spec: {
       name: "library_update",
       description: "test",

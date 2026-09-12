@@ -10,7 +10,9 @@ import { evaluateActionContract } from "../src/agent/contracts/actionEvaluation"
 import { PlanAmendmentService } from "../src/agent/plans/amendments";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
+import { describeLibraryMutationInput } from "../src/agent/contracts/actionContract";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { createBuiltInToolRegistry } from "../src/agent/tools";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import {
@@ -77,6 +79,7 @@ describe("AgentToolRegistry", function () {
           let writes = 0,
             confirmations = 0;
           registry.register({
+            effectOperations: ["settings_update"],
             spec: {
               name: "interaction_write",
               description: "fixture",
@@ -143,6 +146,7 @@ describe("AgentToolRegistry", function () {
     let executions = 0;
     let checkpoints = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "settings_test",
         description: "fixture",
@@ -203,6 +207,7 @@ describe("AgentToolRegistry", function () {
     let targets = ["setting:original"],
       writes = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "changing_settings",
         description: "fixture",
@@ -300,6 +305,7 @@ describe("AgentToolRegistry", function () {
     ]) {
       const registry = new AgentToolRegistry(contracts);
       registry.register({
+        effectOperations: ["settings_update"],
         spec: {
           name: "zotero_script",
           description: "Confined read",
@@ -334,6 +340,7 @@ describe("AgentToolRegistry", function () {
     const contracts = new ActionContractService({} as never);
     const registry = new AgentToolRegistry(contracts);
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_settings",
         description: "Protected fixture",
@@ -407,6 +414,7 @@ describe("AgentToolRegistry", function () {
     const registry = new AgentToolRegistry(contracts);
     const written: number[] = [];
     registry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "checkpoint_tag",
         description: "Add an approved tag",
@@ -518,6 +526,7 @@ describe("AgentToolRegistry", function () {
       );
       let imports = 0;
       registry.register({
+        effectOperations: ["import_identifiers"],
         spec: {
           name: "library_import",
           description: "Import fixture",
@@ -711,6 +720,8 @@ describe("AgentToolRegistry", function () {
     );
     let validateCalls = 0;
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["zotero_script_execute"],
       spec: {
         name: "zotero_script",
         description: "run a Zotero script",
@@ -760,6 +771,7 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "mutate_library",
         description: "apply changes",
@@ -899,6 +911,7 @@ describe("AgentToolRegistry", function () {
       const registry = new AgentToolRegistry(contracts);
       let executions = 0;
       registry.register({
+        effectOperations: ["note_create"],
         spec: {
           name: "write_note",
           description: "write a Zotero note",
@@ -996,6 +1009,7 @@ describe("AgentToolRegistry", function () {
     let planCalls = 0;
     const executedTargets: string[] = [];
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "editable_write",
         description: "write a target",
@@ -1102,6 +1116,7 @@ describe("AgentToolRegistry", function () {
     );
     let executions = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "boundary_write",
         description: "write a target",
@@ -1194,6 +1209,8 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["import_identifiers"],
       spec: {
         name: "mutate_library",
         description: "apply changes",
@@ -1281,6 +1298,7 @@ describe("AgentToolRegistry", function () {
     );
     let executions = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "mutate_library",
         description: "apply changes",
@@ -1337,6 +1355,8 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["note_edit"],
       spec: {
         name: "edit_current_note",
         description: "edit the active note",
@@ -1408,6 +1428,8 @@ describe("AgentToolRegistry", function () {
       execute: async () => ({ value: "read" }),
     });
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["settings_update"],
       spec: {
         name: "write_tool_list",
         description: "list write-tool state",
@@ -1469,6 +1491,7 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "write_tool",
         description: "write",
@@ -1556,6 +1579,8 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["settings_update"],
       spec: {
         name: "unknown_write",
         description: "write",
@@ -1637,6 +1662,8 @@ describe("AgentToolRegistry", function () {
     );
     let executions = 0;
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["settings_update"],
       spec: {
         name: "unknown_external_effect",
         description: "unknown write",
@@ -1679,6 +1706,7 @@ describe("AgentToolRegistry", function () {
     const registry = new AgentToolRegistry();
     let executed = false;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "unverified_write",
         description: "write",
@@ -1742,6 +1770,7 @@ describe("AgentToolRegistry", function () {
     options: { withPendingAction?: boolean } = {},
   ) {
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "judgment_tags",
         description: "fixture",
@@ -1853,6 +1882,7 @@ describe("AgentToolRegistry", function () {
     let targets = ["item:41"],
       writes = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "judgment_tags",
         description: "fixture",
@@ -2058,5 +2088,111 @@ describe("AgentToolRegistry", function () {
       "the judgment marker, not the plan-approval policy, decides the authority",
     );
     assert.equal(prepared.execution.result.authority, "yolo_judgment");
+  });
+  describe("external_effect registration", function () {
+    const effectDefinition = () => ({
+      effectOperations: ["settings_update"],
+      spec: {
+        name: "registered_effect",
+        description: "fixture",
+        inputSchema: { type: "object" },
+        executionClass: "external_effect" as const,
+        workCategory: "zotero_action" as const,
+      },
+      effectOperations: ["settings_update" as const],
+      validate: (args: unknown) => ({ ok: true as const, value: args }),
+      describeAction: describeTestMutation,
+      execute: async () => ({ content: {}, effect: "applied" as const }),
+    });
+
+    it("accepts an external_effect tool that declares its adapter and operations", function () {
+      const registry = new AgentToolRegistry();
+      registry.register(effectDefinition());
+      assert.isDefined(registry.getTool("registered_effect"));
+    });
+
+    it("refuses an external_effect tool with no typed action adapter", function () {
+      const registry = new AgentToolRegistry();
+      const { describeAction, ...withoutAdapter } = effectDefinition();
+      assert.isFunction(describeAction);
+      assert.throws(
+        () => registry.register(withoutAdapter as never),
+        /registered_effect.*describeAction/s,
+      );
+      assert.isUndefined(registry.getTool("registered_effect"));
+    });
+
+    it("refuses an external_effect tool that declares no effect operations", function () {
+      const registry = new AgentToolRegistry();
+      const { effectOperations, ...withoutOperations } = effectDefinition();
+      assert.isArray(effectOperations);
+      assert.throws(
+        () => registry.register(withoutOperations as never),
+        /registered_effect.*effectOperations/s,
+      );
+      assert.throws(
+        () =>
+          registry.register({ ...effectDefinition(), effectOperations: [] }),
+        /registered_effect.*effectOperations/s,
+      );
+    });
+
+    it("refuses an effect operation that is not in the operation catalog", function () {
+      const registry = new AgentToolRegistry();
+      assert.throws(
+        () =>
+          registry.register({
+            ...effectDefinition(),
+            effectOperations: ["settings_update", "teleport_items"] as never,
+          }),
+        /teleport_items.*operation catalog/s,
+      );
+    });
+
+    it("exempts control and read classes by class, not by tool name", function () {
+      const registry = new AgentToolRegistry();
+      const control = effectDefinition();
+      registry.register({
+        ...control,
+        spec: {
+          ...control.spec,
+          name: "control_shaped_like_library_batch",
+          executionClass: "control",
+        },
+        describeAction: undefined,
+        effectOperations: undefined,
+      } as never);
+      registry.register({
+        ...control,
+        spec: {
+          ...control.spec,
+          name: "plain_read",
+          executionClass: "read",
+          workCategory: "retrieval",
+        },
+        describeAction: undefined,
+        effectOperations: undefined,
+      } as never);
+      assert.isDefined(registry.getTool("control_shaped_like_library_batch"));
+      assert.isDefined(registry.getTool("plain_read"));
+    });
+
+    it("keeps every production external_effect tool declaring its operations", function () {
+      const production = createBuiltInToolRegistry({
+        zoteroGateway: {} as never,
+        pdfService: {} as never,
+        pdfPageService: {} as never,
+        retrievalService: {} as never,
+      });
+      const undeclared = production
+        .listToolDefinitions()
+        .filter(
+          (tool) =>
+            tool.spec.executionClass === "external_effect" &&
+            !(tool.describeAction && tool.effectOperations?.length),
+        )
+        .map((tool) => tool.spec.name);
+      assert.deepEqual(undeclared, []);
+    });
   });
 });

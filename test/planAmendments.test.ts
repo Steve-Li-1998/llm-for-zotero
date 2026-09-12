@@ -1587,6 +1587,7 @@ describe("autonomous Plan scope amendments", function () {
       const contracts = new ActionContractService(gateway as never);
       const registry = new AgentToolRegistry(contracts, amendments);
       registry.register({
+        effectOperations: ["apply_tags"],
         spec: {
           name: "tag_scope",
           description: "Tag the approved source",

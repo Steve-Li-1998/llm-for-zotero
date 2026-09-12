@@ -60,6 +60,7 @@ export function createAnnotatePdfTool(
         destinationCollectionIds: [],
       },
     ],
+    effectOperations: ["annotation_write"],
     spec: {
       name: "annotate_pdf",
       description:

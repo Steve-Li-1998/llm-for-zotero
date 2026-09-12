@@ -33,6 +33,7 @@ export function createUndoLastActionTool(
         destinationCollectionIds: [],
       },
     ],
+    effectOperations: ["undo"],
     spec: {
       name: "undo_last_action",
       description:

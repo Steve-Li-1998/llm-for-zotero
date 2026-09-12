@@ -154,8 +154,14 @@ describe("zotero_script mode guards", function () {
  * A script's effects cannot be declared in advance, so the journal records
  * what it found immediately afterwards as the step's post-image. The receipt
  * used to ignore that entirely and report `execution_only` — "the script ran"
- * — for a call that had just changed the library. These pin the three
- * outcomes: the post-image still holds, it does not, and there was none.
+ * — for a call that had just changed the library.
+ *
+ * What `verified` claims is narrow on purpose: the objects the journal
+ * recorded still hold the state it recorded. That is a statement about state,
+ * not about intent, so a script that guarded an item and changed nothing is
+ * verified too — which is why the fact says how many targets were compared.
+ * The other outcomes each get their own fact suffix, so "could not check" is
+ * never filed as "checked and matched".
  */
 describe("zotero_script receipt verification", function () {
   const originalZotero = globalThis.Zotero;
@@ -204,10 +210,15 @@ describe("zotero_script receipt verification", function () {
     extra: () => string;
     access?: "library" | "privileged";
     effect?: "read" | "write";
-    onStatement?: (sql: string, params: unknown[]) => void;
+    onStatement?: (
+      sql: string,
+      params: unknown[],
+      db: ObservableJournalDb,
+    ) => void;
   }) {
     const db = new ObservableJournalDb();
-    if (params.onStatement) db.onStatement = params.onStatement;
+    const hook = params.onStatement;
+    if (hook) db.onStatement = (sql, bound) => hook(sql, bound, db);
     const item = fakeItem(1, params.extra);
     globalThis.Zotero = {
       DB: db,
@@ -241,7 +252,9 @@ describe("zotero_script receipt verification", function () {
     globalThis.Zotero = originalZotero;
   });
 
-  it("verifies a library write whose journalled post-image still holds", async function () {
+  it("verifies a library write whose journalled post-image still holds, and names what it compared", async function () {
+    // This script guards one item and changes nothing. The receipt is still
+    // verified: it proves the guarded state, not that the script had intent.
     const { receipts } = await runScript({
       script: "env.snapshot(Zotero.Items.get(1)); return 'done';",
       extra: () => "audited",
@@ -254,7 +267,7 @@ describe("zotero_script receipt verification", function () {
     assert.lengthOf(receipts[0].verifiedFacts, 1);
     assert.match(
       receipts[0].verifiedFacts[0],
-      /^script_postcondition:.+:1:satisfied$/,
+      /^script_postcondition:[^:]+:1:satisfied:1 targets$/,
     );
   });
 
@@ -282,10 +295,51 @@ describe("zotero_script receipt verification", function () {
 
     assert.equal(receipts[0].verification, "unverified");
     assert.equal(receipts[0].status, "unverified");
-    assert.deepEqual(receipts[0].verifiedFacts, []);
+    assert.lengthOf(receipts[0].verifiedFacts, 1);
+    assert.match(
+      receipts[0].verifiedFacts[0],
+      /^script_postcondition:[^:]+:1:mismatched$/,
+      "a mismatch must never be recorded with the satisfied fact",
+    );
     assert.match(
       receipts[0].reasons.join(" "),
       /recorded effect could not be confirmed: native state no longer matches/,
+    );
+  });
+
+  it("records a journal it could not read back as not_re_readable, not as a mismatch", async function () {
+    const { receipts } = await runScript({
+      script: "env.snapshot(Zotero.Items.get(1)); return 'done';",
+      extra: () => "audited",
+      // The write succeeded and is journalled; reading the step back fails.
+      onStatement: (sql, bound, db) => {
+        if (
+          sql.startsWith(`UPDATE ${JOURNAL_STEPS_TABLE}`) &&
+          bound.some(
+            (value) =>
+              typeof value === "string" && value.includes("script_effects"),
+          )
+        ) {
+          db.failWhen = (statement) =>
+            statement.startsWith(`SELECT * FROM ${JOURNAL_STEPS_TABLE}`)
+              ? new Error("journal read failed")
+              : null;
+        }
+      },
+    });
+
+    // Conservative: an effect that could not be checked is not verified. But
+    // the fact says which of the two it was, so the audit trail does not read
+    // as though native state disagreed.
+    assert.equal(receipts[0].verification, "unverified");
+    assert.lengthOf(receipts[0].verifiedFacts, 1);
+    assert.match(
+      receipts[0].verifiedFacts[0],
+      /^script_postcondition:[^:]+:1:not_re_readable$/,
+    );
+    assert.match(
+      receipts[0].reasons.join(" "),
+      /journalled step could not be loaded: journal read failed/,
     );
   });
 

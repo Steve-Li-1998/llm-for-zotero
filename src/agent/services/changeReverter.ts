@@ -2368,6 +2368,13 @@ export async function revertActions(params: {
   return { reverted, partiallyReverted, residuals, skipped, conflicts, steps };
 }
 
+export type JournalStepPostState = {
+  kind: "satisfied" | "mismatched" | "not_re_readable";
+  /** How many objects the recorded post-image covers. */
+  comparedTargets: number;
+  reason?: string;
+};
+
 /**
  * Re-reads the native state a journalled step recorded as its post-image.
  *
@@ -2382,17 +2389,16 @@ export async function verifyJournalStepPostcondition(params: {
   step: JournalStep;
   zoteroGateway: ZoteroGateway;
   context: AgentToolContext;
-}): Promise<{
-  kind: "satisfied" | "mismatched" | "not_re_readable";
-  reason?: string;
-}> {
+}): Promise<JournalStepPostState> {
   if (!params.step.expectedPostconditionJson) {
     return {
       kind: "not_re_readable",
+      comparedTargets: 0,
       reason: "the step recorded no expected post-image to read back",
     };
   }
   const expected = parseJson(params.step.expectedPostconditionJson);
+  const comparedTargets = countPostImageTargets(expected);
   try {
     const current = await currentStepPostcondition({
       step: params.step,
@@ -2402,25 +2408,53 @@ export async function verifyJournalStepPostcondition(params: {
     if (current === undefined) {
       return {
         kind: "not_re_readable",
+        comparedTargets,
         reason:
           "the recorded post-image format cannot be read back by this version",
       };
     }
     return stable(current) === stable(expected)
-      ? { kind: "satisfied" }
+      ? { kind: "satisfied", comparedTargets }
       : {
           kind: "mismatched",
+          comparedTargets,
           reason:
             "native state no longer matches the post-image recorded for this step",
         };
   } catch (error) {
     return {
       kind: "not_re_readable",
+      comparedTargets,
       reason: `the post-image could not be read back: ${
         error instanceof Error ? error.message : String(error)
       }`,
     };
   }
+}
+
+/**
+ * How many objects a recorded post-image actually covers.
+ *
+ * A receipt that says "verified" should say what was compared: a script that
+ * guarded four items proves more than one that guarded none, and the two must
+ * not read identically in the audit trail.
+ */
+function countPostImageTargets(expected: unknown): number {
+  if (!expected || typeof expected !== "object") return 0;
+  const record = expected as Record<string, unknown>;
+  if (record.kind === "script_effects" || record.kind === "script_items") {
+    return (
+      (Array.isArray(record.items) ? record.items.length : 0) +
+      (Array.isArray(record.declared) ? record.declared.length : 0)
+    );
+  }
+  // A captured library-operation state carries its objects in named sections;
+  // anything else — a note, a file, a preference, one created item — is one.
+  const sections = MUTATION_STATE_SECTIONS.map((section) =>
+    Array.isArray(record[section]) ? (record[section] as unknown[]).length : 0,
+  );
+  const rows = sections.reduce((total, count) => total + count, 0);
+  return rows || 1;
 }
 
 export async function revertRun(params: {

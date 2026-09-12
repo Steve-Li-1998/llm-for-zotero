@@ -1322,9 +1322,11 @@ export class ActionContractService {
         appliedTargets: postState.verified ? proposal.requestedTargets : [],
         alreadySatisfiedTargets: [],
         rejectedTargets: postState.verified ? [] : proposal.requestedTargets,
-        verifiedFacts: postState.verified
-          ? [...base.verifiedFacts, ...postState.facts]
-          : base.verifiedFacts,
+        // Carried whether or not the re-read confirmed the effect: each fact
+        // names its own outcome, so a receipt that could not check is
+        // distinguishable from one that checked and disagreed. The tool never
+        // emits a "satisfied" fact for a re-read that was not satisfied.
+        verifiedFacts: [...base.verifiedFacts, ...postState.facts],
         reasons: [
           ...base.reasons,
           ...(postState.reason ? [postState.reason] : []),

@@ -241,7 +241,7 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
     operations: ["zotero_script_execute"],
     verification: "verified",
     verificationNote:
-      "A run that journals an expected post-image re-reads it before the receipt is minted; one that declares no expected effect — a privileged read — stays execution_only (test/zoteroScriptConfirmation.test.ts).",
+      "A run that journals an expected post-image re-reads it before the receipt is minted; one that declares no expected effect — a privileged read — stays execution_only. `verified` here claims state, not intent: a library-mode script whose post-image re-reads intact is verified even when the script changed nothing, so the fact names how many targets were compared (test/zoteroScriptConfirmation.test.ts).",
     fixture: {
       access: "library",
       effect: "write",

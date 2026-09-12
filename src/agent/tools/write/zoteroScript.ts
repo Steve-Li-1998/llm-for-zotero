@@ -36,6 +36,7 @@ import { ZoteroGateway } from "../../services/zoteroGateway";
 import {
   parseInverseValue,
   verifyJournalStepPostcondition,
+  type JournalStepPostState,
 } from "../../services/changeReverter";
 import { fingerprintText } from "../../contracts/actionOperationEvidence";
 
@@ -1608,6 +1609,13 @@ export function createZoteroScriptTool(
  * A run that declared no expected effect — a privileged read, or a write that
  * snapshotted nothing — has no post-image, attaches no report, and keeps the
  * `execution_only` receipt that honestly describes it.
+ *
+ * What `verified` means here is deliberately narrow: the objects the journal
+ * recorded still hold the state it recorded. It is a claim about state, not
+ * about intent, so a library-mode script whose post-image re-reads intact is
+ * verified even when the script changed nothing. That is why the fact names
+ * how many targets were compared — a run that guarded four objects and one
+ * that guarded none must not read identically in the audit trail.
  */
 async function withScriptPostState<T>(
   outcome: AgentWriteToolOutput<T> & {
@@ -1619,7 +1627,10 @@ async function withScriptPostState<T>(
   if (!journalStep || !outcome.content || typeof outcome.content !== "object") {
     return outcome;
   }
-  let reread: Awaited<ReturnType<typeof verifyJournalStepPostcondition>>;
+  // executeJournaledStep derives the durable step id from its action and
+  // sequence, so it is known even when reading the step back fails.
+  const stepId = `${journalStep.actionId}:${journalStep.sequence}`;
+  let reread: JournalStepPostState;
   try {
     const step = (await listJournalSteps(journalStep.actionId)).find(
       (entry) => entry.sequence === journalStep.sequence,
@@ -1636,6 +1647,7 @@ async function withScriptPostState<T>(
     // never as a failure of the script.
     reread = {
       kind: "not_re_readable",
+      comparedTargets: 0,
       reason: `the journalled step could not be loaded: ${
         error instanceof Error ? error.message : String(error)
       }`,
@@ -1647,8 +1659,12 @@ async function withScriptPostState<T>(
       ...outcome.content,
       executionPostState: {
         verified: reread.kind === "satisfied",
+        // One fact, and its suffix is the outcome. "Could not check" must
+        // never be filed under the same string as "checked and matched".
         facts: [
-          `script_postcondition:${journalStep.actionId}:${journalStep.sequence}:satisfied`,
+          reread.kind === "satisfied"
+            ? `script_postcondition:${stepId}:satisfied:${reread.comparedTargets} targets`
+            : `script_postcondition:${stepId}:${reread.kind}`,
         ],
         ...(reread.reason
           ? {

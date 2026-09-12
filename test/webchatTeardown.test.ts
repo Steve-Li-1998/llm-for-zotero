@@ -88,12 +88,14 @@ describe("WebChat teardown", function () {
     return index;
   }
 
-  it("stops the connection check when the panel body is torn down", function () {
-    assert.include(cleanupBody(), "stopWebChatConnectionCheck();");
+  it("unmounts the WebChat feature when the panel body is torn down", function () {
+    // What that unmount does — stop the poll, abort the preload — is pinned
+    // behaviourally in test/setupHandlersWebChatFeature.test.ts.
+    assert.match(cleanupBody(), /disposeWebChatFeature\(\);/);
   });
 
-  it("aborts any in-flight webchat preload when the panel body is torn down", function () {
-    assert.include(cleanupBody(), "abortWebChatPreload();");
+  it("disposes the panel lifecycle as a safety net for later features", function () {
+    assert.include(cleanupBody(), "panelLifecycle.dispose();");
   });
 
   it("tears WebChat down first, before any other cleanup step", function () {
@@ -197,10 +199,7 @@ describe("WebChat preload ownership", function () {
       "expected two preload launch sites",
     );
     assert.strictEqual(
-      occurrences(
-        surface,
-        /const token = (\{ aborted: false \}|[\w.]*beginPreload\(\));/g,
-      ),
+      occurrences(surface, /const token = [\w.]*beginPreload\(\);/g),
       2,
       "each preload launch site must take a fresh abort token",
     );

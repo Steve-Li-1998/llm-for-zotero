@@ -279,13 +279,30 @@ describe("webchat isolation", function () {
     assert.isAtLeast(warmupGuard, warmupStart);
 
     const coldStartup = source.indexOf("[webchat] Cold startup");
-    const preloadCall = source.indexOf("showWebChatPreloadScreen", coldStartup);
-    const preloadGuard = source.indexOf(
-      "if (isWebChatMode() && !hasExistingWebChatSessionForCurrentItem()) {",
-      coldStartup,
-    );
     assert.isAtLeast(coldStartup, 0);
-    assert.isAtLeast(preloadGuard, coldStartup);
+    assert.include(
+      source,
+      "hasExistingWebChatSession: () => hasExistingWebChatSessionForCurrentItem(),",
+      "the WebChat feature must read the same existing-session helper",
+    );
+
+    // The cold-start preload itself lives in the WebChat feature the panel
+    // mounts at that point.
+    const feature = readFileSync(
+      resolve(
+        here,
+        "../src/modules/contextPanel/setupHandlers/features/webChat.ts",
+      ),
+      "utf8",
+    );
+    const preloadGuard = feature.indexOf(
+      "if (isWebChatMode() && !hasExistingWebChatSession()) {",
+    );
+    const preloadCall = feature.indexOf(
+      "showWebChatPreloadScreen",
+      preloadGuard,
+    );
+    assert.isAtLeast(preloadGuard, 0);
     assert.isAtLeast(preloadCall, preloadGuard);
   });
 

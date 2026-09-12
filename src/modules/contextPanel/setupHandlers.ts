@@ -377,7 +377,11 @@ import {
   isAutoLoadedSnapshotForCurrentPaper,
 } from "./paperContextPreloadIdentity";
 import type { SetupHandlersContext } from "./setupHandlers/types";
-import { observeElementDisconnected } from "./setupHandlers/lifecycle";
+import {
+  observeElementDisconnected,
+  PanelLifecycle,
+} from "./setupHandlers/lifecycle";
+import { createWebChatFeature } from "./setupHandlers/features/webChat";
 import {
   MODEL_MENU_OPEN_CLASS,
   REASONING_MENU_OPEN_CLASS,
@@ -5501,9 +5505,7 @@ export function setupHandlers(
               ) as HTMLElement | null;
               if (chatShellEl) {
                 try {
-                  abortWebChatPreload();
-                  const token = { aborted: false };
-                  webchatPreloadAbort = token;
+                  const token = webChatFeature.beginPreload();
                   const { showWebChatPreloadScreen } =
                     await import("../../webchat/preloadScreen");
                   const { getWebChatTargetByModelName } =
@@ -5526,7 +5528,7 @@ export function setupHandlers(
                 } catch {
                   // Preload failed or was aborted — still apply UI (dot will show status)
                 } finally {
-                  webchatPreloadAbort = null;
+                  webChatFeature.clearPreload();
                 }
               }
 
@@ -5913,16 +5915,19 @@ export function setupHandlers(
     }
   };
 
-  let webchatConnectionTimer: ReturnType<typeof setInterval> | null = null;
-  // Simple abort token — Zotero's Gecko context lacks AbortController.
-  let webchatPreloadAbort: { aborted: boolean } | null = null;
-
-  const abortWebChatPreload = () => {
-    if (webchatPreloadAbort) {
-      webchatPreloadAbort.aborted = true;
-      webchatPreloadAbort = null;
-    }
-  };
+  // Panel features register their teardown here. cleanupSetupHandlers stays
+  // explicitly ordered, so it calls the handle returned by add() at the exact
+  // position the feature's undo used to sit; dispose() is the safety net for
+  // any feature that is registered but not listed there.
+  const panelLifecycle = new PanelLifecycle();
+  const webChatFeature = createWebChatFeature({
+    isWebChatMode: () => isWebChatMode(),
+    hasExistingWebChatSession: () => hasExistingWebChatSessionForCurrentItem(),
+    getCurrentModelName: () => getSelectedModelInfo().currentModel,
+  });
+  const disposeWebChatFeature = panelLifecycle.add(() =>
+    webChatFeature.unmount(),
+  );
 
   markNextWebChatSendAsNewChat = () => {
     if (!item) return;
@@ -6003,11 +6008,11 @@ export function setupHandlers(
     getSelectedModelEntryId: () =>
       getSelectedModelInfo().selectedEntryId || null,
     setSelectedModelEntry,
-    abortPreload: abortWebChatPreload,
+    abortPreload: () => webChatFeature.abortPreload(),
     removePreloadOverlay: () => {
       body.querySelector(".llm-webchat-preload")?.remove();
     },
-    stopConnectionCheck: () => stopWebChatConnectionCheck(),
+    stopConnectionCheck: () => webChatFeature.stopConnectionCheck(),
     clearNewChatIntent: clearNextWebChatNewChatIntent,
     applyWebChatModeUI: () => applyWebChatModeUI(),
     updateModelButton: () => updateModelButton(),
@@ -6034,33 +6039,6 @@ export function setupHandlers(
     hooks.leaveWebChatMode = () =>
       leaveWebChatMode({ restoreConversation: false });
   }
-
-  const startWebChatConnectionCheck = (dot: HTMLElement) => {
-    stopWebChatConnectionCheck();
-    const check = async () => {
-      try {
-        // Always use dynamic port — saved apiBase may be stale
-        const { getRelayBaseUrl } = await import("../../webchat/relayServer");
-        const host = getRelayBaseUrl();
-        const { testConnection } = await import("../../webchat/client");
-        const alive = await testConnection(host);
-        dot.className = alive
-          ? "llm-webchat-dot llm-webchat-dot-connected"
-          : "llm-webchat-dot llm-webchat-dot-disconnected";
-      } catch {
-        dot.className = "llm-webchat-dot llm-webchat-dot-disconnected";
-      }
-    };
-    void check(); // immediate first check
-    webchatConnectionTimer = setInterval(check, 5000);
-  };
-
-  const stopWebChatConnectionCheck = () => {
-    if (webchatConnectionTimer !== null) {
-      clearInterval(webchatConnectionTimer);
-      webchatConnectionTimer = null;
-    }
-  };
 
   updateReasoningButton = () => {
     if (!item || !reasoningBtn) return;
@@ -6498,7 +6476,7 @@ export function setupHandlers(
         modeChipBtn.setAttribute("aria-disabled", "true");
         modeChipBtn.dataset.webchatStatic = "true";
         modeChipBtn.style.cursor = "default";
-        startWebChatConnectionCheck(dot);
+        webChatFeature.startConnectionCheck(dot);
       } else {
         const oldDot = modeChipBtn.querySelector(".llm-webchat-dot");
         if (oldDot) {
@@ -6510,7 +6488,7 @@ export function setupHandlers(
             ? "Switch to paper chat"
             : "Switch to library chat";
         }
-        stopWebChatConnectionCheck();
+        webChatFeature.stopConnectionCheck();
         modeChipBtn.disabled = false;
         modeChipBtn.removeAttribute("aria-disabled");
         delete modeChipBtn.dataset.webchatStatic;
@@ -6565,62 +6543,12 @@ export function setupHandlers(
   syncModelFromPrefs();
   flushResponsiveLayoutSyncNow();
   // Set active_target before applyWebChatModeUI so sidebar filters by the correct site
-  try {
-    if (isWebChatMode()) {
-      const { getWebChatTargetByModelName: getColdTarget } =
-        require("../../webchat/types") as typeof import("../../webchat/types");
-      const { relaySetActiveTarget: setColdTarget } =
-        require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
-      const { currentModel: coldStartModel } = getSelectedModelInfo();
-      const coldEntry = getColdTarget(coldStartModel || "");
-      if (coldEntry?.id) setColdTarget(coldEntry.id);
-    }
-  } catch {
-    /* isWebChatMode may not be ready */
-  }
+  webChatFeature.primeColdStartTarget();
   applyWebChatModeUI();
   resetComposePreviewUI();
   flushPanelStateRefreshNow();
   // [webchat] Cold startup → show preload screen so user knows they're in webchat mode
-  try {
-    if (isWebChatMode() && !hasExistingWebChatSessionForCurrentItem()) {
-      const chatShellEl = body.querySelector(
-        ".llm-chat-shell",
-      ) as HTMLElement | null;
-      if (chatShellEl) {
-        void (async () => {
-          try {
-            abortWebChatPreload();
-            const token = { aborted: false };
-            webchatPreloadAbort = token;
-            const { showWebChatPreloadScreen } =
-              await import("../../webchat/preloadScreen");
-            const { getWebChatTargetByModelName } =
-              await import("../../webchat/types");
-            const { relaySetActiveTarget: relaySetTarget2 } =
-              await import("../../webchat/relayServer");
-            const { currentModel: coldModel } = getSelectedModelInfo();
-            const coldTargetEntry = getWebChatTargetByModelName(
-              coldModel || "",
-            );
-            if (coldTargetEntry?.id) relaySetTarget2(coldTargetEntry.id);
-            await showWebChatPreloadScreen(
-              chatShellEl,
-              token,
-              coldTargetEntry?.label,
-              coldTargetEntry?.modelName,
-            );
-          } catch {
-            // Preload failed or was aborted — dot will show connection status
-          } finally {
-            webchatPreloadAbort = null;
-          }
-        })();
-      }
-    }
-  } catch {
-    // isWebChatMode may not be ready during initial render
-  }
+  webChatFeature.mount(handlerContext);
   restoreDraftInputForCurrentConversation();
   if (isWebChatMode()) {
     initializeWebChatConversationForCurrentItem();
@@ -8394,10 +8322,9 @@ export function setupHandlers(
   const cleanupSetupHandlers = () => {
     if (setupHandlersCleaned) return;
     setupHandlersCleaned = true;
-    // The connection-check interval and preload token outlive the detached
-    // body otherwise — one leaked 5s timer per abandoned WebChat panel.
-    stopWebChatConnectionCheck();
-    abortWebChatPreload();
+    // WebChat first, exactly where its undo used to sit: the connection-check
+    // interval and preload token outlive the detached body otherwise.
+    disposeWebChatFeature();
     disconnectObserverCleanup?.();
     disconnectObserverCleanup = null;
     cleanupPrefObservers?.();
@@ -8438,6 +8365,7 @@ export function setupHandlers(
     delete (body as any).__llmScheduleClaudeThreadQueueDrain;
     delete (body as any).__llmQueueTurnDeletion;
     delete (body as any).__llmSearchPanelHistory;
+    panelLifecycle.dispose();
     unregisterContextSurfaceActions();
     disposePendingDeletionSubscriptionForBody(body);
     void releaseClaudeRuntimeForBody(body);

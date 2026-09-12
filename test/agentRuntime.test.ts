@@ -9651,3 +9651,316 @@ describe("agent stage events", function () {
     }
   });
 });
+
+describe("tool result review delivery", function () {
+  function toolCallStep(id: string, name: string): AgentModelStep {
+    const call = { id, name, arguments: {} };
+    return {
+      kind: "tool_calls",
+      calls: [call],
+      assistantMessage: { role: "assistant", content: "", tool_calls: [call] },
+    };
+  }
+
+  function reviewAction(toolName: string) {
+    return {
+      toolName,
+      title: "Review the results",
+      mode: "review" as const,
+      confirmLabel: "Use these",
+      cancelLabel: "Cancel",
+      fields: [],
+      actions: [{ id: "use", label: "Use these" }],
+    };
+  }
+
+  it("delivers a review's replacement content and both follow-up messages", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      let reviewsCreated = 0;
+      registry.register({
+        spec: {
+          name: "literature_search",
+          description: "search",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          workCategory: "retrieval",
+        },
+        presentation: { label: "Search literature" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async () => ({ content: { hits: ["raw"] } }),
+        buildFollowupMessage: async () => ({
+          role: "user",
+          content: "tool-followup",
+        }),
+        createResultReviewAction: async () => {
+          reviewsCreated += 1;
+          return reviewAction("literature_search");
+        },
+        resolveResultReview: async () => ({
+          kind: "deliver",
+          toolMessageContent: { reviewed: ["kept"] },
+          followupMessages: [{ role: "user", content: "review-followup" }],
+        }),
+      } as never);
+
+      const events: AgentEvent[] = [];
+      const modelInputs: AgentModelMessage[][] = [];
+      const steps: AgentModelStep[] = [
+        toolCallStep("call-review", "literature_search"),
+        {
+          kind: "final",
+          text: "Done.",
+          assistantMessage: { role: "assistant", content: "Done." },
+        },
+      ];
+      let stepIndex = 0;
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            modelInputs.push(params.messages);
+            const step = steps[stepIndex];
+            stepIndex += 1;
+            return step;
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 991_201,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Find papers",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => {
+          events.push(event);
+          if (event.type === "confirmation_required")
+            runtime.resolveConfirmation(event.requestId, {
+              approved: true,
+              actionId: "use",
+            });
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      assert.equal(reviewsCreated, 1, "the review card is built exactly once");
+      assert.deepEqual(
+        events
+          .map((event) => event.type)
+          .filter((type) =>
+            [
+              "tool_call",
+              "tool_result",
+              "confirmation_required",
+              "confirmation_resolved",
+            ].includes(type),
+          ),
+        [
+          "tool_call",
+          "tool_result",
+          "confirmation_required",
+          "confirmation_resolved",
+        ],
+        "the result is published before its review card is raised",
+      );
+
+      const secondStep = modelInputs[1];
+      const toolMessage = secondStep.find(
+        (message) => message.role === "tool",
+      ) as Extract<AgentModelMessage, { role: "tool" }> | undefined;
+      assert.equal(toolMessage?.tool_call_id, "call-review");
+      assert.deepEqual(JSON.parse(String(toolMessage?.content)), {
+        reviewed: ["kept"],
+        actionReceipts: [],
+      });
+      assert.deepEqual(
+        secondStep
+          .filter(
+            (message) =>
+              message.role === "user" && typeof message.content === "string",
+          )
+          .map((message) => message.content)
+          .filter(
+            (content) =>
+              content === "review-followup" || content === "tool-followup",
+          ),
+        ["review-followup", "tool-followup"],
+        "the review's own follow-ups precede the tool's built one",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("chains an approved review into another tool and reports its terminal text", async function () {
+    const restoreDb = installMockDb();
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      const chainedInputs: unknown[] = [];
+      registry.register({
+        spec: {
+          name: "literature_search",
+          description: "search",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          workCategory: "retrieval",
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async () => ({ content: { hits: ["raw"] } }),
+        createResultReviewAction: async () => reviewAction("literature_search"),
+        resolveResultReview: async () => ({
+          kind: "invoke_tool",
+          call: {
+            name: "note_write",
+            arguments: { text: "chained" },
+            inheritedApproval: {
+              sourceToolName: "literature_search",
+              sourceActionId: "use",
+              sourceMode: "review",
+            },
+          },
+          terminalText: {
+            onSuccess: "Saved the reviewed results.",
+            onDenied: "Nothing was saved.",
+            onError: "The save failed.",
+          },
+        }),
+      } as never);
+      registry.register({
+        effectOperations: ["note_create"],
+        spec: {
+          name: "note_write",
+          description: "write a note",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          workCategory: "zotero_action",
+          requiresConfirmation: false,
+        },
+        presentation: { label: "Write note" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        acceptInheritedApproval: () => true,
+        planInvocation: async () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test note write.",
+          }),
+        describeAction: () => [
+          {
+            id: "note_create:review-chain",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "note_create",
+            source: "zotero_native",
+            requestedTargets: [],
+            destinationCollectionIds: [],
+          },
+        ],
+        execute: async (input: unknown) => {
+          chainedInputs.push(input);
+          return {
+            content: { status: "created", noteId: 901 },
+            effect: "applied",
+          };
+        },
+      } as never);
+
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("call-review", "literature_search"),
+              {
+                kind: "final",
+                text: "Unused.",
+                assistantMessage: { role: "assistant", content: "Unused." },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 991_202,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Find papers and save them",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => {
+          events.push(event);
+          if (event.type === "confirmation_required")
+            runtime.resolveConfirmation(event.requestId, {
+              approved: true,
+              actionId: "use",
+            });
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      assert.equal(
+        outcome.kind === "completed" ? outcome.text : "",
+        "Saved the reviewed results.",
+        "the review's success text, not the provider's final step, ends the run",
+      );
+      assert.deepEqual(chainedInputs, [{ text: "chained" }]);
+      assert.deepEqual(
+        events
+          .filter(
+            (event) =>
+              event.type === "tool_call" || event.type === "tool_result",
+          )
+          .map((event) => [
+            event.type,
+            (event as Extract<AgentEvent, { type: "tool_call" }>).name,
+          ]),
+        [
+          ["tool_call", "literature_search"],
+          ["tool_result", "literature_search"],
+          ["tool_call", "note_write"],
+          ["tool_result", "note_write"],
+        ],
+        "the chained call is executed and published like any other call",
+      );
+      const chainedCallEvent = events.find(
+        (event) => event.type === "tool_call" && event.name === "note_write",
+      ) as Extract<AgentEvent, { type: "tool_call" }>;
+      assert.notEqual(
+        chainedCallEvent.callId,
+        "call-review",
+        "the chained call carries its own synthetic id",
+      );
+      const noteReceipts = (
+        events.find(
+          (event) =>
+            event.type === "tool_result" && event.name === "note_write",
+        ) as Extract<AgentEvent, { type: "tool_result" }>
+      ).actionReceipts;
+      assert.isNotEmpty(
+        noteReceipts || [],
+        "the chained write still produces its receipt",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+});

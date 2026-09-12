@@ -102,6 +102,13 @@ import {
   recordCodexNativeReadActivity,
 } from "./nativeContextLedger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
+import {
+  externalRuntimeCommandEffect,
+  externalRuntimeFileEffect,
+  recordExternalRuntimeEffect,
+  type ExternalRuntimeEffect,
+  type ExternalRuntimeEffectOutcome,
+} from "../agent/contracts/externalRuntimeEffects";
 import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
 import { renderSelectedTextAnchorContext } from "../services/context/selectedTextAnchorFormatting";
 import {
@@ -437,6 +444,109 @@ function buildCodexNativeApprovalSummary(
     return "Legacy patch approval";
   }
   return "Codex native approval";
+}
+
+const CODEX_APPROVAL_FILE_PATH_KEYS = [
+  "path",
+  "filePath",
+  "file_path",
+  "targetPath",
+  "target_path",
+] as const;
+
+/**
+ * Every path a file-change approval names, in the order the card shows them.
+ *
+ * An approval may carry one `path` or a whole `changes` map keyed by path, and
+ * the receipt has to name all of them: a target the host displayed but left out
+ * of the receipt is a change nobody can audit afterwards.
+ */
+function collectCodexApprovalFilePaths(params: unknown): string[] {
+  const paths: string[] = [];
+  const add = (value: unknown): void => {
+    const path = normalizeNonEmptyString(value);
+    if (path && !paths.includes(path)) paths.push(path);
+  };
+  for (const record of collectNestedRecords(params)) {
+    const changes = record.changes;
+    if (changes && typeof changes === "object" && !Array.isArray(changes)) {
+      for (const key of Object.keys(changes)) add(key);
+    }
+    for (const key of CODEX_APPROVAL_FILE_PATH_KEYS) add(record[key]);
+  }
+  return paths;
+}
+
+/**
+ * The catalogued effect a Codex approval request is asking to perform.
+ *
+ * Only the two methods that change something outside the host produce an
+ * effect. A permission request grants Codex a capability but writes nothing by
+ * itself, and a question changes nothing at all, so neither mints a receipt —
+ * the effects they later enable arrive here as their own approvals.
+ */
+export function describeCodexNativeApprovalEffect(
+  request: CodexNativeApprovalRequest,
+): ExternalRuntimeEffect | null {
+  switch (request.method) {
+    case "item/commandExecution/requestApproval":
+    case "execCommandApproval":
+      return externalRuntimeCommandEffect(
+        "codex_native",
+        findCommandPreview(request.params),
+      );
+    case "item/fileChange/requestApproval":
+    case "applyPatchApproval": {
+      const paths = collectCodexApprovalFilePaths(request.params);
+      return externalRuntimeFileEffect(
+        "codex_native",
+        paths.length ? paths : [findPathSummary(request.params)],
+      );
+    }
+    default:
+      return null;
+  }
+}
+
+/** The trace row for what Codex itself did, distinct from the card that asked. */
+function codexNativeEffectActivityText(decision: {
+  effect: ExternalRuntimeEffect;
+  outcome: ExternalRuntimeEffectOutcome;
+}): string {
+  const command = decision.effect.operation === "command_execute";
+  return decision.outcome === "executed"
+    ? command
+      ? "Codex ran an approved shell command"
+      : "Codex applied an approved file change"
+    : command
+      ? "Codex shell command denied"
+      : "Codex file change denied";
+}
+
+let codexNativeApprovalEffectSequence = 0;
+
+/** Stable identity for the approval this receipt covers. */
+function codexNativeApprovalCallId(
+  request: CodexNativeApprovalRequest,
+): string {
+  return (
+    firstNonEmptyString(normalizeRecord(request.params), [
+      "itemId",
+      "approvalId",
+      "callId",
+      "id",
+    ]) || `${request.method}:${++codexNativeApprovalEffectSequence}`
+  );
+}
+
+/** Whether an app-server approval response granted the request. */
+function codexNativeApprovalResponseGranted(response: unknown): boolean {
+  const record = normalizeRecord(response);
+  return Boolean(
+    record.approved ||
+    record.decision === "accept" ||
+    record.decision === "approved",
+  );
 }
 
 export function isCodexNativeBuiltInApprovalRequest(
@@ -2253,6 +2363,15 @@ function registerNativeApprovalRequestHandlers(params: {
   isTurnStillLive?: () => void;
   signal?: AbortSignal;
   planning?: boolean;
+  /**
+   * Called once for every decision the host returns about an effect Codex
+   * wants to run itself, so the turn can receipt and journal it.
+   */
+  onApprovalEffect?: (decision: {
+    effect: ExternalRuntimeEffect;
+    outcome: ExternalRuntimeEffectOutcome;
+    callId: string;
+  }) => void | Promise<void>;
   getTurnIdentity?: () => Promise<
     { threadId: string; turnId?: string } | undefined
   >;
@@ -2275,6 +2394,23 @@ function registerNativeApprovalRequestHandlers(params: {
           params: rawParams,
           signal: controller.signal,
         };
+        // Every decision about a Codex-run effect is receipted here, which is
+        // the one place all of them pass through: the approval card, the
+        // planning-mode refusal, and the default denial when no host surface
+        // answered. An aborted turn is the exception — nothing was decided.
+        const reportApprovalEffect = async (
+          response: unknown,
+        ): Promise<void> => {
+          const effect = describeCodexNativeApprovalEffect(request);
+          if (!effect || !params.onApprovalEffect) return;
+          await params.onApprovalEffect({
+            effect,
+            outcome: codexNativeApprovalResponseGranted(response)
+              ? "executed"
+              : "declined",
+            callId: codexNativeApprovalCallId(request),
+          });
+        };
         try {
           const identity = await params.getTurnIdentity?.();
           if (controller.signal.aborted) return { answers: {} };
@@ -2286,8 +2422,12 @@ function registerNativeApprovalRequestHandlers(params: {
               (record.turnId && record.turnId !== identity?.turnId))
           )
             throw new Error("Stale native request");
-          if (params.planning && isCodexNativeBuiltInApprovalRequest(request))
-            return resolveCodexNativeApprovalRequest(request).response;
+          if (params.planning && isCodexNativeBuiltInApprovalRequest(request)) {
+            const planningResponse =
+              resolveCodexNativeApprovalRequest(request).response;
+            await reportApprovalEffect(planningResponse);
+            return planningResponse;
+          }
           const questions = readNativeQuestions(request);
           const response = params.onApprovalRequest
             ? await params.onApprovalRequest(request)
@@ -2310,21 +2450,20 @@ function registerNativeApprovalRequestHandlers(params: {
               turnId: identity.turnId,
             });
           }
-          if (!questions)
+          if (!questions) {
+            await reportApprovalEffect(response);
             logCodexNativeApprovalDecision({
               method,
               requestParams: rawParams,
               decision: {
-                approved: Boolean(
-                  normalizeRecord(response).approved ||
-                  normalizeRecord(response).decision === "accept",
-                ),
+                approved: codexNativeApprovalResponseGranted(response),
                 response,
                 reason: "native_handler",
                 target: getApprovalRequestTarget(rawParams),
               },
               redactText: params.redactText,
             });
+          }
           return response;
         } finally {
           for (const signal of signals)
@@ -2779,6 +2918,10 @@ export async function runCodexAppServerNativeTurn(input: {
           throw new Error("Conversation write generation changed");
         }
       };
+      // Declared before the approval handlers are registered: a decision can
+      // arrive as soon as they are, and it must have somewhere to record itself.
+      const hostReceipts: import("../agent/contracts/types").AgentActionReceipt[] =
+        [];
       let activeTurnIdentity: { threadId: string; turnId?: string } | undefined;
       let turnStarted = Promise.resolve();
       let resolveTurnStarted: () => void = () => {};
@@ -2795,6 +2938,33 @@ export async function runCodexAppServerNativeTurn(input: {
         isTurnStillLive: assertApprovalTurnStillLive,
         signal: params.signal,
         planning: planContext?.phase === "planning",
+        onApprovalEffect: async (decision) => {
+          const receipt = await recordExternalRuntimeEffect({
+            ...decision,
+            runId: activeTurnIdentity?.turnId || activeTurnIdentity?.threadId,
+            conversationKey: params.scope.conversationKey,
+          });
+          hostReceipts.push(receipt);
+          try {
+            await publishHost({
+              type: "codex_tool_activity",
+              itemId: `codex-effect:${decision.callId}`,
+              phase: "completed",
+              toolName: "codex_native_effect",
+              ok: decision.outcome === "executed",
+              text: codexNativeEffectActivityText(decision),
+              actionReceipts: [receipt],
+              workCategory: "external_system",
+            });
+          } catch (error) {
+            // The client's effect and its durable receipt are already settled;
+            // a dead or superseded turn must not turn that into a failure.
+            ztoolkit.log(
+              "Codex app-server native: effect receipt not published",
+              error,
+            );
+          }
+        },
         getTurnIdentity: async () => {
           await turnStarted;
           return activeTurnIdentity;
@@ -2814,8 +2984,6 @@ export async function runCodexAppServerNativeTurn(input: {
         instanceID: params.scope.instanceID || summary?.instanceID,
         conversationGeneration: expectedGeneration,
       };
-      const hostReceipts: import("../agent/contracts/types").AgentActionReceipt[] =
-        [];
       let successfulHostToolResults = 0;
       let submittedDocument = false;
       let latestPlanLedger: PlanExecutionLedger | undefined;

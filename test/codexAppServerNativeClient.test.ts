@@ -15,6 +15,7 @@ import {
   buildCodexNativeApprovalPendingAction,
   buildCodexNativeApprovalResponseFromResolution,
   buildCodexNativeScopedMcpScopeForTests,
+  describeCodexNativeApprovalEffect,
   buildCodexNativeVisibleTurnContextBlockForTests,
   buildZoteroEnvironmentManifest,
   compactCodexAppServerConversation,
@@ -3630,5 +3631,197 @@ describe("Codex app-server native client", function () {
     assert.include(block, "offset=25");
     assert.notInclude(block, "failed search");
     assert.notInclude(block, "write-file");
+  });
+});
+
+/**
+ * What a Codex turn records about the effects Codex ran itself.
+ *
+ * Codex executes its own shell commands and file changes; the host only
+ * answers the approval card. Before Phase 3 that decision left no receipt, so a
+ * Codex turn's audit trail was silently shorter than an in-app one. These tests
+ * pin the receipt each decision mints and the trace row that carries it.
+ */
+describe("Codex native approval effect receipts", function () {
+  it("describes a command approval as a fingerprinted command effect", function () {
+    const effect = describeCodexNativeApprovalEffect({
+      method: "item/commandExecution/requestApproval",
+      params: { command: "npm test", cwd: "/repo/example" },
+    });
+    assert.equal(effect?.source, "codex_native");
+    assert.equal(effect?.operation, "command_execute");
+    assert.match(
+      String(effect?.requestedTargets[0]),
+      /^command:fnv1a32:[0-9a-f]{8}$/,
+    );
+  });
+
+  it("describes a file-change approval by the paths the card showed", function () {
+    const effect = describeCodexNativeApprovalEffect({
+      method: "item/fileChange/requestApproval",
+      params: {
+        changes: {
+          "/repo/example/notes.md": { kind: "update" },
+          "/repo/example/new.md": { kind: "add" },
+        },
+      },
+    });
+    assert.equal(effect?.operation, "file_write");
+    assert.deepEqual(effect?.requestedTargets, [
+      "file:/repo/example/notes.md",
+      "file:/repo/example/new.md",
+    ]);
+  });
+
+  it("describes the legacy approval methods as the same two effects", function () {
+    assert.equal(
+      describeCodexNativeApprovalEffect({
+        method: "execCommandApproval",
+        params: { command: "ls" },
+      })?.operation,
+      "command_execute",
+    );
+    assert.equal(
+      describeCodexNativeApprovalEffect({
+        method: "applyPatchApproval",
+        params: { path: "/repo/patched.md" },
+      })?.operation,
+      "file_write",
+    );
+  });
+
+  it("describes no effect for requests that change nothing by themselves", function () {
+    assert.isNull(
+      describeCodexNativeApprovalEffect({
+        method: "item/permissions/requestApproval",
+        params: { permissions: { fileSystem: { write: ["/repo"] } } },
+      }),
+      "granting a permission is not itself a file change or a command",
+    );
+    assert.isNull(
+      describeCodexNativeApprovalEffect({
+        method: "item/tool/requestUserInput",
+        params: { questions: [{ id: "q", question: "Which?" }] },
+      }),
+    );
+  });
+
+  async function runApprovedCommandTurn(approved: boolean): Promise<{
+    events: any[];
+    responses: any[];
+  }> {
+    const events: any[] = [];
+    const responses: any[] = [];
+    const requests: Array<{ method: string; params: Record<string, any> }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["approval-receipt-thread"],
+      requests,
+      onServerResponse: (message) => responses.push(message),
+      onTurn: ({ threadId, turnId, emit }) => {
+        emit({
+          id: 9101,
+          method: "item/commandExecution/requestApproval",
+          params: {
+            threadId,
+            turnId,
+            itemId: "cmd-1",
+            command: "npm test",
+            cwd: "/repo/example",
+          },
+        });
+        setTimeout(
+          () =>
+            emit({
+              method: "turn/completed",
+              params: { turn: { id: turnId, status: "completed" } },
+            }),
+          20,
+        );
+      },
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs();
+    const processKey = "codex-approval-receipt";
+    const globalScope = globalThis as typeof globalThis & {
+      ztoolkit?: { log: (...args: unknown[]) => void };
+    };
+    const originalZtoolkit = globalScope.ztoolkit;
+    globalScope.ztoolkit = { log: () => undefined };
+    CodexAppServerProcess.spawn = async () => proc;
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          conversationKey: 6_000_000_400,
+          libraryID: 1,
+          kind: "global",
+          title: "Approval receipts",
+        },
+        model: "gpt-5.6",
+        messages: [{ role: "user", content: "Run the tests" }],
+        processKey,
+        eventJournal: {
+          runId: "codex-approval-run",
+          append: async (event) => {
+            events.push(event);
+          },
+          finish: async () => {},
+        },
+        onApprovalRequest: async () =>
+          approved ? { decision: "accept" } : { decision: "decline" },
+        hooks: {
+          loadProviderSessionId: async () => null,
+          persistProviderSession: async () => {},
+        },
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+      globalScope.ztoolkit = originalZtoolkit;
+    }
+    return { events, responses };
+  }
+
+  it("records an approved Codex command as an execution_only receipt on the run", async function () {
+    const { events, responses } = await runApprovedCommandTurn(true);
+    assert.deepEqual(
+      responses.find((entry) => entry.id === 9101)?.result,
+      { decision: "accept" },
+      JSON.stringify(responses),
+    );
+    const activity = events.find(
+      (event) =>
+        event.type === "codex_tool_activity" && event.actionReceipts?.length,
+    );
+    assert.isObject(
+      activity,
+      `no receipt activity in ${JSON.stringify(events)}`,
+    );
+    const receipt = activity.actionReceipts[0];
+    assert.equal(receipt.operation, "command_execute");
+    assert.equal(receipt.proofDomain, "execution");
+    assert.equal(receipt.verification, "execution_only");
+    assert.equal(receipt.status, "observed");
+    assert.equal(receipt.executionAuthority, "external_runtime");
+    assert.match(
+      String(receipt.requestedTargets[0]),
+      /^command:fnv1a32:[0-9a-f]{8}$/,
+    );
+  });
+
+  it("records a denied Codex command as cancelled with no proof claimed", async function () {
+    const { events } = await runApprovedCommandTurn(false);
+    const activity = events.find(
+      (event) =>
+        event.type === "codex_tool_activity" && event.actionReceipts?.length,
+    );
+    assert.isObject(
+      activity,
+      `no receipt activity in ${JSON.stringify(events)}`,
+    );
+    const receipt = activity.actionReceipts[0];
+    assert.equal(receipt.status, "cancelled");
+    assert.equal(receipt.verification, "not_applicable");
+    assert.deepEqual(receipt.appliedTargets, []);
   });
 });

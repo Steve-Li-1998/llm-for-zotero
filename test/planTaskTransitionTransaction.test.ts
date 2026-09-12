@@ -78,7 +78,10 @@ import { createPreparePlanExecutionTool } from "../src/agent/tools/plan/prepareP
 import { finalizeNativePlanProposal } from "../src/agent/plans/nativePlanning";
 import { loadPlanArtifact } from "../src/agent/plans/store";
 import { initResearchStore } from "../src/agent/research/store";
-import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/chat";
+import {
+  announceFinalizedMaterialForRunForTests,
+  createCodexNativeActivityTraceControllerForTests,
+} from "../src/modules/contextPanel/chat";
 import {
   initAgentTraceStore,
   getAgentRunTrace,
@@ -1041,6 +1044,60 @@ describe("transactional Plan task transitions", function () {
       ["agent_stage"],
     );
     assert.deepEqual(trace.events[0].payload, stage);
+  });
+
+  it("brackets a host-announced material with its own generation stage", async function () {
+    // A native run's only material is the one the host announces after the
+    // document is delivered. The run already carries stages the bridge
+    // emitted, so the compatibility projection will not touch it -- this
+    // append has to bracket itself, exactly as the runtime does.
+    const runId = "material-stage-append";
+    await ensureConversationKeyLedgerEntry({
+      conversationKey: 41,
+      instanceID: "material-instance",
+      conversationID: "material-conversation",
+      system: "upstream",
+      kind: "paper",
+      profileSignature: "material-profile",
+      libraryID: 1,
+      paperItemID: 41,
+      issuedAt: 1,
+    });
+    await createAgentRun({
+      runId,
+      conversationKey: 41,
+      mode: "agent",
+      status: "running",
+      createdAt: 1,
+    });
+    await appendAgentRunEvent(runId, 1, {
+      type: "agent_stage",
+      stage: "retrieval",
+      status: "completed",
+    });
+    await announceFinalizedMaterialForRunForTests(runId, {
+      documentId: "run:document:9",
+      documentVersion: 3,
+      contentHash: "sha256:report",
+      title: "The report",
+      version: 2,
+      documentKind: "report",
+    } as never);
+    const trace = await getAgentRunTrace(runId);
+    assert.deepEqual(
+      trace.events.map((entry) => entry.eventType),
+      ["agent_stage", "agent_stage", "material_finalized"],
+    );
+    assert.deepEqual(trace.events[1].payload, {
+      type: "agent_stage",
+      stage: "generation",
+      status: "completed",
+      materialRef: {
+        documentId: "run:document:9",
+        documentVersion: 3,
+        contentHash: "sha256:report",
+      },
+    });
   });
 
   it("preserves typed restrictions when native feedback revises the explanation", async function () {

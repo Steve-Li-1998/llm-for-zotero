@@ -1884,17 +1884,36 @@ async function announceFinalizedMaterialForRun(
   ) {
     return;
   }
-  const record = await appendAgentRunEventAfterLatest(runId, {
-    type: "material_finalized" as const,
-    materialRef: materialRefFromDocument(document),
-    materialKind: document.version === 2 ? document.documentKind : undefined,
-    materialTitle: document.title,
-  });
+  const materialRef = materialRefFromDocument(document);
+  // The stage goes in first, immediately before the event it describes, as
+  // every other producer emits it: a run that already carries stages is one
+  // the compatibility projection leaves alone, so an unbracketed material
+  // here would simply never show as generated work.
+  const appended = [
+    await appendAgentRunEventAfterLatest(
+      runId,
+      buildAgentStageEvent({
+        stage: "generation",
+        status: "completed",
+        materialRef,
+      }),
+    ),
+    await appendAgentRunEventAfterLatest(runId, {
+      type: "material_finalized" as const,
+      materialRef,
+      materialKind: document.version === 2 ? document.documentKind : undefined,
+      materialTitle: document.title,
+    }),
+  ];
   const cached = agentRunTraceCache.get(runId) || [];
-  if (!cached.some((entry) => entry.seq === record.seq)) {
-    agentRunTraceCache.set(runId, [...cached, record]);
-  }
+  const added = appended.filter(
+    (record) => !cached.some((entry) => entry.seq === record.seq),
+  );
+  if (added.length) agentRunTraceCache.set(runId, [...cached, ...added]);
 }
+
+export const announceFinalizedMaterialForRunForTests =
+  announceFinalizedMaterialForRun;
 
 async function updateStoredLatestAssistantMessageByConversationUnlocked(
   conversationKey: number,

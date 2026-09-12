@@ -13,7 +13,7 @@ import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { setOriginalAgentPermissionMode } from "../src/agent/originalAgentPermissionMode";
 import {
   installMockDb,
-  installPlanDocumentSqlite,
+  installAgentStoreSqlite,
 } from "./helpers/agentRuntimeMockDb";
 import { installNativeNoteStore } from "./helpers/nativeNoteStore";
 import { createTestActionContractService } from "./helpers/actionContractService";
@@ -277,7 +277,7 @@ describe("direct material journey", function () {
   beforeEach(async function () {
     clearAgentTranscriptStore();
     restoreDb = installMockDb();
-    restoreDocuments = installPlanDocumentSqlite();
+    restoreDocuments = installAgentStoreSqlite();
     library = installJourneyLibrary();
     originalToolkit = (globalThis as any).ztoolkit;
     (globalThis as any).ztoolkit = { log: () => undefined };

@@ -102,6 +102,7 @@ import {
   upsertAgentToolResultHandles,
   type AgentToolResultHandleRecord,
 } from "./store/toolResultHandles";
+import { listResumableBatches } from "./store/batchItemStore";
 import {
   appendAgentRunEvent,
   createAgentRun,
@@ -123,9 +124,9 @@ import { latestExecutionCheckpoint } from "./execution/checkpoint";
 import { createAgentExecutionContext } from "./execution/context";
 import { loadMaterialOutcomesForConversation } from "./execution/materialOutcomes";
 import {
-  buildFinalizedMaterialRecoveryMessage,
   buildInterruptedRunRecoveryMessage,
   buildTranscriptUserMessage,
+  buildTurnStartRecoveryMessage,
   isCurrentTurnUserTranscriptMessage,
   isManualCompactRequest,
   readLatestTranscriptGoal,
@@ -644,6 +645,12 @@ export class AgentRuntime {
       request.materialOutcomes = (
         await loadMaterialOutcomesForConversation(request.conversationKey)
       ).entries;
+      // The same is true of a note batch that stopped halfway: its unwritten
+      // items live in durable rows, and a turn that cannot see them has no way
+      // to continue the batch except by authoring every body again.
+      const resumableBatches = await listResumableBatches(
+        request.conversationKey,
+      );
       let recoveryMessage: AgentModelMessage | null = null;
       let interruptedActionCheckpoint: ActionContractCheckpoint | null = null;
       if (interruptedPriorRun) {
@@ -685,6 +692,7 @@ export class AgentRuntime {
             ? undefined
             : readLatestTranscriptGoal(latestTranscriptSegment?.messages || []),
           materialOutcomes: request.materialOutcomes,
+          resumableBatches,
         });
         transcriptMessagesForPrompt = compatibilityMatches
           ? [...transcriptMessagesForPrompt, recoveryMessage]
@@ -697,7 +705,10 @@ export class AgentRuntime {
       // once the material is saved, stale -- copies in the transcript.
       const materialRecoveryMessage = recoveryMessage
         ? null
-        : buildFinalizedMaterialRecoveryMessage(request.materialOutcomes);
+        : buildTurnStartRecoveryMessage({
+            materialOutcomes: request.materialOutcomes,
+            resumableBatches,
+          });
       const promptTranscriptMessages = (): AgentModelMessage[] =>
         materialRecoveryMessage
           ? [...transcriptMessagesForPrompt, materialRecoveryMessage]

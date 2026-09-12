@@ -1,13 +1,31 @@
 import { assert } from "chai";
 import {
-  buildFinalizedMaterialRecoveryMessage,
   buildInterruptedRunRecoveryMessage,
   buildTranscriptUserMessage,
+  buildTurnStartRecoveryMessage,
   isCurrentTurnUserTranscriptMessage,
   isManualCompactRequest,
   readLatestTranscriptGoal,
 } from "../src/agent/execution/transcriptRecovery";
 import type { MaterialOutcomeEntry } from "../src/agent/execution/materialOutcomes";
+import type { ResumableBatch } from "../src/agent/store/batchItemStore";
+
+const interruptedBatch: ResumableBatch = {
+  batchId: "batch-note_write_batch-abc123",
+  conversationKey: 42,
+  total: 3,
+  saved: 1,
+  failed: 1,
+  pending: 1,
+  createdAt: 1000,
+  updatedAt: 1100,
+};
+
+const BATCH_HEADER = "Resumable note batches:";
+const BATCH_LINE =
+  "batchId=batch-note_write_batch-abc123 total=3 saved=1 failed=1 pending=1";
+const BATCH_INSTRUCTION =
+  "To continue, call note_write_batch with resumeBatchId=batch-note_write_batch-abc123; the saved items are skipped and no note is regenerated.";
 
 const unsavedMaterial: MaterialOutcomeEntry = {
   materialRef: {
@@ -86,15 +104,61 @@ describe("Agent transcript recovery", function () {
   });
 
   it("builds a standalone host message for an uninterrupted next turn", function () {
-    const message = buildFinalizedMaterialRecoveryMessage([unsavedMaterial]);
+    const message = buildTurnStartRecoveryMessage({
+      materialOutcomes: [unsavedMaterial],
+    });
     assert.exists(message);
     assert.equal(message?.role, "user");
     assert.include(String(message?.content), "documentId=run-1:document:1");
-    assert.isNull(buildFinalizedMaterialRecoveryMessage([]));
+    assert.isNull(buildTurnStartRecoveryMessage({ materialOutcomes: [] }));
     assert.isNull(
-      buildFinalizedMaterialRecoveryMessage([
-        { ...unsavedMaterial, status: "saved" },
-      ]),
+      buildTurnStartRecoveryMessage({
+        materialOutcomes: [{ ...unsavedMaterial, status: "saved" }],
+      }),
     );
+    assert.isNull(buildTurnStartRecoveryMessage({}));
+  });
+
+  it("names a batch the conversation can continue at its own item", function () {
+    const message = buildTurnStartRecoveryMessage({
+      resumableBatches: [interruptedBatch],
+    });
+    assert.exists(message);
+    const content = String(message?.content);
+    assert.include(content, BATCH_HEADER);
+    assert.include(content, BATCH_LINE);
+    assert.include(content, BATCH_INSTRUCTION);
+    assert.isTrue(
+      message?.transient,
+      "the rows are read again at every turn start, so the block never persists",
+    );
+  });
+
+  it("carries unsaved material and resumable batches in one host message", function () {
+    const message = buildTurnStartRecoveryMessage({
+      materialOutcomes: [unsavedMaterial],
+      resumableBatches: [interruptedBatch],
+    });
+    const content = String(message?.content);
+    // Two sections of one message: a second host message would stack another
+    // block into every prompt for as long as either stayed outstanding.
+    assert.isBelow(
+      content.indexOf("Finalized material available (not saved as a note):"),
+      content.indexOf(BATCH_HEADER),
+    );
+    assert.include(content, "documentId=run-1:document:1");
+    assert.include(content, BATCH_LINE);
+  });
+
+  it("names resumable batches in the interrupted-run recovery note", function () {
+    const message = buildInterruptedRunRecoveryMessage({
+      run: { runId: "run-3" } as never,
+      actions: [],
+      resumableBatches: [interruptedBatch],
+    });
+    const content = String(message.content);
+    assert.include(content, BATCH_HEADER);
+    assert.include(content, BATCH_LINE);
+    assert.include(content, BATCH_INSTRUCTION);
   });
 });

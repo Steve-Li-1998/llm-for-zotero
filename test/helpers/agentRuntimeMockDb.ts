@@ -222,18 +222,28 @@ export function installMockDb(): InstalledMockDb {
 }
 
 /**
- * The agent-run mock database is hand-written SQL pattern matching. The
- * document store needs real SQL, so plan-document statements are routed to an
- * in-memory sqlite database while every other statement stays on the mock.
+ * Tables whose statements are too much SQL to fake by hand: aggregates,
+ * joins, `INSERT OR IGNORE`, `PRAGMA table_info`. They run on real sqlite.
  */
-export function installPlanDocumentSqlite(): () => void {
+const SQLITE_BACKED_TABLES = [
+  "llm_for_zotero_plan_document",
+  "llm_for_zotero_agent_batch_",
+];
+
+/**
+ * The agent-run mock database is hand-written SQL pattern matching. The
+ * document and durable-batch stores need real SQL, so their statements are
+ * routed to an in-memory sqlite database while every other statement stays on
+ * the mock.
+ */
+export function installAgentStoreSqlite(): () => void {
   const zotero = globalThis as typeof globalThis & { Zotero: typeof Zotero };
   const base = zotero.Zotero.DB;
   const db = new DatabaseSync(":memory:");
   zotero.Zotero.DB = {
     ...base,
     queryAsync: async (sql: string, params: unknown[] = []) => {
-      if (!sql.includes("llm_for_zotero_plan_document"))
+      if (!SQLITE_BACKED_TABLES.some((table) => sql.includes(table)))
         return base.queryAsync(sql, params);
       const statement = db.prepare(sql);
       const values = params.map((value) =>

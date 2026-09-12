@@ -83,8 +83,18 @@ import type {
   AgentStepParams,
 } from "../src/agent/model/adapter";
 import {
+  createBatchItems,
+  initAgentBatchItemStore,
+  markBatchItemFailed,
+  markBatchItemSaved,
+} from "../src/agent/store/batchItemStore";
+import {
+  createBatchJob,
+  initAgentBatchJobStore,
+} from "../src/agent/store/batchJobStore";
+import {
   installMockDb,
-  installPlanDocumentSqlite,
+  installAgentStoreSqlite,
   type InstalledMockDb,
 } from "./helpers/agentRuntimeMockDb";
 import { createTestActionContractService } from "./helpers/actionContractService";
@@ -8126,7 +8136,7 @@ const submitDocumentGateway = {
 describe("finalized material announcement", function () {
   it("emits material_finalized and carries the same ref on the final event", async function () {
     const restoreDb = installMockDb();
-    const restoreDocuments = installPlanDocumentSqlite();
+    const restoreDocuments = installAgentStoreSqlite();
     const events: AgentEvent[] = [];
     let steps = 0;
     try {
@@ -8536,7 +8546,7 @@ describe("finalized material announcement", function () {
 
   it("tells the next turn which finalized material is still unsaved, without persisting the block", async function () {
     const installed = installMockDb();
-    const restoreDocuments = installPlanDocumentSqlite();
+    const restoreDocuments = installAgentStoreSqlite();
     clearAgentTranscriptStore();
     try {
       await initPlanDocumentStore();
@@ -8648,6 +8658,117 @@ describe("finalized material announcement", function () {
       );
     } finally {
       restoreDocuments();
+      installed();
+    }
+  });
+
+  const BATCH_HEADER = "Resumable note batches:";
+
+  /** Seeds one interrupted batch: A saved, B failed, C never attempted. */
+  async function seedInterruptedBatch(
+    conversationKey: number,
+    batchId: string,
+  ): Promise<void> {
+    await initAgentBatchJobStore();
+    await initAgentBatchItemStore();
+    await createBatchJob({
+      jobId: batchId,
+      conversationKey,
+      action: "note_write_batch",
+      input: { target: "item" },
+      totalCount: 3,
+      now: 1000,
+    });
+    await createBatchItems(
+      batchId,
+      [1, 2, 3].map((id) => ({
+        itemKey: `item:${id}`,
+        position: id,
+        materialRef: {
+          documentId: `run-batch:document:${id}`,
+          documentVersion: 1,
+          contentHash: `sha256:note-${id}`,
+        },
+      })),
+      1000,
+    );
+    await markBatchItemSaved(batchId, "item:1", {
+      actionId: "action-batch",
+      stepSequence: 1,
+      noteId: 900,
+      now: 1100,
+    });
+    await markBatchItemFailed(batchId, "item:2", {
+      actionId: "action-batch",
+      stepSequence: 2,
+      error: "Zotero refused the note write",
+      now: 1100,
+    });
+  }
+
+  it("tells the next turn which note batch it can continue, and where", async function () {
+    const installed = installMockDb();
+    const restoreStores = installAgentStoreSqlite();
+    clearAgentTranscriptStore();
+    try {
+      await initPlanDocumentStore();
+      const conversationKey = 774413;
+      const batchId = "batch-note_write_batch-resume";
+      await seedInterruptedBatch(conversationKey, batchId);
+
+      const next = await runPlainTurn(conversationKey, "Keep going", 200);
+      const blockIndex = next.promptMessages.findIndex((message) =>
+        String(message.content).includes(BATCH_HEADER),
+      );
+      assert.isAtLeast(blockIndex, 0, "the turn must name the open batch");
+      const block = String(next.promptMessages[blockIndex]?.content);
+      assert.include(
+        block,
+        `batchId=${batchId} total=3 saved=1 failed=1 pending=1`,
+      );
+      assert.include(
+        block,
+        `To continue, call note_write_batch with resumeBatchId=${batchId}; the saved items are skipped and no note is regenerated.`,
+      );
+      assert.isTrue(
+        (next.promptMessages[blockIndex] as { transient?: boolean }).transient,
+        "the rows are read again every turn, so the block must never persist",
+      );
+      assert.include(
+        String(next.promptMessages[blockIndex + 1]?.content),
+        "Keep going",
+        "the host block sits immediately before this turn's user message",
+      );
+      assert.notInclude(
+        readPersistedTranscript(installed, conversationKey)
+          .map((message) => String(message.content))
+          .join("\n"),
+        BATCH_HEADER,
+      );
+
+      // Once every item has landed there is nothing to continue, and an
+      // offer to resume would write the same three notes a second time.
+      await markBatchItemSaved(batchId, "item:2", {
+        actionId: "action-batch",
+        stepSequence: 3,
+        noteId: 901,
+        now: 1200,
+      });
+      await markBatchItemSaved(batchId, "item:3", {
+        actionId: "action-batch",
+        stepSequence: 4,
+        noteId: 902,
+        now: 1200,
+      });
+      const after = await runPlainTurn(conversationKey, "And now?", 300);
+      assert.isEmpty(
+        after.promptMessages.filter((message) =>
+          String(message.content).includes(BATCH_HEADER),
+        ),
+        "a batch whose items are all written is never offered",
+      );
+    } finally {
+      restoreStores();
       installed();
     }
   });

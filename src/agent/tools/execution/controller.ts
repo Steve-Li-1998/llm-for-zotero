@@ -15,6 +15,7 @@ import type { PlanAmendmentGrant } from "../../plans/planAmendmentTypes";
 import { canonicalJson } from "../../services/libraryMutation/canonicalJson";
 import type {
   AgentActionEvidence,
+  AgentActionReceipt,
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentToolCall,
@@ -34,6 +35,44 @@ import {
   normalizeExecutionOutput,
   pendingActionMaterial,
 } from "./results";
+
+/**
+ * What an execution's evidence records are worth recording in the audit trail.
+ *
+ * The records themselves carry whole post-images — a script's guarded item
+ * JSON, a note body, a captured library state. Every one of those is already
+ * durable in the journal step the record names, so the audit row keeps the
+ * identity and the verdict and drops the payload: a summary tells a reader
+ * which durable step proved what, and nothing is stored twice.
+ */
+function summarizeActionEvidence(
+  evidence: AgentActionEvidence[] | undefined,
+  receipts: AgentActionReceipt[],
+):
+  | Array<{
+      source: AgentActionEvidence["source"];
+      stepId?: string;
+      verification?: AgentActionReceipt["verification"];
+      reason?: string;
+    }>
+  | undefined {
+  if (!evidence?.length) return undefined;
+  return evidence.map((entry) => {
+    const receipt = entry.journalStepId
+      ? receipts.find(
+          (candidate) => candidate.evidenceRef === entry.journalStepId,
+        )
+      : undefined;
+    const matched =
+      receipt || (receipts.length === 1 ? receipts[0] : undefined);
+    return {
+      source: entry.source,
+      ...(entry.journalStepId ? { stepId: entry.journalStepId } : {}),
+      ...(matched ? { verification: matched.verification } : {}),
+      ...(matched?.reasons.length ? { reason: matched.reasons[0] } : {}),
+    };
+  });
+}
 
 type ReceiptOutcome = {
   ok: boolean;
@@ -762,9 +801,23 @@ export class InvocationController {
                   )
                 ? "applied"
                 : undefined;
+        // Receipts first: the audit row records what this execution proved,
+        // and that is only knowable once the receipts have re-read state.
+        const actionReceipts = await this.receipts(
+          {
+            ok: true,
+            effect,
+            content: output.content,
+            actionEvidence: output.actionEvidence,
+          },
+          assessed,
+        );
         await this.recordGrantOutcome(grant, "executed", {
           effect,
-          actionEvidence: output.actionEvidence,
+          actionEvidence: summarizeActionEvidence(
+            output.actionEvidence,
+            actionReceipts,
+          ),
           content: output.content,
         });
         return this.result({
@@ -777,15 +830,7 @@ export class InvocationController {
             effect,
             authority:
               authority === "yolo_judgment" ? "yolo_judgment" : undefined,
-            actionReceipts: await this.receipts(
-              {
-                ok: true,
-                effect,
-                content: output.content,
-                actionEvidence: output.actionEvidence,
-              },
-              assessed,
-            ),
+            actionReceipts,
             content: output.content,
             artifacts: output.artifacts,
             continuationCheckpoint: output.continuationCheckpoint,

@@ -114,6 +114,102 @@ describe("direct-agent execution boundary", function () {
     assert.isUndefined((directContext().request as any).classifiedIntent);
   });
 
+  it("audits an external write by summary, never by copying its post-image", async function () {
+    // A script's post-image holds whole note bodies and item JSON. The durable
+    // journal step already stores it; copying it into the execution audit row
+    // duplicates the largest payload in the system for no reader.
+    const db = new ChangeJournalTestDb();
+    globalThis.Zotero = {
+      DB: db,
+      Prefs: { get: () => "auto" },
+      Items: { get: () => ({ libraryID: 1 }) },
+      Collections: { get: () => null },
+      debug: () => undefined,
+    } as never;
+    await initAgentChangeJournal();
+    const registry = new AgentToolRegistry(
+      new ActionContractService({} as never),
+    );
+    registry.register({
+      effectOperations: ["zotero_script_execute"],
+      spec: {
+        name: "direct_script",
+        description: "fixture",
+        inputSchema: { type: "object" },
+        executionClass: "external_effect",
+        requiresConfirmation: false,
+      },
+      validate: (input) => ({ ok: true, value: input }),
+      describeAction: () => [
+        {
+          id: "zotero_script_execute:fixture",
+          proofDomain: "execution",
+          capability: "zotero.script",
+          operation: "zotero_script_execute",
+          source: "zotero_script",
+          requestedTargets: ["item:41"],
+          destinationCollectionIds: [],
+        },
+      ],
+      planInvocation: () =>
+        stateChangeInvocationPlan({
+          domains: ["zotero_library"],
+          effects: ["modify"],
+          targets: ["item:41"],
+          reason: "Run the declared script effect.",
+        }),
+      execute: async () => ({
+        content: { returned: "done" },
+        effect: "applied" as const,
+        actionEvidence: [
+          {
+            version: 1 as const,
+            source: "external_mutation" as const,
+            operation: "zotero_script",
+            preImage: { kind: "script_effects", items: [], declared: [] },
+            postImage: {
+              kind: "script_effects",
+              items: [
+                {
+                  itemId: 41,
+                  exists: true,
+                  json: { key: "ABCD", itemType: "note" },
+                  noteHtml: "<p>A whole note body that must not be copied.</p>",
+                },
+              ],
+              declared: [],
+            },
+            journalStepId: "script-action:1",
+            effect: "applied" as const,
+          },
+        ],
+      }),
+    });
+
+    const prepared = await registry.prepareExecution(
+      { id: "call-script", name: "direct_script", arguments: {} },
+      directContext(),
+    );
+    assert.equal(prepared.kind, "result");
+    if (prepared.kind !== "result") return;
+    assert.isTrue(prepared.execution.result.ok);
+
+    const observation = [...db.observations.values()].find(
+      (row) => row.event === "original_execution_completed",
+    );
+    const extra = String(observation?.extra_json || "");
+    assert.notInclude(extra, "noteHtml");
+    assert.notInclude(extra, "A whole note body");
+    assert.notInclude(extra, "ABCD");
+    assert.deepEqual(JSON.parse(extra).actionEvidence, [
+      {
+        source: "external_mutation",
+        stepId: "script-action:1",
+        verification: "execution_only",
+      },
+    ]);
+  });
+
   it("requires review for a new note in Safe mode", async function () {
     const db = new ChangeJournalTestDb();
     globalThis.Zotero = {

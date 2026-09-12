@@ -1666,6 +1666,7 @@ function buildMcpToolActivityEvent(params: {
   verifiedReadSources?: VerifiedReadSource[];
   readObservations?: readonly TrustedReadObservation[];
   mutability?: "read" | "write";
+  researchJobId?: string;
   scope: ZoteroMcpActiveScope | null;
   libraryID: number;
 }): ZoteroMcpToolActivityEvent {
@@ -1684,6 +1685,7 @@ function buildMcpToolActivityEvent(params: {
     actionReceipts: params.actionReceipts,
     workCategory: params.workCategory,
     mutability: params.mutability,
+    researchJobId: params.researchJobId,
     quoteCitations: params.quoteCitations,
     verifiedReadSources: params.verifiedReadSources,
     readObservations: params.readObservations,
@@ -2090,6 +2092,7 @@ async function handleToolsCall(
     actionReceipts?: AgentActionReceipt[];
     verifiedReadSources?: VerifiedReadSource[];
     readObservations?: readonly TrustedReadObservation[];
+    researchJobId?: string;
   }) => {
     emitZoteroMcpToolActivity(
       buildMcpToolActivityEvent({
@@ -2105,6 +2108,7 @@ async function handleToolsCall(
         workCategory,
         verifiedReadSources: result.verifiedReadSources,
         readObservations: result.readObservations,
+        researchJobId: result.researchJobId,
         mutability:
           tool?.spec.executionClass === "external_effect" ? "write" : "read",
         quoteCitations: result.quoteCitations,
@@ -2350,6 +2354,7 @@ async function handleToolsCall(
       ),
       artifacts: prepared.execution.result.artifacts,
       actionReceipts: prepared.execution.result.actionReceipts,
+      researchJobId: prepared.execution.result.researchJobId,
       verifiedReadSources: readObservations.map(
         ({
           libraryID,

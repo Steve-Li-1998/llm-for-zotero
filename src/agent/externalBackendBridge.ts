@@ -3436,7 +3436,7 @@ export function createExternalBackendBridgeRuntime(options: {
                   if (
                     event.phase === "completed" &&
                     event.ok &&
-                    event.toolName === "research_update" &&
+                    event.researchJobId &&
                     params.request.planContext?.phase === "executing"
                   ) {
                     const job = await loadResearchJobForExecution(

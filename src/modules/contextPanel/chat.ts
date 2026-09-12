@@ -3951,10 +3951,9 @@ function buildCodexNativeTurnCallbacks(ctx: {
       );
       if (event.phase === "completed" && event.ok) {
         void (async () => {
-          if (
-            event.toolName === "research_update" &&
-            ctx.planContext?.phase === "executing"
-          ) {
+          // The row says which research job it advanced; the panel never asks
+          // which tool ran.
+          if (event.researchJobId && ctx.planContext?.phase === "executing") {
             const { loadResearchJobForExecution } =
               await import("../../agent/research/store");
             const job = await loadResearchJobForExecution(
@@ -6438,6 +6437,8 @@ type CodexNativeMcpToolActivityEvent = {
   artifacts?: AgentToolArtifact[];
   actionReceipts?: import("../../agent/contracts/types").AgentActionReceipt[];
   workCategory?: AgentWorkCategory;
+  /** The research job this call advanced, as its own result declared it. */
+  researchJobId?: string;
   /**
    * The native item this MCP request belongs to, as the Codex client paired
    * them inside the turn. Two identity spaces describe one call; this is the

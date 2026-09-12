@@ -139,14 +139,6 @@ const ALLOWED_SITES: AllowedSite[] = [
       "interaction kind on AgentPendingAction, as the tool spec already " +
       'declares it (`interaction: "user_input"`).',
   },
-  {
-    file: "src/modules/contextPanel/chat.ts",
-    snippet: 'event.toolName === "research_update"',
-    reason:
-      "Known meaning site owned by Phase 4 Task 4, which replaces it with " +
-      "the planning stage event carrying the research job id from the " +
-      "tool result payload.",
-  },
 ];
 
 type Offence = { file: string; line: number; text: string; pattern: string };

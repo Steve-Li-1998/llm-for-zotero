@@ -1121,6 +1121,8 @@ export type AgentToolResult = {
    * into a single turn-level `materialRef`.
    */
   batchItems?: AgentBatchItemOutcome[];
+  /** The research job this call advanced, as the tool's result declared it. */
+  researchJobId?: string;
 };
 
 /**
@@ -1200,6 +1202,14 @@ export type AgentToolExecutionOutput<TResult = unknown> =
       materialKind?: string;
       materialTitle?: string;
       batchItems?: AgentBatchItemOutcome[];
+      /**
+       * The research job this call advanced.
+       *
+       * A research tool's own answer to "which investigation moved", so a
+       * bridge that wants to show the reader its progress reads a fact the
+       * result stated instead of recognising the tool by name.
+       */
+      researchJobId?: string;
     };
 
 /** Explicit execution contract for tools whose validated operation can write. */

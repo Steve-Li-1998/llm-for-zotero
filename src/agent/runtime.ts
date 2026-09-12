@@ -1,7 +1,6 @@
 import { resolveNoteEditModelRequest } from "./model/noteEditingPolicy";
 import { buildPaperDisplayLabels } from "../shared/paperDisplayLabels";
 import { listScopeSnapshotItems } from "./research/store";
-import { resolvePreparedActionReview } from "./tools/execution/review";
 import { ensureModelCapabilities } from "../modelCapabilities";
 import {
   areConversationWritesFrozen,
@@ -12,7 +11,6 @@ import {
 import { getNotesDirectoryConfig } from "../utils/notesDirectoryConfig";
 import type { WebAttributionAssessment } from "../webAccess/attribution";
 import { clearWebSourcesForRun } from "../webAccess/runSources";
-import { buildActionCallDigest } from "./authorization/proposal";
 import {
   buildAgentContextBudgetState,
   resolveAgentContextBudgetPolicy,
@@ -50,7 +48,6 @@ import {
   readLatestActionContractCheckpoint,
   type ActionContractCheckpoint,
 } from "./contracts/actionContractRunSession";
-import { createUnverifiedReceipt } from "./contracts/actionEvaluation";
 import { loadWorkflowCheckpoint } from "./contracts/workflowCheckpoint";
 import { resolveDocumentOutcomePolicy } from "./documents/outcomePolicy";
 import type { MaterialRef } from "./documents/materialRef";
@@ -72,12 +69,8 @@ import {
 import { resolvePlanSkillRoutingReceipt } from "./model/semanticSkillRouting";
 import {
   buildAdapterToolCallResult,
-  buildArtifactFollowupMessage,
-  filterFollowupMessageForCapabilities,
-  type ToolWorkflowDelivery,
   type ToolWorkflowOutcome,
 } from "./model/toolArtifactDelivery";
-import { createTrustedReadObservations } from "./plans/readObservation";
 import { PlanExecutionRunSession } from "./plans/runSession";
 import { loadPlanArtifact } from "./plans/store";
 import type { PlanEvent } from "./plans/types";
@@ -86,7 +79,6 @@ import {
   AgentEventLocalDocumentStreamRedactor,
   LocalDocumentPathStreamRedactor,
 } from "./privacy/localDocumentPathRedaction";
-import { canonicalJson } from "./services/libraryMutation/canonicalJson";
 import {
   getAllSkills,
   getBuiltinSkillInstructionById,
@@ -95,9 +87,7 @@ import {
 } from "./skills";
 import { listJournalActions } from "./store/changeJournal";
 import { recordAgentTurn } from "./store/conversationMemory";
-import { sha256Text } from "./store/journalRecoveryBlobStore";
 import {
-  createAgentToolResultHandleRecord,
   hasAgentToolResultHandles,
   hydrateAgentToolResultHandles,
   upsertAgentToolResultHandles,
@@ -125,6 +115,10 @@ import { latestExecutionCheckpoint } from "./execution/checkpoint";
 import { createAgentExecutionContext } from "./execution/context";
 import { loadMaterialOutcomesForConversation } from "./execution/materialOutcomes";
 import {
+  createToolExecution,
+  type ToolExecutionRecord,
+} from "./execution/toolExecution";
+import {
   buildInterruptedRunRecoveryMessage,
   buildTranscriptUserMessage,
   buildTurnStartRecoveryMessage,
@@ -133,7 +127,6 @@ import {
   readLatestTranscriptGoal,
 } from "./execution/transcriptRecovery";
 import {
-  buildSyntheticToolCall,
   buildToolProgressFingerprint,
   filterTransientRecoveryTool,
   isUserDeniedToolResult,
@@ -143,28 +136,21 @@ import {
 import type { PreparedActionCall } from "./tools/workflowSteps";
 import type {
   AgentAssistantMessage,
-  AgentActionReceipt,
   AgentConfirmationResolution,
   AgentEvent,
-  AgentInheritedApproval,
-  AgentModelCapabilities,
   AgentModelMessage,
   AgentModelStep,
   AgentPendingAction,
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
-  AgentToolCall,
   AgentToolContext,
-  AgentToolEffect,
   AgentToolMessage,
   AgentToolResult,
   AgentUserMessage,
   ResolvedAgentRuntimeRequest,
 } from "./types";
-import { resolveAgentToolCallWorkCategory } from "./workCategory";
 import { buildAgentStageEvent } from "./stageEvents";
-import { resolveAgentToolPresentationLabel } from "./toolPresentation";
 
 type AgentRuntimeDeps = {
   registry: AgentToolRegistry;
@@ -184,13 +170,6 @@ function createRunId(): string {
 function createConfirmationRequestId(): string {
   return `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
-
-type ExecutedToolCall = {
-  toolResult: AgentToolResult;
-  toolDefinition?: import("./types").AgentToolDefinition<any, any>;
-  input?: unknown;
-  documentEvidenceRefs?: unknown[];
-};
 
 /**
  * What a plan event says about the planning stage.
@@ -519,15 +498,7 @@ export class AgentRuntime {
         },
       };
       const toolsUsedThisTurn: string[] = [];
-      const toolExecutionRecords: Array<{
-        name: string;
-        ok: boolean;
-        mutability?: "read" | "write";
-        effect?: AgentToolEffect;
-        input?: unknown;
-        content?: unknown;
-        actionReceipts?: AgentActionReceipt[];
-      }> = [];
+      const toolExecutionRecords: ToolExecutionRecord[] = [];
       const pendingReadActivities: AgentPendingReadActivity[] = [];
       await hydrateAgentToolResultHandles(request.conversationKey);
       let toolResultReadAvailable = hasAgentToolResultHandles(
@@ -1578,9 +1549,13 @@ export class AgentRuntime {
           },
           onToolCall: async (call) => {
             await rollbackStepStreamedText();
-            const outcome = await executeToolWorkflow(call, round, {
-              modelCallId: call.id,
-            });
+            const outcome = await toolExecution.executeToolWorkflow(
+              call,
+              round,
+              {
+                modelCallId: call.id,
+              },
+            );
             if (outcome.stopRun) providerTerminalOutcomes.push(outcome);
             newTranscriptMessages.push({
               role: "assistant",
@@ -1651,770 +1626,46 @@ export class AgentRuntime {
           resolution: settled,
         };
       };
-      const executePreparedToolCall = async (
-        call: AgentToolCall,
-        round: number,
-        options: {
-          inheritedApproval?: AgentInheritedApproval;
-          checkpointedWorkflow?: boolean;
-        } = {},
-      ): Promise<ExecutedToolCall> => {
-        const toolDefinition = this.registry.getTool(call.name);
-        const workCategory = toolDefinition
-          ? resolveAgentToolCallWorkCategory(toolDefinition, call.arguments)
-          : undefined;
-        const toolLabel = resolveAgentToolPresentationLabel(toolDefinition);
-        /**
-         * Open and close this call's stage.
-         *
-         * A call the registry cannot resolve has no declared category, and
-         * guessing one from its name is the thing the stage model exists to
-         * remove -- so it reports no stage at all. The registry answers such
-         * a call with a synthetic error and no effect, so there is no work
-         * for a stage to describe.
-         */
-        const emitCallStage = async (
-          status: "started" | "completed" | "failed",
-          details: {
-            receiptIds?: string[];
-            materialRef?: MaterialRef;
-          } = {},
-        ) => {
-          if (!workCategory) return;
-          await emit(
-            buildAgentStageEvent({
-              stage: workCategory,
-              status,
-              callId: call.id,
-              toolName: call.name,
-              toolLabel,
-              ...details,
-            }),
-          );
-        };
-        const lifecycleError = (): ExecutedToolCall => ({
-          toolResult: {
-            callId: call.id,
-            name: call.name,
-            ok: false,
-            actionReceipts: [
-              createUnverifiedReceipt({
-                reason: "Conversation lifecycle changed before execution.",
-              }),
-            ],
-            content: {
-              error:
-                "Conversation lifecycle changed before this tool could execute.",
-            },
-          },
-        });
-        const executionAllowed = () =>
-          !params.signal?.aborted && writeAllowed();
-        if (!executionAllowed()) return lifecycleError();
-        await emitCallStage("started");
-        await emit({
-          type: "tool_call",
-          callId: call.id,
-          name: call.name,
-          args: call.arguments,
-          toolLabel,
-          workCategory,
-          executionId:
-            request.planContext?.phase === "executing"
-              ? request.planContext.executionId
-              : undefined,
-          taskId:
-            request.planContext?.phase === "executing"
-              ? request.planContext.activeTaskId
-              : undefined,
-        });
-        toolsUsedThisTurn.push(call.name);
-        const cachedPaperEvidence =
-          call.name === "paper_read"
-            ? await paperEvidenceFrontier.readCached({
-                input: call.arguments,
-                toolCallId: call.id,
-                resourceSignature: resourceContextPlan.resourceSignature,
-              })
-            : null;
-        let executedCall: {
-          toolResult: AgentToolResult;
-          toolDefinition?: import("./types").AgentToolDefinition<any, any>;
-          input?: unknown;
-          documentEvidenceRefs?: unknown[];
-        };
-        if (cachedPaperEvidence) {
-          executedCall = {
-            toolResult: {
-              callId: call.id,
-              name: call.name,
-              ok: true,
-              actionReceipts: [],
-              content: cachedPaperEvidence.content,
-            },
-            toolDefinition: this.registry.getTool(call.name),
-            input: call.arguments,
-          };
-        } else {
-          const execution = await this.registry.prepareExecution(
-            call,
-            {
-              ...context,
-              currentAnswerText,
-              requestActionReview: async (action) =>
-                (await requestActionResolution(action)).resolution,
-              resolvePreparedAction: (prepared) =>
-                resolvePreparedActionReview(
-                  prepared,
-                  async (action) =>
-                    (await requestActionResolution(action)).resolution,
-                  executionAllowed,
-                ),
-            },
-            {
-              callerKind: options.inheritedApproval ? "action" : "model",
-              inheritedApproval: options.inheritedApproval,
-              checkpointedWorkflow: options.checkpointedWorkflow,
-              isExecutionAllowed: executionAllowed,
-              executeWithLock: (task) =>
-                withConversationWriteLock(request.conversationKey, task),
-            },
-          );
-          if (execution.kind === "confirmation") {
-            const { resolution } = await requestActionResolution(
-              execution.action,
-            );
-            if (!executionAllowed()) return lifecycleError();
-            // Resolution semantics belong to the rendered action schema. Some
-            // review-card controls deliberately carry approved:false while
-            // continuing the workflow without applying a mutation.
-            let confirmedExecution = await execution.execute(resolution);
-            while (confirmedExecution.kind === "confirmation") {
-              const next = await requestActionResolution(
-                confirmedExecution.action,
-              );
-              if (!executionAllowed()) return lifecycleError();
-              confirmedExecution = await confirmedExecution.execute(
-                next.resolution,
-              );
-            }
-            executedCall = {
-              toolResult: confirmedExecution.execution.result,
-              toolDefinition: confirmedExecution.execution.tool,
-              input: confirmedExecution.execution.input,
-            };
-          } else {
-            if (!executionAllowed()) return lifecycleError();
-            executedCall = {
-              toolResult: execution.execution.result,
-              toolDefinition: execution.execution.tool,
-              input: execution.execution.input,
-            };
-          }
-        }
-        const { toolResult } = executedCall;
-        let readActivityContent = toolResult.content;
-        if (
-          toolResult.ok &&
-          toolResult.artifacts?.length &&
-          request.documentOutcomePolicy?.required
-        ) {
-          const artifactsByPath = new Map(
-            (request.documentArtifactObservations || []).map((artifact) => [
-              artifact.storedPath,
-              artifact,
-            ]),
-          );
-          for (const artifact of toolResult.artifacts) {
-            artifactsByPath.set(artifact.storedPath, artifact);
-          }
-          request.documentArtifactObservations = [...artifactsByPath.values()];
-        }
-        if (
-          !cachedPaperEvidence &&
-          toolResult.ok &&
-          executedCall.toolDefinition?.spec.executionClass === "read"
-        ) {
-          const observations = await createTrustedReadObservations({
-            toolName: toolResult.name,
-            callId: toolResult.callId,
-            input: executedCall.input,
-            result: toolResult.content,
-          });
-          if (observations.length) {
-            const merged = new Map(
-              (request.documentReadObservations || []).map((entry) => [
-                entry.observationId,
-                entry,
-              ]),
-            );
-            for (const observation of observations) {
-              merged.set(observation.observationId, observation);
-            }
-            request.documentReadObservations = [...merged.values()];
-            executedCall.documentEvidenceRefs = observations.map(
-              (observation) => ({
-                evidenceRef: observation.observationId,
-                libraryID: observation.libraryID,
-                itemKey: observation.itemKey,
-                capabilities: observation.capabilities,
-                attachmentItemKey: observation.attachmentItemKey,
-                pageIndex: observation.pageIndex,
-                sourceFingerprint: observation.sourceFingerprint,
-              }),
-            );
-          }
-        }
-        let paperEvidenceFrontierState:
-          | "advanced"
-          | "unchanged"
-          | "unavailable"
-          | undefined = cachedPaperEvidence?.frontier;
-        if (
-          !cachedPaperEvidence &&
-          toolResult.ok &&
-          call.name === "paper_read"
-        ) {
-          const originalContent = toolResult.content;
-          const processed = await paperEvidenceFrontier.processResult({
-            input: executedCall.input,
-            content: originalContent,
-            toolCallId: call.id,
-            resourceSignature: resourceContextPlan.resourceSignature,
-            persistOriginal: async (content) => {
-              const inputDigest = `sha256:${await sha256Text(
-                canonicalJson(executedCall.input),
-              )}`;
-              const record = createAgentToolResultHandleRecord({
-                conversationKey: request.conversationKey,
-                toolName: call.name,
-                toolCallId: call.id,
-                inputDigest,
-                resourceSignature: resourceContextPlan.resourceSignature,
-                content,
-                createdAt: this.now(),
-              });
-              if (!record) return undefined;
-              await persistToolResultHandles([record]);
-              preservedTurnHandleRecords.push(record);
-              toolResultReadAvailable = true;
-              setToolResultReadAvailability(request, true);
-              return record.handle;
-            },
-          });
-          toolResult.content = processed.content;
-          readActivityContent = processed.originalContent ?? originalContent;
-          paperEvidenceFrontierState = processed.frontier;
-        }
-        toolExecutionRecords.push({
-          name: toolResult.name,
-          ok: toolResult.ok,
-          mutability:
-            executedCall.toolDefinition?.spec.executionClass ===
-            "external_effect"
-              ? "write"
-              : "read",
-          effect: toolResult.effect,
-          input: executedCall.input,
-          content: toolResult.content,
-          actionReceipts: toolResult.actionReceipts,
-        });
-        if (toolResult.ok) {
-          if (paperEvidenceFrontierState !== "unchanged") {
-            pendingReadActivities.push({
-              toolName: toolResult.name,
-              toolLabel:
-                typeof executedCall.toolDefinition?.presentation?.label ===
-                "string"
-                  ? executedCall.toolDefinition.presentation.label
-                  : undefined,
-              input: executedCall.input,
-              content: readActivityContent,
-              artifacts: toolResult.artifacts,
-              request,
-              timestamp: this.now(),
-            });
-          }
-        } else {
-          const rawError = readToolError(toolResult);
-          const userDenied = isUserDeniedToolResult(toolResult);
-          // A denial is the user steering, not the tool failing. Counting it
-          // meant three careful "Cancel" clicks failed the run outright and
-          // -- because persistence is gated on completion -- discarded its
-          // memory along with it.
-          if (rawError && !userDenied) {
-            await emit({
-              type: "tool_error",
-              callId: toolResult.callId,
-              name: toolResult.name,
-              error: rawError,
-              round,
-              toolLabel,
-              workCategory,
-            });
-          }
-        }
-        await emitCallStage(toolResult.ok ? "completed" : "failed", {
-          receiptIds: toolResult.actionReceipts?.length
-            ? toolResult.actionReceipts.map((receipt) => receipt.id)
-            : undefined,
-          materialRef: toolResult.materialRef,
-        });
-        await emit({
-          type: "tool_result",
-          callId: toolResult.callId,
-          name: toolResult.name,
-          ok: toolResult.ok,
-          toolLabel,
-          workCategory,
-          effect: toolResult.effect,
-          authority: toolResult.authority,
-          actionReceipts: toolResult.actionReceipts,
-          content: toolResult.content,
-          artifacts: toolResult.artifacts,
-          executionId:
-            request.planContext?.phase === "executing"
-              ? request.planContext.executionId
-              : undefined,
-          taskId:
-            request.planContext?.phase === "executing"
-              ? request.planContext.activeTaskId
-              : undefined,
-        });
-        if (toolResult.materialRef) {
-          finalizedMaterialRefs.set(
-            toolResult.materialRef.documentId,
-            toolResult.materialRef,
-          );
-          await emit(
-            buildAgentStageEvent({
-              stage: "generation",
-              status: "completed",
-              callId: toolResult.callId,
-              toolName: toolResult.name,
-              toolLabel,
-              materialRef: toolResult.materialRef,
-            }),
-          );
-          await emit({
-            type: "material_finalized",
-            materialRef: toolResult.materialRef,
-            materialKind: toolResult.materialKind,
-            materialTitle: toolResult.materialTitle,
-            callId: toolResult.callId,
-          });
-        }
-        // A batch announces its items one by one. They are deliberately not
-        // `material_finalized`: fifty note bodies are recovered from the
-        // batch's own durable rows, not from the turn's material ledger.
-        for (const item of toolResult.batchItems || []) {
-          // A pending row is one this run has not written yet: not a
-          // completion and not a failure, and the stage vocabulary has no
-          // third outcome. It reports no stage rather than a wrong one; the
-          // row itself still says the note is not written.
-          if (item.status !== "pending")
-            await emit(
-              buildAgentStageEvent({
-                stage: "zotero_action",
-                status: item.status === "saved" ? "completed" : "failed",
-                callId: toolResult.callId,
-                toolName: toolResult.name,
-                toolLabel,
-                batchId: item.batchId,
-                itemKey: item.itemKey,
-                materialRef: item.materialRef,
-              }),
-            );
-          await emit({
-            type: "batch_item_outcome",
-            batchId: item.batchId,
-            itemKey: item.itemKey,
-            materialRef: item.materialRef,
-            status: item.status,
-            written: item.written,
-            noteId: item.noteId,
-            error: item.error,
-            callId: toolResult.callId,
-          });
-        }
-        await actionContractSession.recordToolReceipts(
-          toolResult.actionReceipts,
-        );
-        await activePlanSession.recordToolResult({
-          toolName: toolResult.name,
-          executionClass: executedCall.toolDefinition?.spec.executionClass,
-          input: executedCall.input,
-          result: toolResult,
-          artifacts: toolResult.artifacts,
-          runId,
-        });
-        return executedCall;
-      };
-      const buildToolDelivery = async (
-        toolResult: AgentToolResult,
-        callId: string,
-        toolDefinition?: import("./types").AgentToolDefinition<any, any>,
-        contentOverride?: unknown,
-        extraFollowupMessages: AgentModelMessage[] = [],
-      ): Promise<ToolWorkflowDelivery> => {
-        const followupMessage = toolDefinition?.buildFollowupMessage
-          ? await toolDefinition.buildFollowupMessage(toolResult, {
-              ...context,
-              currentAnswerText,
-            })
-          : await buildArtifactFollowupMessage(toolResult, {
-              contentInputs:
-                resolveCapabilitiesContentInputs(adapterCapabilities),
-              modelName: request.model,
-            });
-        const filteredFollowupMessage = filterFollowupMessageForCapabilities(
-          followupMessage,
-          adapterCapabilities,
-          request.model,
-        );
-        const followupMessages = extraFollowupMessages
-          .map((message) =>
-            filterFollowupMessageForCapabilities(
-              message,
-              adapterCapabilities,
-              request.model,
-            ),
-          )
-          .filter((message): message is AgentModelMessage => Boolean(message));
-        if (filteredFollowupMessage) {
-          followupMessages.push(filteredFollowupMessage);
-        }
-        const rawContent = contentOverride ?? toolResult.content;
-        const contentWithReceipt =
-          rawContent &&
-          typeof rawContent === "object" &&
-          !Array.isArray(rawContent)
-            ? {
-                ...(rawContent as Record<string, unknown>),
-                actionReceipts: toolResult.actionReceipts,
-              }
-            : {
-                content: rawContent,
-                actionReceipts: toolResult.actionReceipts,
-              };
-        return {
-          callId,
-          name: toolResult.name,
-          content: {
-            ...contentWithReceipt,
-            ...(activePlanSession.workflowProgress()
-              ? { planProgress: activePlanSession.workflowProgress() }
-              : {}),
-          },
-          followupMessages,
-        };
-      };
+      // Tool execution is its own collaborator, built once per turn with the
+      // state its three functions used to reach through this method's
+      // closure. The prepared-action summaries it appends to are read by the
+      // finalization path below, so they stay declared here.
       const workflowSummaries: string[] = [];
-      const executeToolWorkflow = async (
-        call: AgentToolCall,
-        round: number,
-        options: {
-          modelCallId?: string;
-          preparedAction?: PreparedActionCall;
-          suppressModelDelivery?: boolean;
-          inheritedApproval?: AgentInheritedApproval;
-          checkpointedWorkflow?: boolean;
-        } = {},
-      ): Promise<ToolWorkflowOutcome> => {
-        if (params.signal?.aborted) throw new Error("Aborted");
-        if (!writeAllowed()) {
-          return {
-            failed: true,
-            stopRun: true,
-            finalText: "Conversation lifecycle changed before execution.",
-            toolResult: {
-              callId: call.id,
-              name: call.name,
-              ok: false,
-              actionReceipts: [
-                createUnverifiedReceipt({
-                  reason: "Conversation lifecycle changed before execution.",
-                }),
-              ],
-              content: {
-                error:
-                  "Conversation lifecycle changed before this tool could execute.",
-              },
-            },
-          };
-        }
-        // A provider may batch a prerequisite read and a bound action. Recheck
-        // readiness at this tool boundary, using the host's canonical arguments
-        // while preserving the provider call ID solely for result delivery.
-        let preparedAction = options.preparedAction;
-        if (
-          !preparedAction &&
-          options.modelCallId &&
-          !options.inheritedApproval
-        ) {
-          const next = await this.registry.getNextWorkflowStep(
-            request,
-            activePlanSession.activeWorkflowObligationIds(),
-          );
-          if (next.kind === "action" && next.prepared.call.name === call.name)
-            preparedAction = next.prepared;
-        }
-        if (preparedAction) call = preparedAction.call;
-        const executedCall = await executePreparedToolCall(call, round, {
-          inheritedApproval: options.inheritedApproval,
-          checkpointedWorkflow:
-            Boolean(preparedAction) || options.checkpointedWorkflow,
-        });
-        const { toolResult, toolDefinition, input, documentEvidenceRefs } =
-          executedCall;
-        const deliveryCallId = options.modelCallId || call.id;
-        const contentForModel = documentEvidenceRefs?.length
-          ? toolResult.content &&
-            typeof toolResult.content === "object" &&
-            !Array.isArray(toolResult.content)
-            ? {
-                ...(toolResult.content as Record<string, unknown>),
-                documentEvidenceRefs,
-              }
-            : { content: toolResult.content, documentEvidenceRefs }
-          : undefined;
-
-        if (preparedAction) {
-          const verified =
-            toolResult.ok &&
-            toolResult.actionReceipts.some(
-              (receipt) =>
-                receipt.obligationId === preparedAction.obligationId &&
-                receipt.verification === "verified" &&
-                ["applied", "already_satisfied"].includes(receipt.status),
-            );
-          if (!verified) {
-            const failure =
-              readToolError(toolResult) ||
-              "The requested state change could not be verified. Remaining actions have not been executed; recorded progress has been retained.";
-            return {
-              toolResult,
-              failed: true,
-              stopRun: true,
-              finalText: failure,
-              delivery: options.suppressModelDelivery
-                ? undefined
-                : await buildToolDelivery(
-                    toolResult,
-                    deliveryCallId,
-                    toolDefinition,
-                    { error: failure, result: toolResult.content },
-                  ),
-            };
-          }
-          workflowSummaries.push(preparedAction.summary);
-        }
-
-        if (toolResult.ok && toolDefinition?.resolveTerminalResult) {
-          const terminal = await toolDefinition.resolveTerminalResult(
-            input as never,
-            toolResult,
-            { ...context, currentAnswerText },
-          );
-          if (terminal) {
-            if (terminal.documentId) {
-              finalizedMaterial = {
-                documentId: terminal.documentId,
-                finalText: terminal.finalText,
-              };
-              const actionDecision = await actionContractSession.evaluateFinal({
-                canCorrect: true,
-              });
-              const planDecision = await activePlanSession.evaluateFinal({
-                canCorrect: true,
-              });
-              if (
-                actionDecision.kind !== "accept" ||
-                planDecision.kind !== "accept"
-              ) {
-                const remainingWork =
-                  actionDecision.kind === "correct"
-                    ? actionDecision.correction
-                    : actionDecision.kind === "fail"
-                      ? actionDecision.failure
-                      : planDecision.kind === "correct"
-                        ? planDecision.correction
-                        : planDecision.kind === "fail"
-                          ? planDecision.failure
-                          : "";
-                return {
-                  toolResult,
-                  delivery: options.suppressModelDelivery
-                    ? undefined
-                    : await buildToolDelivery(
-                        toolResult,
-                        deliveryCallId,
-                        toolDefinition,
-                        {
-                          content: contentForModel || toolResult.content,
-                          remainingWork,
-                          finalizedDocumentId: terminal.documentId,
-                          instruction:
-                            "The material is finalized and preserved. Complete the remaining authorized actions using this finalized payload; do not regenerate the document.",
-                        },
-                      ),
-                };
-              }
-            }
-            return {
-              toolResult,
-              delivery: options.suppressModelDelivery
-                ? undefined
-                : await buildToolDelivery(
-                    toolResult,
-                    deliveryCallId,
-                    toolDefinition,
-                    contentForModel,
-                  ),
-              stopRun: true,
-              finalText: terminal.finalText,
-              documentId: terminal.documentId || terminal.planDocumentId,
-              preserveToolOnlyTranscript:
-                terminal.providerTranscript === "tool_only",
-            };
-          }
-        }
-
-        if (
-          toolResult.ok &&
-          toolDefinition?.createResultReviewAction &&
-          toolDefinition.resolveResultReview
-        ) {
-          const currentResult = toolResult;
-          const currentInput = input;
-          while (true) {
-            const reviewAction = await toolDefinition.createResultReviewAction(
-              currentInput as never,
-              currentResult,
-              {
-                ...context,
-                currentAnswerText,
-              },
-            );
-            if (!reviewAction) {
-              if (options.suppressModelDelivery) {
-                return { toolResult: currentResult };
-              }
-              return {
-                toolResult: currentResult,
-                delivery: await buildToolDelivery(
-                  currentResult,
-                  deliveryCallId,
-                  toolDefinition,
-                  contentForModel,
-                ),
-              };
-            }
-
-            const { resolution } = await requestActionResolution(reviewAction);
-            if (params.signal?.aborted || !writeAllowed()) {
-              return { toolResult: currentResult };
-            }
-            const reviewOutcome = await toolDefinition.resolveResultReview(
-              currentInput as never,
-              currentResult,
-              resolution,
-              {
-                ...context,
-                currentAnswerText,
-              },
-            );
-
-            if (reviewOutcome.kind === "deliver") {
-              // Completion follows the latest review continuation, including a
-              // request for more papers that has not triggered another search.
-              const reviewRecord = toolExecutionRecords.findLast(
-                (record) => record.name === currentResult.name,
-              );
-              if (
-                reviewRecord &&
-                reviewOutcome.toolMessageContent !== undefined
-              ) {
-                reviewRecord.content = reviewOutcome.toolMessageContent;
-              }
-              return options.suppressModelDelivery
-                ? { toolResult: currentResult }
-                : {
-                    toolResult: currentResult,
-                    delivery: await buildToolDelivery(
-                      currentResult,
-                      deliveryCallId,
-                      toolDefinition,
-                      reviewOutcome.toolMessageContent,
-                      reviewOutcome.followupMessages || [],
-                    ),
-                  };
-            }
-
-            if (reviewOutcome.kind === "stop") {
-              return {
-                toolResult: currentResult,
-                stopRun: true,
-                finalText: reviewOutcome.finalText,
-              };
-            }
-
-            const chainedCall = buildSyntheticToolCall(
-              reviewOutcome.call.name,
-              reviewOutcome.call.arguments,
-            );
-            const inheritedApproval = reviewOutcome.call.inheritedApproval
-              ? {
-                  ...reviewOutcome.call.inheritedApproval,
-                  approvedCallDigest: buildActionCallDigest(
-                    chainedCall.name,
-                    chainedCall.arguments,
-                  ),
-                }
-              : undefined;
-            const chainedOutcome = await executeToolWorkflow(
-              chainedCall,
-              round,
-              {
-                modelCallId: deliveryCallId,
-                suppressModelDelivery: Boolean(reviewOutcome.terminalText),
-                inheritedApproval,
-              },
-            );
-            if (reviewOutcome.terminalText) {
-              const finalText = chainedOutcome.toolResult.ok
-                ? reviewOutcome.terminalText.onSuccess
-                : isUserDeniedToolResult(chainedOutcome.toolResult)
-                  ? reviewOutcome.terminalText.onDenied
-                  : reviewOutcome.terminalText.onError;
-              return {
-                toolResult: chainedOutcome.toolResult,
-                stopRun: true,
-                finalText,
-              };
-            }
-            return chainedOutcome;
-          }
-        }
-
-        if (options.suppressModelDelivery) {
-          return { toolResult };
-        }
-        return {
-          toolResult,
-          delivery: await buildToolDelivery(
-            toolResult,
-            deliveryCallId,
-            toolDefinition,
-            contentForModel,
-          ),
-        };
-      };
+      const toolExecution = createToolExecution({
+        registry: this.registry,
+        now: this.now,
+        signal: params.signal,
+        emit,
+        request,
+        runId,
+        context,
+        writeAllowed,
+        adapterCapabilities,
+        actionContractSession,
+        activePlanSession,
+        paperEvidenceFrontier,
+        resourceContextPlan,
+        persistToolResultHandles,
+        requestActionResolution,
+        finalizedMaterialRefs,
+        pendingReadActivities,
+        preservedTurnHandleRecords,
+        toolExecutionRecords,
+        toolsUsedThisTurn,
+        workflowSummaries,
+        getCurrentAnswerText: () => currentAnswerText,
+        setFinalizedMaterial: (material) => {
+          finalizedMaterial = material;
+        },
+        setToolResultReadAvailable: (available) => {
+          toolResultReadAvailable = available;
+        },
+      });
       // A prepared effect already has its native identities and arguments. It
       // uses the same permission, journal and receipt path as any model call.
       let referencesClarified = false;
       if (request.actionPreparation?.state === "needs_input") {
-        const clarification = await executeToolWorkflow(
+        const clarification = await toolExecution.executeToolWorkflow(
           {
             id: `preparation:${runId}`,
             name: "request_user_input",
@@ -2484,7 +1735,7 @@ export class AgentRuntime {
           tool.isAvailable?.(request) === false
         )
           throw new Error("Unknown or unavailable registered operation.");
-        const outcome = await executeToolWorkflow(
+        const outcome = await toolExecution.executeToolWorkflow(
           {
             id: `workflow-script:${runId}:${++operationSequence}`,
             name,
@@ -2544,10 +1795,14 @@ export class AgentRuntime {
               type: "status",
               text: "Applying the next resolved action",
             });
-            const result = await executeToolWorkflow(prepared.call, 0, {
-              suppressModelDelivery: true,
-              preparedAction: prepared,
-            });
+            const result = await toolExecution.executeToolWorkflow(
+              prepared.call,
+              0,
+              {
+                suppressModelDelivery: true,
+                preparedAction: prepared,
+              },
+            );
             if (result.failed)
               return completeRun(
                 result.finalText || "The action failed.",
@@ -2915,9 +2170,13 @@ export class AgentRuntime {
           let roundHadToolFailure = false;
           let roundHadInputRejection = false;
           for (const call of calls) {
-            const outcome = await executeToolWorkflow(call, round, {
-              modelCallId: call.id,
-            });
+            const outcome = await toolExecution.executeToolWorkflow(
+              call,
+              round,
+              {
+                modelCallId: call.id,
+              },
+            );
             if (outcome.toolResult.ok) roundHadSuccessfulToolResult = true;
             else if (outcome.toolResult.inputRejected)
               roundHadInputRejection = true;

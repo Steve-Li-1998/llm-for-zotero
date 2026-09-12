@@ -7115,6 +7115,9 @@ function createCodexNativeActivityTraceController(
         type: "tool_call",
         callId: `skill:${cleanSkillId}`,
         name: "Skill",
+        // The trace reads this label, never the call's name: a skill
+        // activation is not a registered tool and has no spec to look up.
+        toolLabel: "Skill",
         args: {
           skill: cleanSkillId,
           ...(options.source ? { source: options.source } : {}),

@@ -5,6 +5,10 @@ import {
 } from "../src/modules/contextPanel/agentTrace/planProgressView";
 import { assert } from "chai";
 import { createApplyTagsTool } from "../src/agent/tools/write/applyTags";
+import { createFileIOTool } from "../src/agent/tools/write/fileIO";
+import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
+import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
+import { setAgentToolPresentationResolverForTests } from "../src/modules/contextPanel/agentTrace/toolPresentation";
 import type { AgentConfirmationResolution } from "../src/agent/types";
 import { readFileSync } from "node:fs";
 import {
@@ -448,6 +452,47 @@ function traceRowTexts(items: readonly AgentTraceTestItem[]): string[] {
         item.type === "action" || item.type === "stage",
     )
     .map((item) => (item.type === "stage" ? item.label : item.row.text));
+}
+
+type TestToolPresentations = Record<
+  string,
+  NonNullable<ReturnType<typeof createFileIOTool>["presentation"]> | undefined
+>;
+
+/**
+ * Answer the trace's presentation lookups from the specs under test.
+ *
+ * The renderer asks the live tool registry how a tool presents itself, and a
+ * unit test has no way to stand that registry up, so a test that asserts a
+ * tool's own presentation installs the specs it is asserting about.
+ */
+function withToolPresentations(
+  presentations: TestToolPresentations,
+  run: () => void,
+): void {
+  withToolPresentationsReturning(presentations, run);
+}
+
+function withToolPresentationsReturning<T>(
+  presentations: TestToolPresentations,
+  run: () => T,
+): T {
+  setAgentToolPresentationResolverForTests((name) => presentations[name]);
+  try {
+    return run();
+  } finally {
+    setAgentToolPresentationResolverForTests(null);
+  }
+}
+
+/** The real paper tool's presentation, built without its runtime services. */
+function paperReadPresentation() {
+  return createPaperReadTool(
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+  ).presentation;
 }
 
 const fakeDocument = {
@@ -2403,19 +2448,21 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items } = buildAgentTraceDisplayItems(events, null);
-    const visible = flattenTraceItems(items).map((item) =>
-      item.type === "action"
-        ? item.row.text
-        : item.type === "message"
-          ? item.text
-          : "",
-    );
-    assert.include(
-      visible,
-      "Planning the request against the available context.",
-    );
-    assert.notMatch(visible.join("\n"), /update plan|using update/i);
+    withToolPresentations({ update_plan: { hiddenInTrace: true } }, () => {
+      const { items } = buildAgentTraceDisplayItems(events, null);
+      const visible = flattenTraceItems(items).map((item) =>
+        item.type === "action"
+          ? item.row.text
+          : item.type === "message"
+            ? item.text
+            : "",
+      );
+      assert.include(
+        visible,
+        "Planning the request against the available context.",
+      );
+      assert.notMatch(visible.join("\n"), /update plan|using update/i);
+    });
   });
 
   it("rules off the activity trace once an answer follows it", function () {
@@ -3380,15 +3427,18 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = traceRowTexts(items);
+    withToolPresentations({ submit_document: { hiddenInTrace: true } }, () => {
+      const actionTexts = traceRowTexts(
+        buildAgentTraceDisplayItems(events, null).items,
+      );
 
-    assert.include(actionTexts, "Generated summary: Representational drift");
-    assert.notMatch(
-      actionTexts.join("\n"),
-      /submit document|using submit/i,
-      "the finalizing tool call and result stay suppressed",
-    );
+      assert.include(actionTexts, "Generated summary: Representational drift");
+      assert.notMatch(
+        actionTexts.join("\n"),
+        /submit document|using submit/i,
+        "the finalizing tool call and result stay suppressed",
+      );
+    });
   });
 
   it("falls back to a document label when the material names no kind", function () {
@@ -5070,6 +5120,8 @@ describe("agentTrace render", function () {
         phase: "completed",
         toolName: "paper_read",
         toolLabel: "Read Paper",
+        // Both bridges stamp the server on every row they relay.
+        serverName: "llm_for_zotero",
         args,
       }),
       codexToolActivityEvent(2, {
@@ -5202,6 +5254,7 @@ describe("agentTrace render", function () {
       phase: "completed",
       toolName: "paper_read",
       toolLabel: "Read Paper",
+      serverName: "llm_for_zotero",
       arguments: args,
       ok: true,
     });
@@ -5402,7 +5455,13 @@ describe("agentTrace render", function () {
       events,
     }) as unknown as FakeElement;
 
-    assert.deepInclude(getCodexTraceActionTexts(events), "Extracted 2 figures");
+    assert.deepInclude(
+      withToolPresentationsReturning(
+        { paper_read: paperReadPresentation() },
+        () => getCodexTraceActionTexts(events),
+      ),
+      "Extracted 2 figures",
+    );
     assert.deepEqual(
       trace
         .findAllByClass("llm-assistant-generated-image")
@@ -8784,8 +8843,13 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items } = buildAgentTraceDisplayItems(events, null);
-    const rows = traceActionItems(items).map((item) => item.row);
+    const rows = withToolPresentationsReturning(
+      { file_io: createFileIOTool().presentation },
+      () =>
+        traceActionItems(buildAgentTraceDisplayItems(events, null).items).map(
+          (item) => item.row,
+        ),
+    );
     const rowTexts = rows.map((row) => row.text);
     const codeBlocks = rows.map((row) => row.codeBlock);
 
@@ -8873,8 +8937,10 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items } = buildAgentTraceDisplayItems(events, null);
-    const actions = traceActionItems(items);
+    const actions = withToolPresentationsReturning(
+      { file_io: createFileIOTool().presentation },
+      () => traceActionItems(buildAgentTraceDisplayItems(events, null).items),
+    );
     const detailText = JSON.stringify(actions.map((item) => item.details));
     const rowText = actions.map((item) => item.row.text).join("\n");
 
@@ -9301,7 +9367,7 @@ describe("agent trace stage grouping", function () {
       groups.map((group) => group.stage),
       ["retrieval", "generation", "zotero_action"],
     );
-    assert.include(rowTexts(groups[0].children), "Using Paper Read");
+    assert.include(rowTexts(groups[0].children), "Using Read Paper");
     assert.include(rowTexts(groups[2].children), "Zotero state verified");
     assert.notInclude(
       rowTexts(items),
@@ -9593,5 +9659,285 @@ describe("agent trace stage grouping", function () {
       "the retrieval stage keeps its node when later stages arrive",
     );
     disposeAgentTrace(second as unknown as HTMLElement);
+  });
+});
+
+describe("agent trace presentation without tool names", function () {
+  function callEvent(
+    name: string,
+    args: unknown,
+    extra: Record<string, unknown> = {},
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-presentation",
+      seq: 1,
+      eventType: "tool_call",
+      payload: {
+        type: "tool_call",
+        callId: "call-1",
+        name,
+        args,
+        ...extra,
+      } as AgentRunEventRecord["payload"],
+      createdAt: 1,
+    };
+  }
+
+  function firstToolRow(items: readonly AgentTraceTestItem[]) {
+    return traceActionItems(items).find((item) => item.row.kind === "tool")
+      ?.row;
+  }
+
+  it("shows a file operation's code block only because its tool asks for one", function () {
+    const events = [
+      callEvent("file_io", { mode: "read", path: "/tmp/notes/paper.md" }),
+    ];
+
+    const withoutRegistry = firstToolRow(
+      buildAgentTraceDisplayItems(events, null).items,
+    );
+    assert.isUndefined(withoutRegistry?.codeBlock);
+
+    withToolPresentations({ file_io: createFileIOTool().presentation }, () => {
+      const row = firstToolRow(buildAgentTraceDisplayItems(events, null).items);
+      assert.equal(row?.codeBlock, "read /tmp/notes/paper.md");
+      assert.equal(row?.text, "Reading paper.md");
+    });
+  });
+
+  it("shows a shell command's code block and its tool's label", function () {
+    const events = [callEvent("run_command", { command: "ls ~/Desktop" })];
+
+    assert.isUndefined(
+      firstToolRow(buildAgentTraceDisplayItems(events, null).items)?.codeBlock,
+    );
+
+    withToolPresentations(
+      { run_command: createRunCommandTool().presentation },
+      () => {
+        const row = firstToolRow(
+          buildAgentTraceDisplayItems(events, null).items,
+        );
+        assert.equal(row?.codeBlock, "ls ~/Desktop");
+        assert.equal(row?.text, "Run Command");
+      },
+    );
+  });
+
+  it("takes a call's argument details from the tool that declared them", function () {
+    const events = [
+      callEvent("file_io", {
+        action: "write",
+        filePath: "/tmp/script.py",
+        content: "secret script body",
+      }),
+    ];
+
+    const detailsWithoutRegistry = JSON.stringify(
+      traceActionItems(buildAgentTraceDisplayItems(events, null).items).map(
+        (item) => item.details,
+      ),
+    );
+    assert.notInclude(detailsWithoutRegistry, "Argument keys");
+
+    withToolPresentations({ file_io: createFileIOTool().presentation }, () => {
+      const details = JSON.stringify(
+        traceActionItems(buildAgentTraceDisplayItems(events, null).items).map(
+          (item) => item.details,
+        ),
+      );
+      assert.include(details, "Argument keys");
+      assert.include(details, "Action field (action)");
+      assert.include(details, "Path field (filePath)");
+      assert.notInclude(details, "secret script body");
+    });
+  });
+
+  it("substitutes the request's own chips only when a tool asks for them", function () {
+    const userMessage = {
+      role: "user" as const,
+      text: "summarize",
+      timestamp: 1,
+      paperContexts: [
+        { itemId: 7, contextItemId: 8, title: "Representational drift" },
+      ],
+    };
+    const events = [callEvent("get_active_context", {})];
+
+    const chipsWithoutHook = traceActionItems(
+      buildAgentTraceDisplayItems(events, userMessage).items,
+    )
+      .filter((item) => item.row.kind === "tool")
+      .flatMap((item) => item.chips || []);
+    assert.lengthOf(chipsWithoutHook, 0);
+
+    withToolPresentations(
+      {
+        get_active_context: {
+          buildChips: ({ request }) =>
+            (request?.paperTitles || []).map((title) => ({
+              iconName: "paper" as const,
+              label: "Paper",
+              title,
+            })),
+        },
+      },
+      () => {
+        const chips = traceActionItems(
+          buildAgentTraceDisplayItems(events, userMessage).items,
+        )
+          .filter((item) => item.row.kind === "tool")
+          .flatMap((item) => item.chips || []);
+        assert.deepEqual(
+          chips.map((chip) => chip.title),
+          ["Representational drift"],
+        );
+      },
+    );
+  });
+
+  it("reads a result's line range from its numbered lines, not its tool name", function () {
+    const events: AgentRunEventRecord[] = [
+      callEvent("host_file_reader", { path: "/tmp/x.ts" }),
+      {
+        runId: "run-presentation",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "call-1",
+          name: "host_file_reader",
+          ok: true,
+          actionReceipts: [],
+          content: "  12\tconst a = 1;\n  13\tconst b = 2;",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const row = firstToolRow(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.equal(row?.text, "Using Host File Reader lines 12-13");
+  });
+
+  it("asks the paper tool how to name a relayed figure extraction", function () {
+    const events = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "figures-1",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        toolLabel: "Read Paper",
+        ok: true,
+        args: { mode: "figures" },
+        artifacts: [
+          {
+            kind: "image",
+            mimeType: "image/png",
+            storedPath: "/tmp/figure-1.png",
+          },
+          {
+            kind: "image",
+            mimeType: "image/png",
+            storedPath: "/tmp/figure-2.png",
+          },
+        ],
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Agent activity",
+      "Used Read Paper",
+    ]);
+
+    withToolPresentations(
+      {
+        paper_read: createPaperReadTool(
+          undefined as never,
+          undefined as never,
+          undefined as never,
+          undefined as never,
+        ).presentation,
+      },
+      () => {
+        assert.deepEqual(getCodexTraceActionTexts(events), [
+          "Codex received the request",
+          "Agent activity",
+          "Extracted 2 figures",
+        ]);
+      },
+    );
+  });
+
+  it("keeps the plan's own tools out of the trace because they say so", function () {
+    const events: AgentRunEventRecord[] = [
+      callEvent("update_plan", { ready: true, steps: [] }),
+    ];
+
+    withToolPresentations({ update_plan: { hiddenInTrace: true } }, () => {
+      assert.deepEqual(
+        traceRowTexts(buildAgentTraceDisplayItems(events, null).items),
+        ["Request received"],
+      );
+    });
+    withToolPresentations({ update_plan: { label: "Update Plan" } }, () => {
+      assert.include(
+        traceRowTexts(buildAgentTraceDisplayItems(events, null).items),
+        "Using Update Plan",
+      );
+    });
+  });
+
+  it("names a tool by the label its own event carried", function () {
+    const labelled = firstToolRow(
+      buildAgentTraceDisplayItems(
+        [callEvent("paper_read", {}, { toolLabel: "Read Paper" })],
+        null,
+      ).items,
+    );
+    assert.equal(labelled?.text, "Using Read Paper");
+
+    const unlabelled = firstToolRow(
+      buildAgentTraceDisplayItems([callEvent("paper_read", {})], null).items,
+    );
+    assert.equal(unlabelled?.text, "Using Paper Read");
+
+    withToolPresentations({ paper_read: { label: "Read Paper" } }, () => {
+      const fromRegistry = firstToolRow(
+        buildAgentTraceDisplayItems([callEvent("paper_read", {})], null).items,
+      );
+      assert.equal(fromRegistry?.text, "Using Read Paper");
+    });
+  });
+
+  it("names an activated skill from the event's label and arguments", function () {
+    const using = firstToolRow(
+      buildAgentTraceDisplayItems(
+        [
+          callEvent(
+            "skill:graphwalk",
+            { skill: "graphwalk" },
+            { toolLabel: "Skill" },
+          ),
+        ],
+        null,
+      ).items,
+    );
+    assert.equal(using?.text, "Using Skill: graphwalk");
+
+    const invoked = firstToolRow(
+      buildAgentTraceDisplayItems(
+        [
+          callEvent(
+            "skill:evidence-based-qa",
+            { skill: "evidence-based-qa", source: "codex-native-slash" },
+            { toolLabel: "Skill" },
+          ),
+        ],
+        null,
+      ).items,
+    );
+    assert.equal(invoked?.text, "Invoked Skill: evidence-based-qa");
   });
 });

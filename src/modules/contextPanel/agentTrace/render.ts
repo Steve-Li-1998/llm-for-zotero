@@ -3,7 +3,6 @@ import type {
   AgentSavedNoteResultCard,
 } from "../../../agent/types";
 import { projectPaperReferences } from "../../../shared/paperDisplayLabels";
-import { getAgentRuntime } from "../../../agent";
 import type { AgentActionVerification } from "../../../agent/contracts/actionVerificationLabels";
 import {
   AGENT_ACTION_VERIFICATION_LABELS,
@@ -27,7 +26,6 @@ import {
   isContentLikeToolArgumentKey,
   isMalformedToolArgumentsDiagnostic,
 } from "../../../agent/toolArgumentDiagnostics";
-import { summarizeFileIOCall } from "../../../agent/tools/write/fileIO";
 import type {
   AgentActionContract,
   AgentActionReceipt,
@@ -103,7 +101,9 @@ import {
   buildToolResultTraceInfo,
   type ToolResultTraceInfo,
 } from "./toolResultTraceInfo";
+import { getAgentRuntime } from "../../../agent";
 import { projectStageEvents } from "./stageProjection";
+import { resolveAgentToolPresentation } from "./toolPresentation";
 import {
   appendAgentTraceText,
   compactAgentTraceEvents,
@@ -112,18 +112,6 @@ import {
 } from "./traceReducer";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
-
-const INTERNAL_PLAN_TOOL_NAMES = new Set([
-  "update_plan",
-  "amend_plan",
-  "task_update",
-  "request_user_input",
-  "submit_plan_document",
-  "submit_document",
-  "research_update",
-  "approve_research_expansion",
-  "approve_research_mutation",
-]);
 
 type AgentTraceSummaryRow = {
   kind: AgentTraceSummaryKind;
@@ -3132,14 +3120,6 @@ function buildAgentTraceRequestSummary(
   };
 }
 
-function getToolDefinition(name: string) {
-  try {
-    return getAgentRuntime().getToolDefinition(name);
-  } catch {
-    return undefined;
-  }
-}
-
 function resolveToolPresentationSummary(
   summary: AgentToolPresentationSummary | undefined,
   input: {
@@ -3158,8 +3138,30 @@ function resolveToolPresentationSummary(
   return normalized || null;
 }
 
-function toolLabelFromName(name: string): string {
-  const explicitLabel = getToolDefinition(name)?.presentation?.label?.trim();
+/**
+ * Whether this tool asked to stay out of the trace.
+ *
+ * The name is the registry key and nothing more; the answer is the tool's own
+ * declaration. A trace of a tool the registry no longer knows shows its rows,
+ * which is the right failure: a row the reader can read beats a row silently
+ * dropped because a name matched a list written years earlier.
+ */
+function isToolHiddenFromTrace(name: string): boolean {
+  return resolveAgentToolPresentation(name)?.hiddenInTrace === true;
+}
+
+/**
+ * What to call a tool in a row.
+ *
+ * The run stamps the tool's own label on every event it emits, so a trace
+ * recorded months ago still reads the way it read when it ran. Only an event
+ * from before that (or one a connected client relayed without a label) falls
+ * back to the live registry, and then to title-casing the identifier.
+ */
+function toolLabelFromEvent(name: string, eventLabel?: string): string {
+  const stamped = readAgentTraceText(eventLabel);
+  if (stamped) return stamped;
+  const explicitLabel = resolveAgentToolPresentation(name)?.label?.trim();
   if (explicitLabel) return explicitLabel;
   return name
     .split("_")
@@ -3174,7 +3176,7 @@ function buildAgentTraceToolChips(
   userMessage: Message | null | undefined,
 ): AgentTraceChip[] {
   const requestSummary = buildAgentTraceRequestSummary(userMessage);
-  const customChips = getToolDefinition(toolName)?.presentation?.buildChips?.({
+  const customChips = resolveAgentToolPresentation(toolName)?.buildChips?.({
     args,
     request: requestSummary,
   });
@@ -3294,10 +3296,6 @@ function buildAgentTraceToolChips(
     }
   }
 
-  if (!chips.length && toolName === "get_active_context") {
-    return buildAgentTraceRequestChips(userMessage);
-  }
-
   return chips;
 }
 
@@ -3390,9 +3388,6 @@ function buildAgentTraceActionDetails(
   return dedupeAgentTraceDetails(details);
 }
 
-const FILE_IO_TRACE_ACTION_FIELDS = ["action", "mode", "operation", "op"];
-const FILE_IO_TRACE_PATH_FIELDS = ["filePath", "path", "file_path", "filepath"];
-
 function redactContentLikeTraceArgs(value: unknown, key = ""): unknown {
   if (isContentLikeToolArgumentKey(key)) {
     if (typeof value === "string") {
@@ -3420,45 +3415,25 @@ function redactContentLikeTraceArgs(value: unknown, key = ""): unknown {
   return out;
 }
 
-function readFirstTraceStringField(
-  args: Record<string, unknown>,
-  fields: readonly string[],
-): { field: string; value: string } | null {
-  for (const field of fields) {
-    const value = args[field];
-    if (typeof value === "string" && value.trim()) {
-      return { field, value };
-    }
-  }
-  return null;
-}
-
 function buildAgentTraceArgsDetails(
   toolName: string | undefined,
   args: unknown,
 ): AgentTraceDetail[] {
   const details: AgentTraceDetail[] = [];
   const record = isAgentTraceRecord(args) ? args : null;
-  if (record) {
-    if (toolName === "file_io") {
-      const keys = Object.keys(record);
-      pushTraceDetail(details, "Argument keys", keys.join(", "));
-      const action = readFirstTraceStringField(
-        record,
-        FILE_IO_TRACE_ACTION_FIELDS,
+  // A tool that knows which of its argument spellings matter says so itself.
+  if (toolName) {
+    try {
+      details.push(
+        ...(resolveAgentToolPresentation(toolName)?.buildTraceArgDetails?.({
+          args,
+        }) ?? []),
       );
-      if (action) {
-        pushTraceDetail(
-          details,
-          `Action field (${action.field})`,
-          action.value,
-        );
-      }
-      const path = readFirstTraceStringField(record, FILE_IO_TRACE_PATH_FIELDS);
-      if (path) {
-        pushTraceDetail(details, `Path field (${path.field})`, path.value);
-      }
+    } catch {
+      // Display-only formatting must never take the trace down with it.
     }
+  }
+  if (record) {
     if (isMalformedToolArgumentsDiagnostic(record)) {
       pushTraceDetail(details, "Malformed input", record.rawPreview, "code");
     }
@@ -3472,82 +3447,67 @@ function buildAgentTraceArgsDetails(
   return dedupeAgentTraceDetails(details);
 }
 
-function readTraceStringField(
-  args: Record<string, unknown>,
-  fields: readonly string[],
-): string | null {
-  for (const field of fields) {
-    const value = args[field];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return null;
-}
+/**
+ * The label a skill activation carries, when the event is one.
+ *
+ * Skill activation reaches the trace as an event the host labelled "Skill",
+ * with the skill it activated in its arguments. The label is the event's own
+ * word for what happened; the row never asks what the call was named.
+ */
+const SKILL_ACTIVATION_TRACE_LABEL = "Skill";
 
-function buildFileIoTraceCodeBlock(
-  args: Record<string, unknown>,
-): string | undefined {
-  const filePath = readTraceStringField(args, [
-    "filePath",
-    "path",
-    "file_path",
-    "filepath",
-  ]);
-  if (!filePath) return undefined;
-  const action =
-    readTraceStringField(args, ["action", "mode", "operation", "op"]) ||
-    "access";
-  return `${action} ${filePath}`;
+function skillActivationText(label: string, args: unknown): string | null {
+  if (label !== SKILL_ACTIVATION_TRACE_LABEL) return null;
+  const record =
+    args && typeof args === "object" && !Array.isArray(args)
+      ? (args as Record<string, unknown>)
+      : {};
+  const skill = readAgentTraceText(record.skill);
+  if (!skill) return null;
+  const source = readAgentTraceText(record.source);
+  const verb =
+    source === "codex-native-slash" ? "Invoked Skill" : "Using Skill";
+  return `${verb}: ${skill}`;
 }
 
 function summarizeAgentTraceToolCall(
   name: string,
   args: unknown,
+  toolLabel?: string,
   request?: AgentTraceRequestSummary,
   resultInfo?: ToolResultTraceInfo,
 ): AgentTraceSummaryRow {
-  const label = toolLabelFromName(name);
-  const presentation = getToolDefinition(name)?.presentation;
-  const a =
-    args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-  const skillName =
-    name === "Skill" && typeof a.skill === "string" && a.skill.trim()
-      ? a.skill.trim()
-      : null;
-  const skillSource =
-    name === "Skill" && typeof a.source === "string" ? a.source.trim() : "";
-  const skillVerb =
-    skillSource === "codex-native-slash" ? "Invoked Skill" : "Using Skill";
-  const fallbackFileIoSummary =
-    name === "file_io" ? summarizeFileIOCall(args) : null;
+  const label = toolLabelFromEvent(name, toolLabel);
+  const presentation = resolveAgentToolPresentation(name);
+  let codeBlock: ReturnType<
+    NonNullable<typeof presentation>["buildTraceCodeBlock"] & object
+  > | null = null;
+  try {
+    codeBlock = presentation?.buildTraceCodeBlock?.({ args }) ?? null;
+  } catch {
+    codeBlock = null;
+  }
   const text =
     resolveToolPresentationSummary(presentation?.summaries?.onCall, {
       label,
       args,
       request,
     }) ||
-    fallbackFileIoSummary ||
-    (skillName ? `${skillVerb}: ${skillName}` : `Using ${label}`);
+    skillActivationText(label, args) ||
+    `Using ${label}`;
   const displayText =
     resultInfo?.rowSuffix && text === `Using ${label}`
       ? `${text} ${resultInfo.rowSuffix}`
       : text;
 
-  // Show code block for shell commands and file I/O
-  let codeBlock: string | undefined;
-  if (name === "run_command" && typeof a.command === "string") {
-    codeBlock = a.command;
-  } else if (name === "file_io") {
-    codeBlock = buildFileIoTraceCodeBlock(a);
-  }
-
   return {
     kind: "tool",
     icon: "→",
     ...(presentation?.traceIcon ? { iconName: presentation.traceIcon } : {}),
-    // For file_io, use the descriptive onCall text (e.g. "Reading paper section")
-    // instead of the generic label. For other tools (run_command), keep label.
-    text: codeBlock && name !== "file_io" ? label : displayText,
-    codeBlock,
+    // A block that already carries what the summary would say leaves the row
+    // to name the tool instead of repeating the block one line up.
+    text: codeBlock?.replacesSummary ? label : displayText,
+    ...(codeBlock?.code ? { codeBlock: codeBlock.code } : {}),
   };
 }
 
@@ -3808,13 +3768,13 @@ function summarizeAgentTraceConfirmationRequest(
   materialLabelForNote?: string | null,
 ): AgentTraceSummaryRow {
   const toolName = action.toolName;
-  const label = toolLabelFromName(toolName);
+  const label = toolLabelFromEvent(toolName);
   // Material identity outranks the tool's own wording: the user is authorizing
   // one exact document, so the row names it.
   const text = materialLabelForNote
     ? `Waiting for permission to save ${materialLabelForNote} as a note`
     : resolveToolPresentationSummary(
-        getToolDefinition(toolName)?.presentation?.summaries?.onPending,
+        resolveAgentToolPresentation(toolName)?.summaries?.onPending,
         { label, request },
       ) ||
       (action.mode === "review"
@@ -3834,15 +3794,15 @@ function summarizeAgentTraceConfirmationResolved(
   request?: AgentTraceRequestSummary,
 ): AgentTraceSummaryRow {
   const toolName = action.toolName;
-  const label = toolLabelFromName(toolName);
+  const label = toolLabelFromEvent(toolName);
   const selectedActionLabel =
     action.actions?.find((entry) => entry.id === actionId)?.label ||
     (approved ? action.confirmLabel : action.cancelLabel);
   const text =
     resolveToolPresentationSummary(
       approved
-        ? getToolDefinition(toolName)?.presentation?.summaries?.onApproved
-        : getToolDefinition(toolName)?.presentation?.summaries?.onDenied,
+        ? resolveAgentToolPresentation(toolName)?.summaries?.onApproved
+        : resolveAgentToolPresentation(toolName)?.summaries?.onDenied,
       { label, request },
     ) ||
     (approved
@@ -3884,10 +3844,11 @@ function summarizeAgentTraceToolResult(
   name: string,
   ok: boolean,
   content: unknown,
+  toolLabel?: string,
   effect?: AgentToolEffect,
   request?: AgentTraceRequestSummary,
 ): AgentTraceSummaryRow | null {
-  const label = toolLabelFromName(name);
+  const label = toolLabelFromEvent(name, toolLabel);
   const normalized = isAgentTraceRecord(content) ? content : null;
   if (!ok) {
     const rawError = readAgentTraceText(normalized?.error);
@@ -3896,7 +3857,7 @@ function summarizeAgentTraceToolResult(
     }
     const text =
       resolveToolPresentationSummary(
-        getToolDefinition(name)?.presentation?.summaries?.onError,
+        resolveAgentToolPresentation(name)?.summaries?.onError,
         { label, content, effect, request },
       ) || `Could not complete ${label}: ${rawError || "Tool failed"}`;
     return {
@@ -3910,12 +3871,12 @@ function summarizeAgentTraceToolResult(
   const text =
     resolveToolPresentationSummary(
       isEmpty
-        ? getToolDefinition(name)?.presentation?.summaries?.onEmpty
-        : getToolDefinition(name)?.presentation?.summaries?.onSuccess,
+        ? resolveAgentToolPresentation(name)?.summaries?.onEmpty
+        : resolveAgentToolPresentation(name)?.summaries?.onSuccess,
       { label, content, effect, request },
     ) ||
     resolveToolPresentationSummary(
-      getToolDefinition(name)?.presentation?.summaries?.onSuccess,
+      resolveAgentToolPresentation(name)?.summaries?.onSuccess,
       { label, content, effect, request },
     ) ||
     (isEmpty ? `No results from ${label}` : "");
@@ -3951,24 +3912,18 @@ function summarizeCodexToolActivity(input: {
   }
   const toolName = readAgentTraceText(input.toolName);
   const label =
-    readAgentTraceText(input.toolLabel) ||
-    (toolName ? toolLabelFromName(toolName) : "") ||
-    "Zotero MCP tool";
-  const imageArtifacts = normalizeImageArtifacts(input.artifacts);
-  if (
-    input.phase === "completed" &&
-    input.ok !== false &&
-    imageArtifacts.length &&
-    normalizeMcpToolName(toolName || "") === "paper_read" &&
-    readToolArgsMode(input.args) === "figures"
-  ) {
+    (toolName
+      ? toolLabelFromEvent(toolName, input.toolLabel)
+      : readAgentTraceText(input.toolLabel)) || "Zotero MCP tool";
+  // Only the tool that ran can say what its relayed artifacts amount to.
+  const relayedSummary = toolName
+    ? buildRelayedActivitySummary(toolName, input)
+    : null;
+  if (relayedSummary) {
     return {
       kind: "tool",
       icon: "⌘",
-      text:
-        imageArtifacts.length === 1
-          ? "Extracted 1 figure"
-          : `Extracted ${imageArtifacts.length} figures`,
+      text: relayedSummary,
       codeBlock: readAgentTraceText(input.codeBlock) || undefined,
     };
   }
@@ -3981,27 +3936,43 @@ function summarizeCodexToolActivity(input: {
   };
 }
 
+/**
+ * The row a connected client's relayed call gets from the tool that ran.
+ *
+ * The name only locates the spec in the registry; what the row says is the
+ * spec's own answer about the arguments and artifacts it was handed.
+ */
+function buildRelayedActivitySummary(
+  toolName: string,
+  input: {
+    phase: "started" | "completed";
+    args?: unknown;
+    ok?: boolean;
+    artifacts?: AgentToolArtifact[];
+  },
+): string | null {
+  const buildTraceSummary = resolveAgentToolPresentation(
+    normalizeMcpToolName(toolName),
+  )?.buildTraceSummary;
+  if (!buildTraceSummary) return null;
+  try {
+    return (
+      buildTraceSummary({
+        args: input.args,
+        artifacts: input.artifacts,
+        phase: input.phase,
+        ok: input.ok,
+      }) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
 function normalizeMcpToolName(value: string): string {
   const clean = value.trim();
   const match = clean.match(/^mcp__.+__(.+)$/);
   return match?.[1] || clean;
-}
-
-function readToolArgsMode(args: unknown): string {
-  let value = args;
-  if (typeof value === "string") {
-    const clean = value.trim();
-    if (clean.startsWith("{") || clean.startsWith("[")) {
-      try {
-        value = JSON.parse(clean) as unknown;
-      } catch {
-        return "";
-      }
-    }
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const mode = (value as Record<string, unknown>).mode;
-  return typeof mode === "string" ? mode.trim() : "";
 }
 
 type ImageAgentToolArtifact = Extract<AgentToolArtifact, { kind: "image" }>;
@@ -4415,19 +4386,16 @@ function appendLegacyAgentTraceEvent(
       return true;
     }
     case "tool_call": {
-      if (INTERNAL_PLAN_TOOL_NAMES.has(entry.payload.name)) return true;
+      if (isToolHiddenFromTrace(entry.payload.name)) return true;
       const resultEvent = ctx.toolResultsByCallId.get(entry.payload.callId);
-      const resultInfo = buildToolResultTraceInfo(
-        entry.payload.name,
-        resultEvent,
-      );
+      const resultInfo = buildToolResultTraceInfo(resultEvent);
       let presentationDetails: AgentTraceDetail[] = [];
       if (resultEvent) {
         try {
           presentationDetails =
-            getToolDefinition(
+            resolveAgentToolPresentation(
               entry.payload.name,
-            )?.presentation?.buildTraceDetails?.({
+            )?.buildTraceDetails?.({
               args: entry.payload.args,
               content: resultEvent.content,
             }) ?? [];
@@ -4444,10 +4412,11 @@ function appendLegacyAgentTraceEvent(
             ),
             ...(resultInfo?.details || []),
           ];
-      const presentation = getToolDefinition(entry.payload.name)?.presentation;
+      const presentation = resolveAgentToolPresentation(entry.payload.name);
       let row = summarizeAgentTraceToolCall(
         entry.payload.name,
         entry.payload.args,
+        entry.payload.toolLabel,
         ctx.requestSummary,
         resultInfo || undefined,
       );
@@ -4481,7 +4450,7 @@ function appendLegacyAgentTraceEvent(
       appendReasoningTraceItem(ctx, entry.payload);
       return true;
     case "tool_result": {
-      if (INTERNAL_PLAN_TOOL_NAMES.has(entry.payload.name)) return true;
+      if (isToolHiddenFromTrace(entry.payload.name)) return true;
       // A write the agent chose on its own must always be visible, ahead of
       // every presentation shortcut: neither a missing summary nor a tool that
       // folds its result into the call row may hide it.
@@ -4489,7 +4458,7 @@ function appendLegacyAgentTraceEvent(
       if (
         !judgment &&
         entry.payload.ok &&
-        getToolDefinition(entry.payload.name)?.presentation
+        resolveAgentToolPresentation(entry.payload.name)
           ?.mergeResultIntoCallTrace
       ) {
         return true;
@@ -4501,6 +4470,7 @@ function appendLegacyAgentTraceEvent(
         entry.payload.name,
         entry.payload.ok,
         entry.payload.content,
+        entry.payload.toolLabel,
         entry.payload.effect,
         ctx.requestSummary,
       );
@@ -4522,7 +4492,7 @@ function appendLegacyAgentTraceEvent(
           : {
               kind: "ok",
               icon: "✓",
-              text: `${toolLabelFromName(entry.payload.name)} completed (agent's own call)`,
+              text: `${toolLabelFromEvent(entry.payload.name, entry.payload.toolLabel)} completed (agent's own call)`,
             };
       }
       const materialEvidence = entry.payload.ok
@@ -4556,7 +4526,7 @@ function appendLegacyAgentTraceEvent(
         }
         const cards = selectToolResultTraceCards(
           entry.payload,
-          getToolDefinition(entry.payload.name)?.presentation?.buildResultCards,
+          resolveAgentToolPresentation(entry.payload.name)?.buildResultCards,
         );
         if (cards.length) ctx.items.push({ type: "card_list", cards });
       }
@@ -4993,9 +4963,18 @@ function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
     const headlineIndex = stage.item.children.findIndex(
       (child) => child.type === "action" && child.stageHeadline,
     );
-    if (headlineIndex >= 0) {
-      const [headline] = stage.item.children.splice(headlineIndex, 1);
-      if (headline.type === "action") stage.item.label = headline.row.text;
+    const headline =
+      headlineIndex >= 0
+        ? stage.item.children.splice(headlineIndex, 1)[0]
+        : null;
+    if (headline?.type === "action") stage.item.label = headline.row.text;
+    // A stage whose every row was suppressed said nothing the reader can use,
+    // so its heading goes too rather than standing for an empty group.
+    if (!headline && !stage.item.children.length) {
+      const index = items.indexOf(stage.item);
+      if (index >= 0) items.splice(index, 1);
+      interrupted = true;
+      return;
     }
     const chips = buildAgentTraceVerificationChips(stage.receipts);
     if (chips.length) stage.item.chips = chips;

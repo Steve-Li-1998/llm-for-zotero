@@ -373,6 +373,12 @@ export function createTaskUpdateTool(): AgentToolDefinition<
       executionClass: "control",
       workCategory: "planning",
     },
+    /**
+     * The plan machinery itself. Its calls are how a plan is drafted and
+     * advanced, and the plan card already shows the reader the outcome, so a
+     * row for each of them would report the trace's own plumbing.
+     */
+    presentation: { hiddenInTrace: true },
     isAvailable: (request) => {
       if (request.planContext?.phase !== "executing") {
         return request.executionContext?.permissionOwner === "original_agent";

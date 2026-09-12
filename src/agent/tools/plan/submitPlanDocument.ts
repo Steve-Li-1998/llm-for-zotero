@@ -484,6 +484,12 @@ export function createSubmitDocumentTool(
       executionClass: "control",
       workCategory: "generation",
     },
+    /**
+     * The plan machinery itself. Its calls are how a plan is drafted and
+     * advanced, and the plan card already shows the reader the outcome, so a
+     * row for each of them would report the trace's own plumbing.
+     */
+    presentation: { hiddenInTrace: true },
     isAvailable: (request) => request.planContext?.phase !== "planning",
     guidance: {
       matches: (request) => request.documentOutcomePolicy?.required === true,

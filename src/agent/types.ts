@@ -1408,10 +1408,31 @@ export type AgentToolResultCard =
       importIdentifier?: string;
     };
 
+/**
+ * A code block a tool wants shown under its trace row.
+ *
+ * `replacesSummary` says the block already carries what the row's summary
+ * would say -- a shell command whose summary is "Running: <the command>" --
+ * so the row shows the tool's label instead of repeating the block.
+ */
+export type AgentToolTraceCodeBlock = {
+  code: string;
+  replacesSummary?: boolean;
+};
+
 export type AgentToolPresentation = {
   label?: string;
   /** Optional semantic icon for this tool's compact activity-summary row. */
   traceIcon?: "library" | "web";
+  /**
+   * Keep this tool out of the activity trace entirely.
+   *
+   * Set by the tools that are the plan machinery itself: their calls and
+   * results are how a plan is drafted and advanced, and the plan card already
+   * shows the reader the result. Declared here so the trace reads the fact
+   * from the tool instead of holding its own list of names.
+   */
+  hiddenInTrace?: boolean;
   summaries?: {
     onCall?: AgentToolPresentationSummary;
     onPending?: AgentToolPresentationSummary;
@@ -1429,11 +1450,31 @@ export type AgentToolPresentation = {
     args: unknown;
     content?: unknown;
   }) => AgentTraceDetail[];
+  /**
+   * Details drawn from the call's arguments alone, shown whether or not a
+   * result has arrived yet. `buildTraceDetails` replaces the generic details
+   * once a result exists; these are added to them.
+   */
+  buildTraceArgDetails?: (params: { args: unknown }) => AgentTraceDetail[];
+  /** The code block this call shows under its row, if any. */
+  buildTraceCodeBlock?: (params: {
+    args: unknown;
+  }) => AgentToolTraceCodeBlock | null;
   /** Merge a successful result into its expandable call row in the trace. */
   mergeResultIntoCallTrace?: boolean;
+  /**
+   * The row a completed call gets instead of its generic summary.
+   *
+   * A call relayed from a connected client reaches the trace with artifacts
+   * and no result payload, so the phase, outcome and artifacts are passed
+   * alongside the content for the tools that can say something about them.
+   */
   buildTraceSummary?: (params: {
     args: unknown;
     content?: unknown;
+    artifacts?: AgentToolArtifact[];
+    phase?: "started" | "completed";
+    ok?: boolean;
   }) => string | null;
   /**
    * When provided, the agent trace renders a read-only card list below the

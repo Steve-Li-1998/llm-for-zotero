@@ -1079,6 +1079,17 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
 
     presentation: {
       label: "Run Command",
+      // The command itself is the row's content, so the row shows the tool's
+      // label and the block carries the text rather than saying it twice.
+      buildTraceCodeBlock: ({ args }) => {
+        const command =
+          args && typeof args === "object" && !Array.isArray(args)
+            ? (args as Record<string, unknown>).command
+            : undefined;
+        return typeof command === "string" && command.trim()
+          ? { code: command, replacesSummary: true }
+          : null;
+      },
       summaries: {
         onCall: ({ args }) => {
           const a =

@@ -400,39 +400,76 @@ export async function loadLatestPlanDocumentForExecution(
   return documentId ? loadPlanDocument(documentId) : null;
 }
 
+/**
+ * Per-item material of a batch: one note body, not a deliverable of its own.
+ *
+ * A run can publish fifty of these, so every "what did this run produce"
+ * question has to say whether it means the run's answer or its per-item
+ * material, and these are never the answer.
+ */
+const PER_ITEM_MATERIAL_KIND = "note";
+
+/** A row's document kind, read without decoding the rest of its payload. */
+function payloadDocumentKind(payloadJson: unknown): string {
+  if (typeof payloadJson !== "string") return "";
+  try {
+    const kind = (JSON.parse(payloadJson) as { documentKind?: unknown })
+      .documentKind;
+    return typeof kind === "string" ? kind : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The document this run finalized as its deliverable.
+ *
+ * Callers speak it as the turn's visible answer, so a batch's note bodies are
+ * passed over however recently they were written.
+ */
 export async function loadLatestDocumentForRun(
   runId: string,
 ): Promise<PlanDocument | null> {
   const rows = (await Zotero.DB.queryAsync(
-    `SELECT document_id AS documentId FROM ${PLAN_DOCUMENTS_TABLE}
-     WHERE run_id = ? ORDER BY created_at DESC LIMIT 1`,
+    `SELECT document_id AS documentId, payload_json AS payloadJson
+     FROM ${PLAN_DOCUMENTS_TABLE}
+     WHERE run_id = ? ORDER BY created_at DESC, rowid DESC`,
     [runId],
-  )) as Array<{ documentId?: unknown }> | undefined;
-  const documentId =
-    typeof rows?.[0]?.documentId === "string" ? rows[0].documentId : "";
-  return documentId ? loadPlanDocument(documentId) : null;
+  )) as Array<{ documentId?: unknown; payloadJson?: unknown }> | undefined;
+  for (const row of rows || []) {
+    if (payloadDocumentKind(row.payloadJson) === PER_ITEM_MATERIAL_KIND)
+      continue;
+    if (typeof row.documentId === "string" && row.documentId)
+      return loadPlanDocument(row.documentId);
+  }
+  return null;
 }
 
 /**
- * A document this run already published with exactly this content.
+ * A document of this kind that the run already published with this content.
  *
  * A run authors several documents — one note batch publishes one per item —
  * so "is this submission a retry?" cannot be answered by the newest document
  * alone. Matching on content across the whole run is what keeps a repeated
  * call from minting a second identity for text that is already durable.
  */
-export async function loadDocumentForRunByContentHash(
-  runId: string,
-  contentHash: string,
-): Promise<PlanDocument | null> {
+export async function loadDocumentForRunByContentHash(params: {
+  runId: string;
+  contentHash: string;
+  documentKind: string;
+}): Promise<PlanDocument | null> {
   const rows = (await Zotero.DB.queryAsync(
-    `SELECT document_id AS documentId FROM ${PLAN_DOCUMENTS_TABLE}
-     WHERE run_id = ? AND content_hash = ? ORDER BY created_at ASC LIMIT 1`,
-    [runId, contentHash],
-  )) as Array<{ documentId?: unknown }> | undefined;
-  const documentId =
-    typeof rows?.[0]?.documentId === "string" ? rows[0].documentId : "";
-  return documentId ? loadPlanDocument(documentId) : null;
+    `SELECT document_id AS documentId, payload_json AS payloadJson
+     FROM ${PLAN_DOCUMENTS_TABLE}
+     WHERE run_id = ? AND content_hash = ? ORDER BY created_at ASC, rowid ASC`,
+    [params.runId, params.contentHash],
+  )) as Array<{ documentId?: unknown; payloadJson?: unknown }> | undefined;
+  for (const row of rows || []) {
+    if (payloadDocumentKind(row.payloadJson) !== params.documentKind) continue;
+    if (typeof row.documentId === "string" && row.documentId)
+      return loadPlanDocument(row.documentId);
+  }
+  return null;
 }
 
 function directDocumentIdPrefix(runId: string): string {

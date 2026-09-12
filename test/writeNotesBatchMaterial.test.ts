@@ -5,6 +5,7 @@ import { LibraryMutationService } from "../src/agent/services/libraryMutationSer
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import {
   initPlanDocumentStore,
+  loadLatestDocumentForRun,
   loadPlanDocument,
 } from "../src/agent/documents/store";
 import {
@@ -297,6 +298,15 @@ describe("note batch material", function () {
       "The batch rows do not describe these notes",
     );
     assert.equal(native.notes.size, 0, "no note may be written");
+  });
+
+  it("is never mistaken for the run's finalized document", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    await tool.execute(validated(tool), context());
+
+    // External backends replace the turn's answer with the run's finalized
+    // document, so a note body picked up here would be spoken as the answer.
+    assert.isNull(await loadLatestDocumentForRun("run-batch-1"));
   });
 
   it("never announces a batch item as the turn's finalized material", async function () {

@@ -66,11 +66,15 @@ describe("finalized document file export", function () {
       DB: {
         queryAsync: async (sql: string) => {
           if (
-            sql.includes(
-              "SELECT document_id AS documentId FROM llm_for_zotero_plan_documents",
-            )
+            sql.includes("FROM llm_for_zotero_plan_documents") &&
+            sql.includes("document_id AS documentId")
           )
-            return [{ documentId: document.documentId }];
+            return [
+              {
+                documentId: document.documentId,
+                payloadJson: JSON.stringify(document),
+              },
+            ];
           if (
             sql.includes(
               "SELECT payload_json AS payloadJson FROM llm_for_zotero_plan_documents",

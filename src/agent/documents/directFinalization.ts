@@ -374,16 +374,15 @@ export class DirectDocumentFinalizer {
     // The stored document is this submission only when its content is
     // identical: a retry keeps the identity the run already published.
     // Different content is a new document, never a silent substitution of
-    // older content for the input the model just submitted.
-    if (prior && prior.contentHash === finalized.document.contentHash)
-      return storedDocumentResult(prior);
-    // One run may publish many documents — a note batch publishes one per
-    // item — so the retry it is looking for is not always the newest one.
+    // older content for the input the model just submitted. One run may
+    // publish many documents — a note batch publishes one per item — so the
+    // retry it is looking for is not always the newest one.
     if (!stableDocumentId) {
-      const duplicate = await loadDocumentForRunByContentHash(
-        params.runId,
-        finalized.document.contentHash,
-      );
+      const duplicate = await loadDocumentForRunByContentHash({
+        runId: params.runId,
+        contentHash: finalized.document.contentHash,
+        documentKind: spec.kind,
+      });
       if (
         duplicate &&
         duplicate.conversationKey === params.request.conversationKey

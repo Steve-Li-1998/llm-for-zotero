@@ -470,10 +470,18 @@ export function evaluateActionContract(
     const matching = receipts.filter((receipt) =>
       receiptMatches(receipt, obligation),
     );
-    const verified = matching.filter(receiptVerified);
+    // What credits an obligation is the strongest proof its own proof domain
+    // admits. `execution` has no state to read back, so `execution_only` —
+    // which both completion gates accept — is what an execution obligation
+    // can be shown. Every other domain still requires a re-read that matched,
+    // and a receipt only ever matches an obligation of its own operation, so
+    // this never lets a command stand in for a library write.
+    const credited = matching.filter(
+      obligation.proofDomain === "execution" ? receiptProved : receiptVerified,
+    );
     if (
       matching.some((receipt) => receipt.status === "cancelled") &&
-      !verified.length
+      !credited.length
     ) {
       return {
         state: "cancelled",
@@ -488,7 +496,7 @@ export function evaluateActionContract(
       (obligation.scopeRole !== "destination" || obligation.destinationCreation)
     ) {
       const covered = new Set(
-        verified.flatMap((receipt) => [
+        credited.flatMap((receipt) => [
           ...receipt.appliedTargets,
           ...receipt.alreadySatisfiedTargets,
         ]),
@@ -500,7 +508,7 @@ export function evaluateActionContract(
       ) {
         missing.push(obligation);
       }
-    } else if (!verified.length) {
+    } else if (!credited.length) {
       missing.push(obligation);
     }
     sawPartial ||= matching.some((receipt) => receipt.status === "partial");

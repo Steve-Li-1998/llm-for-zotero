@@ -290,6 +290,88 @@ describe("prepared action completion", function () {
     );
   });
 
+  it("credits an execution obligation from the only proof its domain allows", function () {
+    // The classifier's operation enum is the whole catalog, so a turn can
+    // carry a `command_execute` obligation. The only receipt that can ever
+    // match it is `execution_only` — an execution effect leaves nothing to
+    // re-read — so crediting the obligation only from `verified` left such a
+    // turn open forever, correcting the model to produce "independently
+    // verified post-state" for an effect that by ruling has none.
+    const contract = semanticContractFixture({
+      id: "shell",
+      writeDisposition: "required",
+      obligations: [
+        {
+          id: "shell:0",
+          operation: "command_execute",
+          capability: "command.execute",
+          proofDomain: "execution",
+          coverage: "one",
+          targetKind: "items",
+        },
+      ],
+    });
+    const commandReceipt = (
+      overrides: Partial<
+        import("../src/agent/contracts/types").AgentActionReceipt
+      > = {},
+    ): import("../src/agent/contracts/types").AgentActionReceipt => ({
+      version: 2,
+      id: "command:executed",
+      proposalId: "command:proposal",
+      obligationId: "shell:0",
+      proofDomain: "execution",
+      capability: "command.execute",
+      operation: "command_execute",
+      verification: "execution_only",
+      status: "observed",
+      requestedTargets: [],
+      appliedTargets: [],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [],
+      ...overrides,
+    });
+    assert.equal(
+      evaluateActionContract(contract, [commandReceipt()]).state,
+      "satisfied",
+    );
+    // A re-read that was possible and did not happen still leaves it open.
+    assert.equal(
+      evaluateActionContract(contract, [
+        commandReceipt({ verification: "unverified", status: "unverified" }),
+      ]).state,
+      "unverified",
+    );
+    // The wider rule is unchanged: a zotero_state obligation is credited only
+    // by a re-read that matched.
+    const tagContract = semanticContractFixture({
+      id: "tagging",
+      writeDisposition: "required",
+      obligations: [
+        {
+          id: "tagging:0",
+          operation: "apply_tags",
+          capability: "zotero.tags",
+          proofDomain: "zotero_state",
+          coverage: "one",
+          targetKind: "items",
+        },
+      ],
+    });
+    assert.equal(
+      evaluateActionContract(tagContract, [
+        {
+          ...tagReceipt("applied"),
+          obligationId: "tagging:0",
+          verification: "execution_only",
+        },
+      ]).state,
+      "pending",
+    );
+  });
+
   it("reports a dropped action as not performed instead of bare success", function () {
     const contract = semanticContractFixture({
       id: "dropped",

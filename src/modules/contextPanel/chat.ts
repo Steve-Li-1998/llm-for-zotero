@@ -438,6 +438,7 @@ import {
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import { materialRefFromDocument } from "../../agent/documents/workflowMaterial";
 import { loadDocumentIdForMessageOwner } from "../../agent/documents/store";
+import type { PlanDocument } from "../../agent/documents/types";
 import {
   applyHistoryCompression,
   scheduleLLMSummary,
@@ -1837,11 +1838,29 @@ async function publishPersistedPlanDocumentIfPresent(params: {
     documentId: params.documentId || params.planDocumentId,
   });
   if (!document) return;
-  // Delivery may complete the final durable Plan task. Refresh this
-  // conversation's views so their progress cards reload the committed ledger,
-  // without rebuilding unrelated chats that the user may be reading.
+  await announceFinalizedMaterialForRun(params.agentRunId, document);
+  // Delivery may complete the final durable Plan task, and it is also what
+  // announces the finalized material. Refresh this conversation's views once
+  // both are durable, so progress cards reload the committed ledger and the
+  // trace paints the material row, without rebuilding unrelated chats that
+  // the user may be reading.
   refreshActiveConversationPanels(params.conversationKey);
-  const runId = params.agentRunId?.trim();
+}
+
+/**
+ * Record the material a delivered document finalized on its own run trace.
+ *
+ * External backends run their tools through the MCP surface, which journals
+ * provider activity rather than runtime tool results, so this host-side
+ * publication is the only `material_finalized` a Codex or Claude native run
+ * ever gets. The original runtime emits its own, so the append is skipped
+ * when the run already announced this document.
+ */
+async function announceFinalizedMaterialForRun(
+  agentRunId: string | undefined,
+  document: PlanDocument,
+): Promise<void> {
+  const runId = agentRunId?.trim();
   if (!runId) return;
   const persistedTrace = await getAgentRunTrace(runId);
   if (
@@ -1853,13 +1872,12 @@ async function publishPersistedPlanDocumentIfPresent(params: {
   ) {
     return;
   }
-  const event = {
+  const record = await appendAgentRunEventAfterLatest(runId, {
     type: "material_finalized" as const,
     materialRef: materialRefFromDocument(document),
     materialKind: document.version === 2 ? document.documentKind : undefined,
     materialTitle: document.title,
-  };
-  const record = await appendAgentRunEventAfterLatest(runId, event);
+  });
   const cached = agentRunTraceCache.get(runId) || [];
   if (!cached.some((entry) => entry.seq === record.seq)) {
     agentRunTraceCache.set(runId, [...cached, record]);
@@ -7282,11 +7300,6 @@ function createCodexNativeActivityTraceController(
       const record = createEvent(event);
       if (priorIndex >= 0) events[priorIndex] = record;
       else events.push(record);
-      sync();
-      return;
-    }
-    if (event.type === "material_finalized") {
-      events.push(createEvent(event));
       sync();
       return;
     }

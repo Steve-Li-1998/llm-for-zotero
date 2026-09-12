@@ -54,7 +54,10 @@ import { createUnverifiedReceipt } from "./contracts/actionEvaluation";
 import { loadWorkflowCheckpoint } from "./contracts/workflowCheckpoint";
 import { resolveDocumentOutcomePolicy } from "./documents/outcomePolicy";
 import type { MaterialRef } from "./documents/materialRef";
-import { loadWorkflowMaterial } from "./documents/workflowMaterial";
+import {
+  loadWorkflowMaterial,
+  materialRefFromDocument,
+} from "./documents/workflowMaterial";
 import { AgentFinalAnswerController } from "./finalization/finalAnswerController";
 import type { AgentModelAdapter } from "./model/adapter";
 import { resolveCapabilitiesContentInputs } from "./model/contentCapabilities";
@@ -2337,11 +2340,19 @@ export class AgentRuntime {
       }
       if (request.actionProgress?.materialOutputs?.length) {
         const retained = await loadWorkflowMaterial(request);
-        if (retained)
+        if (retained) {
           finalizedMaterial = {
             documentId: retained.documentId,
             finalText: retained.visibleMarkdown,
           };
+          // Material re-adopted from an earlier run must reach the terminal
+          // event with the same identity it was finalized under, not as a
+          // bare document id.
+          finalizedMaterialRefs.set(
+            retained.documentId,
+            materialRefFromDocument(retained),
+          );
+        }
       }
       let operationSequence = 0;
       context.invokeRegisteredOperation = async (name, args) => {

@@ -18,6 +18,9 @@ import { stripNoteHtml } from "../src/utils/noteText";
 import { renderMarkdownForNote } from "../src/utils/markdown";
 import { DatabaseSync } from "node:sqlite";
 import { initPlanDocumentStore } from "../src/agent/documents/store";
+import { initAgentPlanStore } from "../src/agent/plans/store";
+import { initResearchStore } from "../src/agent/research/store";
+import { createDocumentPlan } from "./helpers/documentPlan";
 import type { MaterialRef } from "../src/agent/documents/materialRef";
 import { createSubmitDocumentTool } from "../src/agent/tools/plan/submitPlanDocument";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -8318,6 +8321,35 @@ function installPlanDocumentSqlite(): () => void {
   };
 }
 
+/** Plan, document and research stores need real SQL; the rest stays on the mock. */
+function installPlanSqlite(): () => void {
+  const zotero = globalThis as typeof globalThis & { Zotero: typeof Zotero };
+  const base = zotero.Zotero.DB;
+  const db = new DatabaseSync(":memory:");
+  zotero.Zotero.DB = {
+    ...base,
+    queryAsync: async (sql: string, params: unknown[] = []) => {
+      if (
+        !sql.includes("llm_for_zotero_plan_") &&
+        !sql.includes("llm_for_zotero_research")
+      )
+        return base.queryAsync(sql, params);
+      const statement = db.prepare(sql);
+      const values = params.map((value) =>
+        value === undefined ? null : value,
+      ) as never[];
+      if (/^\s*(SELECT|PRAGMA|WITH)/i.test(sql))
+        return statement.all(...values);
+      statement.run(...values);
+      return [];
+    },
+  } as unknown as typeof Zotero.DB;
+  return () => {
+    zotero.Zotero.DB = base;
+    db.close();
+  };
+}
+
 const submitDocumentGateway = {
   formatStructuredCitations: () => ({
     styleId: "apa",
@@ -8630,4 +8662,114 @@ describe("finalized material announcement", function () {
     }
   });
 
+  it("carries the material ref on the final event when a later turn re-adopts the document", async function () {
+    const installed = installMockDb();
+    const restoreStores = installPlanSqlite();
+    clearAgentTranscriptStore();
+    try {
+      await initAgentPlanStore();
+      await initPlanDocumentStore();
+      await initResearchStore();
+      const conversationKey = 41;
+      const { documentId, materialRef } =
+        await runFinalizingTurn(conversationKey);
+      // Only a plan-executing turn keeps a progress ledger across runs; an
+      // ordinary turn discards any contract it is handed (runtime.ts clears
+      // actionContract/actionProgress/classifiedIntent before the model runs).
+      const plan = await createDocumentPlan(conversationKey);
+
+      const registry = new AgentToolRegistry();
+      registry.register(createSubmitDocumentTool(submitDocumentGateway));
+      const events: AgentEvent[] = [];
+      const secondTurn = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            return {
+              kind: "final",
+              text: "The guide is ready.",
+              assistantMessage: {
+                role: "assistant",
+                content: "The guide is ready.",
+              },
+            };
+          },
+        }),
+      });
+      const intent = classifiedFixture({
+        semantic: semanticFixture({
+          materialOutputs: [
+            {
+              id: "guide",
+              description: "The requested guide",
+              afterActions: [],
+              sourceActionIndexes: [],
+              requiredEvidence: "none",
+            },
+          ],
+        }),
+      });
+      await secondTurn.runTurn({
+        request: {
+          conversationKey,
+          mode: "agent",
+          userText: "Continue the approved plan",
+          libraryID: 1,
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+          metadata: { sourceMessageTimestamp: 200 },
+          planContext: {
+            phase: "executing",
+            planId: plan.planId,
+            revision: plan.revision,
+            executionId: plan.executionId,
+            approvedDigest: plan.planDigest,
+            provider: "original",
+          },
+          actionContract: {
+            version: 4,
+            id: "contract:reused",
+            interpretationSource: "semantic",
+            writeDisposition: "none",
+            intent,
+            obligations: [],
+          },
+          actionProgress: {
+            version: 1,
+            contractId: "contract:reused",
+            state: "pending",
+            correctionCount: 0,
+            obligations: [],
+            appliedReceiptKeys: [],
+            materialOutputs: [{ outputId: "guide", ...materialRef }],
+          },
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      const finalEvent = events.find((event) => event.type === "final") as
+        | Extract<AgentEvent, { type: "final" }>
+        | undefined;
+      assert.equal(
+        finalEvent?.documentId,
+        documentId,
+        "the re-adopted document must name the turn's outcome",
+      );
+      assert.deepEqual(
+        finalEvent?.materialRef,
+        materialRef,
+        "re-adopted material keeps the exact identity turn 1 finalized",
+      );
+    } finally {
+      restoreStores();
+      installed();
+    }
+  });
 });

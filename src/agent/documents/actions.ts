@@ -202,6 +202,17 @@ async function saveDocumentNote(
           "The saved note no longer matches this exact document and parent, or its assets are incomplete. Resolve that note before saving again.",
         );
       }
+      // Embedded assets rewrite the stored HTML with native attachment keys,
+      // so only an asset-free document can be proved against its own body.
+      const noteVerification = document.assets.length
+        ? undefined
+        : await verifyNativeNoteHtml(existing, document.visibleHtml);
+      // Prove the note before recording it as saved: a promotion the read-back
+      // contradicts would lock the document out of every later save attempt.
+      if (noteVerification && !noteVerification.matches)
+        throw new Error(
+          "The saved note no longer matches this exact document and parent, or its assets are incomplete. Resolve that note before saving again.",
+        );
       if (!prior?.savedNote) await promoteDocumentNote(documentId, binding);
       return {
         libraryID: existing.libraryID,
@@ -209,11 +220,7 @@ async function saveDocumentNote(
         itemId: existing.id,
         created: false,
         warnings: [],
-        // Embedded assets rewrite the stored HTML with native attachment keys,
-        // so only an asset-free document can be proved against its own body.
-        noteVerification: document.assets.length
-          ? undefined
-          : await verifyNativeNoteHtml(existing, document.visibleHtml),
+        noteVerification,
       };
     }
     if (existing || prior?.savedNote)
@@ -323,6 +330,13 @@ async function saveDocumentNote(
       "The note was preserved but its requested content or assets are incomplete, or its parent changed.",
     );
   const noteVerification = await verifyNativeNoteHtml(created, persisted.html);
+  // The forced read-back is the only proof the write reached the database.
+  // Promoting a reservation it contradicts marks the document saved while the
+  // receipt rejects it, and every retry then refuses the mismatched note.
+  if (!noteVerification.matches)
+    throw new Error(
+      "The reserved note does not match the finalized content; the document was not recorded as saved.",
+    );
   await promoteDocumentNote(documentId, pendingNote);
   return {
     libraryID: created.libraryID,

@@ -23,6 +23,8 @@ describe("durable document note association", function () {
   let failFinalization: boolean;
   let requireAtomicState: boolean;
   let imageImports: number;
+  let reloadCalls: number;
+  let corruptReloadsFrom: number;
   let restoreRetrievalInvalidator: (() => void) | null = null;
 
   before(function () {
@@ -51,6 +53,8 @@ describe("durable document note association", function () {
     failFinalization = false;
     requireAtomicState = false;
     imageImports = 0;
+    reloadCalls = 0;
+    corruptReloadsFrom = Number.POSITIVE_INFINITY;
     document = {
       version: 2,
       documentId: "summary-document",
@@ -138,7 +142,13 @@ describe("durable document note association", function () {
         });
       }
       async reload() {
-        this.html = this.stored;
+        reloadCalls++;
+        // A forced read-back can disagree with the in-memory note when the
+        // native write never reached the database.
+        this.html =
+          reloadCalls >= corruptReloadsFrom
+            ? "<h1>Summary</h1><p>Truncated by another client.</p>"
+            : this.stored;
       }
     }
     const parent = {
@@ -609,6 +619,54 @@ describe("durable document note association", function () {
     assert.equal(saved.itemId, retried.itemId);
     assert.isFalse(retried.created);
     assert.equal(notes.get(saved.itemId).getNote(), document.visibleHtml);
+  });
+  it("does not record a document as saved when the final read-back disagrees", async function () {
+    const target = { parentItemId: 42, libraryID: 1 };
+    // Calibrate against a healthy save so the corruption lands on the last
+    // forced read-back whatever the persistence internals do.
+    await savePlanDocumentAsNote(document.documentId, target);
+    const readBacksPerSave = reloadCalls;
+    state = undefined;
+    notes.clear();
+
+    corruptReloadsFrom = reloadCalls + readBacksPerSave;
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /does not match the finalized content/,
+    );
+    assert.isUndefined(state?.savedNote);
+    assert.isDefined(state?.pendingNote);
+
+    corruptReloadsFrom = Number.POSITIVE_INFINITY;
+    const retried = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isTrue(retried.noteVerification?.matches);
+    assert.equal(notes.size, 1);
+  });
+  it("does not promote a reserved note whose read-back cannot be verified", async function () {
+    const target = { parentItemId: 42, libraryID: 1 };
+    failAssociation = true;
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /Association storage unavailable/,
+    );
+    failAssociation = false;
+    const reserved = JSON.parse(JSON.stringify(state));
+    assert.isUndefined(reserved.savedNote);
+
+    // Calibrate the already-reserved branch, then replay it from the same
+    // unpromoted state with its last read-back corrupted.
+    const before = reloadCalls;
+    const satisfied = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isFalse(satisfied.created);
+    const readBacks = reloadCalls - before;
+    state = reserved;
+
+    corruptReloadsFrom = reloadCalls + readBacks;
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /no longer matches this exact document/,
+    );
+    assert.isUndefined(state?.savedNote);
   });
   it("binds a requested parent even when the summary contains no citation cluster", async function () {
     const saved = await savePlanDocumentAsNote(document.documentId, {

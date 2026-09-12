@@ -523,6 +523,34 @@ function codexNativeEffectActivityText(decision: {
       : "Codex file change denied";
 }
 
+/**
+ * The trace row carrying one connected-client effect and its receipt.
+ *
+ * Every one of these rows shares a constant tool name and one of four fixed
+ * sentences, so what tells two of them apart is the effect itself: the paths,
+ * or the command fingerprint. They travel in `args`, which the visible dedupe
+ * key reads, so two approvals seconds apart stay two rows instead of merging
+ * into one — and stay auditable in the row's own details.
+ */
+export function buildCodexNativeEffectActivityEvent(decision: {
+  effect: ExternalRuntimeEffect;
+  outcome: ExternalRuntimeEffectOutcome;
+  callId: string;
+  receipt: import("../agent/contracts/types").AgentActionReceipt;
+}): import("../agent/types").AgentEvent {
+  return {
+    type: "codex_tool_activity",
+    itemId: `codex-effect:${decision.callId}`,
+    phase: "completed",
+    toolName: "codex_native_effect",
+    args: { targets: decision.effect.requestedTargets },
+    ok: decision.outcome === "executed",
+    text: codexNativeEffectActivityText(decision),
+    actionReceipts: [decision.receipt],
+    workCategory: "external_system",
+  };
+}
+
 let codexNativeApprovalEffectSequence = 0;
 
 /** Stable identity for the approval this receipt covers. */
@@ -2946,16 +2974,9 @@ export async function runCodexAppServerNativeTurn(input: {
           });
           hostReceipts.push(receipt);
           try {
-            await publishHost({
-              type: "codex_tool_activity",
-              itemId: `codex-effect:${decision.callId}`,
-              phase: "completed",
-              toolName: "codex_native_effect",
-              ok: decision.outcome === "executed",
-              text: codexNativeEffectActivityText(decision),
-              actionReceipts: [receipt],
-              workCategory: "external_system",
-            });
+            await publishHost(
+              buildCodexNativeEffectActivityEvent({ ...decision, receipt }),
+            );
           } catch (error) {
             // The client's effect and its durable receipt are already settled;
             // a dead or superseded turn must not turn that into a failure.

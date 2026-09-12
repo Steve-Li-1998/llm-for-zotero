@@ -21,6 +21,9 @@ import {
 } from "../src/modules/contextPanel/agentTrace/render";
 import { buildNoteChangeResultCards } from "../src/agent/tools/write/noteChangePresentation";
 import { buildClaudeMcpToolActivityEvent } from "../src/agent/externalBackendBridge";
+import { buildCodexNativeEffectActivityEvent } from "../src/codexAppServer/nativeClient";
+import { externalRuntimeCommandEffect } from "../src/agent/contracts/externalRuntimeEffects";
+import { mergeToolActivityPayload } from "../src/modules/contextPanel/agentTrace/toolActivityDedupe";
 import {
   createCodexNativeActivityTraceControllerForTests,
   resolveAssistantResponseMenuContent,
@@ -4219,6 +4222,127 @@ describe("agentTrace render", function () {
         },
       ] as unknown as AgentRunEventRecord[]),
       ["Verified", "Authorized by connected client"],
+    );
+  });
+
+  it("keeps two connected-client effects apart instead of collapsing them into one row", function () {
+    // Every effect row carries the same constant tool name and one of four
+    // fixed sentences, so without a distinct identity per effect the visible
+    // dedupe key is identical and two approvals seconds apart merge into one
+    // row — with one of the two receipts silently dropped.
+    const events = [
+      buildCodexNativeEffectActivityEvent({
+        effect: externalRuntimeCommandEffect("codex_native", "npm test"),
+        outcome: "executed",
+        callId: "cmd-1",
+        receipt: verificationReceipt({
+          id: "receipt-npm-test",
+          verification: "execution_only",
+          status: "observed",
+          executionAuthority: "external_runtime",
+        }),
+      }),
+      buildCodexNativeEffectActivityEvent({
+        effect: externalRuntimeCommandEffect("codex_native", "git status"),
+        outcome: "executed",
+        callId: "cmd-2",
+        receipt: verificationReceipt({
+          id: "receipt-git-status",
+          verification: "execution_only",
+          status: "observed",
+          executionAuthority: "external_runtime",
+        }),
+      }),
+    ].map((payload, index) => ({
+      runId: "run-two-effects",
+      seq: index + 1,
+      eventType: "codex_tool_activity",
+      payload,
+      createdAt: 1_000 + index * 3_000,
+    })) as unknown as AgentRunEventRecord[];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const effectRows = items.filter(
+      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+        item.type === "action" && item.row.kind === "tool",
+    );
+    assert.lengthOf(
+      effectRows,
+      2,
+      `two approved commands are two effects: ${JSON.stringify(effectRows.map((item) => item.row))}`,
+    );
+    assert.deepEqual(
+      effectRows.flatMap((item) =>
+        (item.chips || []).map((chip) => chip.label),
+      ),
+      [
+        "Ran (no state proof)",
+        "Authorized by connected client",
+        "Ran (no state proof)",
+        "Authorized by connected client",
+      ],
+    );
+  });
+
+  it("keeps every receipt when two activity rows do merge", function () {
+    const merged = mergeToolActivityPayload(
+      {
+        type: "codex_tool_activity",
+        itemId: "codex-effect:cmd-1",
+        phase: "completed",
+        actionReceipts: [verificationReceipt({ id: "first" })],
+      } as never,
+      {
+        type: "codex_tool_activity",
+        itemId: "codex-effect:cmd-1",
+        phase: "completed",
+        actionReceipts: [
+          verificationReceipt({ id: "second", verification: "unverified" }),
+          // The same receipt arriving twice — a started/completed pair for one
+          // call — must not be counted twice.
+          verificationReceipt({ id: "first" }),
+        ],
+      } as never,
+    );
+    assert.deepEqual(
+      (merged.actionReceipts || []).map((receipt) => receipt.id),
+      ["first", "second"],
+    );
+  });
+
+  it("keeps both proofs when the same command is approved twice in a row", function () {
+    // Two identical approvals are genuinely one visible activity, so the rows
+    // merge — but they are two effects, and the surviving chip must speak for
+    // the weaker of the two rather than for whichever arrived last.
+    const events = [
+      { id: "receipt-first", verification: "execution_only" as const },
+      { id: "receipt-second", verification: "unverified" as const },
+    ].map((receipt, index) => ({
+      runId: "run-same-command",
+      seq: index + 1,
+      eventType: "codex_tool_activity",
+      payload: buildCodexNativeEffectActivityEvent({
+        effect: externalRuntimeCommandEffect("codex_native", "npm test"),
+        outcome: "executed",
+        callId: `cmd-${index}`,
+        receipt: verificationReceipt({
+          ...receipt,
+          status: "observed",
+          executionAuthority: "external_runtime",
+        }),
+      }),
+      createdAt: 1_000 + index * 3_000,
+    })) as unknown as AgentRunEventRecord[];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const effectRows = items.filter(
+      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+        item.type === "action" && item.row.kind === "tool",
+    );
+    assert.lengthOf(effectRows, 1);
+    assert.deepEqual(
+      (effectRows[0].chips || []).map((chip) => chip.label),
+      ["Unverified", "Authorized by connected client"],
     );
   });
 

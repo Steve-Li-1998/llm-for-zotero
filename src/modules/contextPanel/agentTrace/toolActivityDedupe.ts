@@ -201,6 +201,34 @@ export function isWithinToolActivityDedupeWindow(
   );
 }
 
+/**
+ * The receipts of both merged rows, never only the later row's.
+ *
+ * A merge is a presentation decision: two rows read as one activity. The
+ * evidence is not presentation, so it accumulates instead of being replaced —
+ * otherwise merging two effects would silently discard one effect's proof and
+ * the surviving chip would speak for work it never covered. A receipt that
+ * arrives twice (a started/completed pair for one call) is kept once, by id.
+ */
+function mergeToolActivityReceipts(
+  previousPayload: CodexToolActivityPayload,
+  nextPayload: CodexToolActivityPayload,
+): CodexToolActivityPayload["actionReceipts"] {
+  const merged = [
+    ...(previousPayload.actionReceipts || []),
+    ...(nextPayload.actionReceipts || []),
+  ];
+  if (!merged.length) return previousPayload.actionReceipts;
+  const seen = new Set<string>();
+  return merged.filter((receipt) => {
+    const id = receipt?.id;
+    if (!id) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 export function mergeToolActivityPayload(
   previousPayload: CodexToolActivityPayload,
   nextPayload: CodexToolActivityPayload,
@@ -208,6 +236,7 @@ export function mergeToolActivityPayload(
   return {
     ...previousPayload,
     ...nextPayload,
+    actionReceipts: mergeToolActivityReceipts(previousPayload, nextPayload),
     toolName: nextPayload.toolName || previousPayload.toolName,
     toolLabel: nextPayload.toolLabel || previousPayload.toolLabel,
     serverName: nextPayload.serverName || previousPayload.serverName,

@@ -38,7 +38,9 @@ export function evaluatePreparedActionContract(
   receipts: AgentActionReceipt[],
 ): ContractEvaluation {
   const delegated = receipts.filter(
-    (receipt) => receipt.executionAuthority === "external_runtime",
+    (receipt) =>
+      receipt.executionAuthority === "external_runtime" &&
+      !isConnectedRuntimeSideEffect(receipt),
   );
   if (delegated.length) {
     // The calling agent owns action intent. Report the actual effects without
@@ -333,6 +335,26 @@ function receiptMatches(
   obligation: AgentActionObligation,
 ): boolean {
   return receipt.obligationId === obligation.id;
+}
+
+/**
+ * An effect the connected client ran inside its own runtime.
+ *
+ * A file Claude Code wrote or a command Codex executed is receipted and
+ * journaled so the trace and the audit trail show it, but it says nothing
+ * about the Zotero action the turn owes. Reading it as delegated action
+ * evidence would break completion in both directions: a shell command would
+ * stand in for an unperformed tag write, and an approved command — whose proof
+ * can only ever be `execution_only` — would report an otherwise complete turn
+ * as unverified. These two capabilities reach a receipt only from the external
+ * bridges; every Zotero effect a client performs comes through the MCP server
+ * with a Zotero capability and stays delegated evidence.
+ */
+function isConnectedRuntimeSideEffect(receipt: AgentActionReceipt): boolean {
+  return (
+    receipt.capability === "file.write" ||
+    receipt.capability === "command.execute"
+  );
 }
 
 function receiptVerified(receipt: AgentActionReceipt): boolean {

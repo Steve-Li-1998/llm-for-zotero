@@ -149,6 +149,56 @@ describe("prepared action completion", function () {
     });
   }
 
+  it("does not let an effect the client ran in its own runtime answer for a Zotero action", function () {
+    // Phase 3 task 5 receipts Codex's and Claude Code's own file changes and
+    // shell commands. They are audit evidence: they must neither satisfy a
+    // Zotero obligation nor report an otherwise complete turn as unverified.
+    const runtimeEffect: import("../src/agent/contracts/types").AgentActionReceipt =
+      {
+        version: 2,
+        executionAuthority: "external_runtime",
+        id: "external_runtime:claude_code:command_execute:call-1:executed",
+        proposalId: "external_runtime:claude_code:command_execute:call-1",
+        proofDomain: "execution",
+        capability: "command.execute",
+        operation: "command_execute",
+        verification: "execution_only",
+        status: "observed",
+        requestedTargets: ["command:fnv1a32:0000dead"],
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: [],
+        reasons: [],
+        verifiedFacts: [],
+      };
+    const zoteroWrite = {
+      ...tagReceipt("applied"),
+      executionAuthority: "external_runtime" as const,
+    };
+    assert.equal(
+      evaluatePreparedActionContract({}, [zoteroWrite, runtimeEffect]).state,
+      "satisfied",
+      "an execution_only shell effect must not spoil a verified delegated write",
+    );
+    const contract = semanticContractFixture({
+      id: "shell-instead-of-tags",
+      writeDisposition: "none",
+      obligations: [],
+      skippedActions: [{ actionIndex: 0, operation: "apply_tags" }],
+    });
+    assert.equal(
+      evaluatePreparedActionContract(
+        {
+          actionContract: contract,
+          actionPreparation: { state: "ready", issues: [] },
+        },
+        [runtimeEffect],
+      ).state,
+      "failed",
+      "a shell command is not the tag write the turn owed",
+    );
+  });
+
   it("reports a dropped action as not performed instead of bare success", function () {
     const contract = semanticContractFixture({
       id: "dropped",

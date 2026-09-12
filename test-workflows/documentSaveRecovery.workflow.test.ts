@@ -1,4 +1,3 @@
-import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import {
   clearPlanDocumentConversationRowsInTransaction,

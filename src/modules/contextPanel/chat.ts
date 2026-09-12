@@ -6698,12 +6698,28 @@ function createCodexNativeActivityTraceController(
     return null;
   };
 
+  /** Splice one event in, keeping every remembered position honest. */
+  const insertEventAt = (index: number, payload: AgentEvent): void => {
+    events.splice(index, 0, createEvent(payload));
+    for (const indexes of [
+      progressEventIndexes,
+      toolEventIndexes,
+      stageEventIndexes,
+    ]) {
+      for (const [key, position] of indexes) {
+        if (position >= index) indexes.set(key, position + 1);
+      }
+    }
+  };
+
   /**
    * Keep one stage event beside the activity row it brackets.
    *
    * A native row is upserted as its phases arrive, so its stage is upserted
    * with it: the trace holds one stage per row, in the status the latest
-   * phase reported.
+   * phase reported. A row whose category only arrives with a later report --
+   * the app server's item and the Zotero server's own report of one call --
+   * gets its stage opened then, still immediately before the row.
    */
   const upsertStageEvent = (
     itemId: string,
@@ -6711,7 +6727,13 @@ function createCodexNativeActivityTraceController(
   ): void => {
     if (!stage) return;
     const existingIndex = stageEventIndexes.get(itemId);
-    if (existingIndex === undefined) return;
+    if (existingIndex === undefined) {
+      const activityIndex = toolEventIndexes.get(itemId);
+      if (activityIndex === undefined) return;
+      insertEventAt(activityIndex, stage);
+      stageEventIndexes.set(itemId, activityIndex);
+      return;
+    }
     const existing = events[existingIndex];
     if (existing?.payload.type !== "agent_stage") return;
     events[existingIndex] = { ...existing, payload: stage };

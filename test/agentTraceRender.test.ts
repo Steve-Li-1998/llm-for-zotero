@@ -3144,6 +3144,53 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("brackets a row that only gets its category from the later of two reports", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    // The item arrives first and states no category; the Zotero MCP report
+    // for the same visible work states one. The row must still be bracketed.
+    controller.appendItemStatus(
+      {
+        id: "call_A",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+      },
+      "completed",
+    );
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:11",
+      phase: "completed",
+      toolName: "query_library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+      ok: true,
+    });
+
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+    );
+    assert.deepEqual(events[0].payload, {
+      type: "agent_stage",
+      stage: "retrieval",
+      status: "completed",
+      toolName: "query_library",
+    });
+  });
+
   it("stops adopting a nameless row just because it went past recently", function () {
     const message = {
       role: "assistant" as const,

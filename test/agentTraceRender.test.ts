@@ -17,7 +17,9 @@ import {
   renderAgentTrace,
   renderAgentTraceDetailsBodyForTests,
   renderPendingActionCard,
+  selectToolResultTraceCards,
 } from "../src/modules/contextPanel/agentTrace/render";
+import { buildNoteChangeResultCards } from "../src/agent/tools/write/noteChangePresentation";
 import {
   createCodexNativeActivityTraceControllerForTests,
   resolveAssistantResponseMenuContent,
@@ -58,6 +60,23 @@ import {
   getStableAnimationDelay,
   STABLE_ANIMATION_DELAY_PROPERTY,
 } from "../src/modules/contextPanel/stableAnimationPhase";
+
+/** The result shape a failed note write journals, as the note tool writes it. */
+function failedNoteChangeContent(): Record<string, unknown> {
+  return {
+    actionId: "journal-action-1",
+    status: "failed",
+    noteChange: {
+      title: "Representational drift",
+      note: { itemId: 77, libraryID: 1, key: "ABCD1234" },
+      conversationKey: 5,
+      state: "failed",
+      before: { checksum: "sha256:before", recoveryId: "recovery-before" },
+      after: { checksum: "sha256:after", recoveryId: "recovery-after" },
+      description: "Zotero refused the note save.",
+    },
+  };
+}
 
 class FakeClassList {
   private readonly classes = new Set<string>();
@@ -3939,6 +3958,73 @@ describe("agentTrace render", function () {
       inlineTextReplacesAssistantText,
       "no final event yet must not promote the draft to the answer",
     );
+  });
+
+  it("keeps the note diff card for a failed write that produced a receipt", function () {
+    const cards = selectToolResultTraceCards(
+      {
+        type: "tool_result",
+        callId: "note-1",
+        name: "note_write",
+        ok: false,
+        actionReceipts: [
+          {
+            version: 2,
+            id: "note_edit:41:unmatched:result",
+            proposalId: "note_edit:41",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "note_edit",
+            verification: "unverified",
+            status: "failed",
+            requestedTargets: ["item:41"],
+            appliedTargets: [],
+            alreadySatisfiedTargets: [],
+            rejectedTargets: [],
+            reasons: ["Zotero refused the note save"],
+            verifiedFacts: [],
+          },
+        ],
+        content: failedNoteChangeContent(),
+      },
+      buildNoteChangeResultCards,
+    );
+
+    assert.lengthOf(cards, 1);
+    assert.equal(cards[0].kind, "note_change");
+  });
+
+  it("keeps the note diff card for a legacy result that journaled no receipts", function () {
+    const cards = selectToolResultTraceCards(
+      {
+        type: "tool_result",
+        callId: "note-1",
+        name: "note_write",
+        ok: false,
+        actionReceipts: [],
+        content: failedNoteChangeContent(),
+      },
+      buildNoteChangeResultCards,
+    );
+
+    assert.lengthOf(cards, 1);
+    assert.equal(cards[0].kind, "note_change");
+  });
+
+  it("keeps an unrelated failed result from contributing cards", function () {
+    const cards = selectToolResultTraceCards(
+      {
+        type: "tool_result",
+        callId: "note-1",
+        name: "note_write",
+        ok: false,
+        actionReceipts: [],
+        content: { error: "The finalized document could not be resolved." },
+      },
+      buildNoteChangeResultCards,
+    );
+
+    assert.isEmpty(cards);
   });
 
   it("renders Codex progress messages as separate activity messages", function () {

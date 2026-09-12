@@ -3579,13 +3579,36 @@ function readMaterialNoteWrite(
   return null;
 }
 
-/** A note write reached execution, whatever the tool that carried it is called. */
-function hasNoteWriteReceipt(
+/**
+ * The cards a tool result contributes to the trace.
+ *
+ * Only the tool that produced the result knows whether its payload carries a
+ * card, so the decision is the builder's own payload check and never the
+ * result's tool name or its receipts: a result journaled before receipts
+ * existed still shows the diff that proves what happened. A failed write shows
+ * only that diff, because the rest of a card set describes work that did not
+ * land.
+ */
+export function selectToolResultTraceCards(
   payload: Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>,
-): boolean {
-  return (payload.actionReceipts || []).some((receipt) =>
-    NOTE_WRITE_ACTION_OPERATIONS.has(receipt.operation),
-  );
+  buildCards: ((content: unknown) => AgentToolResultCard[] | null) | undefined,
+): AgentToolResultCard[] {
+  if (!buildCards) return [];
+  let cards: AgentToolResultCard[] | null = null;
+  try {
+    cards = buildCards(payload.content) ?? null;
+  } catch {
+    // card generation errors must not crash the trace
+    return [];
+  }
+  if (!cards?.length) return [];
+  return payload.ok
+    ? cards
+    : cards.filter(
+        (card) =>
+          card.kind === "note_change" &&
+          ["failed", "mismatch", "unverified"].includes(card.state),
+      );
 }
 
 /** The material a pending note write would consume, named for the user. */
@@ -4343,31 +4366,11 @@ function appendLegacyAgentTraceEvent(
             },
           });
         }
-        if (entry.payload.ok || hasNoteWriteReceipt(entry.payload)) {
-          try {
-            const cards =
-              getToolDefinition(
-                entry.payload.name,
-              )?.presentation?.buildResultCards?.(entry.payload.content) ??
-              null;
-            if (cards && cards.length > 0) {
-              ctx.items.push({
-                type: "card_list",
-                cards: entry.payload.ok
-                  ? cards
-                  : cards.filter(
-                      (card) =>
-                        card.kind === "note_change" &&
-                        ["failed", "mismatch", "unverified"].includes(
-                          card.state,
-                        ),
-                    ),
-              });
-            }
-          } catch {
-            // card generation errors must not crash the trace
-          }
-        }
+        const cards = selectToolResultTraceCards(
+          entry.payload,
+          getToolDefinition(entry.payload.name)?.presentation?.buildResultCards,
+        );
+        if (cards.length) ctx.items.push({ type: "card_list", cards });
       }
       if (entry.payload.ok) {
         const hasImageGrid = appendImageArtifactGrid(

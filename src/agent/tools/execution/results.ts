@@ -141,23 +141,26 @@ export function pendingActionMaterial(
   return undefined;
 }
 
-/** A material reference is identity, so every field must be present to use it. */
+/**
+ * A material reference read out of an untyped tool payload.
+ *
+ * Narrowing is all this adds; the completeness rule that decides whether the
+ * three fields name one revision lives with the identity itself.
+ */
 function readMaterialRef(value: unknown): MaterialRef | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value))
     return undefined;
   const record = value as Record<string, unknown>;
-  return typeof record.documentId === "string" &&
-    record.documentId &&
-    Number.isSafeInteger(record.documentVersion) &&
-    Number(record.documentVersion) >= 1 &&
-    typeof record.contentHash === "string" &&
-    record.contentHash
-    ? {
-        documentId: record.documentId,
-        documentVersion: Number(record.documentVersion),
-        contentHash: record.contentHash,
-      }
-    : undefined;
+  return readFlatMaterialRef({
+    documentId:
+      typeof record.documentId === "string" ? record.documentId : undefined,
+    documentVersion:
+      typeof record.documentVersion === "number"
+        ? record.documentVersion
+        : undefined,
+    contentHash:
+      typeof record.contentHash === "string" ? record.contentHash : undefined,
+  });
 }
 
 export function normalizeExecutionOutput(

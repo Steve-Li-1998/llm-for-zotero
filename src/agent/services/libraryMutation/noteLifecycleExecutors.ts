@@ -132,8 +132,11 @@ export const noteLifecycleExecutors = {
       });
     };
     for (const [index, entry] of operation.notes.entries()) {
-      const position = index + 1;
       const bound = binding?.items[index];
+      // The durable row's own place in the batch, not this call's: a resume
+      // writes a subset, and a cursor renumbered from it would report the
+      // batch as further behind than it is.
+      const position = bound?.position ?? index + 1;
       const target = zoteroGateway.getItem(entry.targetItemId);
       const title = target
         ? String(target.getDisplayTitle?.() || `Item ${entry.targetItemId}`)

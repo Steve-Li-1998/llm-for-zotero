@@ -1,0 +1,468 @@
+import { assert } from "chai";
+import { rejects } from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { createWriteNotesBatchTool } from "../src/agent/tools/write/writeNotesBatch";
+import {
+  initAgentChangeJournal,
+  listJournalActions,
+} from "../src/agent/store/changeJournal";
+import {
+  initPlanDocumentStore,
+  loadPlanDocument,
+} from "../src/agent/documents/store";
+import {
+  createBatchItems,
+  initAgentBatchItemStore,
+  listBatchItems,
+  listResumableBatches,
+} from "../src/agent/store/batchItemStore";
+import {
+  createBatchJob,
+  initAgentBatchJobStore,
+} from "../src/agent/store/batchJobStore";
+import type { AgentToolContext } from "../src/agent/types";
+import { installNativeNoteStore } from "./helpers/nativeNoteStore";
+
+const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
+
+/**
+ * Continuing a batch of notes at the item that did not land.
+ *
+ * The durable rows say which of fifty notes were written; without a way to
+ * hand the batch back to the tool, that record bought nothing -- the model
+ * still had to author every body again to write the two that failed.
+ */
+describe("note batch resume", function () {
+  let db: DatabaseSync;
+  let native: ReturnType<typeof installNativeNoteStore>;
+  let originalZotero: unknown;
+  let failOnParent: number | undefined;
+  let unavailableTarget: number | undefined;
+  /** Zotero goes away only once this many notes have landed. */
+  let unavailableAfterNotes = 0;
+
+  function libraryItem(id: number) {
+    return {
+      id,
+      libraryID: 1,
+      parentID: false,
+      deleted: false,
+      version: 1,
+      dateModified: "2026-09-11 10:00:00",
+      getDisplayTitle: () => `Paper ${id}`,
+      getField: () => "",
+      getTags: () => [],
+      getCollections: () => [],
+      isNote: () => false,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments: () => [],
+      getNotes: () => [],
+      async reload() {},
+    };
+  }
+
+  const targets = new Map([1, 2, 3].map((id) => [id, libraryItem(id)]));
+
+  const gateway = {
+    resolveLibraryID: () => 1,
+    getItem: (id: number) => {
+      if (
+        unavailableTarget === id &&
+        native.notes.size >= unavailableAfterNotes
+      )
+        throw new Error("Zotero is unavailable");
+      return targets.get(id) || native.notes.get(id) || null;
+    },
+    trashItems: async ({ itemIds }: { itemIds: number[] }) => ({
+      trashedCount: itemIds.length,
+      items: itemIds.map((itemId) => ({ itemId, status: "trashed" })),
+    }),
+    formatStructuredCitations: () => ({
+      styleId: "apa",
+      styleTitle: "APA",
+      locale: "en-US",
+      clusters: [],
+      bibliographyEntries: [],
+    }),
+  } as never;
+
+  function context(runId = "run-batch-1"): AgentToolContext {
+    return {
+      request: {
+        conversationKey: 8801,
+        libraryID: 1,
+        metadata: { sourceMessageTimestamp: 100 },
+      },
+      runId,
+      item: null,
+      currentAnswerText: "",
+      modelName: "test-model",
+    } as unknown as AgentToolContext;
+  }
+
+  function notes() {
+    return [
+      { targetItemId: 1, content: "Summary of paper one." },
+      { targetItemId: 2, content: "## Findings\n\nSummary of paper two." },
+      { targetItemId: 3, content: "Summary of paper three." },
+    ];
+  }
+
+  beforeEach(async function () {
+    originalZotero = globalScope.Zotero;
+    failOnParent = undefined;
+    unavailableTarget = undefined;
+    unavailableAfterNotes = 0;
+    db = new DatabaseSync(":memory:");
+    globalScope.Zotero = {
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          const statement = db.prepare(sql);
+          const values = (params || []).map((value) =>
+            value === undefined ? null : value,
+          ) as never[];
+          if (/^\s*(SELECT|PRAGMA|WITH)/i.test(sql))
+            return statement.all(...values);
+          statement.run(...values);
+          return [];
+        },
+        executeTransaction: async (task: () => Promise<unknown>) => task(),
+      },
+      debug: () => undefined,
+    } as unknown as typeof Zotero;
+    native = installNativeNoteStore({
+      startId: 500,
+      onSave: (note: { parentID?: number }) => {
+        if (failOnParent !== undefined && note.parentID === failOnParent)
+          throw new Error("Zotero refused the note write");
+      },
+    });
+    await initPlanDocumentStore();
+    await initAgentBatchJobStore();
+    await initAgentBatchItemStore();
+    await initAgentChangeJournal();
+  });
+
+  afterEach(function () {
+    native.restore();
+    globalScope.Zotero = originalZotero as typeof Zotero;
+    db.close();
+  });
+
+  function tool() {
+    return createWriteNotesBatchTool(gateway);
+  }
+
+  type Tool = ReturnType<typeof createWriteNotesBatchTool>;
+
+  /** Validate, prepare and run one call the way the host would. */
+  async function run(
+    instance: Tool,
+    args: Record<string, unknown>,
+    ctx = context(),
+  ) {
+    const validated = instance.validate(args);
+    assert.isTrue(
+      validated.ok,
+      `validation failed for ${JSON.stringify(args)}`,
+    );
+    if (!validated.ok) throw new Error("unreachable");
+    await instance.planInvocation(validated.value, ctx);
+    return instance.execute(validated.value, ctx);
+  }
+
+  function documentCount(): number {
+    const rows = db
+      .prepare(`SELECT COUNT(*) AS total FROM llm_for_zotero_plan_documents`)
+      .all() as Array<{ total: number }>;
+    return Number(rows[0].total);
+  }
+
+  /**
+   * A batch interrupted after one note: A written, B refused by Zotero, C
+   * never attempted because the library became unreachable mid-batch.
+   */
+  async function interruptedBatch(instance: Tool): Promise<string> {
+    const validated = instance.validate({ notes: notes() });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) throw new Error("unreachable");
+    await instance.planInvocation(validated.value, context());
+    failOnParent = 2;
+    // The library becomes unreachable only after the first note has landed,
+    // which is how a real interruption leaves later items never attempted.
+    unavailableTarget = 3;
+    unavailableAfterNotes = 1;
+    await rejects(instance.execute(validated.value, context()));
+    failOnParent = undefined;
+    unavailableTarget = undefined;
+    unavailableAfterNotes = 0;
+    const [batch] = await listResumableBatches(8801);
+    assert.exists(batch, "the interrupted batch must be resumable");
+    return batch.batchId;
+  }
+
+  it("continues at the items that did not land, writing nothing again", async function () {
+    const instance = tool();
+    const batchId = await interruptedBatch(instance);
+    const before = await listBatchItems(batchId);
+    assert.deepEqual(
+      before.map((row) => row.status),
+      ["saved", "failed", "pending"],
+    );
+    const savedNoteId = before[0].noteId!;
+    const savedHtml = native.notes.get(savedNoteId).stored;
+    const documentsBefore = documentCount();
+
+    const output = await run(instance, { resumeBatchId: batchId });
+
+    assert.equal(
+      documentCount(),
+      documentsBefore,
+      "a resume finalizes nothing: every body is already stored",
+    );
+    const after = await listBatchItems(batchId);
+    assert.deepEqual(
+      after.map((row) => row.status),
+      ["saved", "saved", "saved"],
+    );
+    assert.deepEqual(
+      after.map((row) => row.materialRef),
+      before.map((row) => row.materialRef),
+      "the frozen material identities are unchanged",
+    );
+    assert.equal(after[0].noteId, savedNoteId, "the written note is untouched");
+    assert.equal(native.notes.get(savedNoteId).stored, savedHtml);
+    assert.equal(native.notes.size, 3, "exactly the two unwritten notes land");
+
+    for (const row of after.slice(1)) {
+      const document = await loadPlanDocument(row.materialRef!.documentId);
+      assert.equal(
+        native.notes.get(row.noteId!).stored,
+        document!.visibleHtml,
+        "each note carries exactly the material frozen before the interruption",
+      );
+    }
+    assert.isEmpty(
+      await listResumableBatches(8801),
+      "a batch with every item written is no longer offered",
+    );
+    const payload = (
+      output.content as { result: { result: Record<string, unknown> } }
+    ).result.result;
+    assert.equal(payload.createdCount, 2);
+    assert.deepEqual(
+      (output.batchItems || []).map((entry) => entry.status),
+      ["saved", "saved", "saved"],
+    );
+  });
+
+  it("continues the batch's own journal action while it is still open", async function () {
+    const instance = tool();
+    const batchId = await interruptedBatch(instance);
+    const opened = (await listBatchItems(batchId))[0].actionId;
+    assert.isString(opened);
+
+    await run(instance, { resumeBatchId: batchId });
+
+    const rows = await listBatchItems(batchId);
+    assert.deepEqual(
+      rows.map((row) => row.actionId),
+      [opened, opened, opened],
+      "every note of the batch stays one undoable action",
+    );
+    const actions = await listJournalActions({ conversationKey: 8801 });
+    assert.deepEqual(
+      actions.map((action) => action.actionId),
+      [opened],
+      "a resume opens no second action beside the batch's own",
+    );
+    assert.equal(actions[0].status, "applied");
+    assert.equal(actions[0].affectedCount, 3);
+    assert.deepEqual(
+      actions[0].steps.map((step) => step.sequence).sort(),
+      [1, 2, 3, 4],
+      "resumed steps continue the action's sequence instead of colliding",
+    );
+  });
+
+  it("opens a new action when the batch's action is no longer open", async function () {
+    const instance = tool();
+    const batchId = await interruptedBatch(instance);
+    const opened = (await listBatchItems(batchId))[0].actionId!;
+    // An undone batch's action is history: continuing it would hide the new
+    // notes inside an action the journal has already marked reverted.
+    db.prepare(
+      `UPDATE llm_for_zotero_agent_journal_actions_v2 SET status = 'reverted' WHERE action_id = ?`,
+    ).run(opened);
+
+    await run(instance, { resumeBatchId: batchId });
+
+    const rows = await listBatchItems(batchId);
+    assert.equal(rows[0].actionId, opened, "the written note keeps its action");
+    assert.notEqual(rows[1].actionId, opened);
+    assert.equal(rows[1].actionId, rows[2].actionId);
+    const actions = await listJournalActions({ conversationKey: 8801 });
+    assert.lengthOf(actions, 2);
+  });
+
+  it("writes a saved item again when its note no longer exists", async function () {
+    const instance = tool();
+    await run(instance, { notes: notes() });
+    const [batchId] = [...new Set((await listJobIds()).values())];
+    const before = await listBatchItems(batchId);
+    assert.deepEqual(
+      before.map((row) => row.status),
+      ["saved", "saved", "saved"],
+    );
+    // The user deleted the note outside the agent. The row still claimed it.
+    native.notes.delete(before[0].noteId!);
+
+    const output = await run(instance, { resumeBatchId: batchId });
+
+    const after = await listBatchItems(batchId);
+    assert.notEqual(after[0].noteId, before[0].noteId, "the note is rewritten");
+    assert.equal(after[0].status, "saved");
+    assert.deepEqual(
+      after.slice(1).map((row) => row.noteId),
+      before.slice(1).map((row) => row.noteId),
+      "the notes that still exist are left alone",
+    );
+    const document = await loadPlanDocument(after[0].materialRef!.documentId);
+    assert.equal(
+      native.notes.get(after[0].noteId!).stored,
+      document!.visibleHtml,
+    );
+    const resume = (output.content as { resume: Record<string, unknown> })
+      .resume;
+    assert.deepEqual(resume.rewrittenItemKeys, ["item:1"]);
+    assert.deepEqual(resume.skippedItemKeys, ["item:2", "item:3"]);
+  });
+
+  it("never writes a pending item that has no finalized body", async function () {
+    await createBatchJob({
+      jobId: "batch-corrupt",
+      conversationKey: 8801,
+      action: "note_write_batch",
+      input: {
+        target: "item",
+        notes: [
+          { itemKey: "item:1", targetItemId: 1 },
+          { itemKey: "item:2", targetItemId: 2 },
+        ],
+      },
+      totalCount: 2,
+      now: 1000,
+    });
+    await createBatchItems(
+      "batch-corrupt",
+      [
+        {
+          itemKey: "item:1",
+          position: 1,
+          materialRef: {
+            documentId: "run-x:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:gone",
+          },
+        },
+        // A pending row with no material promises a body the batch cannot
+        // produce. It must never reach a note write.
+        { itemKey: "item:2", position: 2 },
+      ],
+      1000,
+    );
+
+    const output = await run(tool(), { resumeBatchId: "batch-corrupt" });
+
+    assert.equal(native.notes.size, 0, "no note may be written");
+    const rows = await listBatchItems("batch-corrupt");
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["failed", "failed"],
+    );
+    const resume = (
+      output.content as {
+        resume: { blocked: Array<{ itemKey: string; reason: string }> };
+      }
+    ).resume;
+    assert.deepEqual(
+      resume.blocked.map((entry) => entry.itemKey),
+      ["item:1", "item:2"],
+    );
+    assert.include(resume.blocked[1].reason, "no finalized note body");
+    assert.equal(output.effect, "none");
+  });
+
+  it("has nothing to continue once every item is written", async function () {
+    const instance = tool();
+    await run(instance, { notes: notes() });
+    const [batchId] = [...new Set((await listJobIds()).values())];
+    const before = await listBatchItems(batchId);
+
+    const output = await run(instance, { resumeBatchId: batchId });
+
+    assert.equal(native.notes.size, 3, "no note is written a second time");
+    assert.deepEqual(
+      (await listBatchItems(batchId)).map((row) => row.noteId),
+      before.map((row) => row.noteId),
+    );
+    assert.equal(output.effect, "none");
+  });
+
+  it("refuses a batch it cannot safely continue", async function () {
+    const instance = tool();
+    await rejects(
+      run(instance, { resumeBatchId: "batch-missing" }),
+      /was not found/,
+    );
+    await createBatchJob({
+      jobId: "batch-elsewhere",
+      conversationKey: 9999,
+      action: "note_write_batch",
+      input: { target: "item", notes: [] },
+      totalCount: 1,
+      now: 1000,
+    });
+    await rejects(
+      run(instance, { resumeBatchId: "batch-elsewhere" }),
+      /another conversation/,
+    );
+    await createBatchJob({
+      jobId: "batch-tagging",
+      conversationKey: 8801,
+      action: "auto_tag",
+      input: {},
+      totalCount: 1,
+      now: 1000,
+    });
+    await rejects(
+      run(instance, { resumeBatchId: "batch-tagging" }),
+      /not a note batch/,
+    );
+  });
+
+  it("asks for no note bodies when it is given a batch to continue", function () {
+    const instance = tool();
+    const resumed = instance.validate({ resumeBatchId: " batch-1 " });
+    assert.isTrue(resumed.ok);
+    if (resumed.ok) {
+      assert.equal(resumed.value.resumeBatchId, "batch-1");
+      assert.isUndefined(resumed.value.operation);
+    }
+    // Silently dropping fifty authored bodies is worse than refusing the call.
+    const both = instance.validate({
+      resumeBatchId: "batch-1",
+      notes: notes(),
+    });
+    assert.isFalse(both.ok);
+    assert.isFalse(instance.validate({}).ok);
+  });
+
+  async function listJobIds(): Promise<Set<string>> {
+    const rows = db
+      .prepare(`SELECT job_id AS jobId FROM llm_for_zotero_agent_batch_jobs`)
+      .all() as Array<{ jobId: string }>;
+    return new Set(rows.map((row) => row.jobId));
+  }
+});

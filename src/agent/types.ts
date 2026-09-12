@@ -1046,6 +1046,8 @@ export type AgentBatchBinding = {
   items: ReadonlyArray<{
     itemKey: string;
     targetItemId: number;
+    /** The item's place in the durable batch, which a resume writes a subset of. */
+    position: number;
     material?: MaterialRef;
     /** Why this item has no material; it is recorded failed and never written. */
     failure?: string;
@@ -1185,6 +1187,15 @@ export type AgentToolContext = {
   journalToolName?: string;
   /** Internal parent action used by composite tools such as library_batch. */
   journalActionScope?: AgentJournalActionScope;
+  /**
+   * Internal action this call continues rather than replaces.
+   *
+   * A resumed batch belongs to the action its first attempt opened, so undo
+   * still reverts every item of it. The coordinator reopens that action only
+   * while it is still this conversation's and still holds applied work;
+   * otherwise it mints a new one.
+   */
+  resumeJournalActionId?: string;
   /** Internal durable batch this call's items belong to. */
   batchBinding?: AgentBatchBinding;
   /** Host-owned registered operation bridge. Each call retains its own authorization and native receipts. */

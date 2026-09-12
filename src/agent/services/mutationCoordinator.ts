@@ -21,6 +21,7 @@ import {
   claimJournalStep,
   createJournalId,
   isAgentChangeJournalAvailable,
+  listJournalActions,
   prepareJournalAction,
   prepareJournalStep,
   registerJournalRecoveryPayloads,
@@ -105,6 +106,60 @@ export function summarizeMutationOutcomes(
  */
 function ownsItsOwnJournalSteps(operation: LibraryMutationOperation): boolean {
   return operation.type === "save_notes_batch";
+}
+
+/**
+ * Reopen the action a resumed call continues, or decline it.
+ *
+ * A batch that stopped halfway is finished under the action its first attempt
+ * opened: undo has to revert every note of the batch, and a second action
+ * would split them so "undo that" reverted only the notes written after the
+ * interruption. An action is only a container while it is still this
+ * conversation's and still holds applied work -- one that was reverted,
+ * failed outright or belongs to another conversation is history, and the
+ * caller mints a new action instead.
+ */
+async function reopenJournalAction(params: {
+  actionId: string;
+  conversationKey: number;
+}): Promise<{
+  actionId: string;
+  /** Highest sequence already used, so resumed steps do not collide. */
+  lastSequence: number;
+  /** What the action already applied, so its summary does not shrink. */
+  prior: AgentJournalStepOutcome | null;
+} | null> {
+  const [action] = await listJournalActions({
+    actionId: params.actionId,
+    limit: 1,
+  });
+  if (
+    !action ||
+    action.conversationKey !== params.conversationKey ||
+    (action.status !== "applied" && action.status !== "partially_applied")
+  )
+    return null;
+  const claimed = await claimJournalAction({
+    actionId: action.actionId,
+    from: ["applied", "partially_applied"],
+    to: "applying",
+  });
+  if (!claimed) return null;
+  return {
+    actionId: action.actionId,
+    lastSequence: action.steps.reduce(
+      (highest, step) => Math.max(highest, step.sequence),
+      0,
+    ),
+    prior: action.affectedCount
+      ? {
+          effect: "applied",
+          status: "applied",
+          reversibility: action.reversibility,
+          affectedCount: action.affectedCount,
+        }
+      : null,
+  };
 }
 
 async function stepPlanFor(
@@ -302,16 +357,29 @@ export async function executeLibraryMutationAction(params: {
       "The durable change journal is unavailable. This write requires explicit fallback confirmation.",
     );
   }
+  const resumed =
+    journalAvailable && !parentScope && context.resumeJournalActionId
+      ? await reopenJournalAction({
+          actionId: context.resumeJournalActionId,
+          conversationKey: context.request.conversationKey,
+        })
+      : null;
   const actionId =
     parentScope?.actionId ||
+    resumed?.actionId ||
     (journalAvailable ? createJournalId("action") : null);
   const ownsAction = Boolean(actionId && !parentScope);
 
   const results: LibraryMutationExecutionResult[] = [];
-  const completedOutcomes: AgentJournalStepOutcome[] = [];
+  // A reopened action's applied work counts towards this call's summary, so a
+  // resume that lands cannot downgrade an action to a smaller affected count
+  // than it already earned, and one that fails cannot report it as failed.
+  const completedOutcomes: AgentJournalStepOutcome[] = resumed?.prior
+    ? [resumed.prior]
+    : [];
   const actionEvidence: AgentActionEvidence[] = [];
-  let affectedCount = 0;
-  let localSequence = 0;
+  let affectedCount = resumed?.prior?.affectedCount || 0;
+  let localSequence = resumed?.lastSequence || 0;
   // One allocator for the whole action, so an operation that contributes N
   // steps cannot collide with the sequences of its siblings.
   const allocateSequence = () =>
@@ -323,8 +391,9 @@ export async function executeLibraryMutationAction(params: {
   try {
     for (let index = 0; index < operations.length; index += 1) {
       const operation = operations[index];
+      // A reopened action was seeded by the attempt that opened it.
       const prepareAction =
-        ownsAction && index === 0
+        ownsAction && !resumed && index === 0
           ? (plan: MutationStepPlan) => ({
               runId: runIdFor(context),
               conversationKey: context.request.conversationKey,

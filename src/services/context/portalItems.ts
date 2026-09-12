@@ -1,5 +1,6 @@
 import { UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE } from "../../shared/conversationKeySpace";
 import { isSupportedContextAttachment } from "../paperContent/contextAttachmentSupport";
+import { normalizePositiveInt } from "./normalizers";
 
 export type GlobalPortalItem = {
   __llmGlobalPortalItem: true;
@@ -26,11 +27,6 @@ export type PaperPortalItem = {
   getField: (field: string) => string;
   isRegularItem: () => boolean;
 };
-
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
-}
 
 export function isGlobalPortalItem(item: unknown): item is GlobalPortalItem {
   if (!item || typeof item !== "object") return false;

@@ -11,12 +11,14 @@ import {
 import {
   initAgentBatchItemStore,
   listBatchItems,
+  listResumableBatches,
 } from "../src/agent/store/batchItemStore";
 import {
   getBatchJob,
   initAgentBatchJobStore,
 } from "../src/agent/store/batchJobStore";
 import { describeLibraryMutationActions } from "../src/agent/contracts/actionOperationEvidence";
+import { renderRawNoteHtml } from "../src/services/notes/noteRendering";
 import { canonicalJsonEqual } from "../src/agent/services/libraryMutation/canonicalJson";
 import type { AgentToolContext } from "../src/agent/types";
 import { installNativeNoteStore } from "./helpers/nativeNoteStore";
@@ -142,6 +144,50 @@ describe("note batch material", function () {
     assert.isTrue(result.ok);
     if (!result.ok) throw new Error("validation failed");
     return result.value;
+  }
+
+  /** The host prepares a write tool before it asks the user to approve it. */
+  async function prepare(
+    tool: ReturnType<typeof createWriteNotesBatchTool>,
+    input: ReturnType<typeof validated>,
+    ctx = context(),
+  ) {
+    await tool.planInvocation(input, ctx);
+    return input;
+  }
+
+  function runDocuments(runId = "run-batch-1") {
+    return (
+      db
+        .prepare(
+          `SELECT payload_json AS payloadJson FROM llm_for_zotero_plan_documents WHERE run_id = ?`,
+        )
+        .all(runId) as Array<{ payloadJson: string }>
+    ).map(
+      (row) =>
+        JSON.parse(row.payloadJson) as {
+          title: string;
+          visibleMarkdown: string;
+          visibleHtml: string;
+        },
+    );
+  }
+
+  function checklist(
+    tool: ReturnType<typeof createWriteNotesBatchTool>,
+    input: ReturnType<typeof validated>,
+  ) {
+    const action = tool.createPendingAction?.(input, context());
+    return (
+      action?.fields?.[0] as {
+        items: Array<{ id: string; label: string; description?: string }>;
+      }
+    ).items;
+  }
+
+  function flattened(text: string): string {
+    const value = text.replace(/\s+/g, " ").trim();
+    return value.length > 160 ? `${value.slice(0, 160)}\u2026` : value;
   }
 
   function documentCount(): number {
@@ -307,6 +353,173 @@ describe("note batch material", function () {
     // External backends replace the turn's answer with the run's finalized
     // document, so a note body picked up here would be spoken as the answer.
     assert.isNull(await loadLatestDocumentForRun("run-batch-1"));
+  });
+
+  it("retries into the same batch instead of orphaning the first", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    failOnParent = 2;
+    const first = await tool.execute(
+      await prepare(tool, validated(tool)),
+      context(),
+    );
+    const batchId = first.batchItems![0].batchId;
+    const interrupted = await listBatchItems(batchId);
+    assert.deepEqual(
+      interrupted.map((row) => row.status),
+      ["saved", "failed", "saved"],
+    );
+    assert.deepEqual(
+      (await listResumableBatches(8801)).map((entry) => entry.batchId),
+      [batchId],
+    );
+
+    failOnParent = undefined;
+    const second = await tool.execute(
+      await prepare(tool, validated(tool)),
+      context(),
+    );
+
+    // A fresh batch id per call would leave the first batch resumable for
+    // ever, and Task 3 would then write every note a second time.
+    assert.equal(second.batchItems![0].batchId, batchId);
+    const rows = await listBatchItems(batchId);
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["saved", "saved", "saved"],
+    );
+    assert.deepEqual(
+      rows.map((row) => row.createdAt),
+      interrupted.map((row) => row.createdAt),
+      "the durable rows are reused, never re-seeded",
+    );
+    assert.isEmpty(await listResumableBatches(8801));
+  });
+
+  it("stores a note body the way a single note write would", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    const output = await tool.execute(
+      await prepare(tool, validated(tool)),
+      context(),
+    );
+    const rows = await listBatchItems(output.batchItems![0].batchId);
+    const bodies = notes();
+    for (const [index, row] of rows.entries()) {
+      const note = native.notes.get(row.noteId!);
+      // No synthetic title heading, and the same normalization note_write
+      // applies: the two tools must store the same text.
+      assert.equal(note.stored, renderRawNoteHtml(bodies[index].content));
+    }
+  });
+
+  it("accepts note bodies that are not publishable documents", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    const input = tool.validate({
+      notes: [
+        {
+          targetItemId: 1,
+          content: "See ![Figure 1](https://example.com/f1.png) for the curve.",
+        },
+        { targetItemId: 2, content: "Data lives in /Users/me/data/set.csv" },
+      ],
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+
+    const output = await tool.execute(
+      await prepare(tool, input.value),
+      context(),
+    );
+    const rows = await listBatchItems(output.batchItems![0].batchId);
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["saved", "saved"],
+      "a note may say what a published document may not",
+    );
+  });
+
+  it("fails only the item whose body could not be finalized", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    const input = tool.validate({
+      notes: [
+        { targetItemId: 1, content: "A fine note." },
+        { targetItemId: 2, content: "x".repeat(2 * 1024 * 1024 + 16) },
+        { targetItemId: 3, content: "Another fine note." },
+      ],
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+
+    const output = await tool.execute(
+      await prepare(tool, input.value),
+      context(),
+    );
+    const rows = await listBatchItems(output.batchItems![0].batchId);
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["saved", "failed", "saved"],
+      "one unusable body must not cost the other notes",
+    );
+    assert.isUndefined(rows[1].materialRef);
+    assert.equal(native.notes.size, 2, "the failed item writes no note");
+  });
+
+  it("previews the finalized text on the confirmation card", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    const input = await prepare(tool, validated(tool));
+
+    const items = checklist(tool, input);
+    const byTitle = new Map(
+      runDocuments().map((document) => [document.title, document]),
+    );
+    assert.lengthOf(items, 3);
+    for (const item of items) {
+      const document = byTitle.get(item.label);
+      assert.exists(document, `no finalized material for ${item.label}`);
+      assert.equal(
+        item.description,
+        flattened(document!.visibleMarkdown),
+        "the user approves the text that will actually be written",
+      );
+    }
+  });
+
+  it("writes nothing until the batch is approved", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    await prepare(tool, validated(tool));
+
+    assert.equal(documentCount(), 3, "material is frozen before approval");
+    assert.equal(native.notes.size, 0, "a denied batch writes no note");
+    assert.isEmpty(
+      db.prepare(`SELECT batch_id FROM llm_for_zotero_agent_batch_items`).all(),
+      "a denied batch leaves nothing to resume",
+    );
+  });
+
+  it("keeps material aligned with the notes left checked", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    const input = await prepare(tool, validated(tool));
+    const applied = tool.applyConfirmation?.(
+      input,
+      { writeNotesChecklist: ["1", "3"] },
+      context(),
+    );
+    assert.isTrue(applied?.ok);
+    if (!applied?.ok) return;
+
+    const output = await tool.execute(applied.value, context());
+    const rows = await listBatchItems(output.batchItems![0].batchId);
+    assert.deepEqual(
+      rows.map((row) => row.itemKey),
+      ["item:1", "item:3"],
+    );
+    const bodies = notes();
+    for (const [index, row] of rows.entries()) {
+      const note = native.notes.get(row.noteId!);
+      assert.equal(
+        note.stored,
+        renderRawNoteHtml(bodies[index === 0 ? 0 : 2].content),
+      );
+    }
   });
 
   it("never announces a batch item as the turn's finalized material", async function () {

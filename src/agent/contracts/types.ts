@@ -81,6 +81,11 @@ export type AgentActionParameters = {
   documentId?: string;
   /** Frozen with `documentId` and `contentHash` to name one exact material version. */
   documentVersion?: number;
+  /**
+   * One material identity per item of a batch, in item order. A batch has no
+   * single material, so it never fills the flat trio above.
+   */
+  materialRefs?: readonly MaterialRef[];
   commandFingerprint?: string;
   settingsKey?: string;
   settingsValue?: string;

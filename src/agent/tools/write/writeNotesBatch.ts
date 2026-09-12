@@ -12,6 +12,7 @@ import type {
   AgentToolContext,
   AgentWriteToolDefinition,
 } from "../../types";
+import type { MaterialRef } from "../../documents/materialRef";
 import {
   LibraryMutationService,
   type SaveNotesBatchOperation,
@@ -19,12 +20,18 @@ import {
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { DirectDocumentFinalizer } from "../../documents/directFinalization";
 import { materialRefFromDocument } from "../../documents/workflowMaterial";
-import { createBatchJob, finishBatchJob } from "../../store/batchJobStore";
+import {
+  createBatchJob,
+  finishBatchJob,
+  getBatchJob,
+} from "../../store/batchJobStore";
 import {
   createBatchItems,
   listBatchItems,
   type NewBatchItem,
 } from "../../store/batchItemStore";
+import { sha256Text } from "../../store/journalRecoveryBlobStore";
+import { describeLibraryMutationActions } from "../../contracts/actionOperationEvidence";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
 import {
   executeAndRecordUndo,
@@ -34,7 +41,25 @@ import {
 
 const NOTES_CHECKLIST_FIELD_ID = "writeNotesChecklist";
 
-type WriteNotesBatchInput = { operation: SaveNotesBatchOperation };
+/**
+ * One prepared item: its durable row key, the material frozen for it, and the
+ * preview the user approves. Host-only, set during preparation.
+ */
+type PreparedBatchItem = {
+  itemKey: string;
+  targetItemId: number;
+  material?: MaterialRef;
+  /** Exactly what the confirmation card shows for this item. */
+  preview: string;
+  /** Why this item has no material; it is recorded failed and never written. */
+  failure?: string;
+};
+
+type WriteNotesBatchInput = {
+  operation: SaveNotesBatchOperation;
+  /** Host-prepared per-item material, frozen before the user is asked. */
+  _items?: PreparedBatchItem[];
+};
 
 /**
  * A durable row key for one item of this batch.
@@ -68,52 +93,114 @@ export function createWriteNotesBatchTool(
   }
 
   /**
-   * Freeze every body as its own durable document before the first write.
+   * Freeze every body as its own durable document before the user is asked.
    *
-   * Until each note is finalized material there is nothing a resume can write
-   * that is provably the text the user approved, and nothing that survives a
-   * crash. Identical content in the same run keeps the identity it already
-   * published, so re-running the tool mints no second copy.
+   * Preparation, not execution, is where this belongs: the confirmation card
+   * must preview the text that will actually be written, and the material has
+   * to be frozen before approval for the approval to mean anything. It writes
+   * nothing durable of its own, so a denied batch leaves no rows behind.
+   *
+   * Identical content in the same run keeps the identity it already
+   * published, so preparing the same batch again mints no second copy.
    */
-  async function prepareBatch(
+  async function prepareBatchMaterial(
     input: WriteNotesBatchInput,
     context: AgentToolContext,
-  ): Promise<AgentBatchBinding> {
+  ): Promise<PreparedBatchItem[]> {
+    if (input._items) return input._items;
     const runId = context.runId;
     if (!runId) throw new Error("The note batch has no run identity");
     const now = Date.now();
-    const batchId = `batch-note_write_batch-${now}-${Math.random()
-      .toString(36)
-      .slice(2, 10)}`;
     const keys = batchItemKeys(input.operation.notes);
-    const items: AgentBatchBinding["items"][number][] = [];
-    const rows: NewBatchItem[] = [];
+    const items: PreparedBatchItem[] = [];
     for (const [index, note] of input.operation.notes.entries()) {
-      const { document } = await finalizer.finalizeNoteBody({
-        request: context.request,
-        runId,
-        title: itemTitle(note.targetItemId),
-        markdown: note.content,
-        now,
-      });
-      const materialRef = materialRefFromDocument(document);
-      items.push({
+      const base = {
         itemKey: keys[index],
         targetItemId: note.targetItemId,
-        material: materialRef,
-      });
-      rows.push({ itemKey: keys[index], position: index + 1, materialRef });
+      };
+      try {
+        const { document } = await finalizer.finalizeNoteBody({
+          request: context.request,
+          runId,
+          title: itemTitle(note.targetItemId),
+          markdown: note.content,
+          now,
+        });
+        items.push({
+          ...base,
+          material: materialRefFromDocument(document),
+          preview: previewOf(document.visibleMarkdown),
+        });
+      } catch (error) {
+        // One body the host cannot finalize must not cost the other
+        // forty-nine notes; this item is recorded failed and never written.
+        items.push({
+          ...base,
+          preview: previewOf(note.content),
+          failure: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    await createBatchJob({
-      jobId: batchId,
-      conversationKey: context.request.conversationKey,
-      action: "note_write_batch",
-      input: { target: input.operation.target },
-      totalCount: rows.length,
-      now,
-    });
+    input._items = items;
+    return items;
+  }
+
+  /**
+   * The durable identity of this exact batch.
+   *
+   * A fresh id per call would orphan the rows of an interrupted attempt: they
+   * would stay resumable for ever while the retry wrote every note again
+   * under a new batch. Deriving it from the run and the frozen material means
+   * a retry of the same work lands on the same rows.
+   */
+  async function batchIdentity(
+    runId: string,
+    items: readonly PreparedBatchItem[],
+  ): Promise<string> {
+    const canonical = JSON.stringify([
+      runId,
+      items.map((item) => [
+        item.itemKey,
+        item.material?.documentId ?? null,
+        item.material?.documentVersion ?? null,
+        item.material?.contentHash ?? null,
+      ]),
+    ]);
+    return `batch-note_write_batch-${await sha256Text(canonical)}`;
+  }
+
+  /** Seeds the durable rows for an approved batch, reusing any it already has. */
+  async function openBatch(
+    input: WriteNotesBatchInput,
+    context: AgentToolContext,
+  ): Promise<AgentBatchBinding> {
+    const items = await prepareBatchMaterial(input, context);
+    const batchId = await batchIdentity(context.runId || "", items);
+    const now = Date.now();
+    if (!(await getBatchJob(batchId)))
+      await createBatchJob({
+        jobId: batchId,
+        conversationKey: context.request.conversationKey,
+        action: "note_write_batch",
+        input: { target: input.operation.target },
+        totalCount: items.length,
+        now,
+      });
+    const rows: NewBatchItem[] = items.map((item, index) => ({
+      itemKey: item.itemKey,
+      position: index + 1,
+      materialRef: item.material,
+    }));
     await createBatchItems(batchId, rows, now);
-    return { batchId, items };
+    return {
+      batchId,
+      items: items.map((item) => ({
+        itemKey: item.itemKey,
+        targetItemId: item.targetItemId,
+        material: item.material,
+        failure: item.failure,
+      })),
+    };
   }
 
   return {
@@ -250,23 +337,17 @@ export function createWriteNotesBatchTool(
             type: "checklist" as const,
             id: NOTES_CHECKLIST_FIELD_ID,
             label: "Notes to write",
-            items: notes.map((note) => {
-              const item = zoteroGateway.getItem(note.targetItemId);
-              const title = item
-                ? String(
-                    item.getDisplayTitle?.() || `Item ${note.targetItemId}`,
-                  )
-                : `Item ${note.targetItemId}`;
-              return {
-                id: `${note.targetItemId}`,
-                label: title,
-                // A preview matters here: the user is approving fifty pieces
-                // of generated text at once, and an unreviewable card is
-                // consent in name only.
-                description: previewOf(note.content),
-                checked: true,
-              };
-            }),
+            items: notes.map((note, index) => ({
+              id: `${note.targetItemId}`,
+              label: itemTitle(note.targetItemId),
+              // A preview matters here: the user is approving fifty pieces
+              // of generated text at once, and an unreviewable card is
+              // consent in name only. It shows the finalized text, which is
+              // what the write will actually store.
+              description:
+                input._items?.[index]?.preview ?? previewOf(note.content),
+              checked: true,
+            })),
           },
         ],
       };
@@ -279,20 +360,45 @@ export function createWriteNotesBatchTool(
       );
       if (!keep) return ok(input);
       const kept = new Set(keep);
-      const notes = input.operation.notes.filter((note) =>
-        kept.has(note.targetItemId),
+      const keptIndexes = input.operation.notes.flatMap((note, index) =>
+        kept.has(note.targetItemId) ? [index] : [],
       );
-      if (!notes.length) {
+      if (!keptIndexes.length) {
         return fail("Every note was unchecked, so there is nothing to write.");
       }
-      return ok({ operation: { ...input.operation, notes } });
+      // The prepared material is positional, so it is filtered with the notes
+      // it describes rather than re-derived from the survivors.
+      return ok({
+        operation: {
+          ...input.operation,
+          notes: keptIndexes.map((index) => input.operation.notes[index]),
+        },
+        ...(input._items
+          ? { _items: keptIndexes.map((index) => input._items![index]) }
+          : {}),
+      });
     },
 
-    planInvocation: (input, context) =>
-      planLibraryMutations(mutationService, [input.operation], context),
+    async planInvocation(input, context) {
+      await prepareBatchMaterial(input, context);
+      return planLibraryMutations(mutationService, [input.operation], context);
+    },
+
+    describeAction: (input) =>
+      describeLibraryMutationActions(input).map((descriptor) => ({
+        ...descriptor,
+        parameters: {
+          ...descriptor.parameters,
+          // The proposal names the exact material each item will write, so
+          // approval is bound to it and not to text that could still change.
+          materialRefs: (input._items || []).flatMap((item) =>
+            item.material ? [item.material] : [],
+          ),
+        },
+      })),
 
     async execute(input, context) {
-      const batchBinding = await prepareBatch(input, context);
+      const batchBinding = await openBatch(input, context);
       const result = await executeAndRecordUndo(
         mutationService,
         input.operation,

@@ -90,6 +90,10 @@ import {
 import { sanitizeText } from "../../../utils/textSanitization";
 import type { Message, PaperContextRef } from "../types";
 import { createWebFaviconImage } from "../webFavicon";
+import {
+  buildAgentActionSummaryCard,
+  renderActionSummaryCard,
+} from "./actionSummaryCard";
 import { renderDiffPreviewField } from "./diffPreviewField";
 import { getDiscoveryCardProjection } from "./discoveryCardProjection";
 import { renderNoteChangeCard } from "./noteChangeCard";
@@ -1156,7 +1160,10 @@ function renderTagAssignmentTableField(
  */
 function renderResultCardList(
   doc: Document,
-  cards: Exclude<AgentToolResultCard, { kind: "saved_note" | "note_change" }>[],
+  cards: Exclude<
+    AgentToolResultCard,
+    { kind: "saved_note" | "note_change" | "action_summary" }
+  >[],
 ): HTMLDivElement {
   const container = doc.createElement("div");
   container.className =
@@ -5263,6 +5270,15 @@ function buildAgentTraceDisplayItemsCanonical(
 
   appendMaterialOutcomeFooter(adapterContext);
 
+  // What the run did, stated once at the end for the reader: the answer bubble
+  // no longer carries the model-facing action-status block, and the card
+  // renders wherever the trace does, interleaved text included.
+  const actionSummary = buildAgentActionSummaryCard(
+    compactedEvents,
+    (documentId) => adapterContext.finalizedMaterials.get(documentId)?.title,
+  );
+  if (actionSummary) items.push({ type: "card_list", cards: [actionSummary] });
+
   const finalText = getFinalTraceText(compactedEvents);
   const isInterleaved = items.some(
     (item) =>
@@ -6497,8 +6513,14 @@ export function renderAgentTrace({
       }
 
       if (itemEntry.type === "card_list") {
+        for (const card of itemEntry.cards)
+          if (card.kind === "action_summary")
+            place(renderActionSummaryCard(doc, card));
         const papers = itemEntry.cards.filter(
-          (card) => card.kind !== "saved_note" && card.kind !== "note_change",
+          (card) =>
+            card.kind !== "saved_note" &&
+            card.kind !== "note_change" &&
+            card.kind !== "action_summary",
         );
         if (papers.length) place(renderResultCardList(doc, papers));
         continue;

@@ -8911,6 +8911,42 @@ label.llm-search-results-item:hover {
   box-shadow: none;
 }
 
+.llm-agent-action-summary-card {
+  box-shadow: none;
+}
+
+.llm-agent-action-summary-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.llm-agent-action-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.llm-agent-action-summary-item .llm-agent-process-chips {
+  padding-left: 0;
+}
+
+.llm-agent-action-summary-text {
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-12);
+  overflow-wrap: anywhere;
+}
+
+.llm-agent-action-summary-source {
+  margin-top: 10px;
+  color: var(--fill-secondary);
+  font-size: var(--llm-fs-10);
+  overflow-wrap: anywhere;
+}
+
 .llm-note-review-description {
   margin: 0 0 12px;
   color: var(--fill-secondary);

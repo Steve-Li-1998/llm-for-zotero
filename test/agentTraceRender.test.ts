@@ -10629,3 +10629,234 @@ describe("agent trace presentation without tool names", function () {
     assert.equal(invoked?.text, "Invoked Skill: evidence-based-qa");
   });
 });
+
+/**
+ * What the turn actually did, said once, for the reader.
+ *
+ * The machine-readable action-status block no longer reaches the answer
+ * bubble, so the receipts it stated have to reach the reader somewhere. They
+ * reach it here: one line per receipt at the end of the trace, named by the
+ * operation catalog and verified in the same words the row chips use.
+ */
+describe("agent trace action summary card", function () {
+  type SummaryTestItem = ReturnType<
+    typeof buildAgentTraceDisplayItems
+  >["items"][number];
+
+  function event(
+    seq: number,
+    payload: AgentRunEventRecord["payload"],
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-summary",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq,
+    };
+  }
+
+  const materialRef = {
+    documentId: "run-summary:document:1",
+    documentVersion: 1,
+    contentHash: "sha256:material",
+  };
+
+  function receipt(
+    overrides: Record<string, unknown>,
+  ): Extract<
+    AgentRunEventRecord["payload"],
+    { type: "tool_result" }
+  >["actionReceipts"][number] {
+    return {
+      version: 2,
+      id: "receipt-1",
+      proposalId: "proposal-1",
+      proofDomain: "zotero_state",
+      capability: "zotero.notes",
+      operation: "note_create",
+      verification: "verified",
+      status: "applied",
+      requestedTargets: ["item:41"],
+      appliedTargets: ["item:41"],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [],
+      ...overrides,
+    } as unknown as Extract<
+      AgentRunEventRecord["payload"],
+      { type: "tool_result" }
+    >["actionReceipts"][number];
+  }
+
+  function summaryCard(items: readonly SummaryTestItem[]) {
+    const lists = items.filter(
+      (item): item is Extract<SummaryTestItem, { type: "card_list" }> =>
+        item.type === "card_list",
+    );
+    const cards = lists.flatMap((item) =>
+      item.cards.filter((card) => card.kind === "action_summary"),
+    );
+    return cards[0] as
+      | Extract<(typeof cards)[number], { kind: "action_summary" }>
+      | undefined;
+  }
+
+  const effectEvents: AgentRunEventRecord[] = [
+    event(1, {
+      type: "material_finalized",
+      materialRef,
+      materialKind: "summary",
+      materialTitle: "Attention in transformers",
+    }),
+    event(2, {
+      type: "tool_result",
+      callId: "call-note",
+      name: "note_write",
+      ok: true,
+      actionReceipts: [receipt({ id: "note-1", materialRef })],
+      content: { noteId: 77 },
+    }),
+    event(3, {
+      type: "tool_result",
+      callId: "call-tags",
+      name: "library_update",
+      ok: true,
+      actionReceipts: [
+        receipt({
+          id: "tags-1",
+          capability: "zotero.tags",
+          operation: "apply_tags",
+          verification: "execution_only",
+          status: "partial",
+          executionAuthority: "external_runtime",
+          requestedTargets: ["item:41", "item:42"],
+          appliedTargets: ["item:41"],
+        }),
+      ],
+      content: {},
+    }),
+    event(4, { type: "final", text: "Saved the summary.", materialRef }),
+  ];
+
+  it("lists one line per effect receipt, named by the operation catalog", function () {
+    const card = summaryCard(
+      buildAgentTraceDisplayItems(effectEvents, null).items,
+    );
+
+    assert.exists(card, "the run's effects are summarized");
+    assert.deepEqual(
+      card!.entries.map((entry) => entry.text),
+      [
+        "Created note “Attention in transformers” · 1 target",
+        "Added tags · 2 targets",
+      ],
+    );
+    assert.deepEqual(card!.entries[0].badges, ["Verified"]);
+    assert.deepEqual(card!.entries[1].badges, [
+      "Ran (no state proof)",
+      "Authorized by connected client",
+    ]);
+    assert.equal(card!.answerMaterial, "Attention in transformers");
+  });
+
+  it("closes the trace with the card, after the last stage", function () {
+    const { items } = buildAgentTraceDisplayItems(effectEvents, null);
+    const last = items[items.length - 1];
+
+    assert.equal(last.type, "card_list");
+    assert.equal(
+      last.type === "card_list" ? last.cards[0].kind : "",
+      "action_summary",
+    );
+  });
+
+  it("states each receipt once however many events carry it", function () {
+    const card = summaryCard(
+      buildAgentTraceDisplayItems(
+        [
+          event(1, {
+            type: "tool_result",
+            callId: "call-note",
+            name: "note_write",
+            ok: true,
+            actionReceipts: [receipt({ id: "note-1" })],
+            content: {},
+          }),
+          event(2, {
+            type: "codex_tool_activity",
+            itemId: "item-1",
+            phase: "completed",
+            toolName: "note_write",
+            actionReceipts: [receipt({ id: "note-1" })],
+          }),
+        ],
+        null,
+      ).items,
+    );
+
+    assert.deepEqual(
+      card?.entries.map((entry) => entry.text),
+      ["Created note · 1 target"],
+    );
+  });
+
+  it("shows no card when the run changed nothing", function () {
+    const { items } = buildAgentTraceDisplayItems(
+      [
+        event(1, {
+          type: "tool_result",
+          callId: "call-read",
+          name: "paper_read",
+          ok: true,
+          actionReceipts: [],
+          content: {},
+        }),
+        event(2, {
+          type: "tool_result",
+          callId: "call-tags",
+          name: "library_update",
+          ok: false,
+          actionReceipts: [
+            receipt({
+              id: "tags-failed",
+              operation: "apply_tags",
+              capability: "zotero.tags",
+              status: "failed",
+              verification: "unverified",
+            }),
+          ],
+          content: {},
+        }),
+      ],
+      null,
+    );
+
+    assert.isUndefined(summaryCard(items));
+  });
+
+  it("renders the card at the end of the trace DOM", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card");
+    assert.exists(card);
+    const lines = card!
+      .findAllByClass("llm-agent-action-summary-text")
+      .map((node) => node.textContent);
+    assert.deepEqual(lines, [
+      "Created note “Attention in transformers” · 1 target",
+      "Added tags · 2 targets",
+    ]);
+    assert.include(
+      collectFakeText(card),
+      "Authorized by connected client",
+      "the connected client's authority stays visible",
+    );
+    assert.include(collectFakeText(card), "Attention in transformers");
+  });
+});

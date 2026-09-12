@@ -1410,9 +1410,31 @@ export type AgentNoteChangeResultCard = {
   after: import("./store/journalRecoveryBlobStore").RecoveryPayload;
 };
 
+/**
+ * What one turn did, as the reader is told at the end of its trace.
+ *
+ * Every line comes from a receipt: the operation the receipt states, the
+ * targets it covered, and what its verification proved. Nothing here is read
+ * from a tool name, and nothing is added that no receipt claims.
+ */
+export type AgentActionSummaryResultCard = {
+  kind: "action_summary";
+  /** Title of the material the visible answer was rendered from, if any. */
+  answerMaterial?: string;
+  entries: readonly {
+    /** The receipt this line reports, so one effect is listed once. */
+    receiptId: string;
+    /** Operation label, targets, and the material the effect landed. */
+    text: string;
+    /** Verification wording, and the authority the effect ran under. */
+    badges: readonly string[];
+  }[];
+};
+
 export type AgentToolResultCard =
   | AgentNoteChangeResultCard
   | AgentSavedNoteResultCard
+  | AgentActionSummaryResultCard
   | {
       kind?: "paper";
       title: string;

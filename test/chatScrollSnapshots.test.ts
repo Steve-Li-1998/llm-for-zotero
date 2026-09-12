@@ -524,11 +524,16 @@ describe("chat scroll snapshots", function () {
       validationTaskEnd,
     );
 
+    // The refresh names the messages it changed instead of rebuilding the
+    // panel. It used to be paired with a check that the whole-panel rebuild
+    // was not called here; that check cannot fail now the validator lives in
+    // its own module and cannot import the renderer at all, so the behaviour
+    // is pinned by test/quoteGateWorkflow.test.ts ("repaints the changed
+    // message through the composed chat refresher") instead.
     assert.include(
       validationRefreshSource,
       "rerenderAssistantMessages: changedMessages",
     );
-    assert.notInclude(validationRefreshSource, "refreshConversationPanels(");
     // The validation task classifies on-screen messages first and flips each
     // one the moment it is classified (progressive refresh), instead of
     // accumulating a batch and refreshing once at the end.

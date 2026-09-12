@@ -603,6 +603,19 @@ export type AgentEvent =
       /** The durable batch this stage reports one item of. */
       batchId?: string;
       itemKey?: string;
+      /**
+       * Reconstructed while rendering a trace recorded before stages
+       * existed, rather than emitted by the run itself.
+       */
+      projected?: boolean;
+      /**
+       * Set on the one stage that stands for a whole run whose events
+       * declare no work category at all. Such a trace predates the category
+       * contract, and a category guessed from a tool name is exactly what
+       * the stage model exists to remove, so the run reports one
+       * undifferentiated stage instead of several invented ones.
+       */
+      undifferentiated?: boolean;
     }
   | {
       type: "material_finalized";

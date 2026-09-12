@@ -102,6 +102,7 @@ import {
   buildToolResultTraceInfo,
   type ToolResultTraceInfo,
 } from "./toolResultTraceInfo";
+import { projectStageEvents } from "./stageProjection";
 import {
   appendAgentTraceText,
   compactAgentTraceEvents,
@@ -4891,7 +4892,9 @@ function buildAgentTraceDisplayItemsCanonical(
   const isCodexTrace = assistantMessage?.modelProviderLabel === "Codex";
   const isAgentTrace = assistantMessage?.runMode === "agent";
   const preserveRolledBackText = isCodexTrace || isAgentTrace;
-  const compactedEvents = compactAgentTraceEvents(events);
+  // A trace recorded before the runtime emitted stage events is reconstructed
+  // once, here, so everything below reads one kind of event log.
+  const compactedEvents = compactAgentTraceEvents(projectStageEvents(events));
   const toolResultsByCallId = new Map<
     string,
     Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>

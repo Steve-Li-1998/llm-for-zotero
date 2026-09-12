@@ -330,6 +330,52 @@ describe("material outcome ledger", function () {
     assert.equal(ledger.entries[0].status, "write_failed");
   });
 
+  /**
+   * Only a note write can fail a save, so another tool's arguments are not
+   * evidence about material and never need to be kept while the run replays.
+   */
+  it("ignores a failing tool that is not the note writer", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: materialRef.documentId,
+        contentHash: materialRef.contentHash,
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+    harness.addRun("run-2", 20);
+    harness.addEvent("run-2", {
+      type: "tool_call",
+      callId: "submit-document-2",
+      name: "submit_document",
+      args: {
+        documentId: materialRef.documentId,
+        markdown: "# A second draft\n\n".repeat(200),
+      },
+    });
+    harness.addEvent("run-2", {
+      type: "tool_result",
+      callId: "submit-document-2",
+      name: "submit_document",
+      ok: false,
+      actionReceipts: [],
+      content: { error: "The document failed validation." },
+    });
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.lengthOf(ledger.entries, 1);
+    assert.equal(
+      ledger.entries[0].status,
+      "finalized",
+      "a failed document submission says nothing about whether material was saved",
+    );
+  });
+
   it("lets a later run's verified save close material a failed write left open", async function () {
     const materialRef: MaterialRef = {
       documentId: "run-1:document:1",

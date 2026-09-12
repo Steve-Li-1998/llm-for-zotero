@@ -98,7 +98,11 @@ export async function loadMaterialOutcomesForConversation(
       ordinal += 1;
       const event: AgentEvent = record.payload;
       if (event.type === "tool_call") {
-        callArguments.set(event.callId, event.args);
+        // Only a note write names material this ledger cares about, so no
+        // other tool's arguments -- a whole document body, for one -- are
+        // held in memory while the run replays.
+        if (event.name === NOTE_WRITE_TOOL_NAME)
+          callArguments.set(event.callId, event.args);
         continue;
       }
       if (event.type === "material_finalized") {

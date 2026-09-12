@@ -4922,6 +4922,15 @@ type OpenTraceStage = {
    * event's rows.
    */
   awaitingClose: boolean;
+  /**
+   * Whether the group has reached the item list.
+   *
+   * A stage joins the list with its first row, never when it opens: a stage
+   * whose every row is suppressed would otherwise sit between two halves of
+   * the streamed answer and split them into two paragraphs, and removing it
+   * afterwards cannot put them back together.
+   */
+  shown: boolean;
 };
 
 function traceStageLabel(payload: AgentStagePayload): string {
@@ -4948,6 +4957,28 @@ function readTraceEventReceipts(
  * labelled entirely from the `agent_stage` events the run recorded (or that
  * the compatibility projection reconstructed for it).
  */
+/**
+ * Drop a row's evidence chip when its stage's heading already carries it.
+ *
+ * The heading shows the aggregate of everything the group's rows proved, so a
+ * row whose verdict is that aggregate would state it twice. A row whose proof
+ * differs carries a different label from the shared vocabulary and keeps its
+ * chip -- which is the only case where the second chip tells the reader
+ * something the first did not. The comparison is by label because a heading's
+ * chips are receipt-derived and nothing else in a row's chip set shares that
+ * vocabulary.
+ */
+function suppressChipsTheStageHeadingShows(
+  stage: Extract<AgentTraceDisplayItem, { type: "stage" }>,
+): void {
+  const shown = new Set((stage.chips || []).map((chip) => chip.label));
+  if (!shown.size) return;
+  for (const child of stage.children) {
+    if (child.type !== "action" || !child.chips?.length) continue;
+    child.chips = child.chips.filter((chip) => !shown.has(chip.label));
+  }
+}
+
 function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
   let open: OpenTraceStage | null = null;
   let closed: OpenTraceStage | null = null;
@@ -4957,7 +4988,9 @@ function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
   const close = (): void => {
     const stage = open;
     open = null;
-    if (!stage) return;
+    // A stage no row ever joined never reached the list, so there is nothing
+    // to close and nothing separating what came before it from what follows.
+    if (!stage?.shown) return;
     // The row that announces what the stage produced becomes its heading, so
     // the group names its own outcome instead of repeating it one line down.
     const headlineIndex = stage.item.children.findIndex(
@@ -4968,14 +5001,6 @@ function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
         ? stage.item.children.splice(headlineIndex, 1)[0]
         : null;
     if (headline?.type === "action") stage.item.label = headline.row.text;
-    // A stage whose every row was suppressed said nothing the reader can use,
-    // so its heading goes too rather than standing for an empty group.
-    if (!headline && !stage.item.children.length) {
-      const index = items.indexOf(stage.item);
-      if (index >= 0) items.splice(index, 1);
-      interrupted = true;
-      return;
-    }
     const chips = buildAgentTraceVerificationChips(stage.receipts);
     if (chips.length) stage.item.chips = chips;
     closed = stage;
@@ -5001,8 +5026,7 @@ function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
       ...(payload.projected ? { projected: true } : {}),
       children: [],
     };
-    open = { item, receipts: [], awaitingClose: false };
-    items.push(item);
+    open = { item, receipts: [], awaitingClose: false, shown: false };
   };
 
   return {
@@ -5042,11 +5066,21 @@ function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
         return;
       }
       items.length = producedFrom;
+      if (!open.shown) {
+        // The group takes the place its first row would have had.
+        items.push(open.item);
+        open.shown = true;
+      }
       open.item.children.push(...produced);
       if (open.awaitingClose) close();
     },
     finish(): void {
       close();
+      // A stage that reopens gains receipts, so its heading's verdict is only
+      // final once the run is: the rows drop what it shows exactly once, here.
+      for (const item of items) {
+        if (item.type === "stage") suppressChipsTheStageHeadingShows(item);
+      }
     },
   };
 }

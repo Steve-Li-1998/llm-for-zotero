@@ -442,6 +442,20 @@ function traceActionItems(
   );
 }
 
+/**
+ * Every chip the reader sees, in order.
+ *
+ * A stage heading carries the aggregate of what its rows proved and the rows
+ * carry only what it does not, so reading both never double-counts a verdict.
+ */
+function traceChipLabelsOf(items: readonly AgentTraceTestItem[]): string[] {
+  return flattenTraceItems(items).flatMap((item) =>
+    item.type === "action" || item.type === "stage"
+      ? (item.chips || []).map((chip) => chip.label)
+      : [],
+  );
+}
+
 /** What the reader reads, top to bottom: stage headings and their rows. */
 function traceRowTexts(items: readonly AgentTraceTestItem[]): string[] {
   return flattenTraceItems(items)
@@ -3994,9 +4008,7 @@ describe("agentTrace render", function () {
 
   function traceChipLabels(events: AgentRunEventRecord[]): string[] {
     const { items } = buildAgentTraceDisplayItems(events, null);
-    return traceActionItems(items).flatMap((item) =>
-      (item.chips || []).map((chip) => chip.label),
-    );
+    return traceChipLabelsOf(items);
   }
 
   it("names what a result's receipts proved, one chip per result", function () {
@@ -4326,17 +4338,12 @@ describe("agentTrace render", function () {
       2,
       `two approved commands are two effects: ${JSON.stringify(effectRows.map((item) => item.row))}`,
     );
-    assert.deepEqual(
-      effectRows.flatMap((item) =>
-        (item.chips || []).map((chip) => chip.label),
-      ),
-      [
-        "Ran (no state proof)",
-        "Authorized by connected client",
-        "Ran (no state proof)",
-        "Authorized by connected client",
-      ],
-    );
+    // Each effect keeps its own row; their shared verdict is reported once, on
+    // the stage heading that covers both.
+    assert.deepEqual(traceChipLabelsOf(items), [
+      "Ran (no state proof)",
+      "Authorized by connected client",
+    ]);
   });
 
   it("keeps every receipt when two activity rows do merge", function () {
@@ -4394,10 +4401,10 @@ describe("agentTrace render", function () {
       (item) => item.row.kind === "tool",
     );
     assert.lengthOf(effectRows, 1);
-    assert.deepEqual(
-      (effectRows[0].chips || []).map((chip) => chip.label),
-      ["Unverified", "Authorized by connected client"],
-    );
+    assert.deepEqual(traceChipLabelsOf(items), [
+      "Unverified",
+      "Authorized by connected client",
+    ]);
   });
 
   it("renders a verification chip as text, not markup", function () {
@@ -9588,6 +9595,153 @@ describe("agent trace stage grouping", function () {
     const shape = items.map((item) => item.type);
 
     assert.deepEqual(shape.slice(2), ["stage", "reasoning", "stage"]);
+  });
+
+  it("keeps streamed prose in one block across a stage that shows nothing", function () {
+    const events: AgentRunEventRecord[] = [
+      event(1, { type: "message_delta", text: "Looking at" }),
+      stageEvent(2, {
+        type: "agent_stage",
+        stage: "planning",
+        status: "started",
+      }),
+      // The plan machinery asked to stay out of the trace, so this stage has
+      // no row to show and must not come between the two halves of the answer.
+      event(3, {
+        type: "tool_call",
+        callId: "p1",
+        name: "update_plan",
+        args: {},
+        workCategory: "planning",
+      }),
+      event(4, { type: "message_delta", text: " the library." }),
+      stageEvent(5, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "r1",
+      }),
+      event(6, {
+        type: "tool_call",
+        callId: "r1",
+        name: "query_library",
+        args: {},
+        workCategory: "retrieval",
+      }),
+    ];
+
+    withToolPresentations({ update_plan: { hiddenInTrace: true } }, () => {
+      const { items } = buildAgentTraceDisplayItems(events, null);
+      const inline = flattenTraceItems(items).filter(
+        (item) => item.type === "inline_text",
+      );
+      assert.lengthOf(inline, 1);
+      assert.equal(
+        inline[0].type === "inline_text" ? inline[0].text : "",
+        "Looking at the library.",
+      );
+    });
+  });
+
+  it("shows a child's verification chip only when it differs from its stage's", function () {
+    const receipt = (
+      id: string,
+      verification: string,
+    ): Extract<
+      AgentRunEventRecord["payload"],
+      { type: "tool_result" }
+    >["actionReceipts"][number] =>
+      ({
+        version: 2,
+        id,
+        proposalId: id,
+        proofDomain: "zotero_state",
+        capability: "zotero.items",
+        operation: "tag_add",
+        verification,
+        status: "applied",
+        requestedTargets: ["item:1"],
+        appliedTargets: ["item:1"],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: [],
+        reasons: [],
+      }) as never;
+    const write = (
+      seq: number,
+      callId: string,
+      receipts: Extract<
+        AgentRunEventRecord["payload"],
+        { type: "tool_result" }
+      >["actionReceipts"],
+    ): AgentRunEventRecord[] => [
+      stageEvent(seq, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "completed",
+        callId,
+      }),
+      event(seq + 1, {
+        type: "tool_result",
+        callId,
+        name: "apply_tags",
+        ok: true,
+        actionReceipts: receipts,
+        content: { tagged: 1 },
+        toolLabel: "Apply Tags",
+        workCategory: "zotero_action",
+      }),
+    ];
+
+    const tagPresentation = {
+      apply_tags: {
+        label: "Apply Tags",
+        summaries: { onSuccess: "Tags applied" },
+      },
+    };
+    const agreeing = withToolPresentationsReturning(
+      tagPresentation,
+      () =>
+        buildAgentTraceDisplayItems(
+          write(1, "a", [receipt("a", "verified")]),
+          null,
+        ).items,
+    );
+    const agreeingStage = stages(agreeing)[0];
+    assert.deepEqual(
+      (agreeingStage.chips || []).map((chip) => chip.label),
+      ["Verified"],
+    );
+    assert.deepEqual(
+      traceActionItems(agreeing).flatMap((item) =>
+        (item.chips || []).map((chip) => chip.label),
+      ),
+      [],
+      "a row that proved exactly what its stage reports does not repeat it",
+    );
+
+    const differing = withToolPresentationsReturning(
+      tagPresentation,
+      () =>
+        buildAgentTraceDisplayItems(
+          [
+            ...write(1, "a", [receipt("a", "verified")]),
+            ...write(3, "b", [receipt("b", "unverified")]),
+          ],
+          null,
+        ).items,
+    );
+    const differingStage = stages(differing)[0];
+    assert.deepEqual(
+      (differingStage.chips || []).map((chip) => chip.label),
+      ["Unverified"],
+    );
+    assert.deepEqual(
+      traceActionItems(differing).flatMap((item) =>
+        (item.chips || []).map((chip) => chip.label),
+      ),
+      ["Verified"],
+      "only the row whose proof differs from the stage's keeps its chip",
+    );
   });
 
   it("renders each stage as one disclosure holding its rows", function () {

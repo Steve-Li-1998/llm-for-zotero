@@ -4094,7 +4094,7 @@ await note.saveTx();
     ];
     for (const tool of tools) {
       const name = tool.spec.name;
-      assert.isFalse(tool.spec.requiresConfirmation, `${name} flag`);
+      assert.notProperty(tool.spec, "requiresConfirmation", `${name} flag`);
       assert.isUndefined(tool.shouldRequireConfirmation, `${name} hook`);
       const summaries = tool.presentation?.summaries || {};
       assert.notProperty(summaries, "onPending", `${name} onPending`);

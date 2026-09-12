@@ -263,7 +263,6 @@ export function createLibraryRetrieveTool(
       },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
       exposure: "model",
     },
     presentation: {

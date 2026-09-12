@@ -124,7 +124,6 @@ export function createReadLibraryTool(
       },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
     },
     presentation: {
       label: "Read Library",

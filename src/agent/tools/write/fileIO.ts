@@ -651,7 +651,6 @@ export function createFileIOTool(): AgentWriteToolDefinition<
       },
       executionClass: "external_effect",
       workCategory: "external_system",
-      requiresConfirmation: true,
     },
 
     guidance: {

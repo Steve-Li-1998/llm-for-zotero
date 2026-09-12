@@ -277,7 +277,6 @@ export function getAgentApi() {
      *     inputSchema: { type: "object", properties: { query: { type: "string" } } },
      *     executionClass: "read",
      *     workCategory: "retrieval",
-     *     requiresConfirmation: false,
      *   },
      *   validate: (args) => {
      *     if (!args || typeof args !== "object") return fail("Expected object");

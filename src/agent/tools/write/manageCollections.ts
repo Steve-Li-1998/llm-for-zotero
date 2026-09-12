@@ -86,7 +86,6 @@ export function createManageCollectionsTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {

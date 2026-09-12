@@ -79,7 +79,6 @@ export function createImportLocalFilesTool(
       },
       executionClass: "external_effect",
       workCategory: "external_system",
-      requiresConfirmation: true,
     },
 
     guidance: {

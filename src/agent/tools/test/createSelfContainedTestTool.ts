@@ -33,7 +33,6 @@ export function createSelfContainedTestTool(): AgentToolDefinition<
       // plan is never assessed as an effect.
       executionClass: "control",
       workCategory: "external_system",
-      requiresConfirmation: true,
     },
     guidance: {
       matches: (request) => classifyRequest(request).isDemoToolQuery,

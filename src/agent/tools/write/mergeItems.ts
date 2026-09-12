@@ -60,7 +60,6 @@ export function createMergeItemsTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     guidance: {

@@ -1,4 +1,6 @@
 import { assert } from "chai";
+import { readFileSync, readdirSync, statSync } from "fs";
+import { join, relative } from "path";
 import {
   prohibitedInvocationPlan,
   readOnlyInvocationPlan,
@@ -31,6 +33,21 @@ const describeTestMutation = () => [
     destinationCollectionIds: [],
   },
 ];
+
+const root = process.cwd();
+
+function collectAgentSourceFiles(dir: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const fullPath = join(dir, entry);
+    if (statSync(fullPath).isDirectory()) {
+      files.push(...collectAgentSourceFiles(fullPath));
+    } else if (fullPath.endsWith(".ts")) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
 
 describe("AgentToolRegistry", function () {
   const originalZotero = globalThis.Zotero;
@@ -2193,6 +2210,70 @@ describe("AgentToolRegistry", function () {
         )
         .map((tool) => tool.spec.name);
       assert.deepEqual(undeclared, []);
+    });
+  });
+  describe("requiresConfirmation scope", function () {
+    const production = () =>
+      createBuiltInToolRegistry({
+        zoteroGateway: {} as never,
+        pdfService: {} as never,
+        pdfPageService: {} as never,
+        retrievalService: {} as never,
+      });
+
+    it("keeps the flag only on the specs the controller reads it for", function () {
+      const specs = production()
+        .listToolDefinitions()
+        .map((tool) => tool.spec);
+      const userInput = specs
+        .filter((spec) => spec.interaction === "user_input")
+        .map((spec) => spec.name)
+        .sort();
+      assert.deepEqual(userInput, [
+        "amend_plan",
+        "approve_research_expansion",
+        "approve_research_mutation",
+        "request_user_input",
+      ]);
+      for (const spec of specs) {
+        if (spec.interaction === "user_input") {
+          assert.isBoolean(
+            spec.requiresConfirmation,
+            `${spec.name} must still declare its pause`,
+          );
+          continue;
+        }
+        assert.notProperty(
+          spec,
+          "requiresConfirmation",
+          `${spec.name} must not carry a tool-private confirmation rule`,
+        );
+      }
+    });
+
+    it("leaves no spec literal in the source tree declaring one outside user input", function () {
+      const offenders: string[] = [];
+      let inspected = 0;
+      for (const path of collectAgentSourceFiles(join(root, "src/agent"))) {
+        const lines = readFileSync(path, "utf8").split("\n");
+        lines.forEach((line, index) => {
+          if (!/^\s*requiresConfirmation: (true|false),$/.test(line)) return;
+          inspected += 1;
+          const window = lines.slice(index - 4, index + 5).join("\n");
+          if (/interaction: "user_input"/.test(window)) return;
+          offenders.push(`${relative(root, path)}:${index + 1}`);
+        });
+      }
+      assert.deepEqual(
+        offenders,
+        [],
+        "requiresConfirmation is read only for interaction: 'user_input' specs",
+      );
+      assert.equal(
+        inspected,
+        4,
+        "the source scan lost or gained requiresConfirmation sites; update the count deliberately",
+      );
     });
   });
 });

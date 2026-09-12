@@ -64,7 +64,6 @@ export function createUpdateLibraryTagTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {
@@ -208,7 +207,6 @@ export function createSetItemTagsTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {

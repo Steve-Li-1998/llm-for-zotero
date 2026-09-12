@@ -122,7 +122,6 @@ export function createRevertChangesTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {

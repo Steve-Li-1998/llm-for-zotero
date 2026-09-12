@@ -60,7 +60,6 @@ export function createSyntheticErrorResult(
       inputSchema: { type: "object" },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
     },
     validate: () => ({ ok: true, value: {} }),
     execute: async () => ({ error: message }),

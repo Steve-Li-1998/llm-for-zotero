@@ -242,7 +242,6 @@ function createLibraryUpdateTool(tools: {
       "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links.",
     executionClass: "external_effect",
     workCategory: "zotero_action",
-    requiresConfirmation: true,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -425,7 +424,6 @@ function createLibraryImportTool(tools: {
     // and is labelled external_system for that call.
     executionClass: "external_effect",
     workCategory: "zotero_action",
-    requiresConfirmation: true,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -505,7 +503,6 @@ function createLibraryDeleteTool(tools: {
       "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item.",
     executionClass: "external_effect",
     workCategory: "zotero_action",
-    requiresConfirmation: true,
     inputSchema: {
       type: "object",
       additionalProperties: false,

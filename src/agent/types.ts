@@ -375,7 +375,7 @@ export type AgentWorkCategory =
   | "zotero_action"
   | "external_system";
 
-export type ToolSpec = {
+type ToolSpecBase = {
   name: string;
   description: string;
   /**
@@ -407,7 +407,6 @@ export type ToolSpec = {
    * library changes and external-effect tools reach past the library.
    */
   workCategory: AgentWorkCategory;
-  requiresConfirmation: boolean;
   /**
    * Model-visible tools are advertised to agent/model runtimes and MCP
    * clients. Internal tools stay registered so plugin-owned migration
@@ -425,9 +424,28 @@ export type ToolSpec = {
    * MCP, and public tool catalogs must not expose it.
    */
   localAgentOnly?: boolean;
-  /** Host-owned interaction tools pause for input even though they are reads. */
-  interaction?: "user_input";
 };
+
+/**
+ * A tool's confirmation rule is not its own to declare.
+ *
+ * Every external effect is gated centrally by `authorizeOriginalAction` from
+ * the typed proposal it produced, never by a flag on its spec. The one place
+ * the host reads a spec-level pause is `InvocationController.dispatch`, and
+ * only for the host-owned tools that stop the turn to ask the user something.
+ * Keeping `requiresConfirmation` inside that shape is what stops a write tool
+ * from writing a private permission rule that nothing enforces.
+ */
+export type ToolSpec = ToolSpecBase &
+  (
+    | {
+        /** Host-owned interaction tools pause for input even though they are reads. */
+        interaction: "user_input";
+        /** Whether this interaction pauses for the user by default. */
+        requiresConfirmation: boolean;
+      }
+    | { interaction?: never; requiresConfirmation?: never }
+  );
 
 export type AgentEvent =
   | PlanEvent

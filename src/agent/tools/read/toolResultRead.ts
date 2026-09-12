@@ -318,7 +318,6 @@ export function createToolResultReadTool(): AgentToolDefinition<
       },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
     },
     isAvailable: (request) =>
       request.metadata?.agentToolResultReadAvailable === true,

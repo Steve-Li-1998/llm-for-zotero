@@ -483,7 +483,6 @@ export function createSubmitDocumentTool(
       },
       executionClass: "control",
       workCategory: "generation",
-      requiresConfirmation: false,
     },
     isAvailable: (request) => request.planContext?.phase !== "planning",
     guidance: {

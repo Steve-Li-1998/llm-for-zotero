@@ -1266,7 +1266,6 @@ export function createZoteroScriptTool(
       },
       executionClass: "external_effect",
       workCategory: "external_system",
-      requiresConfirmation: true,
     },
 
     guidance: {

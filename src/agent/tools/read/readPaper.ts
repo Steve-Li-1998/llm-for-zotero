@@ -97,7 +97,6 @@ export function createReadPaperTool(
       },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
     },
     presentation: {
       label: "Read Paper",

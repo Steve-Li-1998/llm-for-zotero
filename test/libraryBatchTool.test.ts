@@ -409,7 +409,7 @@ describe("library_batch", function () {
   it("leaves review to the actual prepared action page", function () {
     const tool = makeTool();
     assert.equal(tool.spec.executionClass, "control");
-    assert.isFalse(tool.spec.requiresConfirmation);
+    assert.notProperty(tool.spec, "requiresConfirmation");
     assert.isUndefined(
       tool.createPendingAction,
       "no generic batch approval card",

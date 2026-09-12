@@ -61,7 +61,6 @@ export function createImportIdentifiersTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {

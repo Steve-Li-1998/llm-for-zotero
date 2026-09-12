@@ -207,7 +207,6 @@ export function createLibraryBatchTool(deps: {
       },
       executionClass: "control",
       workCategory: "zotero_action",
-      requiresConfirmation: false,
     },
 
     guidance: {

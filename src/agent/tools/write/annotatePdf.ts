@@ -113,7 +113,6 @@ export function createAnnotatePdfTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {

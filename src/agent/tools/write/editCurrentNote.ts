@@ -572,7 +572,6 @@ export function createEditCurrentNoteTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
     guidance: {
       matches: () => true,

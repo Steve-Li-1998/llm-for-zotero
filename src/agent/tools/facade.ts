@@ -137,7 +137,6 @@ export function createDelegatingTool<TResult = unknown>(params: {
   inputSchema: object;
   executionClass: "read" | "control" | "external_effect";
   workCategory: AgentWorkCategory;
-  requiresConfirmation: boolean;
   label: string;
   summaries?: NonNullable<AgentToolDefinition["presentation"]>["summaries"];
   tier?: "normal" | "advanced";
@@ -163,7 +162,6 @@ export function createDelegatingTool<TResult = unknown>(params: {
       inputSchema: params.inputSchema,
       executionClass: params.executionClass,
       workCategory: params.workCategory,
-      requiresConfirmation: params.requiresConfirmation,
       exposure: "model",
       tier: params.tier || "normal",
     },
@@ -187,13 +185,6 @@ export function createDelegatingTool<TResult = unknown>(params: {
     describeAction: (input, context) =>
       input.delegateTool.describeAction?.(input.delegateInput, context) ||
       describeLibraryMutationActions(input.delegateInput),
-    async shouldRequireConfirmation(input, context) {
-      const tool = input.delegateTool;
-      if (tool.shouldRequireConfirmation) {
-        return tool.shouldRequireConfirmation(input.delegateInput, context);
-      }
-      return tool.spec.requiresConfirmation;
-    },
     async planInvocation(input, context) {
       const tool = input.delegateTool;
       if (tool.planInvocation) {

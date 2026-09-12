@@ -72,10 +72,8 @@ import {
   repairRecoverableMessageConversationIDs,
 } from "../shared/conversationMessageIdentityRepair";
 import {
-  deleteConversationSearchIndexRow,
   deleteConversationSearchIndexRowInTransaction,
   initConversationSearchIndexStore,
-  refreshConversationSearchIndexForConversation,
 } from "../shared/conversationSearchIndex";
 import {
   CONVERSATION_INSTANCE_ID_MIGRATION_IDS,
@@ -122,6 +120,11 @@ import {
   isConversationWriteGenerationCurrent,
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
+import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
+import {
+  deleteStoreConversationSearchIndex,
+  refreshStoreConversationSearchIndex,
+} from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefStore";
 
@@ -351,7 +354,7 @@ async function resolveRepairingMessageConversationSelector(
     registered: selector.registered,
     getPaperContextRows: getClaudeMessagePaperContextRows,
     storeLabel: "Claude",
-    log: logClaudeScopeWarning,
+    log: logConversationStoreWarning,
   });
   if (repair.status === "refused") {
     if (options.destructive) {
@@ -544,38 +547,20 @@ async function migrateLegacyClaudeConversationKeys(): Promise<
   return remaps;
 }
 
-function logClaudeScopeWarning(message: string): void {
-  const debug = (
-    globalThis as typeof globalThis & {
-      Zotero?: { debug?: (message: string) => void };
-    }
-  ).Zotero?.debug;
-  debug?.(`LLM: ${message}`);
-}
-
-function formatSearchIndexError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function refreshClaudeConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  try {
-    await refreshConversationSearchIndexForConversation({
-      system: "claude_code",
-      conversationKey,
-    });
-  } catch (error) {
-    logClaudeScopeWarning(
-      `Failed to refresh Claude conversation search index for ${conversationKey}: ${formatSearchIndexError(error)}`,
-    );
-  }
+  await refreshStoreConversationSearchIndex({
+    system: "claude_code",
+    storeLabel: "Claude",
+    conversationKey,
+  });
 }
 
 async function deleteClaudeConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  await deleteConversationSearchIndexRow({
+  await deleteStoreConversationSearchIndex({
     system: "claude_code",
     conversationKey,
   });
@@ -747,7 +732,7 @@ async function repairRecoverableClaudeCatalogMessageConversationIDs(
     paperItemIDSql: "c.paper_item_id",
     getPaperContextRows: getClaudeMessagePaperContextRows,
     storeLabel: "Claude",
-    log: logClaudeScopeWarning,
+    log: logConversationStoreWarning,
     ...(normalizedKey
       ? { filterSql: "c.conversation_key = ?", filterParams: [normalizedKey] }
       : {}),
@@ -896,7 +881,7 @@ export async function repairClaudeConversationIdentityRegistry(
           },
           options,
         );
-        logClaudeScopeWarning(
+        logConversationStoreWarning(
           `Migrated Claude conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
         );
         continue;
@@ -943,7 +928,7 @@ export async function repairClaudeConversationIdentityRegistry(
           },
           options,
         );
-        logClaudeScopeWarning(
+        logConversationStoreWarning(
           `Repaired Claude conversation ${summary.conversationKey} to paper ${inferredPaperItemID} based on stored paper contexts.`,
         );
         continue;
@@ -2521,7 +2506,7 @@ async function validateOrRepairClaudeConversationSummary(
       updatedAt: summary.updatedAt,
       title: summary.title,
     });
-    logClaudeScopeWarning(
+    logConversationStoreWarning(
       `Migrated Claude conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
     );
     return summary;
@@ -2597,7 +2582,7 @@ async function validateOrRepairClaudeConversationSummary(
       updatedAt: summary.updatedAt,
       title: summary.title,
     });
-    logClaudeScopeWarning(
+    logConversationStoreWarning(
       `Repaired Claude conversation ${summary.conversationKey} to paper ${inferredPaperItemID} while loading history.`,
     );
     return {
@@ -2693,7 +2678,7 @@ export async function upsertClaudeConversationSummary(params: {
       paperItemID,
     })
   ) {
-    logClaudeScopeWarning(
+    logConversationStoreWarning(
       `Refused to reassign Claude conversation ${conversationKey} from ${existing.kind}/${existing.libraryID}/${existing.paperItemID || ""} to ${params.kind}/${libraryID}/${paperItemID || ""}.`,
     );
     return false;
@@ -2720,7 +2705,7 @@ export async function upsertClaudeConversationSummary(params: {
       issuedAt: createdAt,
     });
   } catch (error) {
-    logClaudeScopeWarning(String(error));
+    logConversationStoreWarning(String(error));
     return false;
   }
   const registryOk = await registerConversationScope(

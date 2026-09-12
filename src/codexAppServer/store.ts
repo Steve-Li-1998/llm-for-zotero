@@ -79,10 +79,8 @@ import {
   repairRecoverableMessageConversationIDs,
 } from "../shared/conversationMessageIdentityRepair";
 import {
-  deleteConversationSearchIndexRow,
   deleteConversationSearchIndexRowInTransaction,
   initConversationSearchIndexStore,
-  refreshConversationSearchIndexForConversation,
 } from "../shared/conversationSearchIndex";
 import {
   CONVERSATION_INSTANCE_ID_MIGRATION_IDS,
@@ -129,6 +127,11 @@ import {
   isConversationWriteGenerationCurrent,
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
+import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
+import {
+  deleteStoreConversationSearchIndex,
+  refreshStoreConversationSearchIndex,
+} from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefStore";
 
@@ -404,7 +407,7 @@ async function resolveRepairingMessageConversationSelector(
     registered: selector.registered,
     getPaperContextRows: getCodexMessagePaperContextRows,
     storeLabel: "Codex",
-    log: logCodexScopeWarning,
+    log: logConversationStoreWarning,
   });
   if (repair.status === "refused") {
     if (options.destructive) {
@@ -728,15 +731,6 @@ function transferColumnSql(columns: readonly string[]): string {
   return columns.join(", ");
 }
 
-function logCodexRepairWarning(message: string): void {
-  const debug = (
-    globalThis as typeof globalThis & {
-      Zotero?: { debug?: (message: string) => void };
-    }
-  ).Zotero?.debug;
-  debug?.(`LLM: ${message}`);
-}
-
 async function tableExists(tableName: string): Promise<boolean> {
   const rows = (await Zotero.DB.queryAsync(
     `SELECT name
@@ -930,7 +924,7 @@ async function moveConversationRowsIfSafe(
     conversationKey,
   );
   if (targetCount > 0) {
-    logCodexRepairWarning(
+    logConversationStoreWarning(
       `Skipped moving Claude conversation row ${conversationKey} to Codex because Codex already has that key.`,
     );
     return;
@@ -961,7 +955,7 @@ async function moveMessageRowsIfSafe(conversationKey: number): Promise<void> {
     conversationKey,
   );
   if (targetCount > 0) {
-    logCodexRepairWarning(
+    logConversationStoreWarning(
       `Skipped moving Claude message rows for ${conversationKey} to Codex because Codex already has messages for that key.`,
     );
     return;
@@ -1092,7 +1086,7 @@ async function repairRecoverableCodexCatalogMessageConversationIDs(
     paperItemIDSql: "c.paper_item_id",
     getPaperContextRows: getCodexMessagePaperContextRows,
     storeLabel: "Codex",
-    log: logCodexScopeWarning,
+    log: logConversationStoreWarning,
     ...(normalizedKey
       ? { filterSql: "c.conversation_key = ?", filterParams: [normalizedKey] }
       : {}),
@@ -1247,7 +1241,7 @@ export async function repairCodexConversationIdentityRegistry(
           },
           options,
         );
-        logCodexScopeWarning(
+        logConversationStoreWarning(
           `Migrated Codex conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
         );
         continue;
@@ -1294,7 +1288,7 @@ export async function repairCodexConversationIdentityRegistry(
           },
           options,
         );
-        logCodexScopeWarning(
+        logConversationStoreWarning(
           `Repaired Codex conversation ${summary.conversationKey} to paper ${inferredPaperItemID} based on stored paper contexts.`,
         );
         continue;
@@ -2883,38 +2877,20 @@ function sameCodexCatalogScope(
   );
 }
 
-function logCodexScopeWarning(message: string): void {
-  const debug = (
-    globalThis as typeof globalThis & {
-      Zotero?: { debug?: (message: string) => void };
-    }
-  ).Zotero?.debug;
-  debug?.(`LLM: ${message}`);
-}
-
-function formatSearchIndexError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function refreshCodexConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  try {
-    await refreshConversationSearchIndexForConversation({
-      system: "codex",
-      conversationKey,
-    });
-  } catch (error) {
-    logCodexScopeWarning(
-      `Failed to refresh Codex conversation search index for ${conversationKey}: ${formatSearchIndexError(error)}`,
-    );
-  }
+  await refreshStoreConversationSearchIndex({
+    system: "codex",
+    storeLabel: "Codex",
+    conversationKey,
+  });
 }
 
 async function deleteCodexConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  await deleteConversationSearchIndexRow({
+  await deleteStoreConversationSearchIndex({
     system: "codex",
     conversationKey,
   });
@@ -2979,7 +2955,7 @@ async function validateOrRepairCodexConversationSummary(
       updatedAt: summary.updatedAt,
       title: summary.title,
     });
-    logCodexScopeWarning(
+    logConversationStoreWarning(
       `Migrated Codex conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
     );
     return summary;
@@ -3055,7 +3031,7 @@ async function validateOrRepairCodexConversationSummary(
       updatedAt: summary.updatedAt,
       title: summary.title,
     });
-    logCodexScopeWarning(
+    logConversationStoreWarning(
       `Repaired Codex conversation ${summary.conversationKey} to paper ${inferredPaperItemID} while loading history.`,
     );
     return {
@@ -3153,7 +3129,7 @@ export async function upsertCodexConversationSummary(params: {
       paperItemID,
     })
   ) {
-    logCodexScopeWarning(
+    logConversationStoreWarning(
       `Refused to reassign Codex conversation ${conversationKey} from ${existing.kind}/${existing.libraryID}/${existing.paperItemID || ""} to ${params.kind}/${libraryID}/${paperItemID || ""}.`,
     );
     return false;
@@ -3180,7 +3156,7 @@ export async function upsertCodexConversationSummary(params: {
       issuedAt: createdAt,
     });
   } catch (error) {
-    logCodexScopeWarning(String(error));
+    logConversationStoreWarning(String(error));
     return false;
   }
   const registryOk = await registerConversationScope(

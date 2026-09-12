@@ -47,10 +47,8 @@ import {
   repairRecoverableMessageConversationIDs,
 } from "../shared/conversationMessageIdentityRepair";
 import {
-  deleteConversationSearchIndexRow,
   deleteConversationSearchIndexRowInTransaction,
   initConversationSearchIndexStore,
-  refreshConversationSearchIndexForConversation,
 } from "../shared/conversationSearchIndex";
 import {
   CONVERSATION_ID_TRANSITION_MIGRATION_ID,
@@ -104,6 +102,11 @@ import {
   deleteConversationForkLinksForInstanceInTransaction,
   initConversationForkLinksStore,
 } from "../shared/conversationForkLinks";
+import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
+import {
+  deleteStoreConversationSearchIndex,
+  refreshStoreConversationSearchIndex,
+} from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import { clearOwnerAttachmentRefsInTransaction } from "./attachmentRefStore";
 import {
@@ -699,7 +702,7 @@ async function resolveRepairingMessageConversationSelector(
     registered: selector.registered,
     getPaperContextRows: getUpstreamMessagePaperContextRows,
     storeLabel: "upstream",
-    log: logChatStoreWarning,
+    log: logConversationStoreWarning,
   });
   if (repair.status === "refused") {
     if (options.destructive) {
@@ -712,38 +715,20 @@ async function resolveRepairingMessageConversationSelector(
   return selector;
 }
 
-function logChatStoreWarning(message: string): void {
-  const debug = (
-    globalThis as typeof globalThis & {
-      Zotero?: { debug?: (message: string) => void };
-    }
-  ).Zotero?.debug;
-  debug?.(`LLM: ${message}`);
-}
-
-function formatSearchIndexError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function refreshUpstreamConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  try {
-    await refreshConversationSearchIndexForConversation({
-      system: "upstream",
-      conversationKey,
-    });
-  } catch (error) {
-    logChatStoreWarning(
-      `Failed to refresh upstream conversation search index for ${conversationKey}: ${formatSearchIndexError(error)}`,
-    );
-  }
+  await refreshStoreConversationSearchIndex({
+    system: "upstream",
+    storeLabel: "upstream",
+    conversationKey,
+  });
 }
 
 async function deleteUpstreamConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  await deleteConversationSearchIndexRow({
+  await deleteStoreConversationSearchIndex({
     system: "upstream",
     conversationKey,
   });
@@ -798,7 +783,7 @@ async function repairRecoverableUpstreamCatalogMessageConversationIDs(
     paperItemIDSql: "NULL",
     getPaperContextRows: getUpstreamMessagePaperContextRows,
     storeLabel: "upstream",
-    log: logChatStoreWarning,
+    log: logConversationStoreWarning,
     ...filter,
   });
   const paperRepair = await repairRecoverableCatalogMessageConversationIDs({
@@ -810,7 +795,7 @@ async function repairRecoverableUpstreamCatalogMessageConversationIDs(
     paperItemIDSql: "c.paper_item_id",
     getPaperContextRows: getUpstreamMessagePaperContextRows,
     storeLabel: "upstream",
-    log: logChatStoreWarning,
+    log: logConversationStoreWarning,
     ...filter,
   });
   return {
@@ -2065,7 +2050,7 @@ async function cleanupLeakedWebchatGhostTitlesOnce(): Promise<void> {
           // webchat-leaked title from a hand-renamed empty draft, so the old
           // value must at least be recoverable from the debug log.
           for (const entry of cleared) {
-            logChatStoreWarning(
+            logConversationStoreWarning(
               `Cleared leaked webchat title from message-less conversation ${entry.key}: "${entry.title}"`,
             );
           }
@@ -2077,7 +2062,7 @@ async function cleanupLeakedWebchatGhostTitlesOnce(): Promise<void> {
       },
     );
   } catch (err) {
-    logChatStoreWarning(
+    logConversationStoreWarning(
       `Failed to clear leaked webchat ghost titles: ${String(err)}`,
     );
   }
@@ -2125,7 +2110,7 @@ async function sweepWebchatSessionConversations(): Promise<void> {
           [conversationKey],
         );
         await refreshUpstreamConversationSearchIndex(conversationKey);
-        logChatStoreWarning(
+        logConversationStoreWarning(
           `Adopted webchat session ${conversationKey} instead of sweeping it; the row owns persisted messages.`,
         );
         continue;
@@ -2145,7 +2130,7 @@ async function sweepWebchatSessionConversations(): Promise<void> {
         // startup sweep from adopting or deleting other sessions.  The row
         // remains visible only to this maintenance pass and is retried on the
         // next startup after the underlying local failure is repaired.
-        logChatStoreWarning(
+        logConversationStoreWarning(
           `Failed to sweep webchat session ${conversationKey}: ${String(error)}`,
         );
       }
@@ -2155,7 +2140,7 @@ async function sweepWebchatSessionConversations(): Promise<void> {
     await sweepTable(PAPER_CONVERSATIONS_TABLE, "paper");
     await sweepTable(GLOBAL_CONVERSATIONS_TABLE, "global");
   } catch (err) {
-    logChatStoreWarning(
+    logConversationStoreWarning(
       `Failed to sweep webchat session conversations: ${String(err)}`,
     );
   }
@@ -3761,7 +3746,7 @@ export async function ensureGlobalConversationExists(
   const existing = await getGlobalConversation(normalizedKey);
   if (existing) {
     if (normalizeLibraryID(existing.libraryID) !== normalizedLibraryID) {
-      logChatStoreWarning(
+      logConversationStoreWarning(
         `Refused to ensure global conversation ${normalizedKey} for library ${normalizedLibraryID}; catalog row belongs to library ${existing.libraryID}.`,
       );
       return false;

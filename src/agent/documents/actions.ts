@@ -3,6 +3,8 @@ import { sha256Text } from "../store/journalRecoveryBlobStore";
 import {
   createFinalizedZoteroNote,
   stripZoteroNoteWrapper,
+  verifyNativeNoteHtml,
+  type NativeNoteVerification,
 } from "../../services/notePersistence";
 import { importNoteImageAsset } from "../../services/notes/noteImages";
 import { escapeNoteHtml } from "../../utils/textSanitization";
@@ -155,6 +157,8 @@ async function saveDocumentNote(
   itemId: number;
   created: boolean;
   warnings: string[];
+  /** Native read-back proving the saved note carries this exact document. */
+  noteVerification?: NativeNoteVerification;
 }> {
   const document = await loadPlanDocument(documentId);
   if (!document) throw new Error("Document not found");
@@ -205,6 +209,11 @@ async function saveDocumentNote(
         itemId: existing.id,
         created: false,
         warnings: [],
+        // Embedded assets rewrite the stored HTML with native attachment keys,
+        // so only an asset-free document can be proved against its own body.
+        noteVerification: document.assets.length
+          ? undefined
+          : await verifyNativeNoteHtml(existing, document.visibleHtml),
       };
     }
     if (existing || prior?.savedNote)
@@ -313,6 +322,7 @@ async function saveDocumentNote(
     throw new Error(
       "The note was preserved but its requested content or assets are incomplete, or its parent changed.",
     );
+  const noteVerification = await verifyNativeNoteHtml(created, persisted.html);
   await promoteDocumentNote(documentId, pendingNote);
   return {
     libraryID: created.libraryID,
@@ -320,6 +330,7 @@ async function saveDocumentNote(
     itemId: created.id,
     created: true,
     warnings: [...persisted.warnings],
+    noteVerification,
   };
 }
 

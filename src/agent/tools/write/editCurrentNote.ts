@@ -995,6 +995,7 @@ export function createEditCurrentNoteTool(
                 title: note.getNoteTitle(),
                 status: saved.created ? "created" : "already_satisfied",
                 warnings: saved.warnings,
+                noteVerification: saved.noteVerification,
               },
               effect: saved.created ? ("applied" as const) : ("none" as const),
               affectedCount: saved.created ? 1 : 0,

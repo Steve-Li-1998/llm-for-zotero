@@ -2,6 +2,7 @@ import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentN
 import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 import { assert } from "chai";
 import { createHash } from "node:crypto";
+import { innermostToolResult } from "../src/agent/contracts/toolResultEnvelope";
 import {
   exportPlanDocumentMarkdown,
   savePlanDocumentAsNote,
@@ -400,6 +401,32 @@ describe("durable document note association", function () {
       notes.get([...notes.keys()][0]).getNote(),
       "Exact durable summary.",
     );
+  });
+  it("carries native note verification on the finalized-document create path", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = {
+      ...directContext("summary-run"),
+      journalFallbackApproved: true,
+    };
+
+    await tool.planInvocation(input.value, context);
+    const result: any = await tool.execute(input.value, context);
+
+    // The receipt reads native evidence from the innermost tool result.
+    const saved: any = innermostToolResult(result.content);
+    assert.equal(saved.noteVerification?.noteId, saved.noteId);
+    assert.isTrue(saved.noteVerification?.matches);
+    assert.equal(saved.noteVerification?.expectedHtml, document.visibleHtml);
   });
   it("refuses a note write when the approved material content changed", async function () {
     addFigure();

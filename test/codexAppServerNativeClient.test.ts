@@ -3863,25 +3863,6 @@ describe("Codex MCP tool activity bridge", function () {
     const correlation = createCodexNativeMcpCallCorrelatorForTests(
       "llm_for_zotero_profile_abc",
     );
-    const first = correlation.correlateRequest({
-      requestId: "jsonrpc:1",
-      toolName: "query_library",
-    });
-    const second = correlation.correlateRequest({
-      requestId: "jsonrpc:2",
-      toolName: "query_library",
-    });
-    assert.isString(first);
-    assert.notEqual(first, second);
-    assert.equal(
-      correlation.correlateRequest({
-        requestId: "jsonrpc:1",
-        toolName: "query_library",
-      }),
-      first,
-      "the completed phase resolves to the same call as the started phase",
-    );
-
     const item = (id: string) =>
       correlation.correlateItem({
         id,
@@ -3889,9 +3870,24 @@ describe("Codex MCP tool activity bridge", function () {
         serverName: "llm_for_zotero_profile_abc",
         toolName: "query_library",
       });
+    const request = (requestId: string) =>
+      correlation.correlateRequest({ requestId, toolName: "query_library" });
+
+    const first = request("jsonrpc:1");
+    assert.isString(first);
+    assert.equal(
+      request("jsonrpc:1"),
+      first,
+      "the completed phase resolves to the same call as the started phase",
+    );
     assert.equal(item("call_A"), first);
-    assert.equal(item("call_B"), second, "two calls keep the model's order");
     assert.equal(item("call_A"), first, "an item keeps the key it was given");
+
+    // The next call of the same tool starts only once that one closed.
+    const second = request("jsonrpc:2");
+    assert.isString(second);
+    assert.notEqual(second, first);
+    assert.equal(item("call_B"), second, "two calls keep the model's order");
   });
 
   it("pairs the two streams whichever of them speaks first", function () {
@@ -3955,6 +3951,53 @@ describe("Codex MCP tool activity bridge", function () {
       paired,
       "a different tool is a different call",
     );
+  });
+
+  it("refuses to pair two calls of one tool that are open at the same time", function () {
+    // The item stream and the MCP observer are delivered independently, so
+    // two concurrent calls of one tool cannot be ordered against each other.
+    // Pairing them by arrival order would put one call's arguments in the
+    // same row as the other call's receipts, which is worse than two rows.
+    const correlation = createCodexNativeMcpCallCorrelatorForTests(
+      "llm_for_zotero_profile_abc",
+    );
+    const first = correlation.correlateRequest({
+      requestId: "jsonrpc:1",
+      toolName: "query_library",
+    });
+    const second = correlation.correlateRequest({
+      requestId: "jsonrpc:2",
+      toolName: "query_library",
+    });
+    assert.isString(first);
+    assert.isUndefined(
+      second,
+      "a second call opening while the first is unpaired is ambiguous",
+    );
+
+    const item = (id: string) =>
+      correlation.correlateItem({
+        id,
+        type: "mcp_tool_call",
+        serverName: "llm_for_zotero_profile_abc",
+        toolName: "query_library",
+      });
+    const firstItem = item("call_A");
+    assert.notEqual(
+      firstItem,
+      first,
+      "an item must not claim a call the turn could not order it against",
+    );
+    assert.isUndefined(item("call_B"));
+    assert.notEqual(firstItem, item("call_B"));
+
+    // The turn recovers: a later call of the same tool pairs normally.
+    const later = correlation.correlateRequest({
+      requestId: "jsonrpc:3",
+      toolName: "query_library",
+    });
+    assert.isString(later);
+    assert.equal(item("call_C"), later);
   });
 
   it("carries the paired call onto the row the panel merges by", function () {

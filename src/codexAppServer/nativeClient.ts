@@ -612,42 +612,69 @@ export type CodexNativeItemEvent = CodexAppServerItemEvent & {
  * panel then merges two rows because they are one call, not because one went
  * past recently enough to look like the other.
  *
- * A call this cannot pair keeps its own key: two rows for one call is a
- * smaller lie than one row for two calls.
+ * Two calls of one tool that are open at the same time are refused outright:
+ * the two streams are delivered independently, so nothing in this turn can
+ * say which item belongs to which request, and a row merging one call's
+ * arguments with the other's receipts would be a single wrong row. A call
+ * this cannot pair keeps its own key instead: two rows for one call is a
+ * smaller lie than one wrong row for two calls.
  */
 export function createCodexNativeMcpCallCorrelator(serverName?: string) {
   const expectedServer = normalizeNonEmptyString(serverName);
   type OpenPair = { key: string; hasRequest: boolean; hasItem: boolean };
   const openPairsByTool = new Map<string, OpenPair[]>();
-  const keyByRequestId = new Map<string, string>();
-  const keyByItemId = new Map<string, string>();
+  // `null` records a side this turn refused to pair, so asking again answers
+  // the same instead of opening a fresh pair a later call could claim.
+  const keyByRequestId = new Map<string, string | null>();
+  const keyByItemId = new Map<string, string | null>();
   let minted = 0;
 
-  const claim = (toolName: string, side: "request" | "item"): string => {
+  /**
+   * The key for one call, or nothing when this turn cannot tell which call
+   * it is.
+   *
+   * Pairing is only trustworthy while calls of a tool are one at a time: the
+   * item notifications and the MCP observer are delivered independently, so
+   * two calls of one tool that are open together cannot be ordered against
+   * each other. Claiming by arrival order there would put one call's
+   * arguments in the same row as the other call's receipts -- a single wrong
+   * row, which is worse than the two right ones this refuses with. The open
+   * pairs are dropped at the same time, so the turn recovers for the next
+   * call rather than staying ambiguous to its end.
+   */
+  const claim = (
+    toolName: string,
+    side: "request" | "item",
+  ): string | undefined => {
     const open = openPairsByTool.get(toolName) || [];
-    const waiting = open.find((pair) =>
-      side === "request"
-        ? pair.hasItem && !pair.hasRequest
-        : pair.hasRequest && !pair.hasItem,
-    );
-    if (waiting) {
-      if (side === "request") waiting.hasRequest = true;
-      else waiting.hasItem = true;
-      openPairsByTool.set(
-        toolName,
-        open.filter((pair) => pair !== waiting),
-      );
-      return waiting.key;
+    if (open.length > 1) {
+      openPairsByTool.delete(toolName);
+      return undefined;
+    }
+    const [pending] = open;
+    if (pending) {
+      const opposite =
+        side === "request"
+          ? pending.hasItem && !pending.hasRequest
+          : pending.hasRequest && !pending.hasItem;
+      if (!opposite) {
+        // The same side twice: a second call opened while the first is still
+        // unpaired.
+        openPairsByTool.delete(toolName);
+        return undefined;
+      }
+      openPairsByTool.delete(toolName);
+      return pending.key;
     }
     minted += 1;
-    const pair: OpenPair = {
-      key: `codex-call:${minted}`,
-      hasRequest: side === "request",
-      hasItem: side === "item",
-    };
-    open.push(pair);
-    openPairsByTool.set(toolName, open);
-    return pair.key;
+    openPairsByTool.set(toolName, [
+      {
+        key: `codex-call:${minted}`,
+        hasRequest: side === "request",
+        hasItem: side === "item",
+      },
+    ]);
+    return `codex-call:${minted}`;
   };
 
   return {
@@ -658,12 +685,13 @@ export function createCodexNativeMcpCallCorrelator(serverName?: string) {
     }): string | undefined {
       if (!expectedServer) return undefined;
       const requestId = normalizeNonEmptyString(event.requestId);
-      const claimed = requestId ? keyByRequestId.get(requestId) : undefined;
-      if (claimed) return claimed;
+      if (requestId && keyByRequestId.has(requestId)) {
+        return keyByRequestId.get(requestId) || undefined;
+      }
       const toolName = normalizeNonEmptyString(event.toolName);
       if (!toolName) return undefined;
       const key = claim(toolName, "request");
-      if (requestId) keyByRequestId.set(requestId, key);
+      if (requestId) keyByRequestId.set(requestId, key ?? null);
       return key;
     },
     /** The key for one native item, when the item is a call to this server. */
@@ -680,12 +708,13 @@ export function createCodexNativeMcpCallCorrelator(serverName?: string) {
         return undefined;
       }
       const itemId = normalizeNonEmptyString(item.id);
-      const claimed = itemId ? keyByItemId.get(itemId) : undefined;
-      if (claimed) return claimed;
+      if (itemId && keyByItemId.has(itemId)) {
+        return keyByItemId.get(itemId) || undefined;
+      }
       const toolName = normalizeNonEmptyString(item.toolName || item.name);
       if (!toolName) return undefined;
       const key = claim(toolName, "item");
-      if (itemId) keyByItemId.set(itemId, key);
+      if (itemId) keyByItemId.set(itemId, key ?? null);
       return key;
     },
   };

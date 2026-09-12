@@ -3191,6 +3191,91 @@ describe("agentTrace render", function () {
     });
   });
 
+  it("keeps two concurrent calls of one tool as two rows", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    // Both calls are open at once, so the bridge paired neither: each row
+    // keeps its own key rather than one row carrying A's arguments with B's
+    // receipts.
+    for (const call of ["a", "b"] as const) {
+      controller.noteMcpToolActivity({
+        requestId: `jsonrpc:${call}`,
+        phase: "completed",
+        toolName: "query_library",
+        toolLabel: "Search library",
+        serverName: "llm_for_zotero",
+        workCategory: "retrieval",
+        arguments: { text: call },
+        actionReceipts: [
+          {
+            id: `receipt-${call}`,
+            operation: "note_create",
+            status: "applied",
+            verification: "verified",
+          } as never,
+        ],
+        ok: true,
+      });
+    }
+    controller.appendItemStatus(
+      {
+        id: "call_A",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+        arguments: { text: "a" },
+      },
+      "completed",
+    );
+    controller.appendItemStatus(
+      {
+        id: "call_B",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+        arguments: { text: "b" },
+      },
+      "completed",
+    );
+
+    const activities = (message.pendingAgentTraceEvents || [])
+      .map((entry) => entry.payload)
+      .filter(
+        (
+          payload,
+        ): payload is Extract<AgentEvent, { type: "codex_tool_activity" }> =>
+          payload.type === "codex_tool_activity",
+      );
+    for (const activity of activities) {
+      const args = activity.args as { text?: string } | undefined;
+      const receiptIds = (activity.actionReceipts || []).map(
+        (receipt) => receipt.id,
+      );
+      if (!receiptIds.length) continue;
+      assert.deepEqual(
+        receiptIds,
+        [`receipt-${args?.text}`],
+        "no row may carry one call's arguments with another call's receipts",
+      );
+    }
+    assert.lengthOf(
+      activities.filter((activity) => activity.actionReceipts?.length),
+      2,
+      "both calls' receipts survive on their own rows",
+    );
+  });
+
   it("stops adopting a nameless row just because it went past recently", function () {
     const message = {
       role: "assistant" as const,

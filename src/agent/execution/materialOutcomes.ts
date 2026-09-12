@@ -33,7 +33,11 @@ export const MATERIAL_OUTCOME_RUN_LIMIT = 20;
 const NOTE_WRITE_TOOL_NAME = "note_write";
 
 /** The only event kinds the ledger replays; the rest of the trace is not read. */
-const LEDGER_EVENT_TYPES = ["material_finalized", "tool_result"] as const;
+const LEDGER_EVENT_TYPES = [
+  "material_finalized",
+  "tool_call",
+  "tool_result",
+] as const;
 
 const MATERIAL_TITLE_MAX_LENGTH = 120;
 
@@ -87,11 +91,16 @@ export async function loadMaterialOutcomesForConversation(
   const open = new Map<string, OpenEntry>();
   let ordinal = 0;
   for (const run of runs) {
+    const callArguments = new Map<string, unknown>();
     for (const record of await listAgentRunEvents(run.runId, {
       eventTypes: LEDGER_EVENT_TYPES,
     })) {
       ordinal += 1;
       const event: AgentEvent = record.payload;
+      if (event.type === "tool_call") {
+        callArguments.set(event.callId, event.args);
+        continue;
+      }
       if (event.type === "material_finalized") {
         const materialRef = parseMaterialRef(event.materialRef);
         if (!materialRef) continue;
@@ -129,19 +138,21 @@ export async function loadMaterialOutcomesForConversation(
         }
         continue;
       }
-      // A failed write still produces receipts, and they carry the frozen
-      // MaterialRef, so the failure names its material without reading the
-      // call that made it.
+      // A write that reached execution carries the frozen MaterialRef on its
+      // receipts. One that failed earlier -- document resolution, lifecycle,
+      // a rejected input -- has no receipt at all, so its material is named by
+      // the result content or, failing that, by the call that requested it.
       const documentIds = new Set(
         (event.actionReceipts || [])
           .map((receipt) => parseMaterialRef(receipt.materialRef)?.documentId)
           .filter((documentId): documentId is string => Boolean(documentId)),
       );
-      const fromContent =
-        event.name === NOTE_WRITE_TOOL_NAME
-          ? readDocumentId(event.content)
-          : undefined;
-      if (fromContent) documentIds.add(fromContent);
+      if (!documentIds.size && event.name === NOTE_WRITE_TOOL_NAME) {
+        const documentId =
+          readDocumentId(event.content) ||
+          readDocumentId(callArguments.get(event.callId));
+        if (documentId) documentIds.add(documentId);
+      }
       for (const documentId of documentIds) {
         const failed = open.get(documentId);
         // A saved entry is terminal: a later failed write is a separate

@@ -291,6 +291,45 @@ describe("material outcome ledger", function () {
     assert.equal(ledger.entries[0].status, "write_failed");
   });
 
+  it("marks a note_write that failed before any receipt was minted", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: materialRef.documentId,
+        contentHash: materialRef.contentHash,
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+    harness.addRun("run-2", 20);
+    harness.addEvent("run-2", {
+      type: "tool_call",
+      callId: "note-write-1",
+      name: "note_write",
+      args: { documentId: materialRef.documentId, mode: "create" },
+    });
+    // Document resolution, lifecycle and input-rejection failures happen
+    // before a proposal is finalized, so the result carries no receipt at all.
+    harness.addEvent("run-2", {
+      type: "tool_result",
+      callId: "note-write-1",
+      name: "note_write",
+      ok: false,
+      actionReceipts: [],
+      content: {
+        error: "The finalized workflow document identity has changed.",
+      },
+    });
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.lengthOf(ledger.entries, 1);
+    assert.equal(ledger.entries[0].status, "write_failed");
+  });
+
   it("lets a later run's verified save close material a failed write left open", async function () {
     const materialRef: MaterialRef = {
       documentId: "run-1:document:1",

@@ -7,6 +7,7 @@ import { exercisePlanHistoryReplay } from "./planHistoryReplay";
 import { exerciseStreamingReplay } from "./streamingReplay";
 import { buildUI } from "./buildUI";
 import { getAgentRuntime } from "../../agent";
+import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
 import { renderPendingActionCard, renderAgentTrace } from "./agentTrace/render";
 import { disposeSetupHandlers, setupHandlers } from "./setupHandlers";
 import { PLAN_APPROVED_EVENT } from "./planModeState";
@@ -1010,36 +1011,38 @@ async function exerciseBackgroundAgentPublication(input: {
     timestamp,
   });
   const tool = getAgentRuntime().getToolDefinition("submit_document")!;
-  const prepared = (await tool.execute(
-    {
-      title: "Background publication fixture",
-      markdown:
-        "# Background publication fixture\n\nThis exact document must survive switching papers.",
-      citations: [],
-      quotes: [],
-      assets: [],
-      groundingReviewed: "passed",
-      groundingIssues: [],
-    },
-    {
-      request: {
-        conversationKey,
-        mode: "agent",
-        libraryID: paperA.libraryID,
-        userText: "Publish a background document.",
-        documentOutcomePolicy: {
-          required: true,
-          documentKind: "custom",
-          integrityPolicy: "authored",
-          trigger: "document_intent",
-        },
+  const prepared = normalizeExecutionOutput(
+    await tool.execute(
+      {
+        title: "Background publication fixture",
+        markdown:
+          "# Background publication fixture\n\nThis exact document must survive switching papers.",
+        citations: [],
+        quotes: [],
+        assets: [],
+        groundingReviewed: "passed",
+        groundingIssues: [],
       },
-      runId: `background-publication-${paperA.key}-${timestamp}`,
-      item: paperA,
-      modelName: "workflow",
-      currentAnswerText: "",
-    } as never,
-  )) as { documentId: string; visibleMarkdown: string };
+      {
+        request: {
+          conversationKey,
+          mode: "agent",
+          libraryID: paperA.libraryID,
+          userText: "Publish a background document.",
+          documentOutcomePolicy: {
+            required: true,
+            documentKind: "custom",
+            integrityPolicy: "authored",
+            trigger: "document_intent",
+          },
+        },
+        runId: `background-publication-${paperA.key}-${timestamp}`,
+        item: paperA,
+        modelName: "workflow",
+        currentAnswerText: "",
+      } as never,
+    ),
+  ).content as { documentId: string; visibleMarkdown: string };
   const paperB = Zotero.Items.get(input.paperBItemId);
   disposeSetupHandlers(panel.body);
   bindTestPanelHost(panel.body, paperB);

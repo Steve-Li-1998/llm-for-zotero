@@ -485,14 +485,21 @@ describe("chat scroll snapshots", function () {
       resolve(here, "../src/modules/contextPanel/chat.ts"),
       "utf8",
     );
-    const validationRefreshStart = chatSource.indexOf(
+    const schedulingSource = readFileSync(
+      resolve(
+        here,
+        "../src/modules/contextPanel/quoteValidation/scheduling.ts",
+      ),
+      "utf8",
+    );
+    const validationRefreshStart = schedulingSource.indexOf(
       "function refreshConversationAfterQuoteValidation(",
     );
-    const validationRefreshEnd = chatSource.indexOf(
+    const validationRefreshEnd = schedulingSource.indexOf(
       "function startConversationQuoteValidation(",
       validationRefreshStart,
     );
-    const validationRefreshSource = chatSource.slice(
+    const validationRefreshSource = schedulingSource.slice(
       validationRefreshStart,
       validationRefreshEnd,
     );
@@ -505,14 +512,14 @@ describe("chat scroll snapshots", function () {
       refreshChatStart,
       refreshChatEnd,
     );
-    const validationTaskStart = chatSource.indexOf(
+    const validationTaskStart = schedulingSource.indexOf(
       "function startConversationQuoteValidation(",
     );
-    const validationTaskEnd = chatSource.indexOf(
+    const validationTaskEnd = schedulingSource.indexOf(
       "function scheduleAssistantMessageQuoteValidation(",
       validationTaskStart,
     );
-    const validationTaskSource = chatSource.slice(
+    const validationTaskSource = schedulingSource.slice(
       validationTaskStart,
       validationTaskEnd,
     );

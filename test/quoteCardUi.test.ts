@@ -655,25 +655,52 @@ describe("quote card UI contract", function () {
   });
 
   it("separates the cache-only quote gate from background warming", function () {
-    const chatSource = source("src/modules/contextPanel/chat.ts");
+    const quoteValidationSource = [
+      "sourceEvidence",
+      "caches",
+      "gate",
+      "scheduling",
+    ]
+      .map((file) =>
+        source(`src/modules/contextPanel/quoteValidation/${file}.ts`),
+      )
+      .join("\n");
 
-    assert.include(chatSource, "warmPageTextCacheForAttachment");
-    assert.include(chatSource, "getCachedPageTextForAttachment");
-    assert.include(chatSource, 'sourceMatchSource: "pdf-page-text"');
-    assert.include(chatSource, "ensureQuoteSourceTextCachedForPaper");
-    assert.include(chatSource, "assistantMarkdownNeedsQuoteSourceSearch");
-    assert.include(chatSource, "await ensurePDFTextCached(contextItem");
-    assert.include(chatSource, 'paper.contentSourceMode || ""');
-    assert.include(chatSource, "!hasCachedQuoteSourceText(contextItemId) &&");
-    assert.include(chatSource, "pdfTextCache.has(contextItemId)");
+    assert.include(quoteValidationSource, "warmPageTextCacheForAttachment");
+    assert.include(quoteValidationSource, "getCachedPageTextForAttachment");
+    assert.include(quoteValidationSource, 'sourceMatchSource: "pdf-page-text"');
     assert.include(
-      chatSource,
+      quoteValidationSource,
+      "ensureQuoteSourceTextCachedForPaper",
+    );
+    assert.include(
+      quoteValidationSource,
+      "assistantMarkdownNeedsQuoteSourceSearch",
+    );
+    assert.include(
+      quoteValidationSource,
+      "await ensurePDFTextCached(contextItem",
+    );
+    assert.include(quoteValidationSource, 'paper.contentSourceMode || ""');
+    assert.include(
+      quoteValidationSource,
+      "!hasCachedQuoteSourceText(contextItemId) &&",
+    );
+    assert.include(quoteValidationSource, "pdfTextCache.has(contextItemId)");
+    assert.include(
+      quoteValidationSource,
       "const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(",
     );
-    assert.include(chatSource, "await warmQuoteSourceCachesForPaperContexts(");
-    assert.include(chatSource, "pendingQuoteValidations");
-    assert.include(chatSource, "startConversationQuoteValidation");
-    assert.include(chatSource, "scheduleAssistantMessageQuoteValidation(");
+    assert.include(
+      quoteValidationSource,
+      "await warmQuoteSourceCachesForPaperContexts(",
+    );
+    assert.include(quoteValidationSource, "pendingQuoteValidations");
+    assert.include(quoteValidationSource, "startConversationQuoteValidation");
+    assert.include(
+      quoteValidationSource,
+      "scheduleAssistantMessageQuoteValidation(",
+    );
   });
 
   it("decorates citation blockquotes after all assistant markdown surfaces are mounted", function () {

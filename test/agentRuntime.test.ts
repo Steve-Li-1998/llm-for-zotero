@@ -16,6 +16,9 @@ import { semanticFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import { stripNoteHtml } from "../src/utils/noteText";
 import { renderMarkdownForNote } from "../src/utils/markdown";
+import { DatabaseSync } from "node:sqlite";
+import { initPlanDocumentStore } from "../src/agent/documents/store";
+import { createSubmitDocumentTool } from "../src/agent/tools/plan/submitPlanDocument";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -8267,4 +8270,171 @@ describe("delegating facade trace labels", function () {
       }
     });
   }
+});
+
+/**
+ * The agent-run mock database is hand-written SQL pattern matching. The
+ * document store needs real SQL, so plan-document statements are routed to an
+ * in-memory sqlite database while every other statement stays on the mock.
+ */
+function installPlanDocumentSqlite(): () => void {
+  const zotero = globalThis as typeof globalThis & { Zotero: typeof Zotero };
+  const base = zotero.Zotero.DB;
+  const db = new DatabaseSync(":memory:");
+  zotero.Zotero.DB = {
+    ...base,
+    queryAsync: async (sql: string, params: unknown[] = []) => {
+      if (!sql.includes("llm_for_zotero_plan_document"))
+        return base.queryAsync(sql, params);
+      const statement = db.prepare(sql);
+      const values = params.map((value) =>
+        value === undefined ? null : value,
+      ) as never[];
+      if (/^\s*(SELECT|PRAGMA|WITH)/i.test(sql))
+        return statement.all(...values);
+      statement.run(...values);
+      return [];
+    },
+  } as unknown as typeof Zotero.DB;
+  return () => {
+    zotero.Zotero.DB = base;
+    db.close();
+  };
+}
+
+const submitDocumentGateway = {
+  formatStructuredCitations: () => ({
+    styleId: "apa",
+    styleTitle: "APA",
+    locale: "en-US",
+    clusters: [],
+    bibliographyEntries: [],
+  }),
+} as unknown as import("../src/agent/services/zoteroGateway").ZoteroGateway;
+
+describe("finalized material announcement", function () {
+  it("emits material_finalized and carries the same ref on the final event", async function () {
+    const restoreDb = installMockDb();
+    const restoreDocuments = installPlanDocumentSqlite();
+    const events: AgentEvent[] = [];
+    let steps = 0;
+    try {
+      await initPlanDocumentStore();
+      const registry = new AgentToolRegistry();
+      registry.register(createSubmitDocumentTool(submitDocumentGateway));
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            if (steps++ === 0) {
+              const call = {
+                id: "submit-document-1",
+                name: "submit_document",
+                arguments: {
+                  documentKind: "guide",
+                  integrityPolicy: "authored",
+                  title: "Representational drift",
+                  markdown: "# Representational drift\n\nA complete guide.",
+                  citations: [],
+                  quotes: [],
+                  assets: [],
+                  groundingReviewed: "passed",
+                  groundingIssues: [],
+                },
+              };
+              return {
+                kind: "tool_calls",
+                calls: [call],
+                assistantMessage: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [call],
+                },
+              };
+            }
+            return {
+              kind: "final",
+              text: "Unreachable: submit_document ends the turn.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Unreachable: submit_document ends the turn.",
+              },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 774411,
+          mode: "agent",
+          userText: "Write a guide about representational drift",
+          libraryID: 1,
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+          metadata: { sourceMessageTimestamp: 100 },
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      assert.equal(outcome.kind, "completed");
+      const toolResult = events.find(
+        (event) =>
+          event.type === "tool_result" && event.name === "submit_document",
+      );
+      assert.exists(toolResult, "the document tool must report a result");
+      const returnedRef = (
+        toolResult as Extract<AgentEvent, { type: "tool_result" }>
+      ).content as { materialRef?: unknown };
+      const announced = events.find(
+        (event) => event.type === "material_finalized",
+      ) as Extract<AgentEvent, { type: "material_finalized" }> | undefined;
+      assert.exists(
+        announced,
+        "a finalized document must be announced as material",
+      );
+      assert.deepEqual(announced?.materialRef, returnedRef.materialRef);
+      assert.equal(announced?.callId, "submit-document-1");
+      assert.equal(announced?.materialKind, "guide");
+      assert.equal(announced?.materialTitle, "Representational drift");
+
+      const finalEvent = events.find((event) => event.type === "final") as
+        | Extract<AgentEvent, { type: "final" }>
+        | undefined;
+      assert.deepEqual(finalEvent?.materialRef, announced?.materialRef);
+      assert.equal(
+        finalEvent?.documentId,
+        announced?.materialRef.documentId,
+        "the final event's document and material must be the same document",
+      );
+
+      const trace = await getAgentRunTrace(outcome.runId);
+      const persisted = trace.events.filter(
+        (entry) => entry.eventType === "material_finalized",
+      );
+      assert.lengthOf(
+        persisted,
+        1,
+        "the material announcement is persisted like every other run event",
+      );
+      const toolResultIndex = trace.events.findIndex(
+        (entry) => entry.eventType === "tool_result",
+      );
+      assert.isAbove(
+        persisted[0].seq,
+        trace.events[toolResultIndex].seq,
+        "material is announced after the tool result that carried it",
+      );
+    } finally {
+      restoreDocuments();
+      restoreDb();
+    }
+  });
 });

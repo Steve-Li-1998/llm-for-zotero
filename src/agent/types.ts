@@ -28,6 +28,7 @@ import type {
   ActionMechanism,
   ActionRiskSignal,
 } from "./authorization/types";
+import type { MaterialRef } from "./documents/types";
 import type {
   ResolvedTurnSelectedTextAnchor,
   ResolvedTurnSelectedTextContext,
@@ -522,10 +523,21 @@ export type AgentEvent =
   | { type: "context_compacted"; automatic?: boolean }
   | { type: "fallback"; reason: string }
   | {
+      type: "material_finalized";
+      /** Immutable identity of the material this run finalized. */
+      materialRef: MaterialRef;
+      materialKind?: string;
+      materialTitle?: string;
+      /** The tool call that finalized it; absent for host-side publication. */
+      callId?: string;
+    }
+  | {
       type: "final";
       text: string;
       /** Immutable host-finalized document rendered for this visible answer. */
       documentId?: string;
+      /** Identity of that document when the answer came from finalized material. */
+      materialRef?: MaterialRef;
       /** @deprecated Legacy Plan-only field. */
       planDocumentId?: string;
       answerStartedAt?: number;
@@ -959,6 +971,13 @@ export type AgentToolResult = {
   content: unknown;
   artifacts?: AgentToolArtifact[];
   continuationCheckpoint?: AgentToolContinuationCheckpoint;
+  /**
+   * Durable material this call finalized. The host announces it as a run
+   * event, so later turns recover it without re-reading tool payloads.
+   */
+  materialRef?: MaterialRef;
+  materialKind?: string;
+  materialTitle?: string;
 };
 
 export type AgentToolReviewResolution =
@@ -995,6 +1014,9 @@ export type AgentToolExecutionOutput<TResult = unknown> =
       effect?: AgentToolEffect;
       actionEvidence?: AgentActionEvidence[];
       continuationCheckpoint?: AgentToolContinuationCheckpoint;
+      materialRef?: MaterialRef;
+      materialKind?: string;
+      materialTitle?: string;
     };
 
 /** Explicit execution contract for tools whose validated operation can write. */

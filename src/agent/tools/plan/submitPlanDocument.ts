@@ -542,11 +542,20 @@ export function createSubmitDocumentTool(
           document,
         );
       }
+      const materialRef = materialRefFromDocument(document);
       return {
-        documentId: document.documentId,
-        contentHash: document.contentHash,
-        materialRef: materialRefFromDocument(document),
-        visibleMarkdown: document.visibleMarkdown,
+        // The model reads the reference from the payload; the host reads it
+        // from the typed result and announces it as a run event.
+        content: {
+          documentId: document.documentId,
+          contentHash: document.contentHash,
+          materialRef,
+          visibleMarkdown: document.visibleMarkdown,
+        },
+        materialRef,
+        materialKind:
+          document.version === 2 ? document.documentKind : undefined,
+        materialTitle: document.title,
       };
     },
     resolveTerminalResult: (_input, result: AgentToolResult) => {

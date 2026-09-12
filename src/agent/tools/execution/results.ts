@@ -1,4 +1,5 @@
 import type { ActionProposal } from "../../authorization/types";
+import type { MaterialRef } from "../../documents/types";
 import type {
   AgentActionEvidence,
   AgentInvocationPlan,
@@ -120,6 +121,25 @@ export function createProposalConfirmationAction(
   };
 }
 
+/** A material reference is identity, so every field must be present to use it. */
+function readMaterialRef(value: unknown): MaterialRef | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const record = value as Record<string, unknown>;
+  return typeof record.documentId === "string" &&
+    record.documentId &&
+    Number.isSafeInteger(record.documentVersion) &&
+    Number(record.documentVersion) >= 1 &&
+    typeof record.contentHash === "string" &&
+    record.contentHash
+    ? {
+        documentId: record.documentId,
+        documentVersion: Number(record.documentVersion),
+        contentHash: record.contentHash,
+      }
+    : undefined;
+}
+
 export function normalizeExecutionOutput(
   value: AgentToolExecutionOutput<any>,
 ): {
@@ -128,6 +148,9 @@ export function normalizeExecutionOutput(
   effect?: AgentToolEffect;
   actionEvidence?: AgentActionEvidence[];
   continuationCheckpoint?: AgentToolContinuationCheckpoint;
+  materialRef?: MaterialRef;
+  materialKind?: string;
+  materialTitle?: string;
 } {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const record = value as {
@@ -136,6 +159,9 @@ export function normalizeExecutionOutput(
       effect?: unknown;
       actionEvidence?: unknown;
       continuationCheckpoint?: unknown;
+      materialRef?: unknown;
+      materialKind?: unknown;
+      materialTitle?: unknown;
     };
     if (Object.prototype.hasOwnProperty.call(record, "content")) {
       return {
@@ -161,6 +187,15 @@ export function normalizeExecutionOutput(
           typeof (record.continuationCheckpoint as Record<string, unknown>)
             .instruction === "string"
             ? (record.continuationCheckpoint as AgentToolContinuationCheckpoint)
+            : undefined,
+        materialRef: readMaterialRef(record.materialRef),
+        materialKind:
+          typeof record.materialKind === "string"
+            ? record.materialKind
+            : undefined,
+        materialTitle:
+          typeof record.materialTitle === "string"
+            ? record.materialTitle
             : undefined,
       };
     }

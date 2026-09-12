@@ -777,6 +777,9 @@ export class InvocationController {
             content: output.content,
             artifacts: output.artifacts,
             continuationCheckpoint: output.continuationCheckpoint,
+            materialRef: output.materialRef,
+            materialKind: output.materialKind,
+            materialTitle: output.materialTitle,
           },
         });
       } catch (error) {

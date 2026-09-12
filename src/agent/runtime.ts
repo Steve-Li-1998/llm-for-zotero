@@ -53,6 +53,7 @@ import {
 import { createUnverifiedReceipt } from "./contracts/actionEvaluation";
 import { loadWorkflowCheckpoint } from "./contracts/workflowCheckpoint";
 import { resolveDocumentOutcomePolicy } from "./documents/outcomePolicy";
+import type { MaterialRef } from "./documents/types";
 import { loadWorkflowMaterial } from "./documents/workflowMaterial";
 import { AgentFinalAnswerController } from "./finalization/finalAnswerController";
 import type { AgentModelAdapter } from "./model/adapter";
@@ -1126,6 +1127,9 @@ export class AgentRuntime {
       let finalizedMaterial:
         | { documentId: string; finalText: string }
         | undefined;
+      // Material this run finalized, keyed by document id, so the terminal
+      // event can name the exact revision the answer came from.
+      const finalizedMaterialRefs = new Map<string, MaterialRef>();
       const completeRun = async (
         finalText: string,
         status: "completed" | "failed" = "completed",
@@ -1150,11 +1154,15 @@ export class AgentRuntime {
               "The agent run ended before the plan completed",
           );
         }
+        const finalMaterialRef = options.documentId
+          ? finalizedMaterialRefs.get(options.documentId)
+          : undefined;
         if (options.emitFinalEvent !== false) {
           await emit({
             type: "final",
             text: redactedFinalText,
             ...(options.documentId ? { documentId: options.documentId } : {}),
+            ...(finalMaterialRef ? { materialRef: finalMaterialRef } : {}),
             ...(options.webAttribution?.status === "valid" &&
             options.webAttribution.anchors.length
               ? {
@@ -1866,6 +1874,19 @@ export class AgentRuntime {
               ? request.planContext.activeTaskId
               : undefined,
         });
+        if (toolResult.materialRef) {
+          finalizedMaterialRefs.set(
+            toolResult.materialRef.documentId,
+            toolResult.materialRef,
+          );
+          await emit({
+            type: "material_finalized",
+            materialRef: toolResult.materialRef,
+            materialKind: toolResult.materialKind,
+            materialTitle: toolResult.materialTitle,
+            callId: toolResult.callId,
+          });
+        }
         await actionContractSession.recordToolReceipts(
           toolResult.actionReceipts,
         );

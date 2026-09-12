@@ -46,6 +46,7 @@ import {
   type ZoteroMcpActiveScope,
   type ZoteroMcpToolActivityEvent,
 } from "../agent/mcp/server";
+import { CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY } from "../agent/workCategory";
 import {
   buildLegacyCodexAppServerChatInput,
   prepareCodexAppServerChatTurn,
@@ -547,9 +548,10 @@ export function buildCodexNativeEffectActivityEvent(decision: {
     ok: decision.outcome === "executed",
     text: codexNativeEffectActivityText(decision),
     actionReceipts: [decision.receipt],
-    workCategory: "external_system",
+    workCategory: CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY,
   };
 }
+
 
 let codexNativeApprovalEffectSequence = 0;
 

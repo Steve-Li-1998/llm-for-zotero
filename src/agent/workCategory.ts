@@ -31,6 +31,17 @@ export function resolveAgentToolCallWorkCategory(
 }
 
 /**
+ * Work a connected runtime performed inside its own process.
+ *
+ * A connected client's file write or shell command never reaches a host
+ * `ToolSpec`, so it has no category to declare. It is named here with the
+ * registered tools rather than spelled at the bridge, so the vocabulary stays
+ * in one table.
+ */
+export const CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY: AgentWorkCategory =
+  "external_system";
+
+/**
  * Activity kinds native Codex reports for work it runs itself. These never
  * reach a host `ToolSpec`, so the panel resolves their meaning here instead of
  * spelling a second taxonomy at each render site.

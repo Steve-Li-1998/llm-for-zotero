@@ -289,13 +289,30 @@ describe("agent work categories", function () {
     );
   });
 
-  it("leaves the chat panel no second work-category taxonomy", function () {
-    const chat = readFileSync(
-      join(root, "src/modules/contextPanel/chat.ts"),
-      "utf8",
-    );
-    const literals = chat.match(/workCategory:\s*"/g) || [];
-    assert.deepEqual(literals, [], "chat.ts must not hard-code categories");
+  it("leaves the panel and both bridges no second work-category taxonomy", function () {
+    // A category literal outside the table is a second taxonomy: it drifts
+    // from the specs without any test noticing.
+    const scanned = [
+      "src/modules/contextPanel/chat.ts",
+      "src/codexAppServer/nativeClient.ts",
+      "src/agent/externalBackendBridge.ts",
+    ].map((path) => ({
+      path,
+      source: readFileSync(join(root, path), "utf8"),
+    }));
+    for (const file of scanned) {
+      assert.isAbove(
+        file.source.length,
+        0,
+        `${file.path} must be readable for the scan to mean anything`,
+      );
+      assert.deepEqual(
+        file.source.match(/workCategory:\s*"/g) || [],
+        [],
+        `${file.path} must not hard-code categories`,
+      );
+    }
+    const chat = scanned[0].source;
     const used = Array.from(
       chat.matchAll(/resolveCodexNativeWorkCategory\("([a-z_]+)"\)/g),
       (match) => match[1],

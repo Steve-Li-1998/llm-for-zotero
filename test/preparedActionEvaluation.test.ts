@@ -244,6 +244,52 @@ describe("prepared action completion", function () {
     );
   });
 
+  it("accepts a delegated effect that proved everything its proof domain can prove", function () {
+    // Task 3's ruling: `execution_only` means the effect ran and there is no
+    // state to re-read, and the host's own final gate lets such a receipt
+    // pass. The delegated branch read anything short of `verified` as a
+    // failure, so the identical receipt — a script an MCP client drove
+    // through the host's own zotero_script — reported an otherwise complete
+    // turn as unverified and invited a replay of a command that already ran.
+    const scriptRun: import("../src/agent/contracts/types").AgentActionReceipt =
+      {
+        version: 2,
+        executionAuthority: "external_runtime",
+        id: "zotero_script:executed",
+        proposalId: "zotero_script:proposal",
+        proofDomain: "execution",
+        capability: "zotero.script",
+        operation: "zotero_script_execute",
+        verification: "execution_only",
+        status: "observed",
+        requestedTargets: [],
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: [],
+        reasons: [],
+        verifiedFacts: [],
+      };
+    const decision = evaluatePreparedActionContract({}, [scriptRun]);
+    assert.equal(decision.state, "satisfied");
+    assert.isUndefined(decision.failure);
+    // A verified delegated write alongside it still reads as satisfied.
+    assert.equal(
+      evaluatePreparedActionContract({}, [
+        scriptRun,
+        { ...tagReceipt("applied"), executionAuthority: "external_runtime" },
+      ]).state,
+      "satisfied",
+    );
+    // `unverified` keeps failing: there a re-read was possible and either did
+    // not match or never happened.
+    assert.equal(
+      evaluatePreparedActionContract({}, [
+        { ...scriptRun, verification: "unverified", status: "unverified" },
+      ]).state,
+      "unverified",
+    );
+  });
+
   it("reports a dropped action as not performed instead of bare success", function () {
     const contract = semanticContractFixture({
       id: "dropped",

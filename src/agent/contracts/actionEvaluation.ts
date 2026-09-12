@@ -45,14 +45,14 @@ export function evaluatePreparedActionContract(
   if (delegated.length) {
     // The calling agent owns action intent. Report the actual effects without
     // reinterpreting them through Original Agent obligations or inviting replay.
-    if (delegated.every(receiptVerified)) return { state: "satisfied" };
+    if (delegated.every(receiptProved)) return { state: "satisfied" };
     const state = delegated.some((receipt) => receipt.status === "failed")
       ? "failed"
       : delegated.every((receipt) => receipt.status === "cancelled")
         ? "cancelled"
         : delegated.some(
               (receipt) =>
-                receipt.status === "partial" || receiptVerified(receipt),
+                receipt.status === "partial" || receiptProved(receipt),
             )
           ? "partial"
           : "unverified";
@@ -360,12 +360,36 @@ function isConnectedRuntimeSideEffect(receipt: AgentActionReceipt): boolean {
   return receipt.origin === "connected_runtime";
 }
 
-function receiptVerified(receipt: AgentActionReceipt): boolean {
+function receiptTookEffect(receipt: AgentActionReceipt): boolean {
   return (
-    receipt.verification === "verified" &&
-    (receipt.status === "applied" ||
-      receipt.status === "already_satisfied" ||
-      receipt.status === "observed")
+    receipt.status === "applied" ||
+    receipt.status === "already_satisfied" ||
+    receipt.status === "observed"
+  );
+}
+
+function receiptVerified(receipt: AgentActionReceipt): boolean {
+  return receipt.verification === "verified" && receiptTookEffect(receipt);
+}
+
+/**
+ * The receipt carries the strongest proof its proof domain admits.
+ *
+ * `verified` is a re-read that matched. `execution_only` is the whole proof a
+ * shell command or an effect-free script can ever have: it ran, and there is
+ * no state to read back. Phase 3 task 3 ruled that such a receipt passes the
+ * host's own final gate, so the delegated gate must not read it as a failure
+ * either — a client that ran one would be told its complete turn was
+ * unverified and invited to run the command a second time.
+ *
+ * `unverified` stays a failure in both gates: there a re-read was possible
+ * and either disagreed or never happened.
+ */
+function receiptProved(receipt: AgentActionReceipt): boolean {
+  return (
+    (receipt.verification === "verified" ||
+      receipt.verification === "execution_only") &&
+    receiptTookEffect(receipt)
   );
 }
 

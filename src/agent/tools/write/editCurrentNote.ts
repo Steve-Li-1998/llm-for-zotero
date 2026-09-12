@@ -85,7 +85,6 @@ type EditCurrentNoteInput = {
   documentId?: string;
   /** The exact material this proposal is frozen to, resolved once in preparation. */
   _documentMaterialRef?: MaterialRef;
-  _documentContentHash?: string;
   _documentHasAssets?: boolean;
   mode: "edit" | "create" | "append";
   content: string;
@@ -425,7 +424,6 @@ async function prepareWorkflowDocumentNote(
   input.content = document.visibleHtml;
   input._isHtml = true;
   input._documentMaterialRef = materialRefFromDocument(document);
-  input._documentContentHash = document.contentHash;
   input._documentHasAssets = document.assets.length > 0;
 }
 
@@ -449,7 +447,7 @@ export function createEditCurrentNoteTool(
           noteMode: input.mode,
           documentId: input.documentId,
           documentVersion: input._documentMaterialRef?.documentVersion,
-          contentHash: input._documentContentHash,
+          contentHash: input._documentMaterialRef?.contentHash,
           targetItemId: input.targetItemId,
           targetNoteId: input.targetNoteId || input.noteId,
           expectedText: input.content
@@ -977,7 +975,7 @@ export function createEditCurrentNoteTool(
             forward: {
               documentId,
               targetItemId: input.targetItemId,
-              contentHash: input._documentContentHash,
+              contentHash: input._documentMaterialRef?.contentHash,
             },
             reversibility: "full",
             deferredInverse: true,

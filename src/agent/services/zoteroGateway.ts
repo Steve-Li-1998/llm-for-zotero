@@ -3550,23 +3550,6 @@ export class ZoteroGateway {
     };
   }
 
-  async applyTagsToItems(params: {
-    itemIds: number[];
-    tags: string[];
-  }): Promise<{
-    selectedCount: number;
-    updatedCount: number;
-    skippedCount: number;
-    items: BatchTagItemResult[];
-  }> {
-    return this.applyTagAssignments({
-      assignments: params.itemIds.map((itemId) => ({
-        itemId,
-        tags: params.tags,
-      })),
-    });
-  }
-
   /**
    * Sets an item's collection membership to exactly the given set.
    *
@@ -3891,37 +3874,6 @@ export class ZoteroGateway {
       skippedCount: results.length - addedCount,
       collections: Array.from(collectionMap.values()),
       items: results,
-    };
-  }
-
-  async addItemsToCollection(params: {
-    itemIds: number[];
-    targetCollectionId: number;
-  }): Promise<{
-    selectedCount: number;
-    movedCount: number;
-    addedCount: number;
-    skippedCount: number;
-    collection: CollectionSummary;
-    items: BatchMoveItemResult[];
-  }> {
-    const collection = this.getCollectionSummary(params.targetCollectionId);
-    if (!collection) {
-      throw new Error("Collection not found");
-    }
-    const result = await this.addItemsToCollections({
-      assignments: params.itemIds.map((itemId) => ({
-        itemId,
-        targetCollectionId: params.targetCollectionId,
-      })),
-    });
-    return {
-      selectedCount: result.selectedCount,
-      movedCount: result.movedCount,
-      addedCount: result.addedCount,
-      skippedCount: result.skippedCount,
-      collection,
-      items: result.items,
     };
   }
 

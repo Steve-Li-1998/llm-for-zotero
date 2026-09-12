@@ -2106,9 +2106,9 @@ describe("AgentToolRegistry", function () {
     );
     assert.equal(prepared.execution.result.authority, "yolo_judgment");
   });
+
   describe("external_effect registration", function () {
     const effectDefinition = () => ({
-      effectOperations: ["settings_update"],
       spec: {
         name: "registered_effect",
         description: "fixture",

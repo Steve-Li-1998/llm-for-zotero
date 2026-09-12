@@ -30,6 +30,30 @@ import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
  * an external effect but absent here fails, and a row here that no longer
  * matches the registry fails. Adding a tool therefore means deciding its
  * operations, its proof domain and its receipt verification on purpose.
+ *
+ * Two kinds of assertion live here, and they are not worth the same.
+ *
+ * **Observed from production.** These build the real registry and call the
+ * real tools, so they fail when production drifts:
+ * - "audits exactly the external effects the registry holds"
+ * - "exempts control tools by class, not by name"
+ * - "gives every external effect a typed action adapter"
+ * - "declares exactly the audited operations, each with a proof domain"
+ * - "describes only audited operations from a representative input"
+ * - "pins what each tool proposes on the inputs it plans as read-only"
+ * - "never plans a mutating call as a trusted read"
+ *
+ * **Table-internal.** These read the table against `OPERATION_CATALOG` and
+ * touch no tool and no receipt. They record a decision so that changing it is
+ * a visible edit; they are not evidence that production behaves that way:
+ * - "pins the audit table's proof domain per tool against the catalog"
+ * - "pins the audit table's expected verification per proof domain"
+ *
+ * No assertion in this file observes a receipt. The receipt evidence lives in
+ * the per-tool characterizations (`test/runCommandTool.test.ts`,
+ * `test/fileIOTool.test.ts`, `test/undoLastAction.test.ts`,
+ * `test/revertChanges.test.ts`) until Phase 3 tasks 3 to 5 make the whole path
+ * observable end to end.
  */
 
 type Verification = AgentActionReceipt["verification"];
@@ -518,7 +542,9 @@ describe("effect path audit", function () {
     assert.deepEqual(declared, expected);
   });
 
-  it("keeps one proof domain per operation, owned by the catalog", function () {
+  // Table-internal from here: this reads AUDIT against OPERATION_CATALOG and
+  // never touches a tool or a receipt. It pins the decision, not the runtime.
+  it("pins the audit table's proof domain per tool against the catalog", function () {
     const domains: Record<string, AgentActionProofDomain[]> = {};
     for (const [name, row] of Object.entries(AUDIT)) {
       domains[name] = [
@@ -539,7 +565,11 @@ describe("effect path audit", function () {
     });
   });
 
-  it("records the receipt verification each proof domain produces today", function () {
+  // Table-internal: the expected verification per proof domain is a decision
+  // recorded here. Receipts are observed by the per-tool characterizations
+  // (runCommandTool, fileIOTool, undoLastAction, revertChanges) and will be
+  // observed end to end once Phase 3 tasks 3 to 5 land.
+  it("pins the audit table's expected verification per proof domain — verified against receipts in the per-tool tests and, end to end, in Task 6", function () {
     const byDomain: Record<string, Set<Verification>> = {};
     for (const row of Object.values(AUDIT)) {
       for (const operation of row.operations) {

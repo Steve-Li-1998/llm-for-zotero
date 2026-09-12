@@ -3591,7 +3591,7 @@ describe("AgentRuntime", function () {
       );
       const noteWrites: unknown[] = [];
       registry.register({
-        effectOperations: ["note_create", "save_note"],
+        effectOperations: ["note_create"],
         spec: {
           name: "note_write",
           description: "write note",

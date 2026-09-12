@@ -118,7 +118,9 @@ import {
 import { AgentToolRegistry } from "./tools/registry";
 import { latestExecutionCheckpoint } from "./execution/checkpoint";
 import { createAgentExecutionContext } from "./execution/context";
+import { loadMaterialOutcomesForConversation } from "./execution/materialOutcomes";
 import {
+  buildFinalizedMaterialRecoveryMessage,
   buildInterruptedRunRecoveryMessage,
   buildTranscriptUserMessage,
   isCurrentTurnUserTranscriptMessage,
@@ -633,6 +635,12 @@ export class AgentRuntime {
       let transcriptMessagesForPrompt = transcriptSegment.messages.length
         ? transcriptSegment.messages
         : normalizeHistoryMessages(request);
+      // Material the conversation finalized outlives the run that made it.
+      // Every turn -- not only the one after an interruption -- has to know
+      // what is still unwritten, or it regenerates what already exists.
+      request.materialOutcomes = (
+        await loadMaterialOutcomesForConversation(request.conversationKey)
+      ).entries;
       let recoveryMessage: AgentModelMessage | null = null;
       let interruptedActionCheckpoint: ActionContractCheckpoint | null = null;
       if (interruptedPriorRun) {
@@ -673,6 +681,7 @@ export class AgentRuntime {
           priorGoal: compatibilityMatches
             ? undefined
             : readLatestTranscriptGoal(latestTranscriptSegment?.messages || []),
+          materialOutcomes: request.materialOutcomes,
         });
         transcriptMessagesForPrompt = compatibilityMatches
           ? [...transcriptMessagesForPrompt, recoveryMessage]
@@ -777,10 +786,29 @@ export class AgentRuntime {
       const transcriptTail =
         turnStartTranscriptMessages[turnStartTranscriptMessages.length - 1] ||
         transcriptSegment.messages[transcriptSegment.messages.length - 1];
-      if (
+      const appendsUserMessage =
         hadCompatibleTranscript ||
-        !isCurrentTurnUserTranscriptMessage(transcriptTail, request)
-      ) {
+        !isCurrentTurnUserTranscriptMessage(transcriptTail, request);
+      // An interrupted run already carries the same block inside its recovery
+      // note; an ordinary turn gets it as its own host message, always
+      // immediately ahead of this turn's user message.
+      const materialRecoveryMessage = recoveryMessage
+        ? null
+        : buildFinalizedMaterialRecoveryMessage(request.materialOutcomes);
+      if (materialRecoveryMessage) {
+        turnStartTranscriptMessages.splice(
+          appendsUserMessage
+            ? turnStartTranscriptMessages.length
+            : Math.max(0, turnStartTranscriptMessages.length - 1),
+          0,
+          materialRecoveryMessage,
+        );
+        transcriptMessagesForPrompt = [
+          ...transcriptMessagesForPrompt,
+          materialRecoveryMessage,
+        ];
+      }
+      if (appendsUserMessage) {
         turnStartTranscriptMessages.push(currentUserTranscriptMessage);
       }
       if (turnStartTranscriptMessages.length) {

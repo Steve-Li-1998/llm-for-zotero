@@ -5,6 +5,8 @@ import type {
   AgentRunRecord,
   AgentRuntimeRequest,
 } from "../types";
+import { formatMaterialOutcomeRecoveryLines } from "./materialOutcomes";
+import type { MaterialOutcomeEntry } from "./types";
 
 export function isManualCompactRequest(request: AgentRuntimeRequest): boolean {
   return /^\/compact(?:\s|$)/i.test((request.userText || "").trim());
@@ -69,10 +71,23 @@ export function readLatestTranscriptGoal(
   return undefined;
 }
 
+/**
+ * A turn that follows a finished run still has to be told which material the
+ * conversation generated but never wrote, or it regenerates it.  Returns null
+ * when nothing is outstanding.
+ */
+export function buildFinalizedMaterialRecoveryMessage(
+  materialOutcomes: readonly MaterialOutcomeEntry[] | undefined,
+): AgentModelMessage | null {
+  const lines = formatMaterialOutcomeRecoveryLines(materialOutcomes || []);
+  return lines.length ? { role: "user", content: lines.join("\n") } : null;
+}
+
 export function buildInterruptedRunRecoveryMessage(params: {
   run: AgentRunRecord;
   actions: JournalActionWithSteps[];
   priorGoal?: string;
+  materialOutcomes?: readonly MaterialOutcomeEntry[];
 }): AgentModelMessage {
   const actions = [...params.actions].sort(
     (left, right) =>
@@ -94,6 +109,9 @@ export function buildInterruptedRunRecoveryMessage(params: {
   } else {
     lines.push("No journaled writes were recorded.");
   }
+  lines.push(
+    ...formatMaterialOutcomeRecoveryLines(params.materialOutcomes || []),
+  );
   lines.push(
     "Any unfinished confirmation was discarded and must be proposed and approved again.",
   );

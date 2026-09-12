@@ -1,11 +1,25 @@
 import { assert } from "chai";
 import {
+  buildFinalizedMaterialRecoveryMessage,
   buildInterruptedRunRecoveryMessage,
   buildTranscriptUserMessage,
   isCurrentTurnUserTranscriptMessage,
   isManualCompactRequest,
   readLatestTranscriptGoal,
 } from "../src/agent/execution/transcriptRecovery";
+import type { MaterialOutcomeEntry } from "../src/agent/execution/materialOutcomes";
+
+const unsavedMaterial: MaterialOutcomeEntry = {
+  materialRef: {
+    documentId: "run-1:document:1",
+    documentVersion: 1,
+    contentHash: "sha256:guide",
+  },
+  materialKind: "guide",
+  materialTitle: "Representational drift",
+  runId: "run-1",
+  status: "finalized",
+};
 
 describe("Agent transcript recovery", function () {
   const request = {
@@ -47,6 +61,37 @@ describe("Agent transcript recovery", function () {
     assert.include(
       String(message.content),
       "actionId=action-1; status=verified",
+    );
+  });
+
+  it("names finalized-but-unsaved material in the interrupted-run recovery note", function () {
+    const message = buildInterruptedRunRecoveryMessage({
+      run: { runId: "run-2" } as never,
+      actions: [],
+      materialOutcomes: [unsavedMaterial],
+    });
+    const content = String(message.content);
+    assert.include(content, "Finalized material not yet saved:");
+    assert.include(
+      content,
+      'documentId=run-1:document:1 version=1 hash=sha256:guide title="Representational drift" status=finalized',
+    );
+    assert.include(
+      content,
+      "To save it, call note_write with that documentId; do not regenerate it.",
+    );
+  });
+
+  it("builds a standalone host message for an uninterrupted next turn", function () {
+    const message = buildFinalizedMaterialRecoveryMessage([unsavedMaterial]);
+    assert.exists(message);
+    assert.equal(message?.role, "user");
+    assert.include(String(message?.content), "documentId=run-1:document:1");
+    assert.isNull(buildFinalizedMaterialRecoveryMessage([]));
+    assert.isNull(
+      buildFinalizedMaterialRecoveryMessage([
+        { ...unsavedMaterial, status: "saved" },
+      ]),
     );
   });
 });

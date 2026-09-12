@@ -56,6 +56,7 @@ import type { LoadedSkillRecord } from "./skills/loadingTypes";
 import type {
   ExecutionCheckpoint,
   ExecutionEvidenceInventory,
+  MaterialOutcomeEntry,
 } from "./execution/types";
 
 export type {
@@ -97,6 +98,9 @@ export type {
   ExecutionCheckpointTask,
   ExecutionCheckpointTaskUpdate,
   ExecutionEvidenceInventory,
+  MaterialOutcomeEntry,
+  MaterialOutcomeLedger,
+  MaterialOutcomeStatus,
 } from "./execution/types";
 
 export type AgentRequest = {
@@ -779,6 +783,11 @@ export type AgentRuntimeRequestInput = AgentRequest & {
   executionContext?: AgentExecutionContext;
   /** Latest durable ordinary-work progress. This record never grants authority. */
   executionCheckpoint?: ExecutionCheckpoint;
+  /**
+   * What happened to the material this conversation finalized, derived from
+   * persisted run events at turn start.  Evidence, never authority.
+   */
+  materialOutcomes?: readonly MaterialOutcomeEntry[];
   /** Exact skill instructions loaded or forced by the host for this workflow. */
   loadedSkillRecords?: LoadedSkillRecord[];
   /** Legacy stored-artifact compatibility; absent on fresh ordinary turns. */

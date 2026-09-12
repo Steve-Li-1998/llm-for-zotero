@@ -359,7 +359,8 @@ export function collectJournalActionIds(value: unknown): string[] {
   return [...actionIds];
 }
 
-function parseMaterialRef(value: unknown): MaterialRef | null {
+/** Narrow an untrusted persisted payload to the one material identity. */
+export function parseMaterialRef(value: unknown): MaterialRef | null {
   const candidate = record(value);
   if (
     !candidate ||

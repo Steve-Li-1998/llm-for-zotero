@@ -1,0 +1,472 @@
+import { assert } from "chai";
+import { DatabaseSync } from "node:sqlite";
+import {
+  formatMaterialOutcomeRecoveryLines,
+  loadMaterialOutcomesForConversation,
+} from "../src/agent/execution/materialOutcomes";
+import {
+  initPlanDocumentStore,
+  savePlanDocumentInTransaction,
+} from "../src/agent/documents/store";
+import type { MaterialRef } from "../src/agent/documents/materialRef";
+import type { PlanDocument } from "../src/agent/documents/types";
+import type { AgentActionReceipt } from "../src/agent/contracts/types";
+import type { AgentEvent } from "../src/agent/types";
+
+const CONVERSATION_KEY = 5511;
+
+function directDocument(params: {
+  documentId: string;
+  contentHash: string;
+  conversationKey?: number;
+  runId?: string;
+}): PlanDocument {
+  return {
+    version: 2,
+    documentId: params.documentId,
+    documentVersion: 1,
+    documentKind: "guide",
+    integrityPolicy: "authored",
+    origin: {
+      kind: "direct",
+      runId: params.runId || "run-1",
+      sourceMessageTimestamp: 100,
+      routingReceipt: undefined,
+    },
+    conversationKey: params.conversationKey ?? CONVERSATION_KEY,
+    title: "Representational drift",
+    visibleMarkdown: "# Representational drift\n\nA complete guide.",
+    visibleHtml: "<h1>Representational drift</h1>",
+    citationBundle: {
+      clusters: [],
+      bibliographyEntries: [],
+      style: { id: "apa", title: "APA" },
+      locale: "en-US",
+    },
+    verifiedQuotes: [],
+    assets: [],
+    coverageItems: [],
+    validation: {
+      integrityValidated: true,
+      groundingReviewed: "not_run",
+      quoteVerified: "not_applicable",
+      issues: [],
+    },
+    contentHash: params.contentHash,
+    createdAt: 2,
+  };
+}
+
+function verifiedNoteReceipt(materialRef: MaterialRef): AgentActionReceipt {
+  return {
+    version: 2,
+    id: `receipt:${materialRef.documentId}`,
+    proposalId: `proposal:${materialRef.documentId}`,
+    proofDomain: "zotero_state",
+    capability: "zotero.notes",
+    operation: "note_create",
+    verification: "verified",
+    status: "applied",
+    requestedTargets: ["item:101"],
+    appliedTargets: ["item:101"],
+    alreadySatisfiedTargets: [],
+    rejectedTargets: [],
+    reasons: [],
+    materialRef,
+    verifiedFacts: ["native_note:501:html_sha256:abc"],
+  } as AgentActionReceipt;
+}
+
+function finalizedEvent(materialRef: MaterialRef): AgentEvent {
+  return {
+    type: "material_finalized",
+    materialRef,
+    materialKind: "guide",
+    materialTitle: "Representational drift",
+    callId: "submit-document-1",
+  };
+}
+
+type TestHarness = {
+  db: DatabaseSync;
+  restore: () => void;
+  addRun: (runId: string, createdAt: number) => void;
+  addEvent: (runId: string, event: AgentEvent) => void;
+  addDocument: (document: PlanDocument) => Promise<void>;
+};
+
+async function installHarness(): Promise<TestHarness> {
+  const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
+  const original = globalScope.Zotero;
+  const db = new DatabaseSync(":memory:");
+  globalScope.Zotero = {
+    DB: {
+      queryAsync: async (sql: string, params: unknown[] = []) => {
+        const statement = db.prepare(sql);
+        const values = params.map((value) =>
+          value === undefined ? null : value,
+        ) as never[];
+        if (/^\s*(SELECT|PRAGMA|WITH)/i.test(sql))
+          return statement.all(...values);
+        statement.run(...values);
+        return [];
+      },
+      executeTransaction: async (task: () => Promise<unknown>) => task(),
+    },
+  } as unknown as typeof Zotero;
+  db.exec(`CREATE TABLE llm_for_zotero_agent_runs (
+    run_id TEXT PRIMARY KEY,
+    conversation_key INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    model_name TEXT,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    final_text TEXT
+  )`);
+  db.exec(`CREATE TABLE llm_for_zotero_agent_run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`);
+  await initPlanDocumentStore();
+  const sequences = new Map<string, number>();
+  return {
+    db,
+    restore: () => {
+      globalScope.Zotero = original;
+      db.close();
+    },
+    addRun: (runId, createdAt) => {
+      db.prepare(
+        `INSERT INTO llm_for_zotero_agent_runs
+          (run_id, conversation_key, mode, model_name, status, created_at)
+         VALUES (?, ?, 'agent', 'test', 'completed', ?)`,
+      ).run(runId, CONVERSATION_KEY, createdAt);
+    },
+    addEvent: (runId, event) => {
+      const seq = (sequences.get(runId) || 0) + 1;
+      sequences.set(runId, seq);
+      db.prepare(
+        `INSERT INTO llm_for_zotero_agent_run_events
+          (run_id, seq, event_type, payload_json, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(runId, seq, event.type, JSON.stringify(event), 1000 + seq);
+    },
+    addDocument: async (document) => {
+      await savePlanDocumentInTransaction({
+        document,
+        outbox: {
+          version: 1,
+          outboxId: `${document.documentId}:message`,
+          documentId: document.documentId,
+          conversationKey: document.conversationKey,
+          messageTimestamp: 2,
+          visibleMarkdown: document.visibleMarkdown,
+          status: "pending",
+          attemptCount: 0,
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      });
+    },
+  };
+}
+
+describe("material outcome ledger", function () {
+  let harness: TestHarness;
+
+  beforeEach(async function () {
+    harness = await installHarness();
+  });
+
+  afterEach(function () {
+    harness.restore();
+  });
+
+  it("reports material a run finalized and no later run saved", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: materialRef.documentId,
+        contentHash: materialRef.contentHash,
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.lengthOf(ledger.entries, 1);
+    assert.deepEqual(ledger.entries[0].materialRef, materialRef);
+    assert.equal(ledger.entries[0].status, "finalized");
+    assert.equal(ledger.entries[0].runId, "run-1");
+    assert.equal(ledger.entries[0].materialKind, "guide");
+    assert.equal(ledger.entries[0].materialTitle, "Representational drift");
+    assert.isEmpty(ledger.dropped);
+  });
+
+  it("closes an entry when a later run's verified receipt names the same material", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: materialRef.documentId,
+        contentHash: materialRef.contentHash,
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+    harness.addRun("run-2", 20);
+    harness.addEvent("run-2", {
+      type: "tool_result",
+      callId: "note-write-1",
+      name: "note_write",
+      ok: true,
+      actionReceipts: [verifiedNoteReceipt(materialRef)],
+      content: { noteId: 501, actionId: "journal-action-1" },
+    });
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.lengthOf(ledger.entries, 1);
+    assert.equal(ledger.entries[0].status, "saved");
+    assert.equal(
+      ledger.entries[0].receiptId,
+      `receipt:${materialRef.documentId}`,
+    );
+    assert.equal(ledger.entries[0].actionId, "journal-action-1");
+  });
+
+  it("marks a failed note_write against the finalized document", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: materialRef.documentId,
+        contentHash: materialRef.contentHash,
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+    harness.addRun("run-2", 20);
+    harness.addEvent("run-2", {
+      type: "tool_call",
+      callId: "note-write-1",
+      name: "note_write",
+      args: { documentId: materialRef.documentId, noteMode: "create" },
+    });
+    harness.addEvent("run-2", {
+      type: "tool_result",
+      callId: "note-write-1",
+      name: "note_write",
+      ok: false,
+      actionReceipts: [],
+      content: { error: "The parent item is in the trash." },
+    });
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.lengthOf(ledger.entries, 1);
+    assert.equal(ledger.entries[0].status, "write_failed");
+  });
+
+  it("lets a later run's verified save close material a failed write left open", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: materialRef.documentId,
+        contentHash: materialRef.contentHash,
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+    harness.addRun("run-2", 20);
+    harness.addEvent("run-2", {
+      type: "tool_result",
+      callId: "note-write-1",
+      name: "note_write",
+      ok: false,
+      actionReceipts: [],
+      content: {
+        documentId: materialRef.documentId,
+        error: "The parent item is in the trash.",
+      },
+    });
+    harness.addRun("run-3", 30);
+    harness.addEvent("run-3", {
+      type: "tool_result",
+      callId: "note-write-2",
+      name: "note_write",
+      ok: true,
+      actionReceipts: [verifiedNoteReceipt(materialRef)],
+      content: { noteId: 501 },
+    });
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.lengthOf(ledger.entries, 1);
+    assert.equal(ledger.entries[0].status, "saved");
+  });
+
+  it("drops material whose stored document no longer matches the announced ref", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:announced",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: materialRef.documentId,
+        contentHash: "sha256:rewritten",
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.isEmpty(ledger.entries);
+    assert.lengthOf(ledger.dropped, 1);
+    assert.equal(ledger.dropped[0].documentId, materialRef.documentId);
+    assert.match(ledger.dropped[0].reason, /content hash/i);
+  });
+
+  it("drops material whose document is gone from the store", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.isEmpty(ledger.entries);
+    assert.lengthOf(ledger.dropped, 1);
+  });
+
+  it("orders entries newest first and bounds the scan to the most recent runs", async function () {
+    for (const index of [1, 2, 3]) {
+      const materialRef: MaterialRef = {
+        documentId: `run-${index}:document:1`,
+        documentVersion: 1,
+        contentHash: `sha256:guide-${index}`,
+      };
+      await harness.addDocument(
+        directDocument({
+          documentId: materialRef.documentId,
+          contentHash: materialRef.contentHash,
+          runId: `run-${index}`,
+        }),
+      );
+      harness.addRun(`run-${index}`, index * 10);
+      harness.addEvent(`run-${index}`, finalizedEvent(materialRef));
+    }
+
+    const all = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.deepEqual(
+      all.entries.map((entry) => entry.runId),
+      ["run-3", "run-2", "run-1"],
+    );
+
+    const bounded = await loadMaterialOutcomesForConversation(
+      CONVERSATION_KEY,
+      { limitRuns: 2 },
+    );
+    assert.deepEqual(
+      bounded.entries.map((entry) => entry.runId),
+      ["run-3", "run-2"],
+    );
+  });
+
+  it("ignores material finalized by another conversation", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: materialRef.documentId,
+        contentHash: materialRef.contentHash,
+        conversationKey: CONVERSATION_KEY + 1,
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.isEmpty(ledger.entries);
+    assert.lengthOf(ledger.dropped, 1);
+  });
+});
+
+describe("finalized material recovery lines", function () {
+  const materialRef: MaterialRef = {
+    documentId: "run-1:document:1",
+    documentVersion: 1,
+    contentHash: "sha256:guide",
+  };
+
+  it("lists only material that is still unsaved, with its exact identity", function () {
+    const lines = formatMaterialOutcomeRecoveryLines([
+      {
+        materialRef,
+        materialKind: "guide",
+        materialTitle: "Representational drift",
+        runId: "run-1",
+        status: "finalized",
+      },
+      {
+        materialRef: { ...materialRef, documentId: "run-0:document:1" },
+        materialKind: "guide",
+        materialTitle: "Saved already",
+        runId: "run-0",
+        status: "saved",
+      },
+    ]);
+    assert.deepEqual(lines, [
+      "Finalized material not yet saved:",
+      'documentId=run-1:document:1 version=1 hash=sha256:guide title="Representational drift" status=finalized',
+      "To save it, call note_write with that documentId; do not regenerate it.",
+    ]);
+  });
+
+  it("says nothing when every finalized material was saved", function () {
+    assert.isEmpty(
+      formatMaterialOutcomeRecoveryLines([
+        {
+          materialRef,
+          runId: "run-1",
+          status: "saved",
+        },
+      ]),
+    );
+  });
+
+  it("keeps a failed write in the list so the next turn can retry it", function () {
+    const lines = formatMaterialOutcomeRecoveryLines([
+      {
+        materialRef,
+        materialTitle: "Representational drift",
+        runId: "run-1",
+        status: "write_failed",
+      },
+    ]);
+    assert.lengthOf(lines, 3);
+    assert.include(lines[1], "status=write_failed");
+  });
+});

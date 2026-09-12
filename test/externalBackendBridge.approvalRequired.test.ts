@@ -700,6 +700,21 @@ describe("external bridge action approval handling", function () {
         customInstruction,
         "Do not create a Papers, papers, Notes, or other alternate subfolder",
       );
+      // A Markdown note written with Claude Code's own Write tool bypasses
+      // note_write and every property the host proves through it, so the
+      // prompt must route notes to note_write and leave Write for other files.
+      assert.notInclude(
+        customInstruction,
+        "If using Claude Code's Write tool for a Markdown note",
+      );
+      assert.include(
+        customInstruction,
+        "use the Zotero note_write tool, not Claude Code's Write tool",
+      );
+      assert.include(
+        customInstruction,
+        "Claude Code's Write tool stays available for files that are not notes",
+      );
       assert.include(customInstruction, "Original agent-mode Zotero behavior");
       assert.include(customInstruction, "(creator, year)");
       assert.include(

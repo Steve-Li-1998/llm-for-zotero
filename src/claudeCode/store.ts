@@ -55,7 +55,6 @@ import {
   type PaperContextJsonColumns,
 } from "../shared/conversationRegistry";
 import { stagePaperRestoreTargetForStartup } from "../shared/paperConversationRestore";
-import { repairRecoverableCatalogMessageConversationIDs } from "../shared/conversationMessageIdentityRepair";
 import {
   deleteConversationSearchIndexRowInTransaction,
   initConversationSearchIndexStore,
@@ -121,6 +120,13 @@ import {
 } from "../shared/conversationStore/messageConversationSelector";
 import { getMessagePaperContextRows } from "../shared/conversationStore/messagePaperContextRows";
 import { loadStoredConversationMessages } from "../services/providers/conversationStoreMessageMapping";
+import {
+  backfillStoreCatalogConversationIDs,
+  backfillStoreCatalogConversationInstanceIDs,
+  backfillStoreCatalogConversationTimestamps,
+  repairRecoverableStoreCatalogMessageConversationIDs,
+  type ConversationStoreIdentityConfig,
+} from "../services/providers/conversationStoreIdentityRepair";
 import {
   deleteStoreConversationSearchIndex,
   refreshStoreConversationSearchIndex,
@@ -523,31 +529,8 @@ async function ensureClaudeConversationCatalogColumns(
 }
 
 async function backfillClaudeConversationTimestamps(): Promise<void> {
-  const now = Date.now();
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-     SET created_at = COALESCE(
-       created_at,
-       (SELECT MIN(m.timestamp)
-        FROM ${CLAUDE_MESSAGES_TABLE} m
-        WHERE m.conversation_key = ${CLAUDE_CONVERSATIONS_TABLE}.conversation_key),
-       ?
-     )
-     WHERE created_at IS NULL`,
-    [now],
-  );
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-     SET updated_at = COALESCE(
-       updated_at,
-       (SELECT MAX(m.timestamp)
-        FROM ${CLAUDE_MESSAGES_TABLE} m
-        WHERE m.conversation_key = ${CLAUDE_CONVERSATIONS_TABLE}.conversation_key),
-       created_at,
-       ?
-     )
-     WHERE updated_at IS NULL`,
-    [now],
+  await backfillStoreCatalogConversationTimestamps(
+    CLAUDE_STORE_IDENTITY_CONFIG,
   );
 }
 
@@ -605,6 +588,15 @@ async function getClaudeMessagePaperContextRows(
   );
 }
 
+const CLAUDE_STORE_IDENTITY_CONFIG: ConversationStoreIdentityConfig = {
+  system: "claude_code",
+  storeLabel: "Claude",
+  catalogTable: CLAUDE_CONVERSATIONS_TABLE,
+  messagesTable: CLAUDE_MESSAGES_TABLE,
+  buildConversationID: buildClaudeConversationID,
+  getPaperContextRows: getClaudeMessagePaperContextRows,
+};
+
 async function repairRecoverableClaudeCatalogMessageConversationIDs(
   conversationKey?: number,
 ): Promise<{
@@ -612,116 +604,18 @@ async function repairRecoverableClaudeCatalogMessageConversationIDs(
   repaired: number;
   refused: number;
 }> {
-  const normalizedKey =
-    conversationKey === undefined
-      ? null
-      : normalizeConversationKey(conversationKey);
-  if (conversationKey !== undefined && !normalizedKey) {
-    return { checked: 0, repaired: 0, refused: 0 };
-  }
-  return await repairRecoverableCatalogMessageConversationIDs({
-    queryAsync: Zotero.DB.queryAsync.bind(Zotero.DB),
-    catalogTable: CLAUDE_CONVERSATIONS_TABLE,
-    messageTable: CLAUDE_MESSAGES_TABLE,
-    system: "claude_code",
-    kindSql: "c.kind",
-    paperItemIDSql: "c.paper_item_id",
-    getPaperContextRows: getClaudeMessagePaperContextRows,
-    storeLabel: "Claude",
-    log: logConversationStoreWarning,
-    ...(normalizedKey
-      ? { filterSql: "c.conversation_key = ?", filterParams: [normalizedKey] }
-      : {}),
-  });
+  return await repairRecoverableStoreCatalogMessageConversationIDs(
+    CLAUDE_STORE_IDENTITY_CONFIG,
+    conversationKey,
+  );
 }
 
 async function backfillClaudeConversationIDs(): Promise<void> {
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT conversation_key AS conversationKey,
-            library_id AS libraryID,
-            kind AS kind,
-            paper_item_id AS paperItemID
-     FROM ${CLAUDE_CONVERSATIONS_TABLE}`,
-  )) as
-    | Array<{
-        conversationKey?: unknown;
-        libraryID?: unknown;
-        kind?: unknown;
-        paperItemID?: unknown;
-      }>
-    | undefined;
-  for (const row of rows || []) {
-    const conversationKey = normalizeConversationKey(
-      Number(row.conversationKey),
-    );
-    const libraryID = normalizeLibraryID(Number(row.libraryID));
-    const kind =
-      row.kind === "paper" ? "paper" : row.kind === "global" ? "global" : null;
-    if (!conversationKey || !libraryID || !kind) continue;
-    const paperItemID = normalizePaperItemID(Number(row.paperItemID));
-    const conversationID = buildClaudeConversationID({
-      conversationKey,
-      kind,
-      libraryID,
-      paperItemID,
-    });
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-       SET conversation_id = ?
-       WHERE conversation_key = ?
-         AND (conversation_id IS NULL OR TRIM(conversation_id) = '')`,
-      [conversationID, conversationKey],
-    );
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_MESSAGES_TABLE}
-       SET conversation_id = ?
-       WHERE conversation_key = ?
-         AND (conversation_id IS NULL OR TRIM(conversation_id) = '')`,
-      [conversationID, conversationKey],
-    );
-  }
+  await backfillStoreCatalogConversationIDs(CLAUDE_STORE_IDENTITY_CONFIG);
 }
 
 async function backfillClaudeConversationInstanceIDs(): Promise<void> {
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-     SET conversation_instance_id = (
-       SELECT r.instance_id
-       FROM llm_for_zotero_conversation_registry r
-       WHERE r.conversation_id = ${CLAUDE_CONVERSATIONS_TABLE}.conversation_id
-         AND r.instance_id IS NOT NULL
-         AND TRIM(r.instance_id) <> ''
-       LIMIT 1
-     )
-     WHERE (conversation_instance_id IS NULL OR TRIM(conversation_instance_id) = '')
-       AND conversation_id IS NOT NULL
-       AND EXISTS (
-         SELECT 1
-         FROM llm_for_zotero_conversation_registry r
-         WHERE r.conversation_id = ${CLAUDE_CONVERSATIONS_TABLE}.conversation_id
-           AND r.instance_id IS NOT NULL
-           AND TRIM(r.instance_id) <> ''
-       )`,
-  );
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT conversation_key AS conversationKey
-     FROM ${CLAUDE_CONVERSATIONS_TABLE}
-     WHERE conversation_instance_id IS NULL
-        OR TRIM(conversation_instance_id) = ''`,
-  )) as Array<{ conversationKey?: unknown }> | undefined;
-  for (const row of rows || []) {
-    const conversationKey = normalizeConversationKey(
-      Number(row.conversationKey),
-    );
-    if (!conversationKey) continue;
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-       SET conversation_instance_id = ?
-       WHERE conversation_key = ?
-         AND (conversation_instance_id IS NULL OR TRIM(conversation_instance_id) = '')`,
-      [generateConversationInstanceID(), conversationKey],
-    );
-  }
+  await backfillStoreCatalogConversationInstanceIDs(CLAUDE_CONVERSATIONS_TABLE);
 }
 
 export async function repairClaudeConversationIdentityRegistry(

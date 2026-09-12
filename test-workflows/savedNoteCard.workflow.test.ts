@@ -119,9 +119,14 @@ describe("workflow: create then show saved note", function () {
         root = api.renderToolResultForPanel(panel.panelId, result, {});
         assert.exists(root);
         assert.lengthOf(
+          root!.querySelectorAll(".llm-plan-document-card"),
+          0,
+          "a restored note-only turn shows no second document card",
+        );
+        assert.lengthOf(
           root!.querySelectorAll(".llm-plan-container"),
-          1,
-          "a restored note-only turn has one card, not a second document",
+          2,
+          "a restored note-only turn shows the note and what the turn did",
         );
         const card = root!.querySelector<HTMLElement>(".llm-saved-note-card")!;
         assert.exists(

@@ -5113,6 +5113,18 @@ function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
   };
 }
 
+/** Visit every item, inside a stage group or not, in the order produced. */
+function forEachAgentTraceDisplayItem(
+  items: readonly AgentTraceDisplayItem[],
+  visit: (item: AgentTraceDisplayItem) => void,
+): void {
+  for (const item of items) {
+    visit(item);
+    if (item.type === "stage")
+      forEachAgentTraceDisplayItem(item.children, visit);
+  }
+}
+
 /** Whether any item, inside a stage group or not, satisfies `predicate`. */
 function someAgentTraceDisplayItem(
   items: readonly AgentTraceDisplayItem[],
@@ -6710,8 +6722,12 @@ export function renderAgentTrace({
     string,
     AgentNoteChangeResultCard | AgentSavedNoteResultCard
   >();
-  for (const item of processItems) {
-    if (item.type !== "card_list") continue;
+  // These cards are the turn's outcome, not a step, so they are collected from
+  // the whole item tree: a card list an action produced is grouped into the
+  // stage that produced it, and the in-stage renderer drops these kinds
+  // because they belong here, below the disclosure.
+  forEachAgentTraceDisplayItem(processItems, (item) => {
+    if (item.type !== "card_list") return;
     for (const card of item.cards) {
       if (card.kind === "note_change") {
         shownNoteActions.set(card.actionId, card);
@@ -6722,7 +6738,7 @@ export function renderAgentTrace({
         else wrap.appendChild(renderSavedNoteCard(doc, card));
       }
     }
-  }
+  });
 
   for (const card of shownNoteActions.values())
     wrap.appendChild(
@@ -6731,12 +6747,12 @@ export function renderAgentTrace({
         : renderSavedNoteCard(doc, card),
     );
 
-  for (const item of processItems) {
-    if (item.type !== "card_list") continue;
+  forEachAgentTraceDisplayItem(processItems, (item) => {
+    if (item.type !== "card_list") return;
     for (const card of item.cards)
       if (card.kind === "action_summary")
         wrap.appendChild(renderActionSummaryCard(doc, card));
-  }
+  });
 
   const planProjection = getPlanProjection(events);
   const visiblePlanProjection =

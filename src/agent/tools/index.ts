@@ -702,7 +702,7 @@ export function createBuiltInToolRegistry(
       name: "note_write_batch",
       label: "Write Notes",
       description:
-        "Write a note onto each of many explicitly identified items in one checkpointed batch operation.",
+        "Write a note onto each of many explicitly identified items in one checkpointed batch operation. To continue an interrupted batch, pass resumeBatchId alone: written items are skipped and the rest are written from the bodies already prepared, so no note is written again or regenerated.",
     }),
   );
   registry.register(savedSearchUpdate);

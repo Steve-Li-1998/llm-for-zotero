@@ -89,7 +89,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   note_write:
     "Create, append, or edit one Zotero note. documentId reuses finalized material.",
   note_write_batch:
-    "Write notes to explicitly identified items as one checkpointed batch.",
+    "Write notes to explicitly identified items as one checkpointed batch; resumeBatchId continues an interrupted one.",
   saved_search_update: "Create, replace, or delete a Zotero saved search.",
   library_cite:
     "Format Zotero CSL citations or bibliographies, or export with a translator.",

@@ -279,28 +279,27 @@ export function createWriteNotesBatchTool(
           error: `The note this item wrote (${row.noteId}) is no longer in the library`,
         });
       }
-      const blocked = await blockedReason(row);
-      if (blocked) {
-        resume.blocked.push({ itemKey: row.itemKey, reason: blocked });
-        if (row.status !== "failed" || row.error !== blocked)
+      const resolved = await storedBodyFor(row);
+      if ("blocked" in resolved) {
+        resume.blocked.push({ itemKey: row.itemKey, reason: resolved.blocked });
+        if (row.status !== "failed" || row.error !== resolved.blocked)
           await markBatchItemFailed(batchId, row.itemKey, {
             actionId: row.actionId,
             stepSequence: row.stepSequence,
-            error: blocked,
+            error: resolved.blocked,
           });
         continue;
       }
-      const document = await loadPlanDocument(row.materialRef!.documentId);
       items.push({
         itemKey: row.itemKey,
         targetItemId: descriptor.targetItemId,
         position: row.position,
         material: row.materialRef,
-        preview: previewOf(document!.visibleMarkdown),
+        preview: previewOf(resolved.body),
       });
       notes.push({
         targetItemId: descriptor.targetItemId,
-        content: document!.visibleMarkdown,
+        content: resolved.body,
         ...(descriptor.collections?.length
           ? { collections: descriptor.collections }
           : {}),
@@ -317,26 +316,35 @@ export function createWriteNotesBatchTool(
   }
 
   /**
-   * Why an item cannot be written from what is stored, or nothing.
+   * The item's frozen body, or the reason nothing can write it.
    *
    * A `pending` row with no material is checked here and not only inside the
    * executor: the row promises a body the batch never froze, and a resume
-   * that hands it on would be asking the write path to invent one.
+   * that handed it on would be asking the write path to invent one.
    */
-  async function blockedReason(row: BatchItemRecord): Promise<string | null> {
+  async function storedBodyFor(
+    row: BatchItemRecord,
+  ): Promise<{ body: string } | { blocked: string }> {
     if (!row.materialRef)
-      return row.status === "pending"
-        ? "This item is waiting to be written but has no finalized note body, so nothing can write it"
-        : row.error || "This item has no finalized note body";
+      return {
+        blocked:
+          row.status === "pending"
+            ? "This item is waiting to be written but has no finalized note body, so nothing can write it"
+            : row.error || "This item has no finalized note body",
+      };
     const document = await loadPlanDocument(row.materialRef.documentId);
     if (!document)
-      return `The finalized note material ${row.materialRef.documentId} is no longer stored`;
+      return {
+        blocked: `The finalized note material ${row.materialRef.documentId} is no longer stored`,
+      };
     try {
       assertMaterialRefMatches(document, row.materialRef);
     } catch (error) {
-      return error instanceof Error ? error.message : String(error);
+      return {
+        blocked: error instanceof Error ? error.message : String(error),
+      };
     }
-    return null;
+    return { body: document.visibleMarkdown };
   }
 
   /**

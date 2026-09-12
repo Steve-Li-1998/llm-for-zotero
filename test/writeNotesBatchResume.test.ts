@@ -306,6 +306,36 @@ describe("note batch resume", function () {
     assert.lengthOf(actions, 2);
   });
 
+  it("keeps the shape of the operation the batch was approved as", async function () {
+    const instance = tool();
+    const validated = instance.validate({
+      target: "standalone",
+      notes: [
+        { targetItemId: 1, content: "Standalone one.", collections: [77] },
+        { targetItemId: 2, content: "Standalone two.", collections: [88] },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) throw new Error("unreachable");
+    await instance.planInvocation(validated.value, context());
+    failOnParent = undefined;
+    unavailableTarget = 2;
+    unavailableAfterNotes = 1;
+    await rejects(instance.execute(validated.value, context()));
+    unavailableTarget = undefined;
+    unavailableAfterNotes = 0;
+    const [batch] = await listResumableBatches(8801);
+
+    await run(instance, { resumeBatchId: batch.batchId });
+
+    const rows = await listBatchItems(batch.batchId);
+    const note = native.notes.get(rows[1].noteId!);
+    // A standalone note's collections are not in the frozen body; without the
+    // job row remembering them, a resume would file the note nowhere.
+    assert.isUndefined(note.parentID, "a standalone note has no parent");
+    assert.deepEqual(note.collections, [88]);
+  });
+
   it("writes a saved item again when its note no longer exists", async function () {
     const instance = tool();
     await run(instance, { notes: notes() });

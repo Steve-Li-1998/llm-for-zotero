@@ -8,6 +8,7 @@ import {
   normalizeQuoteTextCanonical,
   type QuoteTextIndex,
 } from "./quoteTextNormalization";
+import { sanitizeText } from "../../utils/textSanitization";
 
 const SEARCH_WORD_PATTERN = /[\p{L}\p{N}]+/gu;
 const PLAIN_ASCII_WORD_PATTERN = /^[a-z]+$/;
@@ -48,37 +49,6 @@ const COMMON_SEARCH_STOP_WORDS = new Set([
 const ELLIPSIS_RE = /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/;
 const ELLIPSIS_RE_G = /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/g;
 const NORMALIZED_QUERY_LENGTHS = [100, 80, 60, 40, 30, 25, 20, 15];
-
-function sanitizeText(text: string): string {
-  let out = "";
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    if (
-      code <= 0x08 ||
-      code === 0x0b ||
-      code === 0x0c ||
-      (code >= 0x0e && code <= 0x1f)
-    ) {
-      continue;
-    }
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = text.charCodeAt(i + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        out += text[i] + text[i + 1];
-        i += 1;
-      } else {
-        out += "\uFFFD";
-      }
-      continue;
-    }
-    if (code >= 0xdc00 && code <= 0xdfff) {
-      out += "\uFFFD";
-      continue;
-    }
-    out += text[i];
-  }
-  return out;
-}
 
 export type QuoteTextSearchQueryKind =
   | "exact"

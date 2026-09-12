@@ -83,13 +83,10 @@ export async function executeJournaledStep<T>(params: {
   sequence: number;
   plan: MutationStepPlan | (() => Promise<MutationStepPlan>);
   prepareAction?: (plan: MutationStepPlan) => JournalActionSeed;
-  execute: (plan: MutationStepPlan) => Promise<MutationStepOutcome<T>>;
-  /**
-   * Composite operations can delegate serialization to their concrete child
-   * writes. They still own their journal step, but must not hold the native
-   * mutation queue while a child tries to acquire it.
-   */
-  serializeNativeMutation?: boolean;
+  execute: (
+    plan: MutationStepPlan,
+    step: { stepId: string | null },
+  ) => Promise<MutationStepOutcome<T>>;
   resume?: boolean;
   reconcileAfterError?: (
     plan: MutationStepPlan,
@@ -259,7 +256,7 @@ export async function executeJournaledStep<T>(params: {
     };
 
     try {
-      return await recordOutcome(await params.execute(plan));
+      return await recordOutcome(await params.execute(plan, { stepId }));
     } catch (error) {
       let failure = error;
       let reconciled: MutationStepOutcome<T> | null | undefined;
@@ -299,9 +296,7 @@ export async function executeJournaledStep<T>(params: {
       throw new MutationMayHaveAppliedError(reason, plan.reversibility);
     }
   };
-  return params.serializeNativeMutation === false
-    ? executeStep()
-    : withActiveJournalAction(actionId, executeStep);
+  return withActiveJournalAction(actionId, executeStep);
 }
 
 export type ExternalMutationPlan = MutationStepPlan;
@@ -312,7 +307,10 @@ export async function executeExternalMutation<T>(params: {
   context: AgentToolContext;
   toolName: string;
   plan: ExternalMutationPlan | (() => Promise<ExternalMutationPlan>);
-  execute: () => Promise<ExternalMutationOutcome<T>>;
+  /** The durable step this write belongs to, wherever it is a step of. */
+  execute: (step: {
+    stepId: string | null;
+  }) => Promise<ExternalMutationOutcome<T>>;
   /** Host-bound identity and frozen plan loaded from the existing journal. */
   recovery?: { actionId: string; resume: boolean };
   reconcileAfterError?: (
@@ -355,7 +353,7 @@ export async function executeExternalMutation<T>(params: {
             recovery: plan.reason,
           })
         : undefined,
-      execute: async () => params.execute(),
+      execute: async (_plan, step) => params.execute(step),
     });
     verifiedOutcome = {
       reversibility: executed.reversibility,

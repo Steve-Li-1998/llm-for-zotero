@@ -3,10 +3,12 @@ import {
   runIdFor,
   MutationMayHaveAppliedError,
   getActiveJournalActionId,
+  withActiveJournalAction,
   type JournalActionSeed,
   type MutationStepPlan,
 } from "./externalMutationCoordinator";
 import type {
+  AgentJournalActionScope,
   AgentJournalStepOutcome,
   AgentActionEvidence,
   AgentToolContext,
@@ -91,6 +93,122 @@ export function summarizeMutationOutcomes(
   };
 }
 
+/**
+ * Operations whose concrete writes are journalled one step each.
+ *
+ * A note batch is not one change: it is N note creations that each reserve a
+ * native identity, each carry their own durable inverse, and each fail
+ * independently. It therefore contributes one step per note to the action
+ * that owns it instead of being flattened into a single journalled step with
+ * one whole-batch inverse.
+ */
+function ownsItsOwnJournalSteps(operation: LibraryMutationOperation): boolean {
+  return operation.type === "save_notes_batch";
+}
+
+async function stepPlanFor(
+  service: LibraryMutationService,
+  operation: LibraryMutationOperation,
+  context: AgentToolContext,
+): Promise<MutationStepPlan> {
+  const plan = await service.planOperation(operation, context);
+  return {
+    operation: operation.type,
+    description: plan.description,
+    forward: operation,
+    inverse: inversePayload(plan.inverseOperations),
+    precondition: plan.precondition,
+    reversibility: plan.reversibility,
+    reason: plan.reason,
+    deferredInverse: plan.deferredInverse,
+  };
+}
+
+/**
+ * Run an operation that journals its own steps.
+ *
+ * The action is seeded before the first child write so the children can claim
+ * steps under it, and the native write window is held for the whole composite
+ * under the owning action id: the children's own acquires are reentrant, so
+ * no concurrent write can slip between two notes of the same batch.
+ */
+async function executeComposite(params: {
+  service: LibraryMutationService;
+  operation: LibraryMutationOperation;
+  context: AgentToolContext;
+  actionId: string | null;
+  parentScope?: AgentJournalActionScope;
+  allocateSequence: () => number;
+  prepareAction?: (plan: MutationStepPlan) => JournalActionSeed;
+}) {
+  const { service, operation, context, actionId, parentScope } = params;
+  const run = async () => {
+    const plan = await stepPlanFor(service, operation, context);
+    if (actionId && params.prepareAction) {
+      await prepareJournalAction({
+        actionId,
+        ...params.prepareAction(plan),
+        effect: "write",
+      });
+    }
+    const stepOutcomes: AgentJournalStepOutcome[] = [];
+    const scope: AgentJournalActionScope | undefined = actionId
+      ? {
+          actionId,
+          allocateSequence: params.allocateSequence,
+          recordStep: (outcome) => {
+            stepOutcomes.push(outcome);
+            parentScope?.recordStep(outcome);
+          },
+        }
+      : undefined;
+    let executed: Awaited<
+      ReturnType<LibraryMutationService["executeOperation"]>
+    >;
+    let expectedPostcondition: unknown;
+    try {
+      executed = await service.executeOperation(
+        operation,
+        scope ? { ...context, journalActionScope: scope } : context,
+      );
+      expectedPostcondition = await service.captureOperationState(
+        operation,
+        context,
+        executed.result,
+      );
+    } catch (error) {
+      // The children own their own durable state; from here the composite
+      // can only report that its window may have changed the library.
+      throw new MutationMayHaveAppliedError(
+        error instanceof Error ? error.message : String(error),
+        plan.reversibility,
+      );
+    }
+    const changed = executed.effect !== "none";
+    const reversibility = changed
+      ? summarizeMutationOutcomes(stepOutcomes).reversibility
+      : "full";
+    const status: AgentJournalStepOutcome["status"] = changed
+      ? executed.effect === "partial"
+        ? "partially_applied"
+        : reversibility === "none"
+          ? "irreversible"
+          : "applied"
+      : "no_effect";
+    return {
+      result: executed.result,
+      reversibility,
+      effect: executed.effect,
+      status,
+      affectedCount: executed.affectedCount,
+      expectedPostcondition,
+      precondition: plan.precondition,
+      journalStepId: undefined as string | undefined,
+    };
+  };
+  return actionId ? withActiveJournalAction(actionId, run) : run();
+}
+
 async function executeOne(params: {
   service: LibraryMutationService;
   operation: LibraryMutationOperation;
@@ -99,37 +217,12 @@ async function executeOne(params: {
   sequence: number;
   prepareAction?: (plan: MutationStepPlan) => JournalActionSeed;
 }) {
-  const { service, operation, context, actionId, sequence } = params;
+  const { service, operation, context } = params;
   return executeJournaledStep({
     ...params,
-    // save_notes_batch is a composite: each durable child note reserves its
-    // own identity and owns its own native write interval.
-    serializeNativeMutation: operation.type !== "save_notes_batch",
-    plan: async () => {
-      const plan = await service.planOperation(operation, context);
-      return {
-        operation: operation.type,
-        description: plan.description,
-        forward: operation,
-        inverse: inversePayload(plan.inverseOperations),
-        precondition: plan.precondition,
-        reversibility: plan.reversibility,
-        reason: plan.reason,
-        deferredInverse: plan.deferredInverse,
-      };
-    },
+    plan: async () => stepPlanFor(service, operation, context),
     execute: async () => {
-      const operationContext =
-        actionId && operation.type === "save_notes_batch"
-          ? {
-              ...context,
-              journalChildActionPrefix: `${actionId}:child:${sequence}`,
-            }
-          : context;
-      const executed = await service.executeOperation(
-        operation,
-        operationContext,
-      );
+      const executed = await service.executeOperation(operation, context);
       const inverse = executed.inverse;
       return {
         result: executed.result,
@@ -208,33 +301,50 @@ export async function executeLibraryMutationAction(params: {
   const completedOutcomes: AgentJournalStepOutcome[] = [];
   const actionEvidence: AgentActionEvidence[] = [];
   let affectedCount = 0;
+  let localSequence = 0;
+  // One allocator for the whole action, so an operation that contributes N
+  // steps cannot collide with the sequences of its siblings.
+  const allocateSequence = () =>
+    parentScope ? parentScope.allocateSequence() : (localSequence += 1);
   try {
     for (let index = 0; index < operations.length; index += 1) {
+      const operation = operations[index];
+      const prepareAction =
+        ownsAction && index === 0
+          ? (plan: MutationStepPlan) => ({
+              runId: runIdFor(context),
+              conversationKey: context.request.conversationKey,
+              toolName: journalToolName,
+              description:
+                operations.length === 1
+                  ? plan.description
+                  : `${journalToolName}: ${operations.length} planned changes`,
+              reversibility: plan.reversibility,
+              recovery: plan.reason,
+            })
+          : undefined;
       // A prior step may have created or changed an object referenced by this
       // operation. Re-plan at the step boundary so its pre-image describes
       // the state immediately before this write, not the state before the
       // whole batch started.
-      const executed = await executeOne({
-        service,
-        operation: operations[index],
-        context,
-        actionId,
-        sequence: parentScope?.allocateSequence() ?? index + 1,
-        prepareAction:
-          ownsAction && index === 0
-            ? (plan) => ({
-                runId: runIdFor(context),
-                conversationKey: context.request.conversationKey,
-                toolName: journalToolName,
-                description:
-                  operations.length === 1
-                    ? plan.description
-                    : `${journalToolName}: ${operations.length} planned changes`,
-                reversibility: plan.reversibility,
-                recovery: plan.reason,
-              })
-            : undefined,
-      });
+      const executed = ownsItsOwnJournalSteps(operation)
+        ? await executeComposite({
+            service,
+            operation,
+            context,
+            actionId,
+            parentScope,
+            allocateSequence,
+            prepareAction,
+          })
+        : await executeOne({
+            service,
+            operation,
+            context,
+            actionId,
+            sequence: allocateSequence(),
+            prepareAction,
+          });
       results.push(executed.result);
       if (
         executed.precondition &&
@@ -245,7 +355,7 @@ export async function executeLibraryMutationAction(params: {
         actionEvidence.push({
           version: 1,
           proofDomain: "zotero_state",
-          operationValue: operations[index],
+          operationValue: operation,
           preState: executed.precondition as AgentActionEvidence["preState"],
           postState:
             executed.expectedPostcondition as AgentActionEvidence["postState"],

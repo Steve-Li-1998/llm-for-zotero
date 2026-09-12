@@ -21,8 +21,7 @@ export const noteLifecycleExecutors = {
       status: "created" | "error";
       reason?: string;
     }> = [];
-    const createdNoteIds: number[] = [];
-    for (const [index, entry] of operation.notes.entries()) {
+    for (const entry of operation.notes) {
       const target = zoteroGateway.getItem(entry.targetItemId);
       const title = target
         ? String(target.getDisplayTitle?.() || `Item ${entry.targetItemId}`)
@@ -39,9 +38,6 @@ export const noteLifecycleExecutors = {
       try {
         const execution = await executeNoteCreation({
           context,
-          logicalActionId: context.journalChildActionPrefix
-            ? `${context.journalChildActionPrefix}:note:${index + 1}`
-            : undefined,
           libraryID: target.libraryID,
           parentItemId:
             operation.target === "standalone" ? undefined : target.id,
@@ -53,7 +49,6 @@ export const noteLifecycleExecutors = {
         const childActionId = (
           execution.content as unknown as { actionId?: unknown }
         ).actionId;
-        if (saved.noteId) createdNoteIds.push(saved.noteId);
         rows.push({
           targetItemId: entry.targetItemId,
           noteId: saved.noteId,
@@ -79,22 +74,18 @@ export const noteLifecycleExecutors = {
         result: {
           createdCount: rows.filter((row) => row.status === "created").length,
           failedCount: rows.filter((row) => row.status === "error").length,
-          actionIds: rows.flatMap((row) =>
-            row.actionId ? [row.actionId] : [],
-          ),
+          actionIds: [
+            ...new Set(
+              rows.flatMap((row) => (row.actionId ? [row.actionId] : [])),
+            ),
+          ],
           notes: rows,
         },
       },
-      inverse: createdNoteIds.length
-        ? {
-            inverseOperations: [
-              { type: "trash_items", itemIds: createdNoteIds },
-            ],
-            description: `Trash ${createdNoteIds.length} note${
-              createdNoteIds.length === 1 ? "" : "s"
-            } that were just written`,
-          }
-        : null,
+      // Each note is a durable step of the owning action and records its own
+      // `trash_items` inverse. A whole-batch inverse here would trash the
+      // same notes a second time during an undo.
+      inverse: null,
     };
   },
   create_items: async (operation, context, zoteroGateway) => {

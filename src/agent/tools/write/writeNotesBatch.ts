@@ -91,6 +91,12 @@ type ResumeResolution = {
   blocked: Array<{ itemKey: string; reason: string }>;
   /** Row writes this resume owes; applied by `execute`, never by preparation. */
   corrections: ResumeRowCorrection[];
+  /**
+   * Items this resume offered to write, as the confirmation card listed them.
+   * The user may uncheck any of them, and what is left decides whether the
+   * action this call continues still owes work when it finishes.
+   */
+  offeredItemKeys: string[];
 };
 
 /** One item as the batch's job row remembers it, so a resume needs no model. */
@@ -276,6 +282,7 @@ export function createWriteNotesBatchTool(
       rewrittenItemKeys: [],
       blocked: [],
       corrections: [],
+      offeredItemKeys: [],
     };
     const items: PreparedBatchItem[] = [];
     const notes: SaveNotesBatchOperation["notes"] = [];
@@ -313,6 +320,7 @@ export function createWriteNotesBatchTool(
           });
         continue;
       }
+      resume.offeredItemKeys.push(row.itemKey);
       items.push({
         itemKey: row.itemKey,
         targetItemId: descriptor.targetItemId,
@@ -720,9 +728,10 @@ export function createWriteNotesBatchTool(
                 ? {
                     resumeJournalAction: {
                       actionId: resume.actionId,
-                      // An item no stored material can write keeps the action
-                      // partially applied however well this call goes.
-                      unfinishedWork: resume.blocked.length > 0,
+                      unfinishedWork: resumeLeavesUnfinishedWork(
+                        resume,
+                        batchBinding.items,
+                      ),
                     },
                   }
                 : {}),
@@ -765,6 +774,26 @@ export function createWriteNotesBatchTool(
       };
     },
   };
+}
+
+/**
+ * Whether the action this resume continues still owes work once it finishes.
+ *
+ * An item no stored material can write is one source: it will never reach a
+ * journal step, so nothing else in the action can speak for it. The
+ * confirmation is the other. The card lists every outstanding item and the
+ * user may uncheck any of them; an item dropped there stays `pending` in the
+ * batch's rows and still owes a note. Reading only what preparation decided
+ * would record the action as fully applied while the batch was still
+ * resumable.
+ */
+function resumeLeavesUnfinishedWork(
+  resume: ResumeResolution,
+  confirmed: AgentBatchBinding["items"],
+): boolean {
+  if (resume.blocked.length > 0) return true;
+  const keptItemKeys = new Set(confirmed.map((item) => item.itemKey));
+  return resume.offeredItemKeys.some((itemKey) => !keptItemKeys.has(itemKey));
 }
 
 /**

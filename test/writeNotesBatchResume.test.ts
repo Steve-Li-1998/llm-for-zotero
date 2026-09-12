@@ -354,6 +354,64 @@ describe("note batch resume", function () {
     );
   });
 
+  it("never records the action as applied while the user unchecks an item it still owes", async function () {
+    const instance = tool();
+    // An interruption that leaves no failed step of its own: note one landed
+    // and the library became unreachable before note two was attempted, so
+    // every step the action holds is applied.
+    const validated = instance.validate({ notes: notes() });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) throw new Error("unreachable");
+    await instance.planInvocation(validated.value, context());
+    unavailableTarget = 2;
+    unavailableAfterNotes = 1;
+    await rejects(instance.execute(validated.value, context()));
+    unavailableTarget = undefined;
+    unavailableAfterNotes = 0;
+    const batchId = (await listResumableBatches(8801))[0].batchId;
+    const before = await listBatchItems(batchId);
+    assert.deepEqual(
+      before.map((row) => row.status),
+      ["saved", "pending", "pending"],
+    );
+    const opened = before[0].actionId!;
+    assert.deepEqual(
+      (await listJournalActions({ actionId: opened }))[0].steps.map(
+        (step) => step.status,
+      ),
+      ["applied"],
+      "no failed step is left to speak for the work the batch still owes",
+    );
+
+    // The resume card offers both outstanding notes; the user keeps one.
+    const resumed = instance.validate({ resumeBatchId: batchId });
+    assert.isTrue(resumed.ok);
+    if (!resumed.ok) throw new Error("unreachable");
+    await instance.planInvocation(resumed.value, context());
+    const confirmed = instance.applyConfirmation?.(resumed.value, {
+      writeNotesChecklist: ["2"],
+    });
+    assert.isTrue(confirmed?.ok);
+    if (!confirmed?.ok) throw new Error("unreachable");
+    await instance.execute(confirmed.value, context());
+
+    const rows = await listBatchItems(batchId);
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["saved", "saved", "pending"],
+      "the unchecked item keeps owing a note",
+    );
+    const [action] = await listJournalActions({ actionId: opened });
+    // The rows still owe a note that this action would own. Recording it as
+    // fully applied would tell every later reader the batch is finished.
+    assert.equal(action.status, "partially_applied");
+    assert.deepEqual(
+      (await listResumableBatches(8801)).map((entry) => entry.batchId),
+      [batchId],
+      "the batch is still on offer, whatever the action says",
+    );
+  });
+
   it("keeps the action's applied work when the resume writes nothing", async function () {
     const instance = tool();
     const batchId = await interruptedBatch(instance);

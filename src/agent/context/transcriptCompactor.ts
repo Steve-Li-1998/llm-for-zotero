@@ -242,8 +242,11 @@ function buildSummaryMessage(
  * recomputed from durable evidence every turn; copying either into a
  * checkpoint would preserve a stale snapshot of something the host already
  * owns.
+ *
+ * Every checkpoint builder shares this one predicate, so the guarantee holds
+ * structurally rather than by each builder remembering it.
  */
-function durableTranscriptMessages(
+export function durableTranscriptMessages(
   messages: readonly AgentModelMessage[],
 ): AgentModelMessage[] {
   return messages.filter(

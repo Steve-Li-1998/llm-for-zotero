@@ -582,69 +582,111 @@ export function buildCodexMcpToolActivityEvent(
 }
 
 /**
- * The two names one Zotero MCP call carries inside a native turn.
- *
- * The app server announces the call as an item of its own protocol, named by
- * the model's function-call id (`call_...`) and carrying the server and tool
- * it is about. The Zotero MCP server sees the same call arrive over JSON-RPC
- * and names it by that request's id. Neither id appears in the other stream,
- * and this client is the only place that sees both: the item notification is
- * delivered here, and the MCP observer fires here.
- *
- * So the pairing is made here, once, from the identity both streams state --
- * this turn's configured server and the tool's name -- and in the order the
- * model issued the calls. The panel is then handed a key and merges on it,
- * instead of adopting whatever activity went past recently enough to look
- * compatible. A call this cannot pair is left unpaired: two rows for one call
- * is a smaller lie than one row for two calls.
- */
-/**
- * A Zotero MCP activity event, with the native item it belongs to when this
- * turn could pair the two identity spaces.
+ * A Zotero MCP activity event, with the key of the call it belongs to when
+ * this turn could pair the protocol's two identity spaces.
  */
 export type CodexNativeMcpToolActivityEvent = ZoteroMcpToolActivityEvent & {
   correlationId?: string;
 };
 
+/** A native item, with that same key when the item is one of those calls. */
+export type CodexNativeItemEvent = CodexAppServerItemEvent & {
+  correlationId?: string;
+};
+
+/**
+ * The two names one Zotero MCP call carries inside a native turn.
+ *
+ * The app server announces the call as an item of its own protocol, named by
+ * the model's function-call id (`call_...`) and carrying the server and the
+ * tool it is about. The Zotero MCP server sees the same call arrive over
+ * JSON-RPC and names it by that request's id. Neither id appears in the other
+ * stream, and this client is the only place that sees both: the item
+ * notification is delivered here, and the MCP observer fires here.
+ *
+ * So the pairing is made here, from the identity both streams state -- this
+ * turn's configured server and the tool's name -- and in the order the calls
+ * happened. Which stream speaks first is not assumed, because the protocol
+ * does not promise it: the first side to arrive opens a pair and is given its
+ * key, and the second side claims that pair and is given the same key. The
+ * panel then merges two rows because they are one call, not because one went
+ * past recently enough to look like the other.
+ *
+ * A call this cannot pair keeps its own key: two rows for one call is a
+ * smaller lie than one row for two calls.
+ */
 export function createCodexNativeMcpCallCorrelator(serverName?: string) {
   const expectedServer = normalizeNonEmptyString(serverName);
-  const unclaimedItemIdsByTool = new Map<string, string[]>();
-  const itemIdByRequestId = new Map<string, string>();
+  type OpenPair = { key: string; hasRequest: boolean; hasItem: boolean };
+  const openPairsByTool = new Map<string, OpenPair[]>();
+  const keyByRequestId = new Map<string, string>();
+  const keyByItemId = new Map<string, string>();
+  let minted = 0;
+
+  const claim = (toolName: string, side: "request" | "item"): string => {
+    const open = openPairsByTool.get(toolName) || [];
+    const waiting = open.find((pair) =>
+      side === "request"
+        ? pair.hasItem && !pair.hasRequest
+        : pair.hasRequest && !pair.hasItem,
+    );
+    if (waiting) {
+      if (side === "request") waiting.hasRequest = true;
+      else waiting.hasItem = true;
+      openPairsByTool.set(
+        toolName,
+        open.filter((pair) => pair !== waiting),
+      );
+      return waiting.key;
+    }
+    minted += 1;
+    const pair: OpenPair = {
+      key: `codex-call:${minted}`,
+      hasRequest: side === "request",
+      hasItem: side === "item",
+    };
+    open.push(pair);
+    openPairsByTool.set(toolName, open);
+    return pair.key;
+  };
+
   return {
-    /** Remember a started item that is a call to this turn's Zotero server. */
-    noteItem(item: {
+    /** The key for one Zotero MCP request, stable across its two phases. */
+    correlateRequest(event: {
+      requestId?: string;
+      toolName?: string;
+    }): string | undefined {
+      if (!expectedServer) return undefined;
+      const requestId = normalizeNonEmptyString(event.requestId);
+      const claimed = requestId ? keyByRequestId.get(requestId) : undefined;
+      if (claimed) return claimed;
+      const toolName = normalizeNonEmptyString(event.toolName);
+      if (!toolName) return undefined;
+      const key = claim(toolName, "request");
+      if (requestId) keyByRequestId.set(requestId, key);
+      return key;
+    },
+    /** The key for one native item, when the item is a call to this server. */
+    correlateItem(item: {
       id?: string;
       type?: string;
       serverName?: string;
       toolName?: string;
       name?: string;
-    }): void {
-      const itemId = normalizeNonEmptyString(item.id);
-      if (!itemId || !expectedServer) return;
-      if (!isCodexNativeItemType(item, ["mcptool"])) return;
-      if (normalizeNonEmptyString(item.serverName) !== expectedServer) return;
-      const toolName = normalizeNonEmptyString(item.toolName || item.name);
-      if (!toolName) return;
-      const queued = unclaimedItemIdsByTool.get(toolName) || [];
-      if (queued.includes(itemId)) return;
-      queued.push(itemId);
-      unclaimedItemIdsByTool.set(toolName, queued);
-    },
-    /** The item this MCP request belongs to, when the turn can say. */
-    correlate(event: {
-      requestId?: string;
-      toolName?: string;
     }): string | undefined {
-      const requestId = normalizeNonEmptyString(event.requestId);
-      const claimed = requestId ? itemIdByRequestId.get(requestId) : undefined;
+      if (!expectedServer) return undefined;
+      if (!isCodexNativeItemType(item, ["mcptool"])) return undefined;
+      if (normalizeNonEmptyString(item.serverName) !== expectedServer) {
+        return undefined;
+      }
+      const itemId = normalizeNonEmptyString(item.id);
+      const claimed = itemId ? keyByItemId.get(itemId) : undefined;
       if (claimed) return claimed;
-      const toolName = normalizeNonEmptyString(event.toolName);
+      const toolName = normalizeNonEmptyString(item.toolName || item.name);
       if (!toolName) return undefined;
-      const queued = unclaimedItemIdsByTool.get(toolName);
-      const itemId = queued?.shift();
-      if (!itemId) return undefined;
-      if (requestId) itemIdByRequestId.set(requestId, itemId);
-      return itemId;
+      const key = claim(toolName, "item");
+      if (itemId) keyByItemId.set(itemId, key);
+      return key;
     },
   };
 }
@@ -2900,8 +2942,8 @@ export async function runCodexAppServerNativeTurn(input: {
   onAgentMessageDelta?: (event: CodexAppServerAgentMessageDeltaEvent) => void;
   onReasoning?: (event: ReasoningEvent) => void;
   onUsage?: (usage: UsageStats) => void;
-  onItemStarted?: (event: CodexAppServerItemEvent) => void;
-  onItemCompleted?: (event: CodexAppServerItemEvent) => void;
+  onItemStarted?: (event: CodexNativeItemEvent) => void;
+  onItemCompleted?: (event: CodexNativeItemEvent) => void;
   onPlanDelta?: (event: CodexNativePlanDelta) => void | Promise<void>;
   onPlanArtifact?: (
     artifact: import("../agent/plans/types").PlanArtifact,
@@ -3307,6 +3349,15 @@ export async function runCodexAppServerNativeTurn(input: {
           const mcpCallCorrelation = createCodexNativeMcpCallCorrelator(
             mcpThreadConfig?.serverName,
           );
+          // An item that is a call to this turn's Zotero server carries the
+          // key its MCP request carries, whichever of the two arrived first.
+          const correlatedItem = (
+            event: CodexAppServerItemEvent,
+          ): CodexNativeItemEvent => {
+            const redacted = redactTerminalValue(event);
+            const correlationId = mcpCallCorrelation.correlateItem(redacted);
+            return correlationId ? { ...redacted, correlationId } : redacted;
+          };
           const unregisterMcpToolActivity = addZoteroMcpToolActivityObserver(
             (event) => {
               const sameConversation =
@@ -3333,7 +3384,8 @@ export async function runCodexAppServerNativeTurn(input: {
                 scope: scopeWithProfile,
                 event: redactedEvent,
               });
-              const correlationId = mcpCallCorrelation.correlate(redactedEvent);
+              const correlationId =
+                mcpCallCorrelation.correlateRequest(redactedEvent);
               params.onMcpToolActivity?.(
                 correlationId
                   ? { ...redactedEvent, correlationId }
@@ -3493,15 +3545,11 @@ export async function runCodexAppServerNativeTurn(input: {
                 : undefined,
               onUsage: params.onUsage,
               onItemStarted: (event) => {
-                // The item names the call the MCP request will arrive for,
-                // and it is announced before that request is made.
-                mcpCallCorrelation.noteItem(event);
-                params.onItemStarted?.(redactTerminalValue(event));
+                params.onItemStarted?.(correlatedItem(event));
               },
-              onItemCompleted: params.onItemCompleted
-                ? (event) =>
-                    params.onItemCompleted?.(redactTerminalValue(event))
-                : undefined,
+              onItemCompleted: (event) => {
+                params.onItemCompleted?.(correlatedItem(event));
+              },
               onPlanUpdated: params.onPlanUpdated,
               onTurnCompleted: params.onTurnCompleted
                 ? (event) =>

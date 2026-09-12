@@ -6833,7 +6833,7 @@ function createCodexNativeActivityTraceController(
     const mapped = mapCodexNativeItemToEvents(
       event,
       phase,
-      `codex-item-${phase}-${seq + 1}`,
+      `codex-${normalizeCodexNativeItemTypeKey(event.type) || "item"}-${phase}-${seq + 1}`,
     );
     if (!mapped?.activity) return false;
     const changedImage = addGeneratedImage(mapped.generatedImage || null);
@@ -6873,8 +6873,12 @@ function createCodexNativeActivityTraceController(
       return;
     }
     if (isCodexNativeToolItem(event)) {
+      // When the bridge paired this item with the MCP request it was made
+      // through, both rows carry that key and become one row.
       const itemId =
-        sanitizeText(event.id || "").trim() || `codex-tool-${phase}-${seq + 1}`;
+        sanitizeText(event.correlationId || "").trim() ||
+        sanitizeText(event.id || "").trim() ||
+        `codex-tool-${phase}-${seq + 1}`;
       const failureText = compactCodexNativeTraceLine(
         event.error || event.summary || event.details || "",
       );

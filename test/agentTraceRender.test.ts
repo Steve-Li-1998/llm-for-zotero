@@ -3092,21 +3092,20 @@ describe("agentTrace render", function () {
       () => undefined,
     );
 
-    // The app server announces the call first, by the model's call id.
-    controller.appendItemStatus(
-      {
-        id: "call_A",
-        type: "mcp_tool_call",
-        toolName: "query_library",
-        serverName: "llm_for_zotero_profile_abc",
-      },
-      "started",
-    );
-    // The Zotero MCP server reports the same call under its own request id,
-    // with the item the client paired it to.
+    // The Zotero MCP server reports the call under its own request id, with
+    // the key the client paired it to.
     controller.noteMcpToolActivity({
       requestId: "jsonrpc:11",
-      correlationId: "call_A",
+      correlationId: "codex-call:1",
+      phase: "started",
+      toolName: "query_library",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+    });
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:11",
+      correlationId: "codex-call:1",
       phase: "completed",
       toolName: "query_library",
       toolLabel: "Search library",
@@ -3114,6 +3113,19 @@ describe("agentTrace render", function () {
       workCategory: "retrieval",
       ok: true,
     });
+    // The app server then announces the same call as an item of its own,
+    // named by the model's call id and carrying different arguments.
+    controller.appendItemStatus(
+      {
+        id: "call_A",
+        correlationId: "codex-call:1",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+        arguments: { entity: "items", libraryID: 1 },
+      },
+      "completed",
+    );
 
     const events = message.pendingAgentTraceEvents || [];
     const activities = events.filter(
@@ -3123,9 +3135,13 @@ describe("agentTrace render", function () {
     const activity = activities[0].payload;
     assert.equal(activity.type, "codex_tool_activity");
     if (activity.type !== "codex_tool_activity") return;
-    assert.equal(activity.itemId, "call_A");
-    assert.equal(activity.phase, "completed");
+    assert.equal(activity.itemId, "codex-call:1");
     assert.equal(activity.workCategory, "retrieval");
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+      "the stage the MCP row opened still brackets the merged row",
+    );
   });
 
   it("stops adopting a nameless row just because it went past recently", function () {

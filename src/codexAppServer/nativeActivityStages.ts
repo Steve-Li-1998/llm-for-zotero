@@ -55,6 +55,12 @@ export type CodexNativeActivityItem = {
   model?: string;
   receiverThreadIds?: unknown;
   raw?: Record<string, unknown>;
+  /**
+   * The key of the call this item is, when the client paired it with the
+   * Zotero MCP request it was made through. Stamped by the client, never by
+   * the app server.
+   */
+  correlationId?: string;
 };
 
 export type CodexNativeActivityPhase = "started" | "completed";

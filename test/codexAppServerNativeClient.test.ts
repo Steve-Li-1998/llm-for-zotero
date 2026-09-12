@@ -3863,41 +3863,55 @@ describe("Codex MCP tool activity bridge", function () {
     const correlation = createCodexNativeMcpCallCorrelatorForTests(
       "llm_for_zotero_profile_abc",
     );
-    correlation.noteItem({
+    const first = correlation.correlateRequest({
+      requestId: "jsonrpc:1",
+      toolName: "query_library",
+    });
+    const second = correlation.correlateRequest({
+      requestId: "jsonrpc:2",
+      toolName: "query_library",
+    });
+    assert.isString(first);
+    assert.notEqual(first, second);
+    assert.equal(
+      correlation.correlateRequest({
+        requestId: "jsonrpc:1",
+        toolName: "query_library",
+      }),
+      first,
+      "the completed phase resolves to the same call as the started phase",
+    );
+
+    const item = (id: string) =>
+      correlation.correlateItem({
+        id,
+        type: "mcp_tool_call",
+        serverName: "llm_for_zotero_profile_abc",
+        toolName: "query_library",
+      });
+    assert.equal(item("call_A"), first);
+    assert.equal(item("call_B"), second, "two calls keep the model's order");
+    assert.equal(item("call_A"), first, "an item keeps the key it was given");
+  });
+
+  it("pairs the two streams whichever of them speaks first", function () {
+    // The app server is not promised to announce a tool call before the call
+    // reaches the Zotero server, so neither order may be assumed.
+    const correlation = createCodexNativeMcpCallCorrelatorForTests(
+      "llm_for_zotero_profile_abc",
+    );
+    const fromItem = correlation.correlateItem({
       id: "call_A",
       type: "mcp_tool_call",
       serverName: "llm_for_zotero_profile_abc",
       toolName: "query_library",
     });
-    correlation.noteItem({
-      id: "call_B",
-      type: "mcp_tool_call",
-      serverName: "llm_for_zotero_profile_abc",
-      toolName: "query_library",
-    });
-
     assert.equal(
-      correlation.correlate({
+      correlation.correlateRequest({
         requestId: "jsonrpc:1",
         toolName: "query_library",
       }),
-      "call_A",
-    );
-    assert.equal(
-      correlation.correlate({
-        requestId: "jsonrpc:2",
-        toolName: "query_library",
-      }),
-      "call_B",
-      "two calls of one tool keep the order the model made them in",
-    );
-    assert.equal(
-      correlation.correlate({
-        requestId: "jsonrpc:1",
-        toolName: "query_library",
-      }),
-      "call_A",
-      "the completed phase resolves to the same item as the started phase",
+      fromItem,
     );
   });
 
@@ -3905,37 +3919,45 @@ describe("Codex MCP tool activity bridge", function () {
     const correlation = createCodexNativeMcpCallCorrelatorForTests(
       "llm_for_zotero_profile_abc",
     );
-    correlation.noteItem({
-      id: "call_other",
-      type: "mcp_tool_call",
-      serverName: "some_other_server",
-      toolName: "query_library",
-    });
-    correlation.noteItem({
-      id: "call_cmd",
-      type: "command_execution",
-      toolName: "query_library",
-    });
     assert.isUndefined(
-      correlation.correlate({
-        requestId: "jsonrpc:1",
+      correlation.correlateItem({
+        id: "call_other",
+        type: "mcp_tool_call",
+        serverName: "some_other_server",
         toolName: "query_library",
       }),
       "another server's item is not this server's call",
     );
-    correlation.noteItem({
-      id: "call_A",
-      type: "mcp_tool_call",
-      serverName: "llm_for_zotero_profile_abc",
+    assert.isUndefined(
+      correlation.correlateItem({
+        id: "call_cmd",
+        type: "command_execution",
+        toolName: "query_library",
+      }),
+      "work Codex ran itself never reached the Zotero server",
+    );
+    assert.isUndefined(
+      createCodexNativeMcpCallCorrelatorForTests(undefined).correlateRequest({
+        requestId: "jsonrpc:1",
+        toolName: "query_library",
+      }),
+      "a turn with no Zotero server configured has nothing to pair",
+    );
+    const paired = correlation.correlateRequest({
+      requestId: "jsonrpc:1",
       toolName: "query_library",
     });
-    assert.isUndefined(
-      correlation.correlate({ requestId: "jsonrpc:2", toolName: "write_note" }),
+    assert.notEqual(
+      correlation.correlateRequest({
+        requestId: "jsonrpc:2",
+        toolName: "write_note",
+      }),
+      paired,
       "a different tool is a different call",
     );
   });
 
-  it("carries the paired item onto the row the panel merges by", function () {
+  it("carries the paired call onto the row the panel merges by", function () {
     const event = buildCodexMcpToolActivityEvent(
       {
         requestId: "jsonrpc:7",
@@ -3944,13 +3966,13 @@ describe("Codex MCP tool activity bridge", function () {
         serverName: "llm_for_zotero",
         timestamp: 3,
       } as never,
-      "call_A",
+      "codex-call:1",
     );
     assert.equal(event.type, "codex_tool_activity");
     if (event.type !== "codex_tool_activity") return;
     assert.equal(
       event.itemId,
-      "call_A",
+      "codex-call:1",
       "the row is keyed by the call, not by the transport request",
     );
   });

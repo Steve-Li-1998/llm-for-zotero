@@ -72,6 +72,25 @@ const LAYERS = [
 /** Tier of files that live directly under `src/` (the composition root). */
 const COMPOSITION_ROOT_TIER = LAYERS.length;
 
+// A root claimed by two tiers, or a tier out of order, would silently mis-place
+// a whole directory, so reject the table itself rather than its verdict.
+{
+  const claimed = new Set();
+  LAYERS.forEach((layer, index) => {
+    if (layer.tier !== index) {
+      throw new Error(
+        `Layer "${layer.name}" declares tier ${layer.tier} at position ${index}.`,
+      );
+    }
+    for (const root of layer.roots) {
+      if (claimed.has(root)) {
+        throw new Error(`Directory ${root} is claimed by more than one layer.`);
+      }
+      claimed.add(root);
+    }
+  });
+}
+
 /**
  * Exact upward runtime imports present when the layer rule was introduced.
  * Every entry is a migration obligation, not a directory exemption: an entry

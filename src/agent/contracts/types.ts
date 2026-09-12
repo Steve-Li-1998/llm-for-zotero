@@ -341,6 +341,16 @@ export type AgentExternalMutationEvidence = {
   preImage?: unknown;
   /** What the write recorded as true immediately after it applied. */
   postImage?: unknown;
+  /**
+   * What the write was authorized to make true, in the same shape.
+   *
+   * Built from the validated input the user approved, so a receipt that
+   * re-reads against this proves the authorized change rather than proving
+   * that whatever the tool chose to write is still in place. When it is
+   * absent the post-image is the only thing there is to compare against, and
+   * the receipt claims no more than that.
+   */
+  authorizedPostImage?: unknown;
   journalStepId?: string;
   effect: "applied" | "partial" | "none";
 };

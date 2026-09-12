@@ -1643,9 +1643,19 @@ export class ActionContractService {
    *
    * Its evidence is the pre-image and post-image the mutation boundary
    * journalled. Neither proves anything by itself — both were written by the
-   * call being judged — so the post-image is re-read here, against live Zotero
-   * state, at the moment the receipt is minted. `verified` therefore means the
-   * effect is still in the library now, not that the tool reported success.
+   * call being judged — so an image is re-read here, against live Zotero
+   * state, at the moment the receipt is minted. When the write declared what
+   * it was *authorized* to make true, that is the image compared, and
+   * `verified` then means live state holds the authorized change rather than
+   * whatever the tool chose to write.
+   *
+   * Scope. The contract holds its own narrow Zotero gateway, so the shapes it
+   * can read back are the single-object ones: a note, a created item, a file,
+   * a path, a preference. A post-image that is a captured library-operation
+   * state needs the mutation handlers and the operation it was captured for;
+   * that is the library branch's evidence, which carries both, and such an
+   * image reaching this branch reads back as `not_re_readable` rather than as
+   * agreement.
    */
   private async externalMutationReceipt(
     base: Omit<
@@ -1672,8 +1682,13 @@ export class ActionContractService {
         ],
       };
     }
+    const authorized = evidence.authorizedPostImage !== undefined;
     const postImage = await verifyRecordedPostImage({
-      image: { expected: evidence.postImage },
+      image: {
+        expected: authorized
+          ? evidence.authorizedPostImage
+          : evidence.postImage,
+      },
       reader: contractPostImageReader(this.gateway),
     });
     const verified = postImage.kind === "satisfied";
@@ -1697,10 +1712,17 @@ export class ActionContractService {
       rejectedTargets: verified ? [] : targets,
       reasons: [
         ...base.reasons,
-        ...(verified || !postImage.reason
+        ...(verified
           ? []
           : [
-              `This ${evidence.operation} write could not be verified: ${postImage.reason}.`,
+              `This ${evidence.operation} write could not be verified: ${
+                postImage.kind === "mismatched"
+                  ? authorized
+                    ? "live Zotero state does not hold what this write was authorized to produce"
+                    : "live Zotero state no longer matches what this write recorded when it applied"
+                  : postImage.reason ||
+                    "its recorded post-image could not be read back"
+              }.`,
             ]),
       ],
     };

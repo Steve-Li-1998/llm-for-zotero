@@ -3057,7 +3057,19 @@ describe("Bespoke finalize-branch receipts", function () {
       destinationCollectionIds: [],
     };
 
-    function preferenceEvidence(value: unknown): AgentActionEvidence[] {
+    function preferenceImage(value: unknown) {
+      return {
+        kind: "preference",
+        key: "automaticTags",
+        existed: true,
+        value,
+      };
+    }
+
+    function preferenceEvidence(params: {
+      recorded: unknown;
+      authorized?: unknown;
+    }): AgentActionEvidence[] {
       return [
         {
           version: 1,
@@ -3069,12 +3081,10 @@ describe("Bespoke finalize-branch receipts", function () {
             existed: false,
             value: undefined,
           },
-          postImage: {
-            kind: "preference",
-            key: "automaticTags",
-            existed: true,
-            value,
-          },
+          postImage: preferenceImage(params.recorded),
+          ...("authorized" in params
+            ? { authorizedPostImage: preferenceImage(params.authorized) }
+            : {}),
           journalStepId: "action-ext:1",
           effect: "applied",
         },
@@ -3108,7 +3118,7 @@ describe("Bespoke finalize-branch receipts", function () {
       harness.settings.set("automaticTags", true);
       const receipt = await receiptWith({
         harness,
-        actionEvidence: preferenceEvidence(true),
+        actionEvidence: preferenceEvidence({ recorded: true }),
       });
       assert.equal(receipt.verification, "verified");
       assert.equal(receipt.status, "applied");
@@ -3122,14 +3132,14 @@ describe("Bespoke finalize-branch receipts", function () {
       harness.settings.set("automaticTags", false);
       const receipt = await receiptWith({
         harness,
-        actionEvidence: preferenceEvidence(true),
+        actionEvidence: preferenceEvidence({ recorded: true }),
       });
       assert.equal(receipt.verification, "unverified");
       assert.equal(receipt.status, "unverified");
       assert.deepEqual(receipt.rejectedTargets, ["item:700"]);
       assert.match(
         receipt.reasons.join(" "),
-        /This update_preference write could not be verified: native state no longer matches/,
+        /This update_preference write could not be verified: live Zotero state no longer matches what this write recorded when it applied/,
       );
     });
 
@@ -3138,12 +3148,76 @@ describe("Bespoke finalize-branch receipts", function () {
       harness.settings.set("automaticTags", true);
       const receipt = await receiptWith({
         harness,
-        actionEvidence: preferenceEvidence(true),
+        actionEvidence: preferenceEvidence({ recorded: true }),
         effect: "none",
       });
       assert.equal(receipt.verification, "verified");
       assert.equal(receipt.status, "already_satisfied");
       assert.deepEqual(receipt.alreadySatisfiedTargets, ["item:700"]);
+    });
+
+    it("credits the authorized image, not the one the tool recorded", async function () {
+      // The tool wrote a coerced value and recorded that. The user authorized
+      // the literal, so the receipt must compare live state against the
+      // literal: a write that landed as something else is not the change the
+      // user approved, however faithfully the tool recorded it.
+      const harness = createHarness();
+      harness.settings.set("automaticTags", true);
+      const receipt = await receiptWith({
+        harness,
+        actionEvidence: preferenceEvidence({
+          recorded: true,
+          authorized: "true",
+        }),
+      });
+      assert.equal(receipt.verification, "unverified");
+      assert.match(
+        receipt.reasons.join(" "),
+        /live Zotero state does not hold what this write was authorized to produce/,
+      );
+    });
+
+    it("verifies when live state holds the authorized image", async function () {
+      const harness = createHarness();
+      harness.settings.set("automaticTags", true);
+      const receipt = await receiptWith({
+        harness,
+        actionEvidence: preferenceEvidence({
+          recorded: true,
+          authorized: true,
+        }),
+      });
+      assert.equal(receipt.verification, "verified");
+      assert.equal(receipt.status, "applied");
+    });
+
+    it("cannot read a captured library state back, and says so", async function () {
+      // A library-operation post-image needs the mutation handlers and the
+      // operation it was captured for; that evidence belongs on the library
+      // branch, which carries both. Reaching this branch with one must read as
+      // "could not check", never as agreement.
+      const receipt = await receiptWith({
+        harness: createHarness(),
+        actionEvidence: [
+          {
+            version: 1,
+            source: "external_mutation",
+            operation: "create_pdf_annotation",
+            postImage: {
+              version: 1,
+              operation: "trash_items",
+              items: [{ itemId: 901, exists: true, deleted: false }],
+            },
+            journalStepId: "action-ext:1",
+            effect: "applied",
+          },
+        ],
+      });
+      assert.equal(receipt.verification, "unverified");
+      assert.match(
+        receipt.reasons.join(" "),
+        /could not be verified: the recorded post-image format cannot be read back by this version/,
+      );
     });
 
     it("refuses a write that attached no evidence at all", async function () {
@@ -3162,8 +3236,8 @@ describe("Bespoke finalize-branch receipts", function () {
       const receipt = await receiptWith({
         harness,
         actionEvidence: [
-          ...preferenceEvidence(true),
-          ...preferenceEvidence(true),
+          ...preferenceEvidence({ recorded: true }),
+          ...preferenceEvidence({ recorded: true }),
         ],
       });
       assert.equal(receipt.verification, "unverified");

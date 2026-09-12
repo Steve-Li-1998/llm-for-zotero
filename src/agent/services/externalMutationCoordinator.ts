@@ -53,6 +53,19 @@ export type MutationStepPlan = {
   forward: unknown;
   inverse?: unknown;
   precondition?: unknown;
+  /**
+   * The post-image this write was *authorized* to make true, in the same shape
+   * the post-image is recorded in.
+   *
+   * It is built from the validated input the user approved, never from what
+   * the call then did, which is the whole point: a receipt that compares live
+   * state against this proves the authorized change, while one that compares
+   * against the recorded post-image proves only that whatever the tool wrote
+   * is still there. Left unset by a write whose authorization is not a single
+   * re-readable image; the journal never stores it, so replaying an inverse
+   * still compares against what actually happened.
+   */
+  authorizedPostcondition?: unknown;
   reversibility: JournalReversibility;
   reason?: string;
   deferredInverse?: boolean;
@@ -100,6 +113,7 @@ export async function executeJournaledStep<T>(params: {
   affectedCount: number;
   expectedPostcondition?: unknown;
   precondition?: unknown;
+  authorizedPostcondition?: unknown;
   operation: string;
   journalStepId?: string;
 }> {
@@ -252,6 +266,7 @@ export async function executeJournaledStep<T>(params: {
         affectedCount: outcome.affectedCount,
         expectedPostcondition: outcome.expectedPostcondition,
         precondition: plan.precondition,
+        authorizedPostcondition: plan.authorizedPostcondition,
         operation: plan.operation,
         journalStepId: stepId || undefined,
       };
@@ -406,6 +421,9 @@ export async function executeExternalMutation<T>(params: {
           operation: executed.operation,
           preImage: executed.precondition,
           postImage: executed.expectedPostcondition,
+          ...(executed.authorizedPostcondition === undefined
+            ? {}
+            : { authorizedPostImage: executed.authorizedPostcondition }),
           journalStepId: executed.journalStepId,
           effect: executed.effect,
         },

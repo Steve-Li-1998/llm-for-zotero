@@ -2,8 +2,10 @@ import { assert } from "chai";
 import { createUndoLastActionTool } from "../src/agent/tools/write/undoLastAction";
 import {
   initAgentChangeJournal,
+  listJournalActions,
   prepareJournalAction,
   prepareJournalStep,
+  selectUndoJournalAction,
   updateJournalAction,
   updateJournalStep,
 } from "../src/agent/store/changeJournal";
@@ -274,5 +276,50 @@ describe("undo_last_action native re-read", function () {
       receipts[0].reasons.join(" "),
       /Reverted step 2 of undo-drifted re-read as mismatched/,
     );
+  });
+
+  it("leaves a mismatched undo in the history so it can be undone again", async function () {
+    await seedTwoStepAction("undo-retryable");
+    refuseRestoreFor = "pref.b";
+
+    const first = await undoReceipt("undo-retryable");
+
+    // The journal must agree with the receipt. Marking the action `reverted`
+    // here would have taken it out of every pending query, leaving the user
+    // told the change did not go back and no way to try again.
+    assert.equal(first.receipts[0].verification, "unverified");
+    assert.deepEqual(first.receipts[0].verifiedFacts, [
+      "reverted_step:undo-retryable:1:matched",
+    ]);
+    const afterFirst = await listJournalActions({
+      actionId: "undo-retryable",
+      conversationKey: 77,
+      limit: 1,
+      pendingOnly: true,
+    });
+    assert.lengthOf(afterFirst, 1, "the action must stay selectable");
+    assert.equal(afterFirst[0].status, "revert_failed");
+    assert.equal(
+      (await selectUndoJournalAction({ conversationKey: 77 })).action?.actionId,
+      "undo-retryable",
+      "a second undo must be able to select it",
+    );
+
+    // Second attempt, with the gateway no longer refusing the restore.
+    refuseRestoreFor = null;
+    const second = await undoReceipt("undo-retryable");
+
+    assert.equal(settings["pref.b"], "before:pref.b");
+    assert.equal(second.receipts[0].verification, "verified");
+    assert.equal(second.receipts[0].status, "applied");
+    assert.deepEqual(second.receipts[0].verifiedFacts, [
+      "reverted_step:undo-retryable:2:matched",
+    ]);
+    const afterSecond = await listJournalActions({
+      actionId: "undo-retryable",
+      conversationKey: 77,
+      limit: 1,
+    });
+    assert.equal(afterSecond[0].status, "reverted");
   });
 });

@@ -304,7 +304,12 @@ export function createRevertChangesTool(
         },
         effect:
           outcome.reverted + outcome.partiallyReverted === 0
-            ? "none"
+            ? // An inverse that ran without completing its action still
+              // changed the library. Reporting "none" would hide that from
+              // the final gate as well as from the user.
+              outcome.steps.length
+              ? "partial"
+              : "none"
             : outcome.partiallyReverted > 0 ||
                 outcome.skipped.length > 0 ||
                 outcome.conflicts.length > 0

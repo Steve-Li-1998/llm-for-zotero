@@ -2278,6 +2278,24 @@ export async function revertActions(params: {
             verification: reread.verification,
             ...(reread.reason ? { reason: reread.reason } : {}),
           });
+          if (reread.verification !== "matched") {
+            // The journal must not claim an undo the target does not show.
+            // Marking the step and its action `revert_failed` keeps both
+            // selectable, so the user can retry instead of being told the
+            // change was put back by a history that no longer offers it.
+            const reason = `Step ${step.sequence} ran its inverse but ${
+              reread.reason || "did not read back as restored"
+            }.`;
+            actionFailed = true;
+            skipped.push({ entryId: action.actionId, reason });
+            await updateJournalStep({
+              stepId: step.stepId,
+              status: "revert_failed",
+              error: reason,
+              now: now(),
+            }).catch(() => undefined);
+            continue;
+          }
           await updateJournalStep({
             stepId: step.stepId,
             status: "reverted",
@@ -2374,6 +2392,7 @@ export async function verifyJournalStepPostcondition(params: {
       reason: "the step recorded no expected post-image to read back",
     };
   }
+  const expected = parseJson(params.step.expectedPostconditionJson);
   try {
     const current = await currentStepPostcondition({
       step: params.step,
@@ -2387,8 +2406,7 @@ export async function verifyJournalStepPostcondition(params: {
           "the recorded post-image format cannot be read back by this version",
       };
     }
-    return stable(current) ===
-      stable(parseJson(params.step.expectedPostconditionJson))
+    return stable(current) === stable(expected)
       ? { kind: "satisfied" }
       : {
           kind: "mismatched",

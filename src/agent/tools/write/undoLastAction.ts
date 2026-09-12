@@ -70,6 +70,11 @@ export function createUndoLastActionTool(
               record.message || "There are no reversible actions left to undo",
             );
           }
+          if (record.status === "undo_incomplete") {
+            return description
+              ? `Could not finish undoing: ${description}; it is still in the history and can be undone again`
+              : "The recorded inverse ran but the change was not restored; it can be undone again";
+          }
           if (record.status === "partially_undone") {
             return description
               ? `Partially undone: ${description}; some effects may remain`
@@ -260,15 +265,33 @@ export function createUndoLastActionTool(
         zoteroGateway,
         context,
       });
-      if (!outcome.reverted && !outcome.partiallyReverted) {
+      if (
+        !outcome.reverted &&
+        !outcome.partiallyReverted &&
+        !outcome.steps.length
+      ) {
+        // Nothing was replayed at all, so nothing changed and there is no
+        // observation to report.
         throw new Error(
           outcome.skipped[0]?.reason ||
             "The latest action could not be safely undone",
         );
       }
+      const incomplete =
+        !outcome.reverted &&
+        !outcome.partiallyReverted &&
+        outcome.steps.length > 0;
       return {
         content: {
-          status: outcome.partiallyReverted ? "partially_undone" : "undone",
+          // An inverse that ran but did not read back as restored is neither
+          // "undone" nor "nothing happened". The action stays `revert_failed`
+          // in the journal and can be undone again; saying so here is what
+          // lets the receipt name the steps that did hold.
+          status: incomplete
+            ? "undo_incomplete"
+            : outcome.partiallyReverted
+              ? "partially_undone"
+              : "undone",
           toolName: action.toolName,
           description: action.description,
           actionId: action.actionId,
@@ -278,8 +301,9 @@ export function createUndoLastActionTool(
           // The receipt's proof: how each replayed step read back from native
           // state, rather than the counters immediately above it.
           revertedSteps: outcome.steps,
+          ...(incomplete ? { skipped: outcome.skipped } : {}),
         },
-        effect: outcome.partiallyReverted ? "partial" : "applied",
+        effect: incomplete || outcome.partiallyReverted ? "partial" : "applied",
       };
     },
   };

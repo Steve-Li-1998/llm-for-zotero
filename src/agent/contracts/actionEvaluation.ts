@@ -346,15 +346,18 @@ function receiptMatches(
  * evidence would break completion in both directions: a shell command would
  * stand in for an unperformed tag write, and an approved command — whose proof
  * can only ever be `execution_only` — would report an otherwise complete turn
- * as unverified. These two capabilities reach a receipt only from the external
- * bridges; every Zotero effect a client performs comes through the MCP server
- * with a Zotero capability and stays delegated evidence.
+ * as unverified.
+ *
+ * The test is provenance, not capability. A `file.write` receipt can equally
+ * come from `file_io` run as a host tool, which the host journaled and
+ * verified and which is delegated evidence like any other; reading the
+ * capability as a proxy would only work while that tool stays off the MCP
+ * surface, and would break silently on the day it is exposed. `origin` is set
+ * by exactly one owner and says what actually matters: the host executed
+ * nothing here.
  */
 function isConnectedRuntimeSideEffect(receipt: AgentActionReceipt): boolean {
-  return (
-    receipt.capability === "file.write" ||
-    receipt.capability === "command.execute"
-  );
+  return receipt.origin === "connected_runtime";
 }
 
 function receiptVerified(receipt: AgentActionReceipt): boolean {

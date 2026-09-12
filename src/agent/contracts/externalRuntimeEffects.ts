@@ -98,6 +98,7 @@ export function buildExternalRuntimeEffectReceipt(params: {
   return {
     version: 2,
     executionAuthority: "external_runtime",
+    origin: "connected_runtime",
     id: `${proposalId}:${outcome}`,
     proposalId,
     proofDomain: authority.proofDomain,

@@ -149,6 +149,50 @@ describe("prepared action completion", function () {
     });
   }
 
+  it("excludes a client's own effect by provenance, not by which capability it used", function () {
+    // A receipt is excluded because the connected client's runtime performed
+    // the effect, which only the connected-runtime receipt owner can say. Any
+    // other reading — "file.write means a bridge minted it" — holds only while
+    // file_io and run_command stay off the MCP surface.
+    const base: import("../src/agent/contracts/types").AgentActionReceipt = {
+      version: 2,
+      executionAuthority: "external_runtime",
+      id: "file-write-receipt",
+      proposalId: "file-write-proposal",
+      proofDomain: "file_state",
+      capability: "file.write",
+      operation: "file_write",
+      verification: "verified",
+      status: "applied",
+      requestedTargets: ["file:/vault/a.md"],
+      appliedTargets: ["file:/vault/a.md"],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [],
+    };
+    // A host tool the client drove over MCP: the host ran it, verified it, and
+    // it is delegated action evidence like any other.
+    assert.equal(
+      evaluatePreparedActionContract({}, [
+        { ...base, verification: "unverified", status: "unverified" },
+      ]).state,
+      "unverified",
+    );
+    // The same capability, minted by the connected-runtime owner: excluded.
+    assert.equal(
+      evaluatePreparedActionContract({}, [
+        {
+          ...base,
+          origin: "connected_runtime",
+          verification: "unverified",
+          status: "unverified",
+        },
+      ]).state,
+      "satisfied",
+    );
+  });
+
   it("does not let an effect the client ran in its own runtime answer for a Zotero action", function () {
     // Phase 3 task 5 receipts Codex's and Claude Code's own file changes and
     // shell commands. They are audit evidence: they must neither satisfy a
@@ -159,6 +203,7 @@ describe("prepared action completion", function () {
         executionAuthority: "external_runtime",
         id: "external_runtime:claude_code:command_execute:call-1:executed",
         proposalId: "external_runtime:claude_code:command_execute:call-1",
+        origin: "connected_runtime",
         proofDomain: "execution",
         capability: "command.execute",
         operation: "command_execute",

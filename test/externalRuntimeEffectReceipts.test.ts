@@ -42,6 +42,11 @@ describe("external runtime effect receipts", function () {
     assert.equal(receipt.verification, "execution_only");
     assert.equal(receipt.status, "observed");
     assert.equal(receipt.executionAuthority, "external_runtime");
+    assert.equal(
+      receipt.origin,
+      "connected_runtime",
+      "provenance is stamped here and nowhere else, so readers need not infer it",
+    );
     assert.deepEqual(receipt.appliedTargets, []);
     assert.deepEqual(receipt.rejectedTargets, []);
     assert.deepEqual(receipt.verifiedFacts, []);

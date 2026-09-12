@@ -249,6 +249,21 @@ export type AgentActionReceipt = {
   version: 2;
   /** Stamped by the invocation controller, never supplied by tool arguments. */
   executionAuthority?: "external_runtime";
+  /**
+   * Where the effect itself ran, which is not the same question as who
+   * authorized it.
+   *
+   * `executionAuthority: "external_runtime"` says a connected client's own
+   * decision was accepted as the authorization for a host tool call the host
+   * then executed, journaled and verified. `origin: "connected_runtime"` says
+   * the host executed nothing: the client performed the effect inside its own
+   * process, so there is no journal step and no post-state to re-read, and the
+   * verification can never be better than `execution_only`. Only the
+   * connected-runtime receipt owner (`contracts/externalRuntimeEffects.ts`)
+   * sets it, so readers can key on provenance instead of guessing it from a
+   * capability.
+   */
+  origin?: "connected_runtime";
   id: string;
   obligationId?: string;
   proposalId: string;

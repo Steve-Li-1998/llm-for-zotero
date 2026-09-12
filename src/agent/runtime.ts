@@ -1932,6 +1932,7 @@ export class AgentRuntime {
             itemKey: item.itemKey,
             materialRef: item.materialRef,
             status: item.status,
+            written: item.written,
             noteId: item.noteId,
             error: item.error,
             callId: toolResult.callId,

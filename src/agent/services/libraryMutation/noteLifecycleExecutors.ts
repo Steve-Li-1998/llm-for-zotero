@@ -73,6 +73,8 @@ export const noteLifecycleExecutors = {
   save_notes_batch: async (operation, context, zoteroGateway) => {
     const rows: Array<{
       targetItemId: number;
+      /** The durable row this note belongs to, when it runs inside a batch. */
+      itemKey?: string;
       noteId?: number;
       actionId?: string;
       title: string;
@@ -145,6 +147,7 @@ export const noteLifecycleExecutors = {
       if (prior?.status === "saved") {
         rows.push({
           targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
           noteId: prior.noteId,
           title,
           status: "already_saved",
@@ -160,6 +163,7 @@ export const noteLifecycleExecutors = {
         const reason = `No item with ID ${entry.targetItemId} exists in this library`;
         rows.push({
           targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
           title,
           status: "error",
           reason,
@@ -190,6 +194,7 @@ export const noteLifecycleExecutors = {
         ).actionId;
         rows.push({
           targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
           noteId: saved.noteId,
           actionId:
             typeof childActionId === "string" ? childActionId : undefined,
@@ -207,6 +212,7 @@ export const noteLifecycleExecutors = {
         const reason = error instanceof Error ? error.message : String(error);
         rows.push({
           targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
           title,
           status: "error",
           reason,

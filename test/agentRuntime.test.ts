@@ -8271,6 +8271,7 @@ describe("finalized material announcement", function () {
         contentHash: `sha256:note-${position}`,
       },
       status: position === 2 ? ("failed" as const) : ("saved" as const),
+      written: position !== 2,
       ...(position === 2
         ? { error: "Zotero refused the note write" }
         : { noteId: 500 + position }),
@@ -8399,6 +8400,165 @@ describe("finalized material announcement", function () {
         persisted[0].seq,
         trace.events[toolResultIndex].seq,
         "items are announced after the tool result that carried them",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("separates the items a resumed batch wrote from the ones it skipped", async function () {
+    const restoreDb = installMockDb();
+    const events: AgentEvent[] = [];
+    // What a resume reports: it announces every row the batch holds, and both
+    // of these are saved. Only the second one was saved by this call.
+    const resumedItems = [
+      {
+        batchId: "batch-note_write_batch-1",
+        itemKey: "item:1",
+        materialRef: {
+          documentId: "run:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:note-1",
+        },
+        status: "saved" as const,
+        written: false,
+        noteId: 501,
+      },
+      {
+        batchId: "batch-note_write_batch-1",
+        itemKey: "item:2",
+        materialRef: {
+          documentId: "run:document:2",
+          documentVersion: 1,
+          contentHash: "sha256:note-2",
+        },
+        status: "saved" as const,
+        written: true,
+        noteId: 502,
+      },
+    ];
+    let steps = 0;
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry();
+      registry.register({
+        spec: {
+          name: "note_write_batch",
+          description: "Write a note onto each of many items",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        planInvocation: async () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test note batch resume.",
+          }),
+        describeAction: () => [
+          {
+            id: "save_notes_batch:0",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "save_notes_batch",
+            source: "library_mutation",
+            requestedTargets: ["item:2"],
+            destinationCollectionIds: [],
+          },
+        ],
+        execute: async () => ({
+          content: { createdCount: 1, alreadySavedCount: 1 },
+          effect: "applied",
+          batchItems: resumedItems,
+        }),
+      } as never);
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            if (steps++ === 0) {
+              const call = {
+                id: "note-batch-resume",
+                name: "note_write_batch",
+                arguments: { resumeBatchId: "batch-note_write_batch-1" },
+              };
+              return {
+                kind: "tool_calls",
+                calls: [call],
+                assistantMessage: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [call],
+                },
+              };
+            }
+            return {
+              kind: "final",
+              text: "Finished the batch.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Finished the batch.",
+              },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 774423,
+          mode: "agent",
+          userText: "Finish that batch",
+          libraryID: 1,
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+          metadata: { sourceMessageTimestamp: 100 },
+        },
+        onEvent: (event) => events.push(event),
+      });
+      assert.equal(outcome.kind, "completed");
+
+      const announced = events.filter(
+        (event) => event.type === "batch_item_outcome",
+      ) as Extract<AgentEvent, { type: "batch_item_outcome" }>[];
+      assert.deepEqual(
+        announced.map((event) => event.status),
+        ["saved", "saved"],
+      );
+      // Anything rendering these as "what just happened" must read `written`;
+      // the status alone would show the same note being written twice.
+      assert.deepEqual(
+        announced.map((event) => ({
+          itemKey: event.itemKey,
+          written: event.written,
+        })),
+        [
+          { itemKey: "item:1", written: false },
+          { itemKey: "item:2", written: true },
+        ],
+      );
+      const persisted = (await getAgentRunTrace(outcome.runId)).events
+        .filter((entry) => entry.eventType === "batch_item_outcome")
+        .map(
+          (entry) =>
+            (
+              entry.payload as Extract<
+                AgentEvent,
+                { type: "batch_item_outcome" }
+              >
+            ).written,
+        );
+      assert.deepEqual(
+        persisted,
+        [false, true],
+        "the distinction survives into the durable trace",
       );
     } finally {
       restoreDb();

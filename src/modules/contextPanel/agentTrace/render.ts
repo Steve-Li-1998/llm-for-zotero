@@ -5910,7 +5910,6 @@ export function renderAgentTrace({
     }
     const text = doc.createElement("span");
     text.className = `llm-at-text llm-at-${itemEntry.row.kind}-text`;
-    if (isActivePlanningRow) text.classList.add("llm-text-shimmer");
     text.textContent = itemEntry.row.text;
     if (isExpandable) {
       row.append(icon, text);

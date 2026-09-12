@@ -1856,32 +1856,74 @@ describe("agentTrace render", function () {
       runMode: "agent" as const,
       streaming: true,
     };
+    const planningMessage = { ...baseMessage };
+    const planningEvents: AgentRunEventRecord[] = [
+      {
+        runId: "run-planning-label",
+        seq: 1,
+        eventType: "status",
+        payload: {
+          type: "status",
+          text: "Planning the request and reviewing context",
+        },
+        createdAt: 1_000,
+      },
+    ];
     const planning = renderAgentTrace({
       doc: fakeDocument,
-      message: { ...baseMessage },
-      events: [
-        {
-          runId: "run-planning-label",
-          seq: 1,
-          eventType: "status",
-          payload: {
-            type: "status",
-            text: "Planning the request and reviewing context",
-          },
-          createdAt: 1_000,
-        },
-      ],
+      message: planningMessage,
+      events: planningEvents,
     }) as unknown as FakeElement;
-    assert.equal(
-      planning.findByClass("llm-agent-activity-label")?.textContent,
-      "Planning",
-    );
+    const planningLabel = planning.findByClass("llm-agent-activity-label")!;
+    assert.equal(planningLabel.textContent, "Planning");
+    assert.isTrue(planningLabel.classList.contains("llm-text-shimmer"));
     const planningRow = planning.findByClass("llm-at-row-planning-active");
     assert.isNotNull(planningRow);
+    const planningText = planningRow!.children[1];
+    assert.equal(
+      planningText.textContent,
+      "Planning the request and reviewing context",
+    );
+    assert.isFalse(planningText.classList.contains("llm-text-shimmer"));
     assert.isTrue(
       planningRow?.children[0]?.classList.contains("llm-at-planning-drive"),
     );
     assert.lengthOf(planning.findAllByClass("llm-at-planning-drive-pixel"), 9);
+
+    const streamingRerender = renderAgentTrace({
+      doc: fakeDocument,
+      message: planningMessage,
+      events: planningEvents,
+      previous: planning as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+    const rerenderedPlanningRow = streamingRerender.findByClass(
+      "llm-at-row-planning-active",
+    )!;
+    assert.isFalse(
+      rerenderedPlanningRow.children[1].classList.contains("llm-text-shimmer"),
+    );
+    assert.lengthOf(
+      streamingRerender.findAllByClass("llm-at-planning-drive-pixel"),
+      9,
+    );
+    assert.isTrue(
+      streamingRerender
+        .findByClass("llm-agent-activity-label")!
+        .classList.contains("llm-text-shimmer"),
+    );
+
+    planningMessage.streaming = false;
+    const completedPlanning = renderAgentTrace({
+      doc: fakeDocument,
+      message: planningMessage,
+      events: planningEvents,
+      previous: streamingRerender as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+    const completedSummary = completedPlanning.findByClass(
+      "llm-agent-activity-summary",
+    )!;
+    assert.equal(completedSummary.textContent, "Planned in 1s");
+    assert.isFalse(completedSummary.classList.contains("llm-text-shimmer"));
 
     const executing = renderAgentTrace({
       doc: fakeDocument,

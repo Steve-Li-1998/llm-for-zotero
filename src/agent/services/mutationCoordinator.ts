@@ -22,12 +22,14 @@ import {
   createJournalId,
   isAgentChangeJournalAvailable,
   listJournalActions,
+  listJournalSteps,
   prepareJournalAction,
   prepareJournalStep,
   registerJournalRecoveryPayloads,
   updateJournalAction,
   updateJournalStep,
   type JournalReversibility,
+  type JournalStatus,
 } from "../store/changeJournal";
 import type {
   LibraryMutationExecutionResult,
@@ -106,6 +108,58 @@ export function summarizeMutationOutcomes(
  */
 function ownsItsOwnJournalSteps(operation: LibraryMutationOperation): boolean {
   return operation.type === "save_notes_batch";
+}
+
+/** Step states that mean the action still owes work it has not applied. */
+const UNFINISHED_STEP_STATUSES: ReadonlySet<JournalStatus> = new Set([
+  "prepared",
+  "applying",
+  "partially_applied",
+  "failed",
+  "uncertain",
+]);
+
+/**
+ * The status a reused action now deserves, read from every step it holds.
+ *
+ * This call's own outcomes cannot answer it: a resume that writes the one
+ * item an earlier attempt failed still leaves that attempt's failed step in
+ * the action, and summarizing only the new steps would rewrite the action as
+ * fully applied. `unfinishedWork` covers what has no step at all -- a batch
+ * item whose body was never finalized is failed in the batch's rows and was
+ * never journalled.
+ */
+async function resumedActionSummary(params: {
+  actionId: string;
+  affectedCount: number;
+  unfinishedWork: boolean;
+  fallbackReversibility: JournalReversibility;
+}): Promise<{
+  status: JournalStatus;
+  reversibility: JournalReversibility;
+  affectedCount: number;
+}> {
+  const steps = await listJournalSteps(params.actionId);
+  const incomplete =
+    params.unfinishedWork ||
+    steps.some((step) => UNFINISHED_STEP_STATUSES.has(step.status));
+  const recoveryRelevant = steps.filter((step) => step.status !== "no_effect");
+  const reversibility = recoveryRelevant.length
+    ? combineReversibility(recoveryRelevant.map((step) => step.reversibility))
+    : params.fallbackReversibility;
+  return {
+    status: params.affectedCount
+      ? incomplete
+        ? "partially_applied"
+        : reversibility === "none"
+          ? "irreversible"
+          : "applied"
+      : incomplete
+        ? "failed"
+        : "no_effect",
+    reversibility,
+    affectedCount: params.affectedCount,
+  };
 }
 
 /**
@@ -358,9 +412,9 @@ export async function executeLibraryMutationAction(params: {
     );
   }
   const resumed =
-    journalAvailable && !parentScope && context.resumeJournalActionId
+    journalAvailable && !parentScope && context.resumeJournalAction
       ? await reopenJournalAction({
-          actionId: context.resumeJournalActionId,
+          actionId: context.resumeJournalAction.actionId,
           conversationKey: context.request.conversationKey,
         })
       : null;
@@ -471,21 +525,26 @@ export async function executeLibraryMutationAction(params: {
             : "applied";
     if (actionId && ownsAction) {
       // The caller is told what this call changed; the action records what it
-      // holds altogether, so a resume adds to the work its first attempt
-      // applied and can never record an action that wrote notes as having
-      // done nothing.
+      // holds altogether. A reused action is therefore summarized from every
+      // step it owns, so a resume can neither shrink it nor rewrite an action
+      // that still carries a failed step as fully applied.
       await updateJournalAction({
         actionId,
-        status:
-          priorOutcome && status === "no_effect" ? "partially_applied" : status,
-        reversibility: priorOutcome
-          ? combineReversibility([
-              priorOutcome.reversibility,
-              summary.reversibility,
-            ])
-          : summary.reversibility,
-        affectedCount:
-          (priorOutcome?.affectedCount || 0) + summary.affectedCount,
+        ...(resumed
+          ? await resumedActionSummary({
+              actionId,
+              affectedCount:
+                (priorOutcome?.affectedCount || 0) + summary.affectedCount,
+              unfinishedWork: Boolean(
+                context.resumeJournalAction?.unfinishedWork,
+              ),
+              fallbackReversibility: summary.reversibility,
+            })
+          : {
+              status,
+              reversibility: summary.reversibility,
+              affectedCount: summary.affectedCount,
+            }),
       });
     }
     return {

@@ -557,6 +557,14 @@ export type AgentEvent =
       /** Absent only for an item whose body could not be finalized. */
       materialRef?: MaterialRef;
       status: "pending" | "saved" | "failed";
+      /**
+       * Whether the carrying call wrote this note, or only reported a row an
+       * earlier call had already written. A resumed batch announces every row
+       * it holds, so a `saved` row that this call skipped is `written: false`;
+       * anything that presents these events as "what just happened" must read
+       * this rather than the status.
+       */
+      written: boolean;
       noteId?: number;
       error?: string;
       /** The tool call that carried this batch. */
@@ -1061,6 +1069,12 @@ export type AgentBatchItemOutcome = {
   /** Absent only for an item whose body could not be finalized. */
   materialRef?: MaterialRef;
   status: "pending" | "saved" | "failed";
+  /**
+   * Whether this call wrote the note, as opposed to reporting a row an
+   * earlier call had already written. A batch reports every row it holds,
+   * so `status: "saved"` alone cannot tell the two apart.
+   */
+  written: boolean;
   noteId?: number;
   error?: string;
 };
@@ -1195,7 +1209,15 @@ export type AgentToolContext = {
    * while it is still this conversation's and still holds applied work;
    * otherwise it mints a new one.
    */
-  resumeJournalActionId?: string;
+  resumeJournalAction?: {
+    actionId: string;
+    /**
+     * Work the action is still missing that this call is not performing.
+     * A batch holding an item it can never write leaves its action partially
+     * applied however well this call itself goes.
+     */
+    unfinishedWork?: boolean;
+  };
   /** Internal durable batch this call's items belong to. */
   batchBinding?: AgentBatchBinding;
   /** Host-owned registered operation bridge. Each call retains its own authorization and native receipts. */

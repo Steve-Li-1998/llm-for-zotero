@@ -64,7 +64,21 @@ type PreparedBatchItem = {
   failure?: string;
 };
 
-/** What continuing a batch settled before a single note was written. */
+/** One row a resume has to correct, once the call is authorized to run. */
+type ResumeRowCorrection = {
+  itemKey: string;
+  actionId?: string;
+  stepSequence?: number;
+  error: string;
+};
+
+/**
+ * What continuing a batch worked out, before anything was written.
+ *
+ * Resolution runs during preparation, which the user may still cancel, so it
+ * decides everything and changes nothing: the row corrections it discovers
+ * travel here and are applied by `execute`.
+ */
 type ResumeResolution = {
   batchId: string;
   /** The journal action the batch's rows already name, if any. */
@@ -75,6 +89,8 @@ type ResumeResolution = {
   rewrittenItemKeys: string[];
   /** Items no stored material can write, with the reason they stay failed. */
   blocked: Array<{ itemKey: string; reason: string }>;
+  /** Row writes this resume owes; applied by `execute`, never by preparation. */
+  corrections: ResumeRowCorrection[];
 };
 
 /** One item as the batch's job row remembers it, so a resume needs no model. */
@@ -225,6 +241,10 @@ export function createWriteNotesBatchTool(
    * the reference the user approved, and writes exactly them. An item whose
    * material is missing or has moved is left failed and named in the result
    * rather than written from something else.
+   *
+   * This runs inside preparation, which the user may still cancel, so it is
+   * pure: the row corrections it finds are carried on the input and written by
+   * `execute`. A cancelled resume must leave the batch exactly as it was.
    */
   async function resolveResume(
     input: WriteNotesBatchInput,
@@ -255,6 +275,7 @@ export function createWriteNotesBatchTool(
       skippedItemKeys: [],
       rewrittenItemKeys: [],
       blocked: [],
+      corrections: [],
     };
     const items: PreparedBatchItem[] = [];
     const notes: SaveNotesBatchOperation["notes"] = [];
@@ -273,7 +294,8 @@ export function createWriteNotesBatchTool(
         // work again, and the row has to say so or the executor would skip it
         // as already written.
         resume.rewrittenItemKeys.push(row.itemKey);
-        await markBatchItemFailed(batchId, row.itemKey, {
+        resume.corrections.push({
+          itemKey: row.itemKey,
           actionId: row.actionId,
           stepSequence: row.stepSequence,
           error: `The note this item wrote (${row.noteId}) is no longer in the library`,
@@ -283,7 +305,8 @@ export function createWriteNotesBatchTool(
       if ("blocked" in resolved) {
         resume.blocked.push({ itemKey: row.itemKey, reason: resolved.blocked });
         if (row.status !== "failed" || row.error !== resolved.blocked)
-          await markBatchItemFailed(batchId, row.itemKey, {
+          resume.corrections.push({
+            itemKey: row.itemKey,
             actionId: row.actionId,
             stepSequence: row.stepSequence,
             error: resolved.blocked,
@@ -674,6 +697,16 @@ export function createWriteNotesBatchTool(
     async execute(input, context) {
       const batchBinding = await openBatch(input, context);
       const resume = input._resume;
+      // The first durable change of an authorized resume. Preparation only
+      // decided these; writing them there would have flipped rows under a
+      // confirmation card the user can still cancel. They land before the
+      // write because the executor skips a row that still reads `saved`.
+      for (const correction of resume?.corrections || [])
+        await markBatchItemFailed(resume!.batchId, correction.itemKey, {
+          actionId: correction.actionId,
+          stepSequence: correction.stepSequence,
+          error: correction.error,
+        });
       const result = notesOf(input).length
         ? await executeAndRecordUndo(
             mutationService,
@@ -684,13 +717,23 @@ export function createWriteNotesBatchTool(
               // Continue the action the batch already opened, so one undo
               // still reverts every note of it.
               ...(resume?.actionId
-                ? { resumeJournalActionId: resume.actionId }
+                ? {
+                    resumeJournalAction: {
+                      actionId: resume.actionId,
+                      // An item no stored material can write keeps the action
+                      // partially applied however well this call goes.
+                      unfinishedWork: resume.blocked.length > 0,
+                    },
+                  }
                 : {}),
             },
             "write_notes_batch",
           )
         : settledBatchResult(resume);
-      const batchItems = await readBatchOutcomes(batchBinding.batchId);
+      const batchItems = await readBatchOutcomes(
+        batchBinding.batchId,
+        writtenItemKeys(result),
+      );
       // The rows are the authority on what still needs writing, so the job is
       // closed only once every item of it has landed. A throw above leaves it
       // open on purpose: the startup sweep will mark it interrupted and its
@@ -752,15 +795,50 @@ function settledBatchResult(resume: ResumeResolution | undefined): {
   };
 }
 
+/**
+ * The item keys this call actually wrote a note for.
+ *
+ * The executor reports one row per note it handled and distinguishes a note
+ * it created from one an earlier call had already written, so the answer
+ * comes from there rather than from the batch's durable rows, which say only
+ * that a note exists.
+ */
+function writtenItemKeys(result: { content: unknown }): Set<string> {
+  const outer =
+    result.content && typeof result.content === "object"
+      ? (result.content as Record<string, unknown>)
+      : {};
+  const inner =
+    outer.result && typeof outer.result === "object"
+      ? (outer.result as Record<string, unknown>)
+      : {};
+  const payload =
+    inner.result && typeof inner.result === "object"
+      ? (inner.result as Record<string, unknown>)
+      : {};
+  const notes = Array.isArray(payload.notes) ? payload.notes : [];
+  return new Set(
+    notes.flatMap((note) =>
+      validateObject<Record<string, unknown>>(note) &&
+      note.status === "created" &&
+      typeof note.itemKey === "string"
+        ? [note.itemKey]
+        : [],
+    ),
+  );
+}
+
 /** What the host announces for each item, read back from the durable rows. */
 async function readBatchOutcomes(
   batchId: string,
+  writtenKeys: ReadonlySet<string>,
 ): Promise<AgentBatchItemOutcome[]> {
   return (await listBatchItems(batchId)).map((row) => ({
     batchId: row.batchId,
     itemKey: row.itemKey,
     materialRef: row.materialRef,
     status: row.status,
+    written: writtenKeys.has(row.itemKey),
     ...(row.noteId === undefined ? {} : { noteId: row.noteId }),
     ...(row.error === undefined ? {} : { error: row.error }),
   }));

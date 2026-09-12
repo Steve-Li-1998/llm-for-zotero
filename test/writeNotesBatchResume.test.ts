@@ -172,6 +172,15 @@ describe("note batch resume", function () {
     return instance.execute(validated.value, ctx);
   }
 
+  /** Every stored column of every batch row, for byte-identity assertions. */
+  function rawItemRows(): unknown[] {
+    return db
+      .prepare(
+        `SELECT * FROM llm_for_zotero_agent_batch_items ORDER BY batch_id, position`,
+      )
+      .all() as unknown[];
+  }
+
   function documentCount(): number {
     const rows = db
       .prepare(`SELECT COUNT(*) AS total FROM llm_for_zotero_plan_documents`)
@@ -255,6 +264,12 @@ describe("note batch resume", function () {
       (output.batchItems || []).map((entry) => entry.status),
       ["saved", "saved", "saved"],
     );
+    // All three rows are saved, but only two of them were saved by this call.
+    // Anything presenting these as "what just happened" has to tell them apart.
+    assert.deepEqual(
+      (output.batchItems || []).map((entry) => entry.written),
+      [false, true, true],
+    );
   });
 
   it("continues the batch's own journal action while it is still open", async function () {
@@ -277,12 +292,65 @@ describe("note batch resume", function () {
       [opened],
       "a resume opens no second action beside the batch's own",
     );
-    assert.equal(actions[0].status, "applied");
+    // The action keeps the failed step of the first attempt beside the step
+    // that finally wrote that note, so it is partially applied as a matter of
+    // record even though every note now exists. The status describes the
+    // action's steps; whether the batch still owes work is the rows' answer,
+    // and they say it does not.
+    assert.equal(actions[0].status, "partially_applied");
     assert.equal(actions[0].affectedCount, 3);
     assert.deepEqual(
       actions[0].steps.map((step) => step.sequence).sort(),
       [1, 2, 3, 4],
       "resumed steps continue the action's sequence instead of colliding",
+    );
+    assert.isEmpty(
+      await listResumableBatches(8801),
+      "the batch itself is finished, whatever its action's history says",
+    );
+  });
+
+  it("never records the action as applied while an item can never be written", async function () {
+    const instance = tool();
+    const validated = instance.validate({
+      notes: [
+        { targetItemId: 1, content: "A fine note." },
+        { targetItemId: 2, content: "Another fine note." },
+        // Too large to finalize, so this item is seeded failed with no
+        // material and never reaches a journal step at all.
+        { targetItemId: 3, content: "x".repeat(2 * 1024 * 1024 + 16) },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) throw new Error("unreachable");
+    await instance.planInvocation(validated.value, context());
+    failOnParents.add(2);
+    await instance.execute(validated.value, context());
+    failOnParents.clear();
+    const batchId = (await listResumableBatches(8801))[0].batchId;
+    assert.deepEqual(
+      (await listBatchItems(batchId)).map((row) => row.status),
+      ["saved", "failed", "failed"],
+    );
+    const opened = (await listBatchItems(batchId))[0].actionId!;
+
+    // The resume writes item 2 and nothing else. Summarising only this call's
+    // steps would rewrite the action as fully applied, while item 3 will
+    // never be written and item 2's first attempt is still a failed step.
+    await run(instance, { resumeBatchId: batchId });
+
+    const rows = await listBatchItems(batchId);
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["saved", "saved", "failed"],
+    );
+    const [action] = await listJournalActions({ actionId: opened });
+    assert.equal(action.status, "partially_applied");
+    assert.equal(action.affectedCount, 2);
+    assert.deepEqual(
+      (await listResumableBatches(8801)).map((entry) => entry.batchId),
+      [batchId],
+      "an item nothing can write keeps the batch on offer",
     );
   });
 
@@ -395,6 +463,36 @@ describe("note batch resume", function () {
     assert.deepEqual(resume.skippedItemKeys, ["item:2", "item:3"]);
   });
 
+  it("changes no durable row until the resume is authorized", async function () {
+    const instance = tool();
+    await run(instance, { notes: notes() });
+    const [batchId] = [...new Set((await listJobIds()).values())];
+    const before = await listBatchItems(batchId);
+    native.notes.delete(before[0].noteId!);
+    const rawBefore = rawItemRows();
+
+    // Preparation is what builds the confirmation card. The user may still
+    // cancel it, so nothing it discovers may be written to the rows yet.
+    const validated = instance.validate({ resumeBatchId: batchId });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) throw new Error("unreachable");
+    await instance.planInvocation(validated.value, context());
+    instance.createPendingAction?.(validated.value, context());
+
+    assert.deepEqual(
+      rawItemRows(),
+      rawBefore,
+      "a cancelled resume leaves the batch exactly as it was",
+    );
+
+    await instance.execute(validated.value, context());
+    assert.notDeepEqual(
+      rawItemRows(),
+      rawBefore,
+      "executing it is what corrects the row whose note is gone",
+    );
+  });
+
   it("never writes a pending item that has no finalized body", async function () {
     await createBatchJob({
       jobId: "batch-corrupt",
@@ -429,7 +527,17 @@ describe("note batch resume", function () {
       1000,
     );
 
-    const output = await run(tool(), { resumeBatchId: "batch-corrupt" });
+    const instance = tool();
+    const validated = instance.validate({ resumeBatchId: "batch-corrupt" });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) throw new Error("unreachable");
+    const rawBefore = rawItemRows();
+    await instance.planInvocation(validated.value, context());
+    // Every row is blocked, so this call needs no confirmation -- which is
+    // exactly why preparation must not have written the failures already.
+    assert.deepEqual(rawItemRows(), rawBefore);
+
+    const output = await instance.execute(validated.value, context());
 
     assert.equal(native.notes.size, 0, "no note may be written");
     const rows = await listBatchItems("batch-corrupt");

@@ -10146,8 +10146,8 @@ export async function sendQuestion(
     assistantMessage.text = outcome.text;
     assistantMessage.interrupted = outcome.interrupted;
     assistantMessage.streaming = false;
-    refreshChatSafely();
     codexActivityTrace?.flushBufferedProgress("error");
+    refreshChatSafely();
     await persistAssistantOnce();
 
     setStatusSafely(`Error: ${`${errMsg}${retryHint}`.slice(0, 40)}`, "error");

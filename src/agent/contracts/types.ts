@@ -78,6 +78,8 @@ export type AgentActionParameters = {
   filePath?: string;
   contentHash?: string;
   documentId?: string;
+  /** Frozen with `documentId` and `contentHash` to name one exact material version. */
+  documentVersion?: number;
   commandFingerprint?: string;
   settingsKey?: string;
   settingsValue?: string;

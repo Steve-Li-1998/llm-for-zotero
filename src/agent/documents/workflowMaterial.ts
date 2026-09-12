@@ -90,12 +90,22 @@ export function assertMaterialRefMatches(
   reference: MaterialRef,
 ): void {
   materialRefFromDocument(reference);
-  if (
-    document.documentId !== reference.documentId ||
-    document.documentVersion !== reference.documentVersion ||
-    document.contentHash !== reference.contentHash
-  ) {
-    throw new Error("The finalized material version or content has changed.");
+  // Name the part that moved: the user approved one exact material, and a
+  // refusal is only actionable when it says which half of that identity broke.
+  if (document.documentId !== reference.documentId) {
+    throw new Error(
+      `The finalized material identity has changed: the approved document ID '${reference.documentId}' is not stored document '${document.documentId}'.`,
+    );
+  }
+  if (document.documentVersion !== reference.documentVersion) {
+    throw new Error(
+      `The finalized material version or content has changed: the approved document version ${reference.documentVersion} is no longer the stored version ${document.documentVersion}.`,
+    );
+  }
+  if (document.contentHash !== reference.contentHash) {
+    throw new Error(
+      `The finalized material version or content has changed: the approved content hash '${reference.contentHash}' is no longer the stored content hash '${document.contentHash}'.`,
+    );
   }
 }
 
@@ -245,10 +255,12 @@ export async function loadWorkflowMaterial(
 
 /** Binds a save proposal to the material receipt and the frozen native parent. */
 export async function resolveWorkflowNoteDocument(
-  context: Pick<AgentToolContext, "request" | "runId">,
+  context: Pick<AgentToolContext, "request">,
   documentId: string,
   targetItemId?: number,
   mode: "create" | "edit" | "append" = "create",
+  /** The MaterialRef frozen into the authorized proposal, when one exists. */
+  frozenRef?: MaterialRef,
 ): Promise<PlanDocument> {
   const request = context.request;
   const document = await loadPlanDocument(documentId);
@@ -258,21 +270,19 @@ export async function resolveWorkflowNoteDocument(
     );
   }
   const progress = request.actionProgress;
-  // Fresh ordinary Agent work has no semantic contract. Its direct document
-  // is still an exact, host-persisted material version, but only the run that
-  // finalized it may save it; the invocation controller authorizes the
-  // concrete target separately.
+  // Fresh ordinary Agent work has no semantic contract. Its direct document is
+  // still an exact, host-persisted material version. The journey spans two
+  // turns — generate, then save — so the run that finalized it is not the run
+  // that saves it; what may not change is the material the user approved, so
+  // the frozen MaterialRef is re-checked here. The invocation controller
+  // authorizes the concrete target separately.
   if (!request.actionContract && !progress) {
     if (document.version !== 2 || document.origin.kind !== "direct") {
       throw new Error(
         "The finalized document is not a direct version 2 Agent document.",
       );
     }
-    if (!context.runId || document.origin.runId !== context.runId) {
-      throw new Error(
-        `The finalized document belongs to a different Agent run (document run '${document.origin.runId}', current run '${context.runId || "none"}').`,
-      );
-    }
+    if (frozenRef) assertMaterialRefMatches(document, frozenRef);
     return document;
   }
   const receipt = progress?.materialOutputs?.find(
@@ -293,5 +303,6 @@ export async function resolveWorkflowNoteDocument(
       "The note must use the finalized workflow document and its exact authorized destination.",
     );
   assertMaterialRefMatches(document, receipt);
+  if (frozenRef) assertMaterialRefMatches(document, frozenRef);
   return document;
 }

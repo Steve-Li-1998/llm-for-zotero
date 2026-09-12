@@ -23,7 +23,11 @@ import {
   savePlanDocumentAsNote,
   finalizeDocumentNoteHtml,
 } from "../../documents/actions";
-import { resolveWorkflowNoteDocument } from "../../documents/workflowMaterial";
+import {
+  materialRefFromDocument,
+  resolveWorkflowNoteDocument,
+} from "../../documents/workflowMaterial";
+import type { MaterialRef } from "../../documents/types";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
@@ -79,6 +83,8 @@ function sanitizeNoteHtml(html: string): string {
 
 type EditCurrentNoteInput = {
   documentId?: string;
+  /** The exact material this proposal is frozen to, resolved once in preparation. */
+  _documentMaterialRef?: MaterialRef;
   _documentContentHash?: string;
   _documentHasAssets?: boolean;
   mode: "edit" | "create" | "append";
@@ -409,6 +415,8 @@ async function prepareWorkflowDocumentNote(
       ? input.targetItemId
       : input.targetNoteId || input.noteId,
     input.mode,
+    // Preparation freezes the reference; every later pass re-checks against it.
+    input._documentMaterialRef,
   );
   if (input.content && input.content !== document.visibleHtml)
     throw new Error(
@@ -416,6 +424,7 @@ async function prepareWorkflowDocumentNote(
     );
   input.content = document.visibleHtml;
   input._isHtml = true;
+  input._documentMaterialRef = materialRefFromDocument(document);
   input._documentContentHash = document.contentHash;
   input._documentHasAssets = document.assets.length > 0;
 }
@@ -439,6 +448,7 @@ export function createEditCurrentNoteTool(
         parameters: {
           noteMode: input.mode,
           documentId: input.documentId,
+          documentVersion: input._documentMaterialRef?.documentVersion,
           contentHash: input._documentContentHash,
           targetItemId: input.targetItemId,
           targetNoteId: input.targetNoteId || input.noteId,
@@ -1146,6 +1156,7 @@ export function createEditCurrentNoteTool(
                   input.documentId!,
                   targetNote.id,
                   input.mode,
+                  input._documentMaterialRef,
                 );
                 const finalized = await finalizeDocumentNoteHtml(document, {
                   noteId: targetNote.id,

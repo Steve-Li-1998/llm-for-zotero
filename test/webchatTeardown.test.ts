@@ -94,6 +94,52 @@ describe("WebChat teardown", function () {
     assert.match(cleanupBody(), /disposeWebChatFeature\(\);/);
   });
 
+  it("registers the feature's own unmount as the handle cleanup calls", function () {
+    // The two pins above only say that cleanup calls a handle and that
+    // unmount() releases the poll. Without this one, rewiring the handle to
+    // anything else leaves every test green while the 5s timer leaks again.
+    const setupHandlers = source(SETUP_HANDLERS_PATH);
+
+    assert.match(
+      setupHandlers,
+      /import \{[^}]*\bPanelLifecycle\b[^}]*\} from "\.\/setupHandlers\/lifecycle";/,
+      "the panel must use the shared PanelLifecycle",
+    );
+    assert.include(
+      setupHandlers,
+      "const panelLifecycle = new PanelLifecycle();",
+      "the panel must own a real PanelLifecycle, not a local stand-in",
+    );
+
+    const construction = setupHandlers.indexOf(
+      "const webChatFeature = createWebChatFeature({",
+    );
+    assert.isAbove(construction, -1, "the WebChat feature is not constructed");
+
+    const registration =
+      /const (\w+) = panelLifecycle\.add\(\(\) =>\s*webChatFeature\.unmount\(\),?\s*\);/.exec(
+        setupHandlers,
+      );
+    assert.isNotNull(
+      registration,
+      "the WebChat feature's unmount must be what is registered on the lifecycle",
+    );
+    const [matched, handle] = registration as RegExpExecArray;
+    assert.isAbove(
+      setupHandlers.indexOf(matched),
+      construction,
+      "the feature must be registered after it is constructed",
+    );
+
+    // Take the handle name from the registration so this cannot drift onto
+    // some other disposable that happens to be called at the same place.
+    assert.include(
+      cleanupBody(),
+      `${handle}();`,
+      "cleanup must call the handle returned by that registration",
+    );
+  });
+
   it("disposes the panel lifecycle as a safety net for later features", function () {
     assert.include(cleanupBody(), "panelLifecycle.dispose();");
   });

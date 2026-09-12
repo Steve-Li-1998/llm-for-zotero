@@ -1031,7 +1031,6 @@ describe("transactional Plan task transitions", function () {
         documentVersion: 1,
         contentHash: "sha256:note",
       },
-      actionId: "action-1",
       batchId: "batch-1",
       itemKey: "item:1",
     };

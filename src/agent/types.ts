@@ -580,9 +580,14 @@ export type AgentEvent =
        * The stage is required and always comes from a declared contract --
        * the tool's `workCategory`, or the fixed category of the event this
        * announces -- so nothing downstream has to infer work from a tool
-       * name. A stage event is emitted immediately before the event it
-       * describes, so a live run and a trace projected from an older run
-       * interleave identically.
+       * name.
+       *
+       * A stage event is emitted immediately before the event it describes:
+       * `started` before the `tool_call`, the closing event before the
+       * `tool_result` that reports the call's outcome. A `tool_error` is a
+       * detail of the call rather than the event a stage describes, so it
+       * stays inside the open stage and precedes the close. A live run and a
+       * trace projected from an older run therefore interleave identically.
        */
       type: "agent_stage";
       stage: AgentStage;
@@ -595,7 +600,6 @@ export type AgentEvent =
       materialRef?: MaterialRef;
       /** Receipts the closing call produced, by `AgentActionReceipt.id`. */
       receiptIds?: string[];
-      actionId?: string;
       /** The durable batch this stage reports one item of. */
       batchId?: string;
       itemKey?: string;

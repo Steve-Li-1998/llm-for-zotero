@@ -9303,10 +9303,12 @@ describe("agent stage events", function () {
       );
 
       const trace = await getAgentRunTrace(outcome.runId);
-      assert.lengthOf(
-        trace.events.filter((entry) => entry.eventType === "agent_stage"),
-        4,
-        "stage events persist like every other run event",
+      assert.deepEqual(
+        trace.events
+          .filter((entry) => entry.eventType === "agent_stage")
+          .map((entry) => entry.payload),
+        stages,
+        "a replayed stage event is structurally identical to the live one",
       );
     } finally {
       restoreDb();
@@ -9350,7 +9352,7 @@ describe("agent stage events", function () {
             { streaming: false, toolCalls: true, multimodal: false },
           ),
       });
-      await runtime.runTurn({
+      const outcome = await runtime.runTurn({
         request: {
           classifiedIntent: classifiedFixture(),
           conversationKey: 990_102,
@@ -9373,6 +9375,31 @@ describe("agent stage events", function () {
       assert.equal(
         events.find((event) => event.type === "tool_error")?.toolLabel,
         "Search library",
+      );
+
+      // The close describes the result, not the error: the error is a detail
+      // inside the still-open stage.
+      const persisted = (await getAgentRunTrace(outcome.runId)).events
+        .slice()
+        .sort((left, right) => left.seq - right.seq);
+      const firstStage = persisted.findIndex(
+        (entry) => entry.eventType === "agent_stage",
+      );
+      assert.isAtLeast(firstStage, 0, "the run must persist a stage event");
+      assert.deepEqual(
+        persisted.slice(firstStage, firstStage + 5).map((entry) => {
+          const payload = entry.payload;
+          return payload.type === "agent_stage"
+            ? `agent_stage:${payload.status}`
+            : payload.type;
+        }),
+        [
+          "agent_stage:started",
+          "tool_call",
+          "tool_error",
+          "agent_stage:failed",
+          "tool_result",
+        ],
       );
     } finally {
       restoreDb();

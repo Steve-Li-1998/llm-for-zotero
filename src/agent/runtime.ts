@@ -206,6 +206,26 @@ const PLANNING_STAGE_STATUS_BY_PLAN_EVENT: Readonly<
   plan_ready: "completed",
 };
 
+type AgentStageEvent = Extract<AgentEvent, { type: "agent_stage" }>;
+
+/**
+ * A stage event carrying only the fields it actually knows.
+ *
+ * A key whose value is `undefined` survives in memory but is dropped by the
+ * JSON the trace store persists, so a live event and the same event replayed
+ * from storage would not compare equal. Nothing downstream should have to
+ * care which side of the store it is reading.
+ */
+function buildAgentStageEvent(
+  fields: Omit<AgentStageEvent, "type">,
+): AgentStageEvent {
+  const event: Record<string, unknown> = { type: "agent_stage", ...fields };
+  for (const key of Object.keys(event)) {
+    if (event[key] === undefined) delete event[key];
+  }
+  return event as AgentStageEvent;
+}
+
 export class AgentRuntime {
   private readonly registry: AgentToolRegistry;
   private readonly adapterFactory: AgentRuntimeDeps["adapterFactory"];
@@ -472,7 +492,7 @@ export class AgentRuntime {
       const emitPlanEvent = async (event: PlanEvent) => {
         const status = PLANNING_STAGE_STATUS_BY_PLAN_EVENT[event.type];
         if (status)
-          await emit({ type: "agent_stage", stage: "planning", status });
+          await emit(buildAgentStageEvent({ stage: "planning", status }));
         await emit(event);
       };
       if (request.workflowCheckpoint)
@@ -1680,15 +1700,16 @@ export class AgentRuntime {
           } = {},
         ) => {
           if (!workCategory) return;
-          await emit({
-            type: "agent_stage",
-            stage: workCategory,
-            status,
-            callId: call.id,
-            toolName: call.name,
-            toolLabel,
-            ...details,
-          });
+          await emit(
+            buildAgentStageEvent({
+              stage: workCategory,
+              status,
+              callId: call.id,
+              toolName: call.name,
+              toolLabel,
+              ...details,
+            }),
+          );
         };
         const lifecycleError = (): ExecutedToolCall => ({
           toolResult: {
@@ -1984,15 +2005,16 @@ export class AgentRuntime {
             toolResult.materialRef.documentId,
             toolResult.materialRef,
           );
-          await emit({
-            type: "agent_stage",
-            stage: "generation",
-            status: "completed",
-            callId: toolResult.callId,
-            toolName: toolResult.name,
-            toolLabel,
-            materialRef: toolResult.materialRef,
-          });
+          await emit(
+            buildAgentStageEvent({
+              stage: "generation",
+              status: "completed",
+              callId: toolResult.callId,
+              toolName: toolResult.name,
+              toolLabel,
+              materialRef: toolResult.materialRef,
+            }),
+          );
           await emit({
             type: "material_finalized",
             materialRef: toolResult.materialRef,
@@ -2010,17 +2032,18 @@ export class AgentRuntime {
           // third outcome. It reports no stage rather than a wrong one; the
           // row itself still says the note is not written.
           if (item.status !== "pending")
-            await emit({
-              type: "agent_stage",
-              stage: "zotero_action",
-              status: item.status === "saved" ? "completed" : "failed",
-              callId: toolResult.callId,
-              toolName: toolResult.name,
-              toolLabel,
-              batchId: item.batchId,
-              itemKey: item.itemKey,
-              materialRef: item.materialRef,
-            });
+            await emit(
+              buildAgentStageEvent({
+                stage: "zotero_action",
+                status: item.status === "saved" ? "completed" : "failed",
+                callId: toolResult.callId,
+                toolName: toolResult.name,
+                toolLabel,
+                batchId: item.batchId,
+                itemKey: item.itemKey,
+                materialRef: item.materialRef,
+              }),
+            );
           await emit({
             type: "batch_item_outcome",
             batchId: item.batchId,

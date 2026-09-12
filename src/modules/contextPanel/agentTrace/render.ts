@@ -25,6 +25,7 @@ import {
 import { summarizeFileIOCall } from "../../../agent/tools/write/fileIO";
 import type {
   AgentActionContract,
+  AgentActionReceipt,
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentPendingChoiceValue,
@@ -3495,20 +3496,129 @@ function summarizeAgentTraceToolCall(
   };
 }
 
+/** Note operations are the only ones that consume finalized material today. */
+const NOTE_WRITE_ACTION_OPERATIONS = new Set([
+  "note_create",
+  "note_edit",
+  "note_append",
+]);
+
+/** Model-authored labels are capped so one long title cannot own the trace. */
+const MATERIAL_LABEL_MAX_LENGTH = 120;
+
+type TraceMaterialAnnouncement = { kind: string; title: string };
+
+function materialLabel(value: unknown, fallback: string): string {
+  const text = compactAgentTraceText(value);
+  const capped = (text || fallback).slice(0, MATERIAL_LABEL_MAX_LENGTH).trim();
+  return capped || fallback;
+}
+
+/** What the run finalized, named the way the announcing event named it. */
+function readMaterialAnnouncement(
+  payload: Extract<
+    AgentRunEventRecord["payload"],
+    { type: "material_finalized" }
+  >,
+): { documentId: string; announcement: TraceMaterialAnnouncement } | null {
+  const documentId = readAgentTraceText(payload.materialRef?.documentId);
+  if (!documentId) return null;
+  return {
+    documentId,
+    announcement: {
+      kind: materialLabel(payload.materialKind, "document").replace(
+        /[_-]+/gu,
+        " ",
+      ),
+      title: materialLabel(payload.materialTitle, documentId),
+    },
+  };
+}
+
+/**
+ * What a note write proved about the Zotero state it claims to have changed.
+ *
+ * The fact strings are opaque strength tokens minted by the verifier, so the
+ * trace reads their shape and never recomputes a digest.
+ */
+function noteWriteEvidence(
+  receipt: AgentActionReceipt,
+): "html_sha256" | "text_match" | null {
+  if (receipt.verification !== "verified") return null;
+  const facts = receipt.verifiedFacts || [];
+  if (facts.some((fact) => /^native_note:.+:html_sha256:.+$/u.test(fact)))
+    return "html_sha256";
+  if (facts.some((fact) => /^native_note:.+:text_match$/u.test(fact)))
+    return "text_match";
+  return null;
+}
+
+type MaterialNoteWriteOutcome = {
+  documentId: string;
+  evidence: "html_sha256" | "text_match" | null;
+};
+
+/**
+ * The material-backed note write a tool result reports, read from its receipts.
+ *
+ * Identity comes from the receipt's frozen `materialRef` and the proposal
+ * operation, never from the tool's name, so a renamed or re-registered write
+ * tool still reads as the same journey stage. A cancelled receipt is a denial,
+ * which the trace already reports as a cancellation rather than a failure.
+ */
+function readMaterialNoteWrite(
+  payload: Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>,
+): MaterialNoteWriteOutcome | null {
+  for (const receipt of payload.actionReceipts || []) {
+    if (!NOTE_WRITE_ACTION_OPERATIONS.has(receipt.operation)) continue;
+    if (receipt.status === "cancelled") return null;
+    const documentId = readAgentTraceText(receipt.materialRef?.documentId);
+    if (!documentId) continue;
+    return { documentId, evidence: noteWriteEvidence(receipt) };
+  }
+  return null;
+}
+
+/** A note write reached execution, whatever the tool that carried it is called. */
+function hasNoteWriteReceipt(
+  payload: Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>,
+): boolean {
+  return (payload.actionReceipts || []).some((receipt) =>
+    NOTE_WRITE_ACTION_OPERATIONS.has(receipt.operation),
+  );
+}
+
+/** The material a pending note write would consume, named for the user. */
+function pendingNoteMaterialLabel(
+  ctx: AgentTraceAdapterContext,
+  action: AgentPendingAction,
+): string | null {
+  const material = action.material;
+  if (!material || !NOTE_WRITE_ACTION_OPERATIONS.has(material.operation))
+    return null;
+  const documentId = readAgentTraceText(material.ref?.documentId);
+  if (!documentId) return null;
+  return ctx.finalizedMaterials.get(documentId)?.title || documentId;
+}
+
 function summarizeAgentTraceConfirmationRequest(
   action: AgentPendingAction,
   request?: AgentTraceRequestSummary,
+  materialLabelForNote?: string | null,
 ): AgentTraceSummaryRow {
   const toolName = action.toolName;
   const label = toolLabelFromName(toolName);
-  const text =
-    resolveToolPresentationSummary(
-      getToolDefinition(toolName)?.presentation?.summaries?.onPending,
-      { label, request },
-    ) ||
-    (action.mode === "review"
-      ? `Waiting for your review of ${label}`
-      : `Waiting for your approval to continue with ${label}`);
+  // Material identity outranks the tool's own wording: the user is authorizing
+  // one exact document, so the row names it.
+  const text = materialLabelForNote
+    ? `Waiting for permission to save ${materialLabelForNote} as a note`
+    : resolveToolPresentationSummary(
+        getToolDefinition(toolName)?.presentation?.summaries?.onPending,
+        { label, request },
+      ) ||
+      (action.mode === "review"
+        ? `Waiting for your review of ${label}`
+        : `Waiting for your approval to continue with ${label}`);
   return {
     kind: "plan",
     icon: "...",
@@ -3924,6 +4034,10 @@ type AgentTraceAdapterContext = {
   intermediateInlineTextItems: Set<
     Extract<AgentTraceDisplayItem, { type: "inline_text" }>
   >;
+  /** Material this run announced as finalized, keyed by document id. */
+  finalizedMaterials: Map<string, TraceMaterialAnnouncement>;
+  /** Documents whose note write failed in this run. */
+  failedMaterialWrites: Set<string>;
 };
 
 function markLatestInlineTextAsIntermediate(
@@ -4166,6 +4280,9 @@ function appendLegacyAgentTraceEvent(
       ) {
         return true;
       }
+      // The journey stage comes from the receipts the write produced, so the
+      // rows below never depend on what the write tool happens to be called.
+      const materialWrite = readMaterialNoteWrite(entry.payload);
       let row = summarizeAgentTraceToolResult(
         entry.payload.name,
         entry.payload.ok,
@@ -4173,6 +4290,18 @@ function appendLegacyAgentTraceEvent(
         entry.payload.effect,
         ctx.requestSummary,
       );
+      if (materialWrite) {
+        if (!entry.payload.ok)
+          ctx.failedMaterialWrites.add(materialWrite.documentId);
+        const text = entry.payload.ok ? "Saved note" : "Note write failed";
+        row = row
+          ? { ...row, text }
+          : {
+              kind: entry.payload.ok ? "ok" : "skip",
+              icon: entry.payload.ok ? "\u2713" : "!",
+              text,
+            };
+      }
       if (judgment) {
         row = row
           ? { ...row, text: `${row.text} (agent's own call)` }
@@ -4188,7 +4317,20 @@ function appendLegacyAgentTraceEvent(
           row,
           workCategory: entry.payload.workCategory,
         });
-        if (entry.payload.ok || entry.payload.name === "note_write") {
+        if (entry.payload.ok && materialWrite?.evidence) {
+          ctx.items.push({
+            type: "action",
+            row: {
+              kind: "ok",
+              icon: "\u2713",
+              text:
+                materialWrite.evidence === "html_sha256"
+                  ? "Zotero state verified"
+                  : "Zotero state checked (text match)",
+            },
+          });
+        }
+        if (entry.payload.ok || hasNoteWriteReceipt(entry.payload)) {
           try {
             const cards =
               getToolDefinition(
@@ -4352,6 +4494,20 @@ function appendSharedAgentTraceEvent(
         detailKey: `plan-amendment:${entry.payload.amendmentId}`,
       });
       return true;
+    case "material_finalized": {
+      const announced = readMaterialAnnouncement(entry.payload);
+      if (!announced) return true;
+      ctx.finalizedMaterials.set(announced.documentId, announced.announcement);
+      ctx.items.push({
+        type: "action",
+        row: {
+          kind: "ok",
+          icon: "\u2713",
+          text: `Generated ${announced.announcement.kind}: ${announced.announcement.title}`,
+        },
+      });
+      return true;
+    }
     case "confirmation_required":
       ctx.pendingActions.set(entry.payload.requestId, entry.payload.action);
       ctx.items.push({
@@ -4359,6 +4515,7 @@ function appendSharedAgentTraceEvent(
         row: summarizeAgentTraceConfirmationRequest(
           entry.payload.action,
           ctx.requestSummary,
+          pendingNoteMaterialLabel(ctx, entry.payload.action),
         ),
       });
       return true;
@@ -4534,6 +4691,29 @@ export function buildAgentTraceDisplayItems(
   return projection;
 }
 
+/**
+ * Close a run that generated material but could not save it.
+ *
+ * The two halves are reported separately everywhere else, so the reader is
+ * left to guess whether the work survived. This row says it did and names the
+ * one thing left to do, which is the same material a retry would reuse.
+ */
+function appendMaterialOutcomeFooter(ctx: AgentTraceAdapterContext): void {
+  for (const [documentId, material] of ctx.finalizedMaterials) {
+    if (!ctx.failedMaterialWrites.has(documentId)) continue;
+    ctx.items.push({
+      type: "action",
+      row: {
+        kind: "skip",
+        icon: "!",
+        text:
+          `Generated ${material.kind}: complete \u00b7 Note write: failed ` +
+          "\u00b7 Retry available using the same material",
+      },
+    });
+  }
+}
+
 function buildAgentTraceDisplayItemsCanonical(
   events: AgentRunEventRecord[],
   userMessage: Message | null | undefined,
@@ -4575,6 +4755,8 @@ function buildAgentTraceDisplayItemsCanonical(
     fallbackReasoningStep: 1,
     visibleInlineText: new Set<string>(),
     intermediateInlineTextItems: new Set(),
+    finalizedMaterials: new Map<string, TraceMaterialAnnouncement>(),
+    failedMaterialWrites: new Set<string>(),
   };
 
   items.push({
@@ -4628,6 +4810,8 @@ function buildAgentTraceDisplayItemsCanonical(
       markLatestInlineTextAsIntermediate(adapterContext, itemCountBeforeEvent);
     }
   }
+
+  appendMaterialOutcomeFooter(adapterContext);
 
   const finalText = getFinalTraceText(compactedEvents);
   const isInterleaved = items.some(

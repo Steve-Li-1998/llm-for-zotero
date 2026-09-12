@@ -3271,6 +3271,589 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("names the finalized material in a journey row", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-journey",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "submit-1",
+          name: "submit_document",
+          args: { title: "Representational drift" },
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-journey",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "submit-1",
+          name: "submit_document",
+          ok: true,
+          actionReceipts: [],
+          content: { documentId: "run-journey:document:1" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-journey",
+        seq: 3,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-journey:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "summary",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(actionTexts, "Generated summary: Representational drift");
+    assert.notMatch(
+      actionTexts.join("\n"),
+      /submit document|using submit/i,
+      "the finalizing tool call and result stay suppressed",
+    );
+  });
+
+  it("falls back to a document label when the material names no kind", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-journey",
+        seq: 1,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          materialRef: {
+            documentId: "run-journey:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialTitle: "Untitled draft",
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(actionTexts, "Generated document: Untitled draft");
+  });
+
+  it("asks for permission to save the named material as a note", function () {
+    const action: AgentPendingAction = {
+      toolName: "edit_current_note",
+      mode: "review",
+      title: "Review new note",
+      confirmLabel: "Create note",
+      cancelLabel: "Cancel",
+      fields: [],
+      material: {
+        operation: "note_create",
+        ref: {
+          documentId: "run-journey:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+      },
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-journey",
+        seq: 1,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          materialRef: {
+            documentId: "run-journey:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "summary",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-journey",
+        seq: 2,
+        eventType: "confirmation_required",
+        payload: {
+          type: "confirmation_required",
+          requestId: "confirm-1",
+          action,
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-journey",
+        seq: 3,
+        eventType: "confirmation_resolved",
+        payload: {
+          type: "confirmation_resolved",
+          requestId: "confirm-1",
+          approved: true,
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(
+      actionTexts,
+      "Waiting for permission to save Representational drift as a note",
+    );
+    assert.include(
+      actionTexts,
+      'Review received - selected "Create note" for Edit Current Note',
+      "the resolved row keeps its current text",
+    );
+  });
+
+  it("names the material by document id when no announcement precedes the request", function () {
+    const action: AgentPendingAction = {
+      toolName: "edit_current_note",
+      mode: "review",
+      title: "Review new note",
+      confirmLabel: "Create note",
+      cancelLabel: "Cancel",
+      fields: [],
+      material: {
+        operation: "note_create",
+        ref: {
+          documentId: "run-earlier:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+      },
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "confirmation_required",
+        payload: {
+          type: "confirmation_required",
+          requestId: "confirm-1",
+          action,
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(
+      actionTexts,
+      "Waiting for permission to save run-earlier:document:1 as a note",
+    );
+  });
+
+  it("reports a verified note write as saved with its Zotero evidence", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "verified",
+              status: "applied",
+              requestedTargets: ["item:41"],
+              appliedTargets: ["item:41"],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: [],
+              verifiedFacts: [
+                "created_note:item:77",
+                "native_note:77:html_sha256:abc123",
+              ],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { noteId: 77, documentId: "run-earlier:document:1" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(actionTexts, "Saved note");
+    assert.include(actionTexts, "Zotero state verified");
+    assert.isAbove(
+      actionTexts.indexOf("Zotero state verified"),
+      actionTexts.indexOf("Saved note"),
+      "the evidence row follows the row it qualifies",
+    );
+  });
+
+  it("marks the weaker text-match evidence differently", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "verified",
+              status: "applied",
+              requestedTargets: ["item:41"],
+              appliedTargets: ["item:41"],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: [],
+              verifiedFacts: ["native_note:77:text_match"],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { noteId: 77, documentId: "run-earlier:document:1" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(actionTexts, "Saved note");
+    assert.include(actionTexts, "Zotero state checked (text match)");
+    assert.notInclude(actionTexts, "Zotero state verified");
+  });
+
+  it("reports a failed note write without claiming Zotero evidence", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: false,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "unverified",
+              status: "failed",
+              requestedTargets: ["item:41"],
+              appliedTargets: [],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: ["Zotero refused the note save"],
+              verifiedFacts: [],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { error: "Zotero refused the note save" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(actionTexts, "Note write failed");
+    assert.notInclude(actionTexts, "Zotero state verified");
+    assert.notInclude(actionTexts, "Zotero state checked (text match)");
+  });
+
+  it("keeps a cancelled note write reading as a cancellation", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: false,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "not_applicable",
+              status: "cancelled",
+              requestedTargets: ["item:41"],
+              appliedTargets: [],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: ["User denied action"],
+              verifiedFacts: [],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { error: "User denied action" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.notInclude(actionTexts, "Note write failed");
+  });
+
+  it("closes a run that generated material but failed to save it", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-mixed",
+        seq: 1,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-mixed:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "summary",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-mixed",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: false,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "unverified",
+              status: "failed",
+              requestedTargets: ["item:41"],
+              appliedTargets: [],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: ["Zotero refused the note save"],
+              verifiedFacts: [],
+              materialRef: {
+                documentId: "run-mixed:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { error: "Zotero refused the note save" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-mixed",
+        seq: 3,
+        eventType: "final",
+        payload: { type: "final", text: "I could not save the note." },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(
+      actionTexts,
+      "Generated summary: complete · Note write: failed · Retry available using the same material",
+    );
+    assert.equal(
+      actionTexts[actionTexts.length - 1],
+      "Generated summary: complete · Note write: failed · Retry available using the same material",
+      "the mixed outcome closes the trace",
+    );
+  });
+
+  it("does not close a saved material with a mixed-outcome row", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-clean",
+        seq: 1,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-clean:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "summary",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-clean",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "verified",
+              status: "applied",
+              requestedTargets: ["item:41"],
+              appliedTargets: ["item:41"],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: [],
+              verifiedFacts: ["native_note:77:html_sha256:abc123"],
+              materialRef: {
+                documentId: "run-clean:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { noteId: 77, documentId: "run-clean:document:1" },
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.notMatch(actionTexts.join("\n"), /Retry available/);
+  });
+
   it("renders Codex progress messages as separate activity messages", function () {
     const events: AgentRunEventRecord[] = [
       {

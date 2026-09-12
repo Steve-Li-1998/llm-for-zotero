@@ -163,6 +163,7 @@ import type {
   ResolvedAgentRuntimeRequest,
 } from "./types";
 import { resolveAgentToolCallWorkCategory } from "./workCategory";
+import { buildAgentStageEvent } from "./stageEvents";
 import { resolveAgentToolPresentationLabel } from "./toolPresentation";
 
 type AgentRuntimeDeps = {
@@ -205,26 +206,6 @@ const PLANNING_STAGE_STATUS_BY_PLAN_EVENT: Readonly<
   plan_updated: "started",
   plan_ready: "completed",
 };
-
-type AgentStageEvent = Extract<AgentEvent, { type: "agent_stage" }>;
-
-/**
- * A stage event carrying only the fields it actually knows.
- *
- * A key whose value is `undefined` survives in memory but is dropped by the
- * JSON the trace store persists, so a live event and the same event replayed
- * from storage would not compare equal. Nothing downstream should have to
- * care which side of the store it is reading.
- */
-function buildAgentStageEvent(
-  fields: Omit<AgentStageEvent, "type">,
-): AgentStageEvent {
-  const event: Record<string, unknown> = { type: "agent_stage", ...fields };
-  for (const key of Object.keys(event)) {
-    if (event[key] === undefined) delete event[key];
-  }
-  return event as AgentStageEvent;
-}
 
 export class AgentRuntime {
   private readonly registry: AgentToolRegistry;

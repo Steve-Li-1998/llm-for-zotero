@@ -455,7 +455,6 @@ import type {
   AgentWorkCategory,
 } from "../../agent/types";
 import {
-  buildAgentStageEvent,
   getCodexNativeRawString,
   humanizeCodexNativeItemType,
   isCodexNativeItemType,
@@ -464,9 +463,12 @@ import {
   normalizeCodexNativeItemTypeKey,
   readCodexNativeRawField,
   resolveCodexNativeStageStatus,
-  type AgentStageEvent,
   type CodexNativeActivityItem,
 } from "../../codexAppServer/nativeActivityStages";
+import {
+  buildAgentStageEvent,
+  type AgentStageEvent,
+} from "../../agent/stageEvents";
 import {
   sendAgentTurn,
   retryAgentTurn,

@@ -4,9 +4,12 @@ import type {
   AgentWorkCategory,
 } from "../../../agent/types";
 import type { MaterialRef } from "../../../agent/documents/materialRef";
+import {
+  buildAgentStageEvent as buildStage,
+  type AgentStageEvent,
+} from "../../../agent/stageEvents";
 
-type AgentStagePayload = Extract<AgentEvent, { type: "agent_stage" }>;
-type AgentStageFields = Omit<AgentStagePayload, "type">;
+type AgentStagePayload = AgentStageEvent;
 type ToolCallPayload = Extract<AgentEvent, { type: "tool_call" }>;
 type ToolResultPayload = Extract<AgentEvent, { type: "tool_result" }>;
 type ToolErrorPayload = Extract<AgentEvent, { type: "tool_error" }>;
@@ -60,24 +63,6 @@ type ProjectedCall = {
   /** The material the call finalized, as its own announcement reported it. */
   materialRef?: MaterialRef;
 };
-
-/**
- * A stage event carrying only the fields it actually knows.
- *
- * The runtime drops undefined-valued keys for the same reason (its own
- * builder in `agent/runtime.ts`): the trace store persists JSON, so a key
- * whose value is `undefined` disappears on the way to storage. A projected
- * stage and the live stage it stands for must be the same object either
- * side of the store, so this shim repeats the rule rather than importing
- * the runtime's module graph into the panel.
- */
-function buildStage(fields: AgentStageFields): AgentStagePayload {
-  const event: Record<string, unknown> = { type: "agent_stage", ...fields };
-  for (const key of Object.keys(event)) {
-    if (event[key] === undefined) delete event[key];
-  }
-  return event as AgentStagePayload;
-}
 
 function readCalls(
   events: readonly AgentRunEventRecord[],

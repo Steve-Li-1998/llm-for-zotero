@@ -17,6 +17,10 @@
  */
 import type { AgentEvent } from "../agent/types";
 import {
+  buildAgentStageEvent,
+  type AgentStageEvent,
+} from "../agent/stageEvents";
+import {
   resolveCodexNativeWorkCategory,
   SKILL_ACTIVATION_WORK_CATEGORY,
   type CodexNativeWorkKind,
@@ -65,7 +69,6 @@ export type CodexNativeActivityItem = {
 
 export type CodexNativeActivityPhase = "started" | "completed";
 
-export type AgentStageEvent = Extract<AgentEvent, { type: "agent_stage" }>;
 export type CodexToolActivityPayload = Extract<
   AgentEvent,
   { type: "codex_tool_activity" }
@@ -365,23 +368,6 @@ function resolveCodexNativeStructuredOperation(
   }
 
   return null;
-}
-
-/**
- * A stage event carrying only the fields it knows.
- *
- * The runtime and the compatibility projection drop undefined-valued keys for
- * the same reason: the trace store persists JSON, so such a key disappears on
- * the way to storage and a live stage would stop equalling its stored self.
- */
-export function buildAgentStageEvent(
-  fields: Omit<AgentStageEvent, "type">,
-): AgentStageEvent {
-  const event: Record<string, unknown> = { type: "agent_stage", ...fields };
-  for (const key of Object.keys(event)) {
-    if (event[key] === undefined) delete event[key];
-  }
-  return event as AgentStageEvent;
 }
 
 /**

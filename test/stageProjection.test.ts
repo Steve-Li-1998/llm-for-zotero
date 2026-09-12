@@ -5,6 +5,8 @@ import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
 import { projectStageEvents } from "../src/modules/contextPanel/agentTrace/stageProjection";
+import { buildAgentStageEvent } from "../src/agent/stageEvents";
+import { mapCodexNativeItemToEvents } from "../src/codexAppServer/nativeActivityStages";
 import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/chat";
 import { classifiedFixture } from "./helpers/semanticIntent";
 import { createTestActionContractService } from "./helpers/actionContractService";
@@ -753,6 +755,81 @@ describe("agent trace stage projection", function () {
       1,
       "the projection runs once per trace, at the top of the reducer",
     );
+  });
+
+  it("builds a stage the same way wherever one is produced", function () {
+    // Three producers emit stage events -- the runtime, the Codex bridge and
+    // this projection -- and one trace can hold events from any of them. They
+    // share one builder so "the same stage" is the same object, and so an
+    // undefined-valued key never survives into a trace the store would drop
+    // it from.
+    const sources = [
+      readFileSync("src/agent/runtime.ts", "utf8"),
+      readFileSync(
+        "src/modules/contextPanel/agentTrace/stageProjection.ts",
+        "utf8",
+      ),
+      readFileSync("src/codexAppServer/nativeActivityStages.ts", "utf8"),
+    ];
+    for (const source of sources) {
+      assert.notMatch(
+        source,
+        /\{\s*type:\s*"agent_stage"\s*,\s*\.\.\.fields\s*\}/,
+        "a second copy of the stage builder is back",
+      );
+      assert.match(
+        source,
+        /from "(\.\.\/)*(\.\/)?(agent\/)?stageEvents"/,
+        "every stage producer builds its event through the shared owner",
+      );
+    }
+
+    const fields = {
+      stage: "retrieval" as const,
+      status: "completed" as const,
+      toolName: "library_search",
+      toolLabel: undefined,
+      receiptIds: undefined,
+    };
+    // The runtime's own path, the bridge's, and this projection's.
+    const fromRuntime = buildAgentStageEvent(fields);
+    const fromBridge = mapCodexNativeItemToEvents(
+      { id: "ws-1", type: "web_search", query: "x" },
+      "completed",
+    )?.stage;
+    const fromProjection = projectStageEvents([
+      {
+        runId: "run-shared",
+        seq: 1,
+        eventType: "codex_tool_activity",
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "item-1",
+          phase: "completed",
+          toolName: "codex_web_search",
+          toolLabel: "Web search",
+          workCategory: "retrieval",
+        },
+        createdAt: 1,
+      },
+    ])[0].payload as Extract<AgentEvent, { type: "agent_stage" }>;
+
+    for (const event of [fromRuntime, fromBridge, fromProjection]) {
+      assert.isDefined(event);
+      assert.equal(event!.type, "agent_stage");
+      for (const [key, value] of Object.entries(event!)) {
+        assert.notStrictEqual(
+          value,
+          undefined,
+          `${key} survived as an undefined key the store would drop`,
+        );
+      }
+    }
+    // The bridge and the projection describe the same work identically apart
+    // from the flag that says one of them reconstructed it.
+    const { projected, ...projectedRest } = fromProjection;
+    assert.isTrue(projected);
+    assert.deepEqual(projectedRest, fromBridge as never);
   });
 
   it("says when it can be deleted", function () {

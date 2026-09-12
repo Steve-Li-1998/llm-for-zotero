@@ -92,6 +92,7 @@ import {
   type PaperNoteRecord,
   type SaveAnswerToNoteResult,
 } from "./zotero/noteCapability";
+import { TagCapability, type BatchTagItemResult } from "./zotero/tagCapability";
 
 /**
  * The shared substrate every capability needs, re-exported under the names
@@ -119,6 +120,7 @@ export type {
   PaperNoteRecord,
   SaveAnswerToNoteResult,
 } from "./zotero/noteCapability";
+export type { BatchTagItemResult } from "./zotero/tagCapability";
 
 export type CollectionBrowseNode = {
   collectionId: number;
@@ -126,15 +128,6 @@ export type CollectionBrowseNode = {
   paperCount: number;
   descendantPaperCount: number;
   childCollections: CollectionBrowseNode[];
-};
-
-export type BatchTagItemResult = {
-  itemId: number;
-  title: string;
-  status: "updated" | "skipped" | "missing";
-  addedTags: string[];
-  skippedTags: string[];
-  reason?: string;
 };
 
 export type BatchMoveItemResult = {
@@ -203,6 +196,15 @@ export class ZoteroGateway {
    * import capability, for the same reason.
    */
   private readonly attachmentCapability = new AttachmentCapability({
+    getItem: (itemId) => this.getItem(itemId),
+    resolveBibliographicItem: (item) => this.resolveBibliographicItem(item),
+  });
+
+  /**
+   * The tag paths, split out of this file. Same thunk wiring as the import
+   * capability, for the same reason.
+   */
+  private readonly tagCapability = new TagCapability({
     getItem: (itemId) => this.getItem(itemId),
     resolveBibliographicItem: (item) => this.resolveBibliographicItem(item),
   });
@@ -845,6 +847,7 @@ export class ZoteroGateway {
     };
   }
 
+  /** See `TagCapability.listUntaggedPaperTargets`. */
   async listUntaggedPaperTargets(params: {
     libraryID: number;
     limit?: number;
@@ -852,22 +855,7 @@ export class ZoteroGateway {
     papers: LibraryPaperTarget[];
     totalCount: number;
   }> {
-    const libraryID = Number.isFinite(params.libraryID)
-      ? Math.floor(params.libraryID)
-      : 0;
-    if (!libraryID) {
-      throw new Error(
-        "No active library available for listing untagged papers",
-      );
-    }
-    const snapshot = await libraryIndexService.getSnapshot(libraryID);
-    const ids = orderedGatewayPaperIds(snapshot).filter((itemId) =>
-      snapshot.untaggedItemIds.has(itemId),
-    );
-    return {
-      papers: buildPaperTargetsForIds(this, pageIds(ids, params.limit)),
-      totalCount: ids.length,
-    };
+    return this.tagCapability.listUntaggedPaperTargets(params);
   }
 
   // ── Universal item listing (all item types, not PDF-only) ──────────────────
@@ -968,6 +956,7 @@ export class ZoteroGateway {
     };
   }
 
+  /** See `TagCapability.listTagItemTargets`. */
   async listTagItemTargets(params: {
     libraryID: number;
     tagContext: TagContextRef;
@@ -978,64 +967,7 @@ export class ZoteroGateway {
     items: LibraryItemTarget[];
     totalCount: number;
   }> {
-    const libraryID = Number.isFinite(params.libraryID)
-      ? Math.floor(params.libraryID)
-      : 0;
-    if (!libraryID) throw new Error("No active library available");
-    const tagName = normalizeText(params.tagContext.name);
-    const normalizedName = normalizeText(
-      params.tagContext.normalizedName || params.tagContext.name,
-    )
-      .toLowerCase()
-      .trim();
-    const includeAutomatic = params.tagContext.includeAutomatic === true;
-    const snapshot = await libraryIndexService.getSnapshot(libraryID);
-    let members: ReadonlySet<number>;
-    if (params.tagContext.scope === "allTagged") {
-      members = new Set(
-        snapshot.topLevelItemOrder.filter((itemId) => {
-          const item = snapshot.itemById.get(itemId);
-          return Boolean(
-            item &&
-            indexItemMatchesAggregateTagScope(
-              item,
-              "allTagged",
-              includeAutomatic,
-            ),
-          );
-        }),
-      );
-    } else if (params.tagContext.scope === "untagged") {
-      members = new Set(
-        snapshot.topLevelItemOrder.filter((itemId) => {
-          const item = snapshot.itemById.get(itemId);
-          return Boolean(
-            item &&
-            indexItemMatchesAggregateTagScope(
-              item,
-              "untagged",
-              includeAutomatic,
-            ),
-          );
-        }),
-      );
-    } else {
-      members = libraryIndexService.tagItemIds(
-        snapshot,
-        tagName || normalizedName,
-        includeAutomatic,
-      );
-    }
-    const ids = orderedIndexIds(
-      snapshot,
-      (item) =>
-        members.has(item.itemId) && indexItemMatchesType(item, params.itemType),
-    );
-    return {
-      tagName,
-      items: buildItemTargetsForIds(this, pageIds(ids, params.limit)),
-      totalCount: ids.length,
-    };
+    return this.tagCapability.listTagItemTargets(params);
   }
 
   async resolveLibraryScopeItemIds(params: {
@@ -1988,25 +1920,13 @@ export class ZoteroGateway {
     return this.attachmentCapability.indexPdfAttachment(params);
   }
 
+  /** See `TagCapability.listLibraryTags`. */
   async listLibraryTags(params: {
     libraryID: number;
     query?: string;
     limit?: number;
   }): Promise<{ name: string; type: number }[]> {
-    const libraryID = Number.isFinite(params.libraryID)
-      ? Math.floor(params.libraryID)
-      : 0;
-    if (!libraryID) throw new Error("No active library available");
-    const raw = await Zotero.Tags.getAll(libraryID);
-    let tags = raw.map((t) => ({ name: t.tag, type: t.type ?? 0 }));
-    if (params.query) {
-      const q = params.query.toLowerCase();
-      tags = tags.filter((t) => t.name.toLowerCase().includes(q));
-    }
-    const normalizedLimit = Number.isFinite(params.limit)
-      ? Math.max(1, Math.floor(params.limit as number))
-      : undefined;
-    return normalizedLimit ? tags.slice(0, normalizedLimit) : tags;
+    return this.tagCapability.listLibraryTags(params);
   }
 
   listAllLibraries(): {
@@ -2023,6 +1943,7 @@ export class ZoteroGateway {
     }));
   }
 
+  /** See `TagCapability.applyTagAssignments`. */
   async applyTagAssignments(params: {
     assignments: BatchTagAssignment[];
   }): Promise<{
@@ -2031,91 +1952,7 @@ export class ZoteroGateway {
     skippedCount: number;
     items: BatchTagItemResult[];
   }> {
-    const normalizedAssignments: BatchTagAssignment[] = [];
-    const seen = new Set<number>();
-    for (const entry of params.assignments) {
-      const itemId = Number.isFinite(entry.itemId)
-        ? Math.floor(entry.itemId)
-        : 0;
-      const tags = Array.from(
-        new Set(
-          (Array.isArray(entry.tags) ? entry.tags : [])
-            .map((tag) => normalizeText(tag))
-            .filter(Boolean),
-        ),
-      );
-      if (!itemId || !tags.length || seen.has(itemId)) continue;
-      seen.add(itemId);
-      normalizedAssignments.push({
-        itemId,
-        tags,
-      });
-    }
-    if (!normalizedAssignments.length) {
-      throw new Error("No valid tag assignments were provided");
-    }
-    const results: BatchTagItemResult[] = [];
-    let updatedCount = 0;
-    for (const assignment of normalizedAssignments) {
-      // Tags live on the item itself. The old resolver redirected a child
-      // attachment to its parent -- a wrong-object write that then reported
-      // the PARENT's id and title as the target -- and rejected standalone
-      // notes outright as "Item not found".
-      const resolution = resolveMatrixItem(
-        this.getItem(assignment.itemId),
-        assignment.itemId,
-        "update",
-      );
-      const item = "item" in resolution ? resolution.item : null;
-      if (!item) {
-        results.push({
-          itemId: assignment.itemId,
-          title: `Item ${assignment.itemId}`,
-          status: "missing",
-          addedTags: [],
-          skippedTags: assignment.tags,
-          reason:
-            "refusal" in resolution
-              ? resolution.refusal
-              : `Item ${assignment.itemId} could not be resolved`,
-        });
-        continue;
-      }
-      const target = buildPaperTargetFromItem(item);
-      const title =
-        target?.title ||
-        normalizeText(item.getDisplayTitle?.()) ||
-        `Item ${item.id}`;
-      const addedTags: string[] = [];
-      const skippedTags: string[] = [];
-      for (const tag of assignment.tags) {
-        if (!tag) continue;
-        if (item.hasTag?.(tag)) {
-          skippedTags.push(tag);
-          continue;
-        }
-        item.addTag?.(tag, 0);
-        addedTags.push(tag);
-      }
-      if (addedTags.length) {
-        await item.saveTx();
-        updatedCount += 1;
-      }
-      results.push({
-        itemId: item.id,
-        title,
-        status: addedTags.length ? "updated" : "skipped",
-        addedTags,
-        skippedTags,
-        reason: addedTags.length ? undefined : "All tags already existed",
-      });
-    }
-    return {
-      selectedCount: normalizedAssignments.length,
-      updatedCount,
-      skippedCount: results.length - updatedCount,
-      items: results,
-    };
+    return this.tagCapability.applyTagAssignments(params);
   }
 
   /**
@@ -2711,14 +2548,7 @@ export class ZoteroGateway {
     };
   }
 
-  /**
-   * Operates on a tag as an object, across the whole library.
-   *
-   * The existing tag path only ever put tags on items or took them off. A
-   * *tag* — the thing in the tag selector — could not be renamed, deleted,
-   * merged or coloured, so fixing a typo in a tag used by 500 papers meant
-   * 500 removals and 500 additions.
-   */
+  /** See `TagCapability.updateLibraryTag`. */
   async updateLibraryTag(params: {
     libraryID: number;
     action: "rename" | "delete" | "merge" | "setColor";
@@ -2735,155 +2565,10 @@ export class ZoteroGateway {
     itemCount?: number;
     reason?: string;
   }> {
-    const tags = (
-      Zotero as unknown as {
-        Tags?: {
-          getID?: (name: string) => number | false;
-          getTagItems?: (libraryID: number, tagID: number) => Promise<number[]>;
-          rename?: (
-            libraryID: number,
-            oldName: string,
-            newName: string,
-          ) => Promise<void>;
-          removeFromLibrary?: (
-            libraryID: number,
-            tagIDs: number[],
-          ) => Promise<void>;
-          setColor?: (
-            libraryID: number,
-            name: string,
-            color: string,
-            position: number,
-          ) => Promise<void>;
-        };
-      }
-    ).Tags;
-    if (!tags?.getID) {
-      return {
-        action: params.action,
-        tag: params.tag,
-        status: "error",
-        reason: "Zotero.Tags is not available in this build",
-      };
-    }
-
-    const tagId = tags.getID(params.tag);
-    if (params.action !== "setColor" && (tagId === false || !tagId)) {
-      return {
-        action: params.action,
-        tag: params.tag,
-        status: "not_found",
-        reason: `No tag named "${params.tag}" exists in this library`,
-      };
-    }
-
-    let itemCount: number | undefined;
-    try {
-      if (tagId) {
-        itemCount = (await tags.getTagItems?.(params.libraryID, tagId))?.length;
-      }
-    } catch {
-      // A count is nice to report but must not block the operation.
-    }
-
-    try {
-      switch (params.action) {
-        case "rename":
-        case "merge": {
-          const newTag = params.newTag?.trim();
-          if (!newTag) {
-            return {
-              action: params.action,
-              tag: params.tag,
-              status: "error",
-              reason: `"${params.action}" needs newTag`,
-            };
-          }
-          // Zotero implements rename-to-an-existing-name as a merge. Capture
-          // that fact before the write so callers never advertise a lossy
-          // rename as fully reversible.
-          const destinationTagId = tags.getID(newTag);
-          let destinationExisted = Boolean(destinationTagId);
-          if (destinationTagId && tags.getTagItems) {
-            try {
-              destinationExisted =
-                (await tags.getTagItems(params.libraryID, destinationTagId))
-                  .length > 0;
-            } catch {
-              // A failed membership read must remain conservative.
-              destinationExisted = true;
-            }
-          }
-          // Zotero's rename merges when the destination already exists, so
-          // rename and merge are the same call -- the distinction is only
-          // what the user is told on the card.
-          await tags.rename?.(params.libraryID, params.tag, newTag);
-          return {
-            action: params.action,
-            tag: params.tag,
-            newTag,
-            destinationExisted,
-            status: "applied",
-            itemCount,
-          };
-        }
-        case "delete": {
-          await tags.removeFromLibrary?.(params.libraryID, [tagId as number]);
-          return {
-            action: params.action,
-            tag: params.tag,
-            status: "applied",
-            itemCount,
-          };
-        }
-        case "setColor": {
-          const color = params.color?.trim();
-          if (!color) {
-            return {
-              action: params.action,
-              tag: params.tag,
-              status: "error",
-              reason: '"setColor" needs a color, e.g. "#FF6666"',
-            };
-          }
-          await tags.setColor?.(
-            params.libraryID,
-            params.tag,
-            color,
-            Number.isFinite(params.position) ? Number(params.position) : 0,
-          );
-          return {
-            action: params.action,
-            tag: params.tag,
-            status: "applied",
-            itemCount,
-          };
-        }
-      }
-    } catch (error) {
-      return {
-        action: params.action,
-        tag: params.tag,
-        status: "error",
-        reason: error instanceof Error ? error.message : String(error),
-      };
-    }
-    return {
-      action: params.action,
-      tag: params.tag,
-      status: "error",
-      reason: `Unknown tag action "${params.action}"`,
-    };
+    return this.tagCapability.updateLibraryTag(params);
   }
 
-  /**
-   * Sets an item's tags to exactly the given list.
-   *
-   * The existing path is add-only, which is why "give my library exactly
-   * these 20 tags" drifted: each batch added its own tags and nothing ever
-   * removed the ones a previous batch had chosen. Replacing the set is what
-   * that request actually means.
-   */
+  /** See `TagCapability.setItemTags`. */
   async setItemTags(params: {
     assignments: Array<{ itemId: number; tags: string[] }>;
   }): Promise<{
@@ -2896,79 +2581,7 @@ export class ZoteroGateway {
       reason?: string;
     }>;
   }> {
-    const results: Array<{
-      itemId: number;
-      title: string;
-      status: "updated" | "skipped" | "error";
-      previousTags?: string[];
-      reason?: string;
-    }> = [];
-    let changedCount = 0;
-
-    for (const assignment of params.assignments) {
-      const rawItem = this.getItem(assignment.itemId);
-      const resolution = resolveMatrixItem(
-        rawItem,
-        assignment.itemId,
-        "update",
-      );
-      if ("refusal" in resolution) {
-        results.push({
-          itemId: assignment.itemId,
-          title: rawItem
-            ? normalizeText(rawItem.getDisplayTitle?.()) ||
-              `Item ${assignment.itemId}`
-            : `Item ${assignment.itemId}`,
-          status: "error",
-          reason: resolution.refusal,
-        });
-        continue;
-      }
-      const item = resolution.item;
-      const title =
-        normalizeText(item.getDisplayTitle?.()) || `Item ${item.id}`;
-      const previousTags = (item.getTags?.() || []).map((entry) =>
-        String(entry.tag),
-      );
-      const nextTags = Array.from(new Set(assignment.tags || []))
-        .map((tag) => String(tag).trim())
-        .filter(Boolean);
-
-      const unchanged =
-        previousTags.length === nextTags.length &&
-        previousTags.every((tag) => nextTags.includes(tag));
-      if (unchanged) {
-        results.push({
-          itemId: Number(item.id),
-          title,
-          status: "skipped",
-          previousTags,
-        });
-        continue;
-      }
-
-      try {
-        item.setTags(nextTags);
-        await item.saveTx();
-        changedCount += 1;
-        results.push({
-          itemId: Number(item.id),
-          title,
-          status: "updated",
-          // The prior set is the only thing an inverse can restore.
-          previousTags,
-        });
-      } catch (error) {
-        results.push({
-          itemId: Number(item.id),
-          title,
-          status: "error",
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    return { changedCount, items: results };
+    return this.tagCapability.setItemTags(params);
   }
 
   /**
@@ -3777,38 +3390,12 @@ export class ZoteroGateway {
     return { restoredCount: restored.length, collectionIds: restored };
   }
 
-  /**
-   * Removes tags and reports which ones were actually on the item.
-   *
-   * It used to return `void`, and the caller derived its count from the
-   * paper-target map — which `buildPaperTargetFromItem` gates on having a PDF
-   * child. So removing a tag from a book worked, reported `removedCount: 0`,
-   * and recorded no undo. Once `effect` started reading that count, the same
-   * stale zero also told the user nothing had changed.
-   */
+  /** See `TagCapability.removeTagsFromItem`. */
   async removeTagsFromItem(params: {
     itemId: number;
     tags: string[];
   }): Promise<{ removed: string[] }> {
-    // Tags live on the item itself — including notes and standalone
-    // attachments, which the regular-item filter used to exclude — so this
-    // resolves through the capability matrix rather than the paper map.
-    const raw = this.getItem(params.itemId);
-    const resolution = resolveMatrixItem(raw, params.itemId, "update");
-    const item = "item" in resolution ? resolution.item : null;
-    if (!item || !params.tags.length) return { removed: [] };
-    const removed: string[] = [];
-    for (const tag of params.tags) {
-      if (!tag) continue;
-      if (item.hasTag?.(tag)) {
-        item.removeTag?.(tag);
-        removed.push(tag);
-      }
-    }
-    if (removed.length) {
-      await item.saveTx();
-    }
-    return { removed };
+    return this.tagCapability.removeTagsFromItem(params);
   }
 
   /**

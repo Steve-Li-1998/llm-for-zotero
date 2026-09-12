@@ -204,6 +204,14 @@ export function createCodexNativeActivityTraceController(
   const runId =
     assistantMessage.agentRunId?.trim() ||
     `codex-native-${Math.floor(assistantMessage.timestamp || Date.now())}`;
+  /**
+   * The message this controller writes to, until the turn ends.
+   *
+   * `dispose` drops it so nothing arriving late -- a coalescer timer, a
+   * provider event after the panel moved on -- can rewrite a message the
+   * panel has already finalized and persisted.
+   */
+  let boundMessage: Message | null = assistantMessage;
   const events: AgentRunEventRecord[] = [];
   const progressEventIndexes = new Map<string, number>();
   const toolEventIndexes = new Map<string, number>();
@@ -228,7 +236,8 @@ export function createCodexNativeActivityTraceController(
       payload: { ...entry.payload } as AgentEvent,
     }));
   const sync = () => {
-    assistantMessage.pendingAgentTraceEvents = events.length
+    if (!boundMessage) return;
+    boundMessage.pendingAgentTraceEvents = events.length
       ? snapshotEvents()
       : undefined;
     queueRefresh();
@@ -300,6 +309,22 @@ export function createCodexNativeActivityTraceController(
     for (const coalescer of progressCoalescers.values()) {
       coalescer.flushNow(reason);
     }
+  };
+
+  /**
+   * End this controller's life with the turn that created it.
+   *
+   * Each progress coalescer holds a pending flush timer; cancelling them
+   * stops a delivery that would land after the panel finalized and persisted
+   * the message. Whatever text is still buffered at that point is text no
+   * persisted trace contains, so dropping it keeps the rendered turn and the
+   * stored turn saying the same thing. Dropping the message binding then
+   * makes every later call a no-op.
+   */
+  const dispose = (): void => {
+    for (const coalescer of progressCoalescers.values()) coalescer.cancel();
+    progressCoalescers.clear();
+    boundMessage = null;
   };
 
   const findRecentVisibleDuplicateToolActivity = (
@@ -446,19 +471,18 @@ export function createCodexNativeActivityTraceController(
   };
 
   const addGeneratedImage = (image: GeneratedChatImage | null): boolean => {
+    if (!boundMessage) return false;
     const normalized = normalizeGeneratedChatImages(image ? [image] : []);
     const next = normalized[0];
     if (!next) return false;
-    const existing = normalizeGeneratedChatImages(
-      assistantMessage.generatedImages,
-    );
+    const existing = normalizeGeneratedChatImages(boundMessage.generatedImages);
     const index = existing.findIndex((entry) => entry.id === next.id);
     if (index >= 0) {
       existing[index] = { ...existing[index], ...next };
     } else {
       existing.push(next);
     }
-    assistantMessage.generatedImages = existing.length ? existing : undefined;
+    boundMessage.generatedImages = existing.length ? existing : undefined;
     return true;
   };
 
@@ -733,7 +757,8 @@ export function createCodexNativeActivityTraceController(
       generation: number,
       status?: import("../../../agent/types").AgentRunStatus,
     ) => {
-      if (!events.length) return;
+      const message = boundMessage;
+      if (!events.length || !message) return;
       await withConversationWriteLock(conversationKey, async () => {
         if (
           areConversationWritesFrozen(conversationKey) ||
@@ -746,7 +771,7 @@ export function createCodexNativeActivityTraceController(
             runId,
             conversationKey,
             mode: "agent",
-            model: assistantMessage.modelName,
+            model: message.modelName,
             status:
               status ||
               (events.some((entry) => entry.payload.type === "final")
@@ -754,11 +779,11 @@ export function createCodexNativeActivityTraceController(
                 : "failed"),
             createdAt: events[0].createdAt,
             completedAt: Date.now(),
-            finalText: assistantMessage.text,
+            finalText: message.text,
           },
           snapshot,
         );
-        assistantMessage.agentRunId = runId;
+        message.agentRunId = runId;
         agentRunTraceCache.set(runId, snapshot);
       });
     },
@@ -789,6 +814,7 @@ export function createCodexNativeActivityTraceController(
     noteMcpConfirmationResolved,
     noteMcpToolActivity,
     noteAgentMessageCompleted,
+    dispose,
   };
 }
 

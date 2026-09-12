@@ -8534,6 +8534,10 @@ export async function retryLatestAssistantResponse(
       "error",
     );
   } finally {
+    // The turn is over on every path through this flow, including the
+    // interrupted and failed ones: the trace controller must stop here or a
+    // buffered flush lands on a message that was already persisted.
+    codexActivityTrace?.dispose();
     releaseRequest();
   }
 }
@@ -11452,6 +11456,9 @@ export async function sendQuestion(
 
     setStatusSafely(`Error: ${`${errMsg}${retryHint}`.slice(0, 40)}`, "error");
   } finally {
+    // Same end of life as the retry flow: stop the trace controller before
+    // the request UI goes idle, so nothing it buffered can arrive later.
+    codexActivityTrace?.dispose();
     if (
       clearPendingRequestIdAndSync(conversationKey, body, item, thisRequestId)
     ) {

@@ -10,6 +10,13 @@ import {
   summarizeQuoteTextSupport,
   type QuoteTextSearchQueryKind,
 } from "../../services/quotes/quoteTextSearch";
+import type {
+  PdfQuoteCertificate,
+  PdfQuoteVerification,
+  PdfReaderPageText,
+  PdfReaderTextCache,
+  PdfReaderTextCoverage,
+} from "../../services/pdf/readerTextBridge";
 import {
   assessAcademicQuoteAlignment,
   buildQuoteTextIndex,
@@ -17,11 +24,7 @@ import {
   type QuoteTextIndex,
 } from "../../services/quotes/quoteTextNormalization";
 
-export type LivePdfPageText = {
-  pageIndex: number;
-  pageLabel?: string;
-  text: string;
-};
+export type LivePdfPageText = PdfReaderPageText;
 
 export type LivePdfSelectionPageLocation = {
   contextItemId?: number;
@@ -74,20 +77,9 @@ export type LivePdfSelectionLocateResult = {
   debugSummary?: string[];
 };
 
-export type LivePdfQuoteCertificate = {
-  contextItemId: number;
-  documentFingerprint: string;
-  pageIndex: number;
-  pageLabel?: string;
-  sourceMatchText: string;
-  sourceMatchKind: "exact" | "normalized-span";
-  sourceMatchPageOccurrence: number;
-};
+export type LivePdfQuoteCertificate = PdfQuoteCertificate;
 
-export type LivePdfQuoteVerification =
-  | { status: "matched"; certificate: LivePdfQuoteCertificate }
-  | { status: "literal-not-found"; documentFingerprint: string }
-  | { status: "defer"; reason: string };
+export type LivePdfQuoteVerification = PdfQuoteVerification;
 
 export type ExactQuoteJumpQueryAttempt = {
   query: string;
@@ -1323,24 +1315,9 @@ function extractRenderedPageTexts(reader: any): {
 // so that subsequent quote lookups are instant (pure in-memory substring
 // search with zero async I/O).
 
-export type PageTextCacheCoverage =
-  | "full-pdfworker"
-  | "full-viewer"
-  | "partial-dom";
+export type PageTextCacheCoverage = PdfReaderTextCoverage;
 
-export interface CachedPageTextIndex {
-  pages: LivePdfPageText[];
-  /** Pre-computed normalised text per page for O(1) reuse. */
-  normalised: {
-    pageIndex: number;
-    pageLabel?: string;
-    normalizedText: string;
-    textIndex: QuoteTextIndex;
-  }[];
-  coverage: PageTextCacheCoverage;
-  pageCount?: number;
-  sourceFingerprint?: string;
-}
+export type CachedPageTextIndex = PdfReaderTextCache;
 
 type ExtractedPageTextIndexSource = {
   pages: LivePdfPageText[];

@@ -1,4 +1,5 @@
 import { createSurfaceBridge } from "../surfaceBridge";
+import type { QuoteTextIndex } from "../quotes/quoteTextNormalization";
 
 export type PdfReaderPageText = {
   pageIndex: number;
@@ -6,15 +7,21 @@ export type PdfReaderPageText = {
   text: string;
 };
 
+export type PdfReaderTextCoverage =
+  | "full-pdfworker"
+  | "full-viewer"
+  | "partial-dom";
+
 export type PdfReaderTextCache = {
   pages: PdfReaderPageText[];
+  /** Pre-computed normalised text per page for O(1) reuse. */
   normalised: Array<{
     pageIndex: number;
     pageLabel?: string;
     normalizedText: string;
-    textIndex: unknown;
+    textIndex: QuoteTextIndex;
   }>;
-  coverage: "full-pdfworker" | "full-viewer" | "partial-dom";
+  coverage: PdfReaderTextCoverage;
   pageCount?: number;
   sourceFingerprint?: string;
 };

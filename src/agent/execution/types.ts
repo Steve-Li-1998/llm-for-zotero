@@ -1,4 +1,4 @@
-import type { MaterialRef } from "../documents/types";
+import type { MaterialRef } from "../documents/materialRef";
 import type { ExecutionTaskStatus } from "../plans/types";
 
 export type ExecutionCheckpointTask = Readonly<{

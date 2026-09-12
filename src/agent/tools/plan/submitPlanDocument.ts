@@ -15,12 +15,12 @@ import type {
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { DirectDocumentFinalizer } from "../../documents/directFinalization";
 import { PlanDocumentFinalizer } from "../../documents/planFinalization";
+import type { MaterialRef } from "../../documents/materialRef";
 import type {
   DocumentAssetProvenance,
   PlanCitationCluster,
   PlanCitationSource,
   PlanDocumentAsset,
-  MaterialRef,
   SubmitPlanDocumentInput,
 } from "../../documents/types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";

@@ -27,7 +27,7 @@ import {
   materialRefFromDocument,
   resolveWorkflowNoteDocument,
 } from "../../documents/workflowMaterial";
-import type { MaterialRef } from "../../documents/types";
+import type { MaterialRef } from "../../documents/materialRef";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {

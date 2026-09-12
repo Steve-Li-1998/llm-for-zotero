@@ -3,7 +3,7 @@ import type {
   AgentToolInputValidation,
   ExecutionTaskStatus,
 } from "../../types";
-import type { MaterialRef } from "../../documents/types";
+import type { MaterialRef } from "../../documents/materialRef";
 import { planExecutionCoordinator } from "../../plans/coordinator";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { listTaskEvidence } from "../../plans/store";

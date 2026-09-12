@@ -28,7 +28,7 @@ import type {
   ActionMechanism,
   ActionRiskSignal,
 } from "./authorization/types";
-import type { MaterialRef } from "./documents/types";
+import type { MaterialRef } from "./documents/materialRef";
 import type {
   ResolvedTurnSelectedTextAnchor,
   ResolvedTurnSelectedTextContext,

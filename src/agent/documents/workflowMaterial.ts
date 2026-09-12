@@ -6,7 +6,8 @@ import {
   obligationsForAction,
   type MaterialOutputIntent,
 } from "../contracts/workflowDependencies";
-import type { MaterialRef, PlanDocument } from "./types";
+import type { MaterialRef } from "./materialRef";
+import type { PlanDocument } from "./types";
 import { loadPlanDocument } from "./store";
 
 function requiredIdentity(value: unknown, label: string): string {

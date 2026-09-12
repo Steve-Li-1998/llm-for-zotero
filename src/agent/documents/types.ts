@@ -28,13 +28,6 @@ export type DocumentSpec = Readonly<{
 
 export type DocumentIntegrityPolicy = "research_grounded" | "authored";
 
-/** Immutable identity of one finalized document revision. */
-export type MaterialRef = Readonly<{
-  documentId: string;
-  documentVersion: number;
-  contentHash: string;
-}>;
-
 export type DocumentOutcomePolicy = Readonly<{
   required: boolean;
   documentKind: DocumentSpec["kind"];

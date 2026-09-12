@@ -1,5 +1,5 @@
 import type { ActionProposal } from "../../authorization/types";
-import type { MaterialRef } from "../../documents/types";
+import type { MaterialRef } from "../../documents/materialRef";
 import type {
   AgentActionEvidence,
   AgentInvocationPlan,

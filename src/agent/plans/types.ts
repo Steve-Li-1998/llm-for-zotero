@@ -5,7 +5,7 @@ import type {
 } from "../contracts/types";
 import type { PlanSkillRoutingReceipt } from "../skills/routingTypes";
 import type { DocumentSpec, PlanDocument } from "../documents/types";
-import type { MaterialRef } from "../documents/types";
+import type { MaterialRef } from "../documents/materialRef";
 import type { ResearchContract, ResearchProgress } from "../research/types";
 import type { ResearchPolicySnapshot } from "../research/policy";
 import type { ActionConstraint } from "../authorization/types";

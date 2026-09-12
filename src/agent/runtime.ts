@@ -53,7 +53,7 @@ import {
 import { createUnverifiedReceipt } from "./contracts/actionEvaluation";
 import { loadWorkflowCheckpoint } from "./contracts/workflowCheckpoint";
 import { resolveDocumentOutcomePolicy } from "./documents/outcomePolicy";
-import type { MaterialRef } from "./documents/types";
+import type { MaterialRef } from "./documents/materialRef";
 import { loadWorkflowMaterial } from "./documents/workflowMaterial";
 import { AgentFinalAnswerController } from "./finalization/finalAnswerController";
 import type { AgentModelAdapter } from "./model/adapter";

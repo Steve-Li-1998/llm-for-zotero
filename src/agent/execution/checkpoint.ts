@@ -1,4 +1,4 @@
-import type { MaterialRef } from "../documents/types";
+import type { MaterialRef } from "../documents/materialRef";
 import { loadMaterialRef } from "../documents/workflowMaterial";
 import { getAgentRunTrace } from "../store/traceStore";
 import type {

@@ -1830,8 +1830,7 @@ export class AgentRuntime {
           }
         } else {
           const rawError = readToolError(toolResult);
-          const userDenied =
-            !!rawError && rawError.toLowerCase() === "user denied action";
+          const userDenied = isUserDeniedToolResult(toolResult);
           // A denial is the user steering, not the tool failing. Counting it
           // meant three careful "Cancel" clicks failed the run outright and
           // -- because persistence is gated on completion -- discarded its
@@ -2743,10 +2742,7 @@ export class AgentRuntime {
             if (outcome.toolResult.ok) roundHadSuccessfulToolResult = true;
             else if (outcome.toolResult.inputRejected)
               roundHadInputRejection = true;
-            else if (
-              readToolError(outcome.toolResult)?.toLowerCase() !==
-              "user denied action"
-            )
+            else if (!isUserDeniedToolResult(outcome.toolResult))
               roundHadToolFailure = true;
             if (
               outcome.toolResult.ok &&

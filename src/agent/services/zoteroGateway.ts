@@ -25,10 +25,7 @@ import { invalidateCachedContextText } from "../../services/paperContent/pdfCont
 import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { joinLocalPath } from "../../utils/localPath";
 import { ensureMineruCacheDirForAttachment } from "../../services/mineru/sync";
-import {
-  persistVerifiedNoteHtml,
-  type CreatedZoteroNoteReceipt,
-} from "../../services/notePersistence";
+import { persistVerifiedNoteHtml } from "../../services/notePersistence";
 import type { AgentRuntimeRequest } from "../types";
 import { getTurnPapers } from "../context/requestTurnPaperScope";
 import type {
@@ -56,6 +53,7 @@ import type {
 import {
   writeAssistantItemNote,
   writeAssistantStandaloneNote,
+  type AssistantNoteWriteResult,
 } from "../../services/notes/assistantNoteWriterBridge";
 export type {
   BatchTagAssignment,
@@ -149,12 +147,7 @@ export type CollectionBrowseNode = {
  * replaced is why no caller could act on a note it had just written — the id
  * existed two layers down and was thrown away on the way up (issue #374).
  */
-export type SaveAnswerToNoteResult = {
-  status: "created" | "appended" | "standalone_created";
-  noteId?: number;
-  collections?: number[];
-  createdNoteReceipt?: CreatedZoteroNoteReceipt;
-};
+export type SaveAnswerToNoteResult = AssistantNoteWriteResult;
 
 export type CollectionSummary = {
   collectionId: number;
@@ -3948,21 +3941,13 @@ export class ZoteroGateway {
         Number.isFinite(params.libraryID) && (params.libraryID as number) > 0
           ? Math.floor(params.libraryID as number)
           : params.item?.libraryID || 0;
-      const created = await writeAssistantStandaloneNote({
+      return writeAssistantStandaloneNote({
         libraryID,
         content: params.content,
         modelName: params.modelName,
         generatedImages: params.generatedImages,
         collections: params.collections,
       });
-      return {
-        status: "standalone_created",
-        noteId: created.noteId,
-        collections: created.collections,
-        ...(created.createdNoteReceipt
-          ? { createdNoteReceipt: created.createdNoteReceipt }
-          : {}),
-      };
     }
     if (!params.item) {
       throw new Error("No Zotero item is active for item-note creation");

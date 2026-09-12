@@ -374,6 +374,7 @@ import {
 } from "./agentTrace/render";
 import { applyStableAnimationPhase } from "./stableAnimationPhase";
 import type { AgentActionContract } from "../../agent/contracts/types";
+import { stripReceiptStatusForDisplay } from "../../agent/contracts/actionEvaluation";
 import { planExecutionCoordinator } from "../../agent/plans/coordinator";
 import {
   TOOL_ACTIVITY_VISIBLE_DEDUPE_WINDOW_MS,
@@ -2806,12 +2807,21 @@ export function getReasoningOptions(
 
 export { QUOTE_RENDER_OCCURRENCE_PATTERN };
 
+/**
+ * The copied form of a response, which is what the reader saw and no more.
+ *
+ * The clipboard is a display surface: what leaves it is the answer as rendered,
+ * so the action-status block the runtime appends for the model is removed here
+ * exactly as the bubble removes it. Saving a response as a note keeps the
+ * stored text as it stands, because that writes durable content of the user's
+ * own rather than presenting the turn.
+ */
 export function buildPlainMarkdownClipboardText(
   markdownText: string,
   quoteCitations?: QuoteCitation[],
 ): string | null {
   const safeText = buildQuoteExpandedMarkdown({
-    markdown: sanitizeText(markdownText).trim(),
+    markdown: stripReceiptStatusForDisplay(sanitizeText(markdownText)).trim(),
     quoteCitations,
   });
   return safeText || null;

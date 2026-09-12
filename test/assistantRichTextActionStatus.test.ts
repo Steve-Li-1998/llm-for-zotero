@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { buildAssistantDisplayMarkdownForRender } from "../src/modules/contextPanel/assistantRichText";
+import { buildRenderedMarkdownClipboardPayload } from "../src/modules/contextPanel/chat";
 import {
   formatReceiptStatus,
   stripReceiptStatusForDisplay,
@@ -102,6 +103,19 @@ describe("assistant rich text action-status block", function () {
     const rendered = buildAssistantDisplayMarkdownForRender({ text: quoted });
 
     assert.include(rendered, "[Action status: note_create");
+  });
+
+  it("keeps the block out of a copied response", function () {
+    const block = formatReceiptStatus([receipt()]);
+
+    const payload = buildRenderedMarkdownClipboardPayload(
+      `Saved the summary as a note.\n\n${block}`,
+    );
+
+    assert.isNotNull(payload);
+    assert.notInclude(payload!.plainText, "[Action status:");
+    assert.notInclude(payload!.renderedHtml, "[Action status:");
+    assert.equal(payload!.plainText, "Saved the summary as a note.");
   });
 
   it("leaves an answer with no block untouched", function () {

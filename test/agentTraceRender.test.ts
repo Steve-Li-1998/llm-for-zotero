@@ -10908,4 +10908,25 @@ describe("agent trace action summary card", function () {
     );
     assert.exists(trace.findByClass("llm-agent-action-summary-card"));
   });
+
+  it("states the turn once across a re-render of the same trace", function () {
+    const message = {
+      role: "assistant",
+      text: "Saved.",
+      timestamp: 1,
+    } as const;
+    const first = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: effectEvents,
+    })!;
+    const next = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: effectEvents,
+      previous: first,
+    }) as unknown as FakeElement;
+
+    assert.lengthOf(next.findAllByClass("llm-agent-action-summary-card"), 1);
+  });
 });

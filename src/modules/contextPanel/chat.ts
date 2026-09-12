@@ -385,23 +385,6 @@ import {
   setQuoteValidationChatRefresher,
   validateLoadedConversationQuoteMessages,
 } from "./quoteValidation/scheduling";
-// Test seams kept at their old address while the quote tests still import
-// them from this module; the follow-up commit points them at the owner.
-export {
-  getQuoteValidationDecisionCacheStatsForTests,
-  hasQuoteSourceIndexForTests,
-  hasQuoteValidationDecisionForTests,
-  primeQuoteSourceIndexCacheForTests,
-  primeQuoteValidationDecisionCacheForTests,
-  resetQuoteValidationDecisionCacheForTests,
-} from "./quoteValidation/caches";
-export {
-  finalizeAssistantMessageQuoteCitationsForTests,
-  orderQuoteValidationBatchByViewportPriority,
-  resolveQuoteValidationIdleTimeouts,
-  scheduleConversationQuoteRevalidation,
-  waitForAssistantQuoteValidationForTests,
-} from "./quoteValidation/scheduling";
 import { applyStableAnimationPhase } from "./stableAnimationPhase";
 import type { AgentActionContract } from "../../agent/contracts/types";
 import { stripReceiptStatusForDisplay } from "../../agent/contracts/actionEvaluation";

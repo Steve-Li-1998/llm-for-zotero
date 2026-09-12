@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   orderQuoteValidationBatchByViewportPriority,
   resolveQuoteValidationIdleTimeouts,
-} from "../src/modules/contextPanel/chat";
+} from "../src/modules/contextPanel/quoteValidation/scheduling";
 import type { Message } from "../src/modules/contextPanel/types";
 
 function assistant(label: string): Message {

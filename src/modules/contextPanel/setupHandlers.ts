@@ -196,9 +196,9 @@ import {
   editLatestUserMessageAndRetry,
   editUserTurnAndRetry,
   findLatestRetryPair,
-  scheduleConversationQuoteRevalidation,
   type EditLatestTurnMarker,
 } from "./chat";
+import { scheduleConversationQuoteRevalidation } from "./quoteValidation/scheduling";
 import {
   getWorkflowTestSendInterceptor,
   notifyWorkflowTestSendSettled,

@@ -1,12 +1,14 @@
 import { assert } from "chai";
+import { buildAssistantDisplayMarkdownForRender } from "../src/modules/contextPanel/chat";
 import {
-  buildAssistantDisplayMarkdownForRender,
-  finalizeAssistantMessageQuoteCitationsForTests,
   getQuoteValidationDecisionCacheStatsForTests,
   resetQuoteValidationDecisionCacheForTests,
+} from "../src/modules/contextPanel/quoteValidation/caches";
+import {
+  finalizeAssistantMessageQuoteCitationsForTests,
   scheduleConversationQuoteRevalidation,
   waitForAssistantQuoteValidationForTests,
-} from "../src/modules/contextPanel/chat";
+} from "../src/modules/contextPanel/quoteValidation/scheduling";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
 import {

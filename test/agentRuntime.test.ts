@@ -263,8 +263,16 @@ function installMockDb(): InstalledMockDb {
           sql.includes("SELECT run_id AS runId") &&
           sql.includes("agent_run_events")
         ) {
+          // listAgentRunEvents narrows to specific event types in SQL when
+          // the caller only needs a few; the extra parameters are those types.
+          const eventTypes = params.slice(1).map(String);
           return events
-            .filter((entry) => entry.runId === params[0])
+            .filter(
+              (entry) =>
+                entry.runId === params[0] &&
+                (!eventTypes.length ||
+                  eventTypes.includes(String(entry.eventType))),
+            )
             .sort((a, b) => Number(a.seq) - Number(b.seq));
         }
         if (
@@ -275,22 +283,25 @@ function installMockDb(): InstalledMockDb {
           const conversationRuns = [...runs.values()].filter(
             (run) => Number(run.conversationKey) === Number(params[0]),
           );
-          // listAgentRunsForConversation asks for every run oldest first;
-          // getLatestAgentRunForConversation asks for the newest one only.
-          // Both break a created_at tie on rowid, as the real SQL does.
-          return sql.includes("ORDER BY created_at ASC")
-            ? conversationRuns.sort(
-                (left, right) =>
-                  Number(left.createdAt) - Number(right.createdAt) ||
-                  Number(left.rowid) - Number(right.rowid),
-              )
-            : conversationRuns
-                .sort(
-                  (left, right) =>
-                    Number(right.createdAt) - Number(left.createdAt) ||
-                    Number(right.rowid) - Number(left.rowid),
-                )
-                .slice(0, 1);
+          // listAgentRunsForConversation asks for every run oldest first, or
+          // for the newest `limit` runs; getLatestAgentRunForConversation asks
+          // for the newest one only (a literal LIMIT 1, so no second
+          // parameter). All of them break a created_at tie on rowid, as the
+          // real SQL does.
+          if (sql.includes("ORDER BY created_at ASC")) {
+            return conversationRuns.sort(
+              (left, right) =>
+                Number(left.createdAt) - Number(right.createdAt) ||
+                Number(left.rowid) - Number(right.rowid),
+            );
+          }
+          return conversationRuns
+            .sort(
+              (left, right) =>
+                Number(right.createdAt) - Number(left.createdAt) ||
+                Number(right.rowid) - Number(left.rowid),
+            )
+            .slice(0, params.length > 1 ? Number(params[1]) : 1);
         }
         if (
           sql.includes("SELECT run_id AS runId") &&
@@ -8560,66 +8571,88 @@ describe("finalized material announcement", function () {
     ) as Extract<AgentEvent, { type: "material_finalized" }> | undefined;
     assert.exists(announced, "turn 1 must finalize material");
     return {
+      runId: outcome.runId,
       documentId: announced!.materialRef.documentId,
       materialRef: announced!.materialRef,
     };
   }
 
-  it("tells the next turn which finalized material is still unsaved", async function () {
+  const BLOCK_HEADER = "Finalized material available (not saved as a note):";
+
+  /** A plain turn whose adapter answers immediately; returns its prompt. */
+  async function runPlainTurn(
+    conversationKey: number,
+    userText: string,
+    sourceMessageTimestamp: number,
+  ): Promise<{
+    request: AgentRuntimeRequest | undefined;
+    promptMessages: AgentModelMessage[];
+  }> {
+    const registry = new AgentToolRegistry();
+    registry.register(createSubmitDocumentTool(submitDocumentGateway));
+    let request: AgentRuntimeRequest | undefined;
+    let promptMessages: AgentModelMessage[] = [];
+    const runtime = new AgentRuntime({
+      registry,
+      adapterFactory: (resolved) => {
+        request = resolved;
+        return {
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            promptMessages = params.messages;
+            return {
+              kind: "final",
+              text: "Acknowledged.",
+              assistantMessage: { role: "assistant", content: "Acknowledged." },
+            };
+          },
+        };
+      },
+    });
+    const outcome = await runtime.runTurn({
+      request: {
+        conversationKey,
+        mode: "agent",
+        userText,
+        libraryID: 1,
+        model: "test",
+        apiKey: "test",
+        apiBase: "https://example.invalid",
+        metadata: { sourceMessageTimestamp },
+      },
+    });
+    assert.equal(outcome.kind, "completed");
+    return { request, promptMessages };
+  }
+
+  function countBlocks(messages: readonly AgentModelMessage[]): number {
+    return messages.filter((message) =>
+      String(message.content).includes(BLOCK_HEADER),
+    ).length;
+  }
+
+  it("tells the next turn which finalized material is still unsaved, without persisting the block", async function () {
     const installed = installMockDb();
     const restoreDocuments = installPlanDocumentSqlite();
     clearAgentTranscriptStore();
     try {
       await initPlanDocumentStore();
       const conversationKey = 774412;
-      const { documentId, materialRef } =
+      const { runId, documentId, materialRef } =
         await runFinalizingTurn(conversationKey);
 
-      const registry = new AgentToolRegistry();
-      registry.register(createSubmitDocumentTool(submitDocumentGateway));
-      let turnRequest: AgentRuntimeRequest | undefined;
-      let promptMessages: AgentModelMessage[] = [];
-      const secondTurn = new AgentRuntime({
-        registry,
-        adapterFactory: (request) => {
-          turnRequest = request;
-          return {
-            getCapabilities: () => ({
-              streaming: false,
-              toolCalls: true,
-              multimodal: false,
-            }),
-            supportsTools: () => true,
-            async runStep(params: AgentStepParams): Promise<AgentModelStep> {
-              promptMessages = params.messages;
-              return {
-                kind: "final",
-                text: "Acknowledged.",
-                assistantMessage: {
-                  role: "assistant",
-                  content: "Acknowledged.",
-                },
-              };
-            },
-          };
-        },
-      });
-      const outcome = await secondTurn.runTurn({
-        request: {
-          conversationKey,
-          mode: "agent",
-          userText: "Save that as a note",
-          libraryID: 1,
-          model: "test",
-          apiKey: "test",
-          apiBase: "https://example.invalid",
-          metadata: { sourceMessageTimestamp: 200 },
-        },
-      });
-      assert.equal(outcome.kind, "completed");
-
+      const second = await runPlainTurn(
+        conversationKey,
+        "Save that as a note",
+        200,
+      );
       assert.deepEqual(
-        turnRequest?.materialOutcomes?.map((entry) => ({
+        second.request?.materialOutcomes?.map((entry) => ({
           documentId: entry.materialRef.documentId,
           status: entry.status,
         })),
@@ -8627,34 +8660,88 @@ describe("finalized material announcement", function () {
         "the ledger is exposed on the request the turn ran with",
       );
 
-      const blockIndex = promptMessages.findIndex((message) =>
-        String(message.content).includes("Finalized material not yet saved:"),
+      assert.equal(
+        countBlocks(second.promptMessages),
+        1,
+        "the next turn's prompt names the unsaved material exactly once",
       );
-      assert.isAtLeast(
-        blockIndex,
-        0,
-        "the next turn's prompt must name the material that is still unsaved",
+      const blockIndex = second.promptMessages.findIndex((message) =>
+        String(message.content).includes(BLOCK_HEADER),
       );
-      const block = String(promptMessages[blockIndex]?.content);
+      const block = String(second.promptMessages[blockIndex]?.content);
       assert.include(
         block,
         `documentId=${documentId} version=${materialRef.documentVersion} hash=${materialRef.contentHash} title="Representational drift" status=finalized`,
       );
       assert.include(
         block,
-        "To save it, call note_write with that documentId; do not regenerate it.",
+        "If the user asks to save it, call note_write with that documentId; do not regenerate it.",
       );
       assert.include(
-        String(promptMessages[blockIndex + 1]?.content),
+        String(second.promptMessages[blockIndex + 1]?.content),
         "Save that as a note",
         "the host block sits immediately before this turn's user message",
       );
-      assert.include(
+      const persisted = readPersistedTranscript(installed, conversationKey)
+        .map((message) => String(message.content))
+        .join("\n");
+      assert.notInclude(
+        persisted,
+        BLOCK_HEADER,
+        "the block is recomputed every turn, so it must never enter the transcript",
+      );
+
+      // A third turn must not stack a second copy: if the block were durable,
+      // the prompt would carry one per turn while the material stays unsaved.
+      const third = await runPlainTurn(conversationKey, "And now?", 300);
+      assert.equal(
+        countBlocks(third.promptMessages),
+        1,
+        "a later turn still names the material exactly once",
+      );
+      assert.notInclude(
         readPersistedTranscript(installed, conversationKey)
           .map((message) => String(message.content))
           .join("\n"),
-        `documentId=${documentId}`,
-        "the block is durable, so a third turn still sees the unsaved material",
+        BLOCK_HEADER,
+      );
+
+      // Once the material is written, no turn may still tell the model to
+      // save it -- a stale copy is what makes a second, unrequested note.
+      await appendAgentRunEvent(runId, 100, {
+        type: "tool_result",
+        callId: "note-write-1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: [
+          {
+            version: 2,
+            id: "receipt:saved",
+            proposalId: "proposal:saved",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "note_create",
+            verification: "verified",
+            status: "applied",
+            requestedTargets: ["item:101"],
+            appliedTargets: ["item:101"],
+            alreadySatisfiedTargets: [],
+            rejectedTargets: [],
+            reasons: [],
+            materialRef,
+          },
+        ],
+        content: { noteId: 501 },
+      });
+      const fourth = await runPlainTurn(conversationKey, "Thanks", 400);
+      assert.deepEqual(
+        fourth.request?.materialOutcomes?.map((entry) => entry.status),
+        ["saved"],
+      );
+      assert.equal(
+        countBlocks(fourth.promptMessages),
+        0,
+        "saved material is never offered for saving again",
       );
     } finally {
       restoreDocuments();

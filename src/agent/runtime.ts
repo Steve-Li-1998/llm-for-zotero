@@ -690,6 +690,18 @@ export class AgentRuntime {
           ? [...transcriptMessagesForPrompt, recoveryMessage]
           : [recoveryMessage];
       }
+      // An interrupted run already carries this block inside its one-time
+      // recovery note. Every other turn gets it as a prompt-only host
+      // message: the ledger is recomputed from run events at every turn
+      // start, so persisting the block would only stack identical -- and,
+      // once the material is saved, stale -- copies in the transcript.
+      const materialRecoveryMessage = recoveryMessage
+        ? null
+        : buildFinalizedMaterialRecoveryMessage(request.materialOutcomes);
+      const promptTranscriptMessages = (): AgentModelMessage[] =>
+        materialRecoveryMessage
+          ? [...transcriptMessagesForPrompt, materialRecoveryMessage]
+          : [...transcriptMessagesForPrompt];
 
       if (
         transcriptMessagesForPrompt.some(
@@ -789,29 +801,10 @@ export class AgentRuntime {
       const transcriptTail =
         turnStartTranscriptMessages[turnStartTranscriptMessages.length - 1] ||
         transcriptSegment.messages[transcriptSegment.messages.length - 1];
-      const appendsUserMessage =
+      if (
         hadCompatibleTranscript ||
-        !isCurrentTurnUserTranscriptMessage(transcriptTail, request);
-      // An interrupted run already carries the same block inside its recovery
-      // note; an ordinary turn gets it as its own host message, always
-      // immediately ahead of this turn's user message.
-      const materialRecoveryMessage = recoveryMessage
-        ? null
-        : buildFinalizedMaterialRecoveryMessage(request.materialOutcomes);
-      if (materialRecoveryMessage) {
-        turnStartTranscriptMessages.splice(
-          appendsUserMessage
-            ? turnStartTranscriptMessages.length
-            : Math.max(0, turnStartTranscriptMessages.length - 1),
-          0,
-          materialRecoveryMessage,
-        );
-        transcriptMessagesForPrompt = [
-          ...transcriptMessagesForPrompt,
-          materialRecoveryMessage,
-        ];
-      }
-      if (appendsUserMessage) {
+        !isCurrentTurnUserTranscriptMessage(transcriptTail, request)
+      ) {
         turnStartTranscriptMessages.push(currentUserTranscriptMessage);
       }
       if (turnStartTranscriptMessages.length) {
@@ -938,7 +931,7 @@ export class AgentRuntime {
         },
       );
       const messages = composeAgentModelInput(renderedPrompt.envelope, {
-        transcriptMessages: transcriptMessagesForPrompt,
+        transcriptMessages: promptTranscriptMessages(),
       });
       const instructionInventory = captureInstructionInventory
         ? buildAgentPromptInstructionInventory(renderedPrompt, messages)
@@ -1010,7 +1003,7 @@ export class AgentRuntime {
             0,
             messages.length,
             ...composeAgentModelInput(renderedPrompt.envelope, {
-              transcriptMessages: transcriptMessagesForPrompt,
+              transcriptMessages: promptTranscriptMessages(),
             }),
           );
         }
@@ -2466,7 +2459,7 @@ export class AgentRuntime {
         );
         continuationSession.restartWithMessages(
           composeAgentModelInput(renderedPrompt.envelope, {
-            transcriptMessages: transcriptMessagesForPrompt,
+            transcriptMessages: promptTranscriptMessages(),
           }),
         );
       }

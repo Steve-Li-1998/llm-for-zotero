@@ -9421,6 +9421,127 @@ describe("agent stage events", function () {
     }
   });
 
+  it("reports no stage for a batch item this run has not written", async function () {
+    const restoreDb = installMockDb();
+    const batchItems = [
+      {
+        batchId: "batch-stage-1",
+        itemKey: "item:saved",
+        materialRef: {
+          documentId: "run:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:note-1",
+        },
+        status: "saved" as const,
+        written: true,
+        noteId: 601,
+      },
+      {
+        batchId: "batch-stage-1",
+        itemKey: "item:pending",
+        status: "pending" as const,
+        written: false,
+      },
+      {
+        batchId: "batch-stage-1",
+        itemKey: "item:failed",
+        status: "failed" as const,
+        written: false,
+        error: "Zotero refused the note write",
+      },
+    ];
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registry.register({
+        effectOperations: ["save_notes_batch"],
+        spec: {
+          name: "note_write_batch",
+          description: "Write a note onto each of many items",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          workCategory: "zotero_action",
+          requiresConfirmation: false,
+        },
+        presentation: { label: "Write notes" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        planInvocation: async () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test note batch.",
+          }),
+        describeAction: () => [
+          {
+            id: "save_notes_batch:stage",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "save_notes_batch",
+            source: "library_mutation",
+            requestedTargets: ["item:saved", "item:pending", "item:failed"],
+            destinationCollectionIds: [],
+          },
+        ],
+        execute: async () => ({
+          content: { createdCount: 1, failedCount: 1 },
+          effect: "partial",
+          batchItems,
+        }),
+      } as never);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("batch-1", "note_write_batch"),
+              {
+                kind: "final",
+                text: "Wrote what I could.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "Wrote what I could.",
+                },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+      await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_105,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Note each of these",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "batch_item_outcome")
+          .map((event) => event.itemKey),
+        ["item:saved", "item:pending", "item:failed"],
+        "every item is still announced",
+      );
+      assert.deepEqual(
+        stageEvents(events)
+          .filter((event) => Boolean(event.itemKey))
+          .map((event) => [event.itemKey, event.status]),
+        [
+          ["item:saved", "completed"],
+          ["item:failed", "failed"],
+        ],
+        "a pending item reports no stage rather than a wrong one",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
   it("reports each plan event as a planning stage", async function () {
     const restoreDb = installMockDb();
     try {
@@ -9489,8 +9610,8 @@ describe("agent stage events", function () {
       );
       assert.deepEqual(
         planning.map((event) => event.status),
-        ["started", "completed", "completed"],
-        "plan_research_progress reports no stage transition of its own",
+        ["started", "completed"],
+        "only a drafted revision and a reviewable plan move the stage",
       );
       const types = events.map((event) => event.type);
       assert.equal(

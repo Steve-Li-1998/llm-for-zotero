@@ -194,16 +194,16 @@ type ExecutedToolCall = {
 /**
  * What a plan event says about the planning stage.
  *
- * A revision still being drafted opens the stage; a reviewable plan and a
- * committed execution transition close it. Progress events report work inside
- * an already-open stage, so they move nothing.
+ * A revision still being drafted opens the stage and a reviewable plan closes
+ * it. Every other plan event reports work inside a stage rather than a
+ * transition of one: an execution ledger advancing would otherwise close a
+ * stage nothing had opened, once per task.
  */
 const PLANNING_STAGE_STATUS_BY_PLAN_EVENT: Readonly<
   Partial<Record<PlanEvent["type"], "started" | "completed">>
 > = {
   plan_updated: "started",
   plan_ready: "completed",
-  plan_execution_updated: "completed",
 };
 
 export class AgentRuntime {
@@ -2005,19 +2005,22 @@ export class AgentRuntime {
         // `material_finalized`: fifty note bodies are recovered from the
         // batch's own durable rows, not from the turn's material ledger.
         for (const item of toolResult.batchItems || []) {
-          // A pending row is one this run did not write, so it never closes
-          // as completed; the row's own status says which of the two it is.
-          await emit({
-            type: "agent_stage",
-            stage: "zotero_action",
-            status: item.status === "saved" ? "completed" : "failed",
-            callId: toolResult.callId,
-            toolName: toolResult.name,
-            toolLabel,
-            batchId: item.batchId,
-            itemKey: item.itemKey,
-            materialRef: item.materialRef,
-          });
+          // A pending row is one this run has not written yet: not a
+          // completion and not a failure, and the stage vocabulary has no
+          // third outcome. It reports no stage rather than a wrong one; the
+          // row itself still says the note is not written.
+          if (item.status !== "pending")
+            await emit({
+              type: "agent_stage",
+              stage: "zotero_action",
+              status: item.status === "saved" ? "completed" : "failed",
+              callId: toolResult.callId,
+              toolName: toolResult.name,
+              toolLabel,
+              batchId: item.batchId,
+              itemKey: item.itemKey,
+              materialRef: item.materialRef,
+            });
           await emit({
             type: "batch_item_outcome",
             batchId: item.batchId,

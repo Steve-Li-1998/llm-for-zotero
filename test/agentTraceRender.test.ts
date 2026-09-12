@@ -10348,6 +10348,158 @@ describe("agent trace stage grouping", function () {
     );
     disposeAgentTrace(second as unknown as HTMLElement);
   });
+
+  /**
+   * The same journey as a run recorded before stage events existed: work
+   * categories on the tool events, a finalized material, a batch row, and no
+   * `agent_stage` anywhere. The compatibility projection has to carry it all
+   * the way to the DOM, not only to the display items.
+   */
+  function phase3Events(): AgentRunEventRecord[] {
+    return [
+      event(1, {
+        type: "tool_call",
+        callId: "r1",
+        name: "paper_read",
+        args: { itemId: 5 },
+        workCategory: "retrieval",
+      }),
+      event(2, {
+        type: "tool_result",
+        callId: "r1",
+        name: "paper_read",
+        ok: true,
+        actionReceipts: [],
+        content: { sections: [] },
+        workCategory: "retrieval",
+      }),
+      event(3, {
+        type: "material_finalized",
+        materialRef: {
+          documentId: "run-journey:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+        materialKind: "summary",
+        materialTitle: "Representational drift",
+      }),
+      event(4, {
+        type: "tool_call",
+        callId: "w1",
+        name: "note_write",
+        args: { documentId: "run-journey:document:1" },
+        workCategory: "zotero_action",
+      }),
+      event(5, {
+        type: "tool_result",
+        callId: "w1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: [noteReceipt],
+        content: { noteId: 77, documentId: "run-journey:document:1" },
+        workCategory: "zotero_action",
+      }),
+      event(6, {
+        type: "batch_item_outcome",
+        batchId: "batch-1",
+        itemKey: "item:91",
+        materialRef: {
+          documentId: "run-journey:document:2",
+          documentVersion: 1,
+          contentHash: "sha256:batch",
+        },
+        status: "saved",
+        written: true,
+        noteId: 78,
+        callId: "w1",
+      }),
+    ];
+  }
+
+  /** A run older than work categories: tool calls and nothing else to read. */
+  function prePhase0Events(): AgentRunEventRecord[] {
+    return [
+      event(1, {
+        type: "tool_call",
+        callId: "old-1",
+        name: "query_library",
+        args: { query: "drift" },
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "old-2",
+        name: "read_paper",
+        args: { itemId: 3 },
+      }),
+    ];
+  }
+
+  function renderStages(events: AgentRunEventRecord[]): {
+    root: FakeElement;
+    labels: string[];
+    kinds: (string | null)[];
+    rows: string[][];
+  } {
+    const root = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant" as const,
+        text: "",
+        timestamp: 1,
+        runMode: "agent" as const,
+        agentRunId: "run-journey",
+        streaming: false,
+      },
+      events,
+    }) as unknown as FakeElement;
+    const nodes = root.findAllByClass("llm-agent-process-stage");
+    return {
+      root,
+      labels: nodes.map(
+        (node) =>
+          node.findByClass("llm-agent-process-stage-label")?.textContent || "",
+      ),
+      kinds: nodes.map((node) => node.getAttribute("data-stage")),
+      rows: nodes.map(
+        (node) =>
+          node
+            .findByClass("llm-agent-process-stage-body")
+            ?.findAllByClass("llm-at-text")
+            .map((row) => row.textContent) || [],
+      ),
+    };
+  }
+
+  it("renders a trace recorded before stage events as the same stages", function () {
+    const historical = renderStages(phase3Events());
+    const live = renderStages(journeyEvents());
+
+    assert.deepEqual(historical.kinds, [
+      "retrieval",
+      "generation",
+      "zotero_action",
+    ]);
+    assert.deepEqual(
+      historical.labels,
+      live.labels,
+      "a projected run reads like the live run it predates",
+    );
+    assert.include(
+      historical.rows[2].join(" | "),
+      "Zotero state verified",
+      "the receipt row still lands inside the action stage it proved",
+    );
+    disposeAgentTrace(historical.root as unknown as HTMLElement);
+    disposeAgentTrace(live.root as unknown as HTMLElement);
+  });
+
+  it("renders a trace recorded before work categories as one activity group", function () {
+    const { root, labels, rows } = renderStages(prePhase0Events());
+
+    assert.deepEqual(labels, ["Agent activity"]);
+    assert.deepEqual(rows[0], ["Using Query Library", "Using Read Paper"]);
+    disposeAgentTrace(root as unknown as HTMLElement);
+  });
 });
 
 describe("agent trace presentation without tool names", function () {

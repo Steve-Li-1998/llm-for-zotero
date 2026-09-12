@@ -312,14 +312,29 @@ export function createCodexNativeActivityTraceController(
   };
 
   /**
+   * Deliver everything the agent-message coalescers still hold.
+   *
+   * `finish` does this for a turn that completes. A turn that is cancelled or
+   * fails never reaches `finish`, and what the coalescers hold is commentary
+   * the model already sent -- so those paths call this immediately before they
+   * persist the turn, and the rendered trace and the stored trace end up
+   * saying the same thing.
+   */
+  const flushBufferedProgress = (
+    reason: "event" | "final" | "cancel" | "error",
+  ): void => {
+    flushAllProgressCoalescers(reason);
+  };
+
+  /**
    * End this controller's life with the turn that created it.
    *
    * Each progress coalescer holds a pending flush timer; cancelling them
    * stops a delivery that would land after the panel finalized and persisted
-   * the message. Whatever text is still buffered at that point is text no
-   * persisted trace contains, so dropping it keeps the rendered turn and the
-   * stored turn saying the same thing. Dropping the message binding then
-   * makes every later call a no-op.
+   * the message. By this point every path that persists has already flushed
+   * what it wanted to keep, so this is the safety net rather than the place
+   * text is decided. Dropping the message binding then makes every later call
+   * a no-op.
    */
   const dispose = (): void => {
     for (const coalescer of progressCoalescers.values()) coalescer.cancel();
@@ -814,6 +829,7 @@ export function createCodexNativeActivityTraceController(
     noteMcpConfirmationResolved,
     noteMcpToolActivity,
     noteAgentMessageCompleted,
+    flushBufferedProgress,
     dispose,
   };
 }

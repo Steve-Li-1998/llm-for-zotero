@@ -6629,6 +6629,9 @@ export async function retryLatestAssistantResponse(
   };
   const finalizeCancelledAssistant = async () => {
     flushResponseStream("cancel");
+    // The turn never reached finish(), so the trace's own buffers are still
+    // holding commentary the model sent. Deliver it before the store write.
+    codexActivityTrace?.flushBufferedProgress("cancel");
     finalizeCancelledAssistantMessage(assistantMessage);
     await codexActivityTrace?.persist(
       conversationKey,
@@ -7183,6 +7186,7 @@ export async function retryLatestAssistantResponse(
       assistantMessage.reasoningDetails = streamedReasoningDetails;
       assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
       assistantMessage.streaming = false;
+      codexActivityTrace?.flushBufferedProgress("cancel");
       await codexActivityTrace?.persist(
         conversationKey,
         conversationGeneration,
@@ -9537,6 +9541,9 @@ export async function sendQuestion(
   };
   const markCancelled = async () => {
     flushResponseStream("cancel");
+    // Same reason as the retry flow: finish() never ran, so flush the trace's
+    // buffered commentary before persistAssistantOnce writes the turn.
+    codexActivityTrace?.flushBufferedProgress("cancel");
     finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
     await persistAssistantOnce("cancelled");
@@ -10141,6 +10148,7 @@ export async function sendQuestion(
     assistantMessage.interrupted = outcome.interrupted;
     assistantMessage.streaming = false;
     refreshChatSafely();
+    codexActivityTrace?.flushBufferedProgress("error");
     await persistAssistantOnce();
 
     setStatusSafely(`Error: ${`${errMsg}${retryHint}`.slice(0, 40)}`, "error");

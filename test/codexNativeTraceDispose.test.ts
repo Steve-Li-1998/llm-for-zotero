@@ -1,5 +1,10 @@
 import { assert } from "chai";
 import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/codexNativeTrace/controller";
+import {
+  getAgentRunTrace,
+  initAgentTraceStore,
+} from "../src/agent/store/traceStore";
+import { installMockDb } from "./helpers/agentRuntimeMockDb";
 
 /**
  * End of life for one native Codex turn's trace controller.
@@ -100,5 +105,67 @@ describe("codex native trace controller disposal", function () {
     controller.dispose();
     controller.dispose();
     assert.isUndefined(message.pendingAgentTraceEvents);
+  });
+});
+
+/**
+ * A turn that is cancelled or fails never reaches finish(), so nothing flushes
+ * the agent-message coalescers on the way out. The text they hold is real
+ * commentary the model already sent, so the flows flush it before they persist
+ * the turn -- otherwise the panel would show text the store never received, or
+ * (after disposal) lose it entirely.
+ */
+describe("codex native trace controller flush before persisting", function () {
+  let uninstallDb: (() => void) | null = null;
+
+  before(async function () {
+    uninstallDb = installMockDb();
+    await initAgentTraceStore();
+  });
+
+  after(function () {
+    uninstallDb?.();
+    uninstallDb = null;
+  });
+
+  it("persists commentary that was still buffered when the turn was cancelled", async function () {
+    const message: any = {
+      role: "assistant",
+      text: "[Cancelled]",
+      timestamp: 1,
+      runMode: "agent",
+      agentRunId: "cancelled-native-turn",
+      modelName: "gpt-5-codex",
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => {},
+    );
+    controller.appendAgentMessageDelta({
+      itemId: "commentary",
+      delta: "Half a sentence the model had already sent",
+    });
+
+    // The turn was interrupted: finish() never runs, so the cancel path has to
+    // flush before it persists.
+    controller.flushBufferedProgress("cancel");
+    await controller.persist(9012, 0, "cancelled");
+
+    const saved = await getAgentRunTrace("cancelled-native-turn");
+    assert.equal(saved.run?.status, "cancelled");
+    assert.deepEqual(
+      saved.events.map((event: any) => event.payload.type),
+      ["codex_progress"],
+      "the buffered commentary reached the store",
+    );
+    assert.include(
+      (saved.events[0].payload as any).text,
+      "Half a sentence the model had already sent",
+    );
+    assert.deepEqual(
+      message.pendingAgentTraceEvents.map((event: any) => event.payload),
+      saved.events.map((event: any) => event.payload),
+      "what the panel renders and what the store holds agree",
+    );
   });
 });

@@ -5226,12 +5226,8 @@ function renderPlanContainer(params: {
 function getPlanDocumentId(events: AgentRunEventRecord[]): string | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index].payload;
-    if (
-      event.type === "document_ready" ||
-      event.type === "plan_document_ready"
-    ) {
-      return event.documentId;
-    }
+    if (event.type === "material_finalized")
+      return event.materialRef.documentId;
   }
   return null;
 }

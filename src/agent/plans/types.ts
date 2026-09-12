@@ -500,18 +500,4 @@ export type PlanEvent =
       previousItemCount: number;
       newItemCount: number;
       authority: "user" | "auto_policy" | "yolo";
-    }
-  | {
-      type: "document_ready";
-      documentId: string;
-      executionId?: string;
-      title: string;
-      contentHash: string;
-    }
-  | {
-      type: "plan_document_ready";
-      documentId: string;
-      executionId: string;
-      title: string;
-      contentHash: string;
     };

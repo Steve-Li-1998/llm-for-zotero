@@ -436,6 +436,7 @@ import {
   saveAgentRunTraceSnapshot,
 } from "../../agent/store/traceStore";
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
+import { materialRefFromDocument } from "../../agent/documents/workflowMaterial";
 import { loadDocumentIdForMessageOwner } from "../../agent/documents/store";
 import {
   applyHistoryCompression,
@@ -1846,24 +1847,17 @@ async function publishPersistedPlanDocumentIfPresent(params: {
   if (
     persistedTrace.events.some(
       (entry) =>
-        (entry.payload.type === "document_ready" ||
-          entry.payload.type === "plan_document_ready") &&
-        entry.payload.documentId === document.documentId,
+        entry.payload.type === "material_finalized" &&
+        entry.payload.materialRef.documentId === document.documentId,
     )
   ) {
     return;
   }
   const event = {
-    type: "document_ready" as const,
-    documentId: document.documentId,
-    executionId:
-      document.version === 1
-        ? document.executionId
-        : document.origin.kind === "planned"
-          ? document.origin.executionId
-          : undefined,
-    title: document.title,
-    contentHash: document.contentHash,
+    type: "material_finalized" as const,
+    materialRef: materialRefFromDocument(document),
+    materialKind: document.version === 2 ? document.documentKind : undefined,
+    materialTitle: document.title,
   };
   const record = await appendAgentRunEventAfterLatest(runId, event);
   const cached = agentRunTraceCache.get(runId) || [];
@@ -7291,10 +7285,7 @@ function createCodexNativeActivityTraceController(
       sync();
       return;
     }
-    if (
-      event.type === "document_ready" ||
-      event.type === "plan_document_ready"
-    ) {
+    if (event.type === "material_finalized") {
       events.push(createEvent(event));
       sync();
       return;

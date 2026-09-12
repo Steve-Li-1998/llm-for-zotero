@@ -3223,6 +3223,54 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("renders a trace whose event log announces finalized material", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          details: "Drafting the guide.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-1:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "guide",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    assert.isTrue(
+      items.some((item) => item.type === "reasoning"),
+      "surrounding rows must still render beside a material event",
+    );
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "", timestamp: 1, runMode: "agent" },
+      events,
+    }) as unknown as FakeElement;
+    assert.isNotEmpty(
+      trace.findAllByClass("llm-plan-document-completion-caption"),
+      "the announced material is the document the trace offers to open",
+    );
+  });
+
   it("renders Codex progress messages as separate activity messages", function () {
     const events: AgentRunEventRecord[] = [
       {

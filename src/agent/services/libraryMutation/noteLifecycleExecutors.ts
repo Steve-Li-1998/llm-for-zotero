@@ -2,6 +2,36 @@ import { executeNoteCreation } from "../noteCreation";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
 import { buildSaveNoteInverse } from "./forwardExecutionSupport";
+import type { MaterialRef } from "../../documents/materialRef";
+import { loadPlanDocument } from "../../documents/store";
+import { assertMaterialRefMatches } from "../../documents/workflowMaterial";
+import { advanceBatchJob } from "../../store/batchJobStore";
+import {
+  markBatchItemFailed,
+  markBatchItemSaved,
+} from "../../store/batchItemStore";
+
+/**
+ * The exact HTML one batch item writes.
+ *
+ * A finalized item writes its stored document, re-checked against the frozen
+ * reference, so a retry after a crash cannot write text that drifted from the
+ * material the user approved. Without material — the operation executed
+ * outside a durable batch — the supplied body is rendered as before.
+ */
+async function noteHtmlForBatchItem(params: {
+  material?: MaterialRef;
+  content: string;
+}): Promise<string> {
+  if (!params.material) return renderRawNoteHtml(params.content);
+  const document = await loadPlanDocument(params.material.documentId);
+  if (!document)
+    throw new Error(
+      `The finalized note material ${params.material.documentId} is no longer stored`,
+    );
+  assertMaterialRefMatches(document, params.material);
+  return document.visibleHtml;
+}
 
 type DomainOperation =
   | "save_notes_batch"
@@ -21,17 +51,60 @@ export const noteLifecycleExecutors = {
       status: "created" | "error";
       reason?: string;
     }> = [];
-    for (const entry of operation.notes) {
+    const batchId = operation.batchId;
+    let appliedCount = 0;
+    // Progress is written after each note lands, never before: a cursor ahead
+    // of the library would skip an unwritten note on resume.
+    const recordProgress = async (params: {
+      itemKey?: string;
+      position: number;
+      journalStep?: { actionId: string; sequence: number };
+      noteId?: number;
+      error?: string;
+    }) => {
+      if (!batchId || !params.itemKey) return;
+      const now = Date.now();
+      if (params.noteId !== undefined) {
+        appliedCount += 1;
+        await markBatchItemSaved(batchId, params.itemKey, {
+          actionId: params.journalStep?.actionId,
+          stepSequence: params.journalStep?.sequence,
+          noteId: params.noteId,
+          now,
+        });
+      } else {
+        await markBatchItemFailed(batchId, params.itemKey, {
+          actionId: params.journalStep?.actionId,
+          stepSequence: params.journalStep?.sequence,
+          error: params.error || "The note was not written",
+          now,
+        });
+      }
+      await advanceBatchJob({
+        jobId: batchId,
+        cursor: params.position,
+        appliedCount,
+        now,
+      });
+    };
+    for (const [index, entry] of operation.notes.entries()) {
+      const position = index + 1;
       const target = zoteroGateway.getItem(entry.targetItemId);
       const title = target
         ? String(target.getDisplayTitle?.() || `Item ${entry.targetItemId}`)
         : `Item ${entry.targetItemId}`;
       if (!target) {
+        const reason = `No item with ID ${entry.targetItemId} exists in this library`;
         rows.push({
           targetItemId: entry.targetItemId,
           title,
           status: "error",
-          reason: `No item with ID ${entry.targetItemId} exists in this library`,
+          reason,
+        });
+        await recordProgress({
+          itemKey: entry.itemKey,
+          position,
+          error: reason,
         });
         continue;
       }
@@ -43,7 +116,10 @@ export const noteLifecycleExecutors = {
             operation.target === "standalone" ? undefined : target.id,
           collections:
             operation.target === "standalone" ? entry.collections : undefined,
-          html: renderRawNoteHtml(entry.content),
+          html: await noteHtmlForBatchItem({
+            material: entry.material,
+            content: entry.content,
+          }),
         });
         const saved = execution.content;
         const childActionId = (
@@ -57,13 +133,25 @@ export const noteLifecycleExecutors = {
           title,
           status: "created",
         });
+        await recordProgress({
+          itemKey: entry.itemKey,
+          position,
+          journalStep: execution.journalStep,
+          noteId: saved.noteId,
+        });
       } catch (error) {
         // One bad target must not lose the other forty-nine notes.
+        const reason = error instanceof Error ? error.message : String(error);
         rows.push({
           targetItemId: entry.targetItemId,
           title,
           status: "error",
-          reason: error instanceof Error ? error.message : String(error),
+          reason,
+        });
+        await recordProgress({
+          itemKey: entry.itemKey,
+          position,
+          error: reason,
         });
       }
     }

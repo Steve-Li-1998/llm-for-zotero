@@ -413,6 +413,28 @@ export async function loadLatestDocumentForRun(
   return documentId ? loadPlanDocument(documentId) : null;
 }
 
+/**
+ * A document this run already published with exactly this content.
+ *
+ * A run authors several documents — one note batch publishes one per item —
+ * so "is this submission a retry?" cannot be answered by the newest document
+ * alone. Matching on content across the whole run is what keeps a repeated
+ * call from minting a second identity for text that is already durable.
+ */
+export async function loadDocumentForRunByContentHash(
+  runId: string,
+  contentHash: string,
+): Promise<PlanDocument | null> {
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT document_id AS documentId FROM ${PLAN_DOCUMENTS_TABLE}
+     WHERE run_id = ? AND content_hash = ? ORDER BY created_at ASC LIMIT 1`,
+    [runId, contentHash],
+  )) as Array<{ documentId?: unknown }> | undefined;
+  const documentId =
+    typeof rows?.[0]?.documentId === "string" ? rows[0].documentId : "";
+  return documentId ? loadPlanDocument(documentId) : null;
+}
+
 function directDocumentIdPrefix(runId: string): string {
   return `${runId}:document:`;
 }

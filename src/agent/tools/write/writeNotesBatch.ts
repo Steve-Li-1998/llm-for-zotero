@@ -6,12 +6,24 @@
  * recent papers" meant 50 tool calls and 50 human approvals. The round budget
  * was never the binding constraint — consent was.
  */
-import type { AgentWriteToolDefinition } from "../../types";
+import type {
+  AgentBatchItemOutcome,
+  AgentToolContext,
+  AgentWriteToolDefinition,
+} from "../../types";
 import {
   LibraryMutationService,
   type SaveNotesBatchOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import { DirectDocumentFinalizer } from "../../documents/directFinalization";
+import { materialRefFromDocument } from "../../documents/workflowMaterial";
+import { createBatchJob, finishBatchJob } from "../../store/batchJobStore";
+import {
+  createBatchItems,
+  listBatchItems,
+  type NewBatchItem,
+} from "../../store/batchItemStore";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
 import {
   executeAndRecordUndo,
@@ -23,10 +35,81 @@ const NOTES_CHECKLIST_FIELD_ID = "writeNotesChecklist";
 
 type WriteNotesBatchInput = { operation: SaveNotesBatchOperation };
 
+/**
+ * A durable row key for one item of this batch.
+ *
+ * The target item identifies the note in every user-visible surface, so it is
+ * the key; a batch that writes two notes onto the same paper distinguishes
+ * them by occurrence so the batch's rows stay one per note.
+ */
+function batchItemKeys(notes: SaveNotesBatchOperation["notes"]): string[] {
+  const seen = new Map<number, number>();
+  return notes.map((note) => {
+    const occurrence = (seen.get(note.targetItemId) || 0) + 1;
+    seen.set(note.targetItemId, occurrence);
+    return occurrence === 1
+      ? `item:${note.targetItemId}`
+      : `item:${note.targetItemId}#${occurrence}`;
+  });
+}
+
 export function createWriteNotesBatchTool(
   zoteroGateway: ZoteroGateway,
 ): AgentWriteToolDefinition<WriteNotesBatchInput, unknown> {
   const mutationService = new LibraryMutationService(zoteroGateway);
+  const finalizer = new DirectDocumentFinalizer(zoteroGateway);
+
+  function itemTitle(targetItemId: number): string {
+    const item = zoteroGateway.getItem(targetItemId);
+    return item
+      ? String(item.getDisplayTitle?.() || `Item ${targetItemId}`)
+      : `Item ${targetItemId}`;
+  }
+
+  /**
+   * Freeze every body as its own durable document before the first write.
+   *
+   * Until each note is finalized material there is nothing a resume can write
+   * that is provably the text the user approved, and nothing that survives a
+   * crash. Identical content in the same run keeps the identity it already
+   * published, so re-running the tool mints no second copy.
+   */
+  async function prepareBatch(
+    input: WriteNotesBatchInput,
+    context: AgentToolContext,
+  ): Promise<{ batchId: string; operation: SaveNotesBatchOperation }> {
+    const runId = context.runId;
+    if (!runId) throw new Error("The note batch has no run identity");
+    const now = Date.now();
+    const batchId = `batch-note_write_batch-${now}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    const keys = batchItemKeys(input.operation.notes);
+    const notes: SaveNotesBatchOperation["notes"] = [];
+    const rows: NewBatchItem[] = [];
+    for (const [index, note] of input.operation.notes.entries()) {
+      const { document } = await finalizer.finalizeNoteBody({
+        request: context.request,
+        runId,
+        title: itemTitle(note.targetItemId),
+        markdown: note.content,
+        now,
+      });
+      const materialRef = materialRefFromDocument(document);
+      notes.push({ ...note, itemKey: keys[index], material: materialRef });
+      rows.push({ itemKey: keys[index], position: index + 1, materialRef });
+    }
+    await createBatchJob({
+      jobId: batchId,
+      conversationKey: context.request.conversationKey,
+      action: "note_write_batch",
+      input: { target: input.operation.target },
+      totalCount: rows.length,
+      now,
+    });
+    await createBatchItems(batchId, rows, now);
+    return { batchId, operation: { ...input.operation, batchId, notes } };
+  }
 
   return {
     spec: {
@@ -204,14 +287,45 @@ export function createWriteNotesBatchTool(
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {
-      return executeAndRecordUndo(
-        mutationService,
-        input.operation,
-        context,
-        "write_notes_batch",
-      );
+      const { batchId, operation } = await prepareBatch(input, context);
+      try {
+        return {
+          ...(await executeAndRecordUndo(
+            mutationService,
+            operation,
+            context,
+            "write_notes_batch",
+          )),
+          batchItems: await readBatchOutcomes(batchId),
+        };
+      } finally {
+        // The rows are the authority on what still needs writing, so the job
+        // is closed only once every item of it has landed.
+        const rows = await listBatchItems(batchId);
+        await finishBatchJob({
+          jobId: batchId,
+          status: rows.every((row) => row.status === "saved")
+            ? "completed"
+            : "failed",
+          now: Date.now(),
+        });
+      }
     },
   };
+}
+
+/** What the host announces for each item, read back from the durable rows. */
+async function readBatchOutcomes(
+  batchId: string,
+): Promise<AgentBatchItemOutcome[]> {
+  return (await listBatchItems(batchId)).map((row) => ({
+    batchId: row.batchId,
+    itemKey: row.itemKey,
+    materialRef: row.materialRef,
+    status: row.status,
+    ...(row.noteId === undefined ? {} : { noteId: row.noteId }),
+    ...(row.error === undefined ? {} : { error: row.error }),
+  }));
 }
 
 function previewOf(content: string): string {

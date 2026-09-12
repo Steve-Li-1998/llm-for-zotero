@@ -7,6 +7,7 @@ import type {
   EditableArticleMetadataPatch,
   EditableArticleMetadataSnapshot,
 } from "./valueTypes";
+import type { MaterialRef } from "../../documents/materialRef";
 
 type LibraryMutationEffect = "applied" | "partial" | "none";
 
@@ -135,10 +136,23 @@ export type SetItemTagsOperation = {
 export type SaveNotesBatchOperation = {
   id?: string;
   type: "save_notes_batch";
+  /**
+   * Durable identity of the batch whose rows own each item's material.
+   * Absent when the operation is executed outside a durable batch.
+   */
+  batchId?: string;
   notes: Array<{
     targetItemId: number;
     content: string;
     collections?: number[];
+    /** This item's row key inside `batchId`. */
+    itemKey?: string;
+    /**
+     * The finalized body this item writes. When present it is the authority:
+     * the stored document's HTML is written, never `content`, so a retry
+     * cannot diverge from the material the user approved.
+     */
+    material?: MaterialRef;
   }>;
   target?: "item" | "standalone";
   modelName?: string;

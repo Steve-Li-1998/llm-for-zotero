@@ -5,6 +5,7 @@ import type { DocumentCitationEvidence } from "./citationService";
 import { finalizeDocument, persistFinalizedDocument } from "./finalizer";
 import {
   directDocumentId,
+  loadDocumentForRunByContentHash,
   loadLatestDocumentForRun,
   loadPlanDocument,
   loadPlanDocumentOutbox,
@@ -24,6 +25,8 @@ import {
   resolveMaterialOutput,
 } from "./workflowMaterial";
 import { ToolInputRejection } from "../tools/execution/failure";
+import { collectHeadings } from "./draftValidation";
+import type { MaterialOutputIntent } from "../contracts/workflowDependencies";
 
 /** The already stored document, with the outbox record that published it. */
 async function storedDocumentResult(document: PlanDocument): Promise<{
@@ -221,6 +224,65 @@ export class DirectDocumentFinalizer {
           integrityPolicy: params.input.integrityPolicy || "authored",
           trigger: "document_intent",
         };
+    return this.publish({
+      request: params.request,
+      runId: params.runId,
+      input: params.input,
+      policy,
+      material,
+      stableDocumentId,
+      now: params.now,
+    });
+  }
+
+  /**
+   * Finalize one batch item's note body as its own durable document.
+   *
+   * A batch item is not the turn's deliverable, so it never inherits the
+   * turn's document policy: a note written during a literature-review turn is
+   * still a note, and holding it to that turn's grounding rules would reject
+   * the whole batch. It is always authored material of kind `note`, titled
+   * after the item it is written onto.
+   */
+  async finalizeNoteBody(params: {
+    request: AgentRuntimeRequest;
+    runId: string;
+    title: string;
+    markdown: string;
+    now?: number;
+  }): Promise<{ document: PlanDocument; outbox: PlanDocumentOutboxRecord }> {
+    return this.publish({
+      request: params.request,
+      runId: params.runId,
+      input: {
+        title: params.title,
+        markdown: noteBodyMarkdown(params.title, params.markdown),
+        citations: [],
+        quotes: [],
+        assets: [],
+        groundingReviewed: "passed",
+        groundingIssues: [],
+      },
+      policy: {
+        required: true,
+        documentKind: "note",
+        integrityPolicy: "authored",
+        trigger: "document_intent",
+      },
+      now: params.now,
+    });
+  }
+
+  private async publish(params: {
+    request: AgentRuntimeRequest;
+    runId: string;
+    input: SubmitPlanDocumentInput;
+    policy: DocumentOutcomePolicy;
+    material?: MaterialOutputIntent;
+    stableDocumentId?: string;
+    now?: number;
+  }): Promise<{ document: PlanDocument; outbox: PlanDocumentOutboxRecord }> {
+    const { material, stableDocumentId, policy } = params;
     const prior = stableDocumentId
       ? await loadPlanDocument(stableDocumentId)
       : await loadLatestDocumentForRun(params.runId);
@@ -315,7 +377,34 @@ export class DirectDocumentFinalizer {
     // older content for the input the model just submitted.
     if (prior && prior.contentHash === finalized.document.contentHash)
       return storedDocumentResult(prior);
+    // One run may publish many documents — a note batch publishes one per
+    // item — so the retry it is looking for is not always the newest one.
+    if (!stableDocumentId) {
+      const duplicate = await loadDocumentForRunByContentHash(
+        params.runId,
+        finalized.document.contentHash,
+      );
+      if (
+        duplicate &&
+        duplicate.conversationKey === params.request.conversationKey
+      )
+        return storedDocumentResult(duplicate);
+    }
     await persistFinalizedDocument(finalized);
     return finalized;
   }
+}
+
+/**
+ * The document body for one authored note.
+ *
+ * Every document carries a heading; a note body the model wrote without one
+ * takes the title of the item it is written onto, which is also the title
+ * Zotero shows for the note. A body that already has its own heading is kept
+ * exactly as the model wrote it.
+ */
+function noteBodyMarkdown(title: string, markdown: string): string {
+  const body = markdown.trim();
+  if (collectHeadings(body).size) return body;
+  return `# ${title.trim()}\n\n${body}`;
 }

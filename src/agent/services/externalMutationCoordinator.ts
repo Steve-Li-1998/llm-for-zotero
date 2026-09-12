@@ -317,7 +317,15 @@ export async function executeExternalMutation<T>(params: {
     plan: ExternalMutationPlan,
     error: unknown,
   ) => Promise<ExternalMutationOutcome<T> | null>;
-}): Promise<AgentWriteToolOutput<T>> {
+}): Promise<
+  AgentWriteToolOutput<T> & {
+    /**
+     * The durable step this write became, for callers that keep their own
+     * ledger of it. Absent when the change journal is unavailable.
+     */
+    journalStep?: { actionId: string; sequence: number };
+  }
+> {
   const { context, toolName } = params;
   const parentScope = context.journalActionScope;
   const journalAvailable = isAgentChangeJournalAvailable();
@@ -332,6 +340,7 @@ export async function executeExternalMutation<T>(params: {
       ? params.recovery?.actionId || createJournalId("action")
       : null);
   const ownsAction = Boolean(actionId && !parentScope);
+  const sequence = parentScope?.allocateSequence() ?? 1;
   let verifiedOutcome:
     | { reversibility: JournalReversibility; affectedCount: number }
     | undefined;
@@ -339,7 +348,7 @@ export async function executeExternalMutation<T>(params: {
     const executed = await executeJournaledStep({
       context,
       actionId,
-      sequence: parentScope?.allocateSequence() ?? 1,
+      sequence,
       plan: params.plan,
       resume: params.recovery?.resume,
       reconcileAfterError: params.reconcileAfterError,
@@ -383,6 +392,7 @@ export async function executeExternalMutation<T>(params: {
     return {
       content: content as T,
       effect: executed.effect,
+      ...(actionId ? { journalStep: { actionId, sequence } } : {}),
     };
   } catch (error) {
     if (actionId && ownsAction) {

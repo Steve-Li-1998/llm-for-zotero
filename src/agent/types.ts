@@ -1005,6 +1005,22 @@ export type AgentToolResult = {
   materialRef?: MaterialRef;
   materialKind?: string;
   materialTitle?: string;
+  /**
+   * Per-item outcomes of a durable batch. The host announces one run event
+   * each, so a batch's material is recoverable per item instead of collapsing
+   * into a single turn-level `materialRef`.
+   */
+  batchItems?: AgentBatchItemOutcome[];
+};
+
+/** One item of a durable batch, with the material it wrote. */
+export type AgentBatchItemOutcome = {
+  batchId: string;
+  itemKey: string;
+  materialRef: MaterialRef;
+  status: "pending" | "saved" | "failed";
+  noteId?: number;
+  error?: string;
 };
 
 export type AgentToolReviewResolution =
@@ -1044,6 +1060,7 @@ export type AgentToolExecutionOutput<TResult = unknown> =
       materialRef?: MaterialRef;
       materialKind?: string;
       materialTitle?: string;
+      batchItems?: AgentBatchItemOutcome[];
     };
 
 /** Explicit execution contract for tools whose validated operation can write. */
@@ -1052,6 +1069,7 @@ export type AgentWriteToolOutput<TResult = unknown> = {
   effect: AgentToolEffect;
   artifacts?: AgentToolArtifact[];
   actionEvidence?: AgentActionEvidence[];
+  batchItems?: AgentBatchItemOutcome[];
 };
 
 export type AgentJournalStepOutcome = {

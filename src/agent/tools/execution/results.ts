@@ -6,6 +6,7 @@ import {
 import type {
   AgentActionEvidence,
   AgentActionProposal,
+  AgentBatchItemOutcome,
   AgentInvocationPlan,
   AgentPendingAction,
   AgentToolArtifact,
@@ -174,6 +175,7 @@ export function normalizeExecutionOutput(
   materialRef?: MaterialRef;
   materialKind?: string;
   materialTitle?: string;
+  batchItems?: AgentBatchItemOutcome[];
 } {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const record = value as {
@@ -185,6 +187,7 @@ export function normalizeExecutionOutput(
       materialRef?: unknown;
       materialKind?: unknown;
       materialTitle?: unknown;
+      batchItems?: unknown;
     };
     if (Object.prototype.hasOwnProperty.call(record, "content")) {
       return {
@@ -220,6 +223,9 @@ export function normalizeExecutionOutput(
           typeof record.materialTitle === "string"
             ? record.materialTitle
             : undefined,
+        batchItems: Array.isArray(record.batchItems)
+          ? (record.batchItems as AgentBatchItemOutcome[])
+          : undefined,
       };
     }
   }

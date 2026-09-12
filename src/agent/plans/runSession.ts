@@ -1,5 +1,4 @@
 import type {
-  AgentEvent,
   AgentRuntimeRequest,
   AgentToolArtifact,
   AgentToolResult,
@@ -172,7 +171,8 @@ export class PlanExecutionRunSession {
       | "classifiedIntent"
       | "loadedSkillRecords"
     >,
-    private readonly emit: (event: AgentEvent) => Promise<void>,
+    /** Plan events only: the runtime stamps the planning stage around them. */
+    private readonly emit: (event: PlanEvent) => Promise<void>,
   ) {}
 
   async initialize(): Promise<

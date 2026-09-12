@@ -1,4 +1,5 @@
 import { areExternalMcpWritesEnabled } from "./prefs";
+import { resolveAgentToolPresentationLabel } from "../toolPresentation";
 import { createJournalId } from "../store/changeJournal";
 import { createAbortController } from "../../utils/apiHelpers";
 /**
@@ -1647,10 +1648,7 @@ function getMcpToolPresentationLabel(
   deps: McpServerDeps,
   toolName: string,
 ): string | undefined {
-  const label = deps.toolRegistry
-    .getTool(toolName)
-    ?.presentation?.label?.trim();
-  return label || undefined;
+  return resolveAgentToolPresentationLabel(deps.toolRegistry.getTool(toolName));
 }
 
 function buildMcpToolActivityEvent(params: {

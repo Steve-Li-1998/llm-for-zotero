@@ -378,6 +378,16 @@ export type AgentWorkCategory =
   | "zotero_action"
   | "external_system";
 
+/**
+ * The product stage a trace groups by.
+ *
+ * It is the work category under the name the reader's model of the run uses:
+ * one vocabulary, so a stage can never disagree with the category its own
+ * tool declared. `external_system` reads as "External action" in the panel;
+ * that is a display label, not a second value.
+ */
+export type AgentStage = AgentWorkCategory;
+
 type ToolSpecBase = {
   name: string;
   description: string;
@@ -478,6 +488,8 @@ export type AgentEvent =
       callId: string;
       name: string;
       args: unknown;
+      /** The tool's own presentation label, resolved when the call was made. */
+      toolLabel?: string;
       workCategory?: AgentWorkCategory;
       executionId?: string;
       taskId?: string;
@@ -487,6 +499,8 @@ export type AgentEvent =
       callId: string;
       name: string;
       ok: boolean;
+      /** The tool's own presentation label, resolved when the call was made. */
+      toolLabel?: string;
       workCategory?: AgentWorkCategory;
       effect?: AgentToolEffect;
       authority?: "yolo_judgment";
@@ -502,6 +516,8 @@ export type AgentEvent =
       name: string;
       error: string;
       round: number;
+      /** The tool's own presentation label, resolved when the call was made. */
+      toolLabel?: string;
       workCategory?: AgentWorkCategory;
     }
   | {
@@ -539,6 +555,8 @@ export type AgentEvent =
       artifacts?: AgentToolArtifact[];
       actionReceipts?: AgentActionReceipt[];
       workCategory?: AgentWorkCategory;
+      /** Whether the call could change library state, as the server saw it. */
+      mutability?: "read" | "write";
     }
   | {
       type: "usage";
@@ -555,6 +573,33 @@ export type AgentEvent =
     }
   | { type: "context_compacted"; automatic?: boolean }
   | { type: "fallback"; reason: string }
+  | {
+      /**
+       * One product stage of the run, as the reader will see it grouped.
+       *
+       * The stage is required and always comes from a declared contract --
+       * the tool's `workCategory`, or the fixed category of the event this
+       * announces -- so nothing downstream has to infer work from a tool
+       * name. A stage event is emitted immediately before the event it
+       * describes, so a live run and a trace projected from an older run
+       * interleave identically.
+       */
+      type: "agent_stage";
+      stage: AgentStage;
+      status: "started" | "completed" | "failed";
+      /** The tool call this stage brackets, when one call owns it. */
+      callId?: string;
+      toolName?: string;
+      toolLabel?: string;
+      /** The material this stage finalized, when it finalized one. */
+      materialRef?: MaterialRef;
+      /** Receipts the closing call produced, by `AgentActionReceipt.id`. */
+      receiptIds?: string[];
+      actionId?: string;
+      /** The durable batch this stage reports one item of. */
+      batchId?: string;
+      itemKey?: string;
+    }
   | {
       type: "material_finalized";
       /** Immutable identity of the material this run finalized. */

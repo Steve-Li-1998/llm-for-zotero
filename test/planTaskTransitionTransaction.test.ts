@@ -82,7 +82,10 @@ import { createCodexNativeActivityTraceControllerForTests } from "../src/modules
 import {
   initAgentTraceStore,
   getAgentRunTrace,
+  createAgentRun,
+  appendAgentRunEvent,
 } from "../src/agent/store/traceStore";
+import type { AgentEvent } from "../src/agent/types";
 import type { Message } from "../src/modules/contextPanel/types";
 import { ensureConversationKeyLedgerEntry } from "../src/shared/conversationKeyLedger";
 import { researchMutationDigest } from "../src/agent/research/mutationApproval";
@@ -991,6 +994,54 @@ describe("transactional Plan task transitions", function () {
       expected,
       "Cancelling the visible stream must preserve native retry context",
     );
+  });
+
+  it("round-trips a stage event through the real trace store", async function () {
+    // The store has no event-type whitelist by design, so a stage event must
+    // survive a real write and read with every field intact.
+    const runId = "stage-round-trip";
+    await ensureConversationKeyLedgerEntry({
+      conversationKey: 41,
+      instanceID: "stage-instance",
+      conversationID: "stage-conversation",
+      system: "upstream",
+      kind: "paper",
+      profileSignature: "stage-profile",
+      libraryID: 1,
+      paperItemID: 41,
+      issuedAt: 1,
+    });
+    await createAgentRun({
+      runId,
+      conversationKey: 41,
+      mode: "agent",
+      status: "running",
+      createdAt: 1,
+    });
+    const stage: AgentEvent = {
+      type: "agent_stage",
+      stage: "zotero_action",
+      status: "completed",
+      callId: "call-1",
+      toolName: "note_write",
+      toolLabel: "Write note",
+      receiptIds: ["receipt-1", "receipt-2"],
+      materialRef: {
+        documentId: "run:document:1",
+        documentVersion: 1,
+        contentHash: "sha256:note",
+      },
+      actionId: "action-1",
+      batchId: "batch-1",
+      itemKey: "item:1",
+    };
+    await appendAgentRunEvent(runId, 1, stage);
+    const trace = await getAgentRunTrace(runId);
+    assert.deepEqual(
+      trace.events.map((entry) => entry.eventType),
+      ["agent_stage"],
+    );
+    assert.deepEqual(trace.events[0].payload, stage);
   });
 
   it("preserves typed restrictions when native feedback revises the explanation", async function () {

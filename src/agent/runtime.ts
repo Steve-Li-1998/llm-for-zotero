@@ -80,6 +80,7 @@ import {
 import { createTrustedReadObservations } from "./plans/readObservation";
 import { PlanExecutionRunSession } from "./plans/runSession";
 import { loadPlanArtifact } from "./plans/store";
+import type { PlanEvent } from "./plans/types";
 import {
   acquireLocalDocumentPathLease,
   AgentEventLocalDocumentStreamRedactor,
@@ -162,6 +163,7 @@ import type {
   ResolvedAgentRuntimeRequest,
 } from "./types";
 import { resolveAgentToolCallWorkCategory } from "./workCategory";
+import { resolveAgentToolPresentationLabel } from "./toolPresentation";
 
 type AgentRuntimeDeps = {
   registry: AgentToolRegistry;
@@ -187,6 +189,21 @@ type ExecutedToolCall = {
   toolDefinition?: import("./types").AgentToolDefinition<any, any>;
   input?: unknown;
   documentEvidenceRefs?: unknown[];
+};
+
+/**
+ * What a plan event says about the planning stage.
+ *
+ * A revision still being drafted opens the stage; a reviewable plan and a
+ * committed execution transition close it. Progress events report work inside
+ * an already-open stage, so they move nothing.
+ */
+const PLANNING_STAGE_STATUS_BY_PLAN_EVENT: Readonly<
+  Partial<Record<PlanEvent["type"], "started" | "completed">>
+> = {
+  plan_updated: "started",
+  plan_ready: "completed",
+  plan_execution_updated: "completed",
 };
 
 export class AgentRuntime {
@@ -446,6 +463,18 @@ export class AgentRuntime {
           if (writeAllowed()) await params.onEvent?.(redactedEvent);
         }
       };
+      /**
+       * Plan events and the planning stage they move, in one place.
+       *
+       * Both the plan session and every plan tool publish through this, so
+       * the stage can never be stamped on one path and missed on the other.
+       */
+      const emitPlanEvent = async (event: PlanEvent) => {
+        const status = PLANNING_STAGE_STATUS_BY_PLAN_EVENT[event.type];
+        if (status)
+          await emit({ type: "agent_stage", stage: "planning", status });
+        await emit(event);
+      };
       if (request.workflowCheckpoint)
         await emit({
           type: "provider_event",
@@ -457,7 +486,10 @@ export class AgentRuntime {
         contracts: this.registry,
         emit,
       });
-      const activePlanSession = new PlanExecutionRunSession(request, emit);
+      const activePlanSession = new PlanExecutionRunSession(
+        request,
+        emitPlanEvent,
+      );
       planSession = activePlanSession;
 
       const context: AgentToolContext = {
@@ -469,7 +501,7 @@ export class AgentRuntime {
         modelProviderLabel: request.modelProviderLabel,
         signal: params.signal,
         checkpointActionProgress: () => actionContractSession.checkpoint(),
-        publishPlanEvent: emit,
+        publishPlanEvent: emitPlanEvent,
         publishExecutionCheckpoint: (checkpoint) =>
           emit({ type: "execution_checkpoint", checkpoint }),
         loadApprovedPlanEffectContext: async () => {
@@ -1630,6 +1662,34 @@ export class AgentRuntime {
         const workCategory = toolDefinition
           ? resolveAgentToolCallWorkCategory(toolDefinition, call.arguments)
           : undefined;
+        const toolLabel = resolveAgentToolPresentationLabel(toolDefinition);
+        /**
+         * Open and close this call's stage.
+         *
+         * A call the registry cannot resolve has no declared category, and
+         * guessing one from its name is the thing the stage model exists to
+         * remove -- so it reports no stage at all. The registry answers such
+         * a call with a synthetic error and no effect, so there is no work
+         * for a stage to describe.
+         */
+        const emitCallStage = async (
+          status: "started" | "completed" | "failed",
+          details: {
+            receiptIds?: string[];
+            materialRef?: MaterialRef;
+          } = {},
+        ) => {
+          if (!workCategory) return;
+          await emit({
+            type: "agent_stage",
+            stage: workCategory,
+            status,
+            callId: call.id,
+            toolName: call.name,
+            toolLabel,
+            ...details,
+          });
+        };
         const lifecycleError = (): ExecutedToolCall => ({
           toolResult: {
             callId: call.id,
@@ -1649,11 +1709,13 @@ export class AgentRuntime {
         const executionAllowed = () =>
           !params.signal?.aborted && writeAllowed();
         if (!executionAllowed()) return lifecycleError();
+        await emitCallStage("started");
         await emit({
           type: "tool_call",
           callId: call.id,
           name: call.name,
           args: call.arguments,
+          toolLabel,
           workCategory,
           executionId:
             request.planContext?.phase === "executing"
@@ -1885,15 +1947,23 @@ export class AgentRuntime {
               name: toolResult.name,
               error: rawError,
               round,
+              toolLabel,
               workCategory,
             });
           }
         }
+        await emitCallStage(toolResult.ok ? "completed" : "failed", {
+          receiptIds: toolResult.actionReceipts?.length
+            ? toolResult.actionReceipts.map((receipt) => receipt.id)
+            : undefined,
+          materialRef: toolResult.materialRef,
+        });
         await emit({
           type: "tool_result",
           callId: toolResult.callId,
           name: toolResult.name,
           ok: toolResult.ok,
+          toolLabel,
           workCategory,
           effect: toolResult.effect,
           authority: toolResult.authority,
@@ -1915,6 +1985,15 @@ export class AgentRuntime {
             toolResult.materialRef,
           );
           await emit({
+            type: "agent_stage",
+            stage: "generation",
+            status: "completed",
+            callId: toolResult.callId,
+            toolName: toolResult.name,
+            toolLabel,
+            materialRef: toolResult.materialRef,
+          });
+          await emit({
             type: "material_finalized",
             materialRef: toolResult.materialRef,
             materialKind: toolResult.materialKind,
@@ -1926,6 +2005,19 @@ export class AgentRuntime {
         // `material_finalized`: fifty note bodies are recovered from the
         // batch's own durable rows, not from the turn's material ledger.
         for (const item of toolResult.batchItems || []) {
+          // A pending row is one this run did not write, so it never closes
+          // as completed; the row's own status says which of the two it is.
+          await emit({
+            type: "agent_stage",
+            stage: "zotero_action",
+            status: item.status === "saved" ? "completed" : "failed",
+            callId: toolResult.callId,
+            toolName: toolResult.name,
+            toolLabel,
+            batchId: item.batchId,
+            itemKey: item.itemKey,
+            materialRef: item.materialRef,
+          });
           await emit({
             type: "batch_item_outcome",
             batchId: item.batchId,

@@ -8242,6 +8242,32 @@ describe("finalized material announcement", function () {
       assert.equal(announced?.materialKind, "guide");
       assert.equal(announced?.materialTitle, "Representational drift");
 
+      const materialIndex = events.findIndex(
+        (event) => event.type === "material_finalized",
+      );
+      const materialStage = events[materialIndex - 1];
+      assert.equal(
+        materialStage?.type,
+        "agent_stage",
+        "the generation stage precedes the material it announces",
+      );
+      assert.deepEqual(
+        materialStage?.type === "agent_stage"
+          ? [materialStage.stage, materialStage.status]
+          : null,
+        ["generation", "completed"],
+      );
+      assert.deepEqual(
+        materialStage?.type === "agent_stage"
+          ? materialStage.materialRef
+          : null,
+        announced?.materialRef,
+      );
+      assert.equal(
+        materialStage?.type === "agent_stage" ? materialStage.callId : null,
+        "submit-document-1",
+      );
+
       const finalEvent = events.find((event) => event.type === "final") as
         | Extract<AgentEvent, { type: "final" }>
         | undefined;
@@ -8399,6 +8425,34 @@ describe("finalized material announcement", function () {
       assert.deepEqual(
         announced.map((event) => event.callId),
         ["note-batch-1", "note-batch-1", "note-batch-1"],
+      );
+
+      const itemStages = events.filter(
+        (event) => event.type === "agent_stage" && Boolean(event.itemKey),
+      ) as Extract<AgentEvent, { type: "agent_stage" }>[];
+      assert.deepEqual(
+        itemStages.map((event) => [event.stage, event.status, event.itemKey]),
+        [
+          ["zotero_action", "completed", "item:1"],
+          ["zotero_action", "failed", "item:2"],
+          ["zotero_action", "completed", "item:3"],
+        ],
+        "each announced item reports its own stage outcome",
+      );
+      assert.deepEqual(
+        itemStages.map((event) => event.batchId),
+        [
+          "batch-note_write_batch-1",
+          "batch-note_write_batch-1",
+          "batch-note_write_batch-1",
+        ],
+      );
+      assert.deepEqual(itemStages[0].materialRef, batchItems[0].materialRef);
+      const batchOrder = events.map((event) => event.type);
+      assert.equal(
+        batchOrder[batchOrder.indexOf("batch_item_outcome") - 1],
+        "agent_stage",
+        "the item stage precedes the outcome it describes",
       );
       // Fifty note bodies must never flood the turn's material ledger.
       assert.isEmpty(
@@ -9059,6 +9113,393 @@ describe("finalized material announcement", function () {
     } finally {
       restoreStores();
       installed();
+    }
+  });
+});
+
+/**
+ * The stage events the trace groups by.
+ *
+ * A stage event is emitted immediately before the event it describes, so a
+ * live run and a projected legacy run interleave identically.
+ */
+describe("agent stage events", function () {
+  type StageEvent = Extract<AgentEvent, { type: "agent_stage" }>;
+
+  function stageEvents(events: AgentEvent[]): StageEvent[] {
+    return events.filter(
+      (event): event is StageEvent => event.type === "agent_stage",
+    );
+  }
+
+  function registerStageReadTool(registry: AgentToolRegistry): void {
+    registry.register({
+      spec: {
+        name: "library_search",
+        description: "search",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        workCategory: "retrieval",
+      },
+      presentation: { label: "Search library" },
+      validate: (args) => ({ ok: true, value: args as never }),
+      execute: async () => ({ content: { hits: [] } }),
+    } as never);
+  }
+
+  function registerStageNoteTool(registry: AgentToolRegistry): void {
+    registry.register({
+      effectOperations: ["note_create"],
+      spec: {
+        name: "note_write",
+        description: "write a note",
+        inputSchema: { type: "object" },
+        executionClass: "external_effect",
+        workCategory: "zotero_action",
+        requiresConfirmation: false,
+      },
+      presentation: { label: "Write note" },
+      validate: (args) => ({ ok: true, value: args as never }),
+      planInvocation: async () =>
+        stateChangeInvocationPlan({
+          reversibility: "full",
+          reason: "Test note write.",
+        }),
+      describeAction: () => [
+        {
+          id: "note_create:stage-test",
+          proofDomain: "zotero_state",
+          capability: "zotero.notes",
+          operation: "note_create",
+          source: "zotero_native",
+          requestedTargets: [],
+          destinationCollectionIds: [],
+        },
+      ],
+      execute: async () => ({
+        content: { status: "created", noteId: 900 },
+        effect: "applied",
+      }),
+    } as never);
+  }
+
+  function toolCallStep(id: string, name: string): AgentModelStep {
+    const call = { id, name, arguments: {} };
+    return {
+      kind: "tool_calls",
+      calls: [call],
+      assistantMessage: { role: "assistant", content: "", tool_calls: [call] },
+    };
+  }
+
+  it("brackets a read and a note write with their own stages", async function () {
+    const restoreDb = installMockDb();
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registerStageReadTool(registry);
+      registerStageNoteTool(registry);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("read-1", "library_search"),
+              toolCallStep("write-1", "note_write"),
+              {
+                kind: "final",
+                text: "Done.",
+                assistantMessage: { role: "assistant", content: "Done." },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_101,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Find it and note it",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+      assert.equal(outcome.kind, "completed");
+
+      const stages = stageEvents(events);
+      assert.deepEqual(
+        stages.map((event) => [event.stage, event.status]),
+        [
+          ["retrieval", "started"],
+          ["retrieval", "completed"],
+          ["zotero_action", "started"],
+          ["zotero_action", "completed"],
+        ],
+        "each resolved call opens and closes exactly one stage",
+      );
+      assert.deepEqual(
+        stages.map((event) => event.toolLabel),
+        ["Search library", "Search library", "Write note", "Write note"],
+        "the label is stamped at emission, never re-derived from the name",
+      );
+      assert.deepEqual(
+        stages.map((event) => event.callId),
+        ["read-1", "read-1", "write-1", "write-1"],
+      );
+      assert.deepEqual(
+        stages.map((event) => event.toolName),
+        ["library_search", "library_search", "note_write", "note_write"],
+      );
+
+      const writeResult = events.find(
+        (event) => event.type === "tool_result" && event.name === "note_write",
+      ) as Extract<AgentEvent, { type: "tool_result" }> | undefined;
+      assert.isNotEmpty(
+        writeResult?.actionReceipts || [],
+        "the note write must produce a receipt for the stage to carry",
+      );
+      assert.deepEqual(
+        stages[3].receiptIds,
+        (writeResult?.actionReceipts || []).map((receipt) => receipt.id),
+        "the closing stage carries the receipts its call produced",
+      );
+      assert.isUndefined(
+        stages[0].receiptIds,
+        "a read produces no receipts to carry",
+      );
+
+      const types = events.map((event) => event.type);
+      const firstStage = types.indexOf("agent_stage");
+      assert.equal(
+        types[firstStage + 1],
+        "tool_call",
+        "a stage event precedes the event it describes",
+      );
+      assert.equal(
+        types[types.indexOf("tool_result") - 1],
+        "agent_stage",
+        "the closing stage precedes the result it describes",
+      );
+
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "tool_call")
+          .map((event) => event.toolLabel),
+        ["Search library", "Write note"],
+        "tool calls carry their label at emission",
+      );
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "tool_result")
+          .map((event) => event.toolLabel),
+        ["Search library", "Write note"],
+        "tool results carry their label at emission",
+      );
+
+      const trace = await getAgentRunTrace(outcome.runId);
+      assert.lengthOf(
+        trace.events.filter((entry) => entry.eventType === "agent_stage"),
+        4,
+        "stage events persist like every other run event",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("closes a failed call's stage as failed and carries its label", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registry.register({
+        spec: {
+          name: "library_search",
+          description: "search",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          workCategory: "retrieval",
+        },
+        presentation: { label: "Search library" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async () => {
+          throw new Error("the library is unavailable");
+        },
+      } as never);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("read-1", "library_search"),
+              {
+                kind: "final",
+                text: "Could not read.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "Could not read.",
+                },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+      await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_102,
+          mode: "agent",
+          userText: "Find it",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      assert.deepEqual(
+        stageEvents(events).map((event) => [event.stage, event.status]),
+        [
+          ["retrieval", "started"],
+          ["retrieval", "failed"],
+        ],
+      );
+      assert.equal(
+        events.find((event) => event.type === "tool_error")?.toolLabel,
+        "Search library",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("emits no stage for a call the registry cannot resolve", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registerStageReadTool(registry);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("ghost-1", "no_such_tool"),
+              {
+                kind: "final",
+                text: "Done.",
+                assistantMessage: { role: "assistant", content: "Done." },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+      await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_103,
+          mode: "agent",
+          userText: "Do something",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+      assert.isEmpty(
+        stageEvents(events),
+        "an unresolvable call must never guess a stage",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("reports each plan event as a planning stage", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registry.register({
+        spec: {
+          name: "plan_probe",
+          description: "publish plan events",
+          inputSchema: { type: "object" },
+          executionClass: "control",
+          workCategory: "planning",
+        },
+        presentation: { label: "Plan" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async (_input: unknown, context: any) => {
+          await context.publishPlanEvent?.({
+            type: "plan_updated",
+            artifact: { planId: "p1", revision: 1 } as never,
+          });
+          await context.publishPlanEvent?.({
+            type: "plan_ready",
+            artifact: { planId: "p1", revision: 1 } as never,
+          });
+          await context.publishPlanEvent?.({
+            type: "plan_execution_updated",
+            ledger: { executionId: "e1", tasks: [] } as never,
+          });
+          await context.publishPlanEvent?.({
+            type: "plan_research_progress",
+            progress: { researchJobId: "r1" } as never,
+          });
+          return { content: { ok: true } };
+        },
+      } as never);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("plan-1", "plan_probe"),
+              {
+                kind: "final",
+                text: "Planned.",
+                assistantMessage: { role: "assistant", content: "Planned." },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+      await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_104,
+          mode: "agent",
+          userText: "Plan it",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      const planning = stageEvents(events).filter(
+        (event) => event.stage === "planning" && !event.callId,
+      );
+      assert.deepEqual(
+        planning.map((event) => event.status),
+        ["started", "completed", "completed"],
+        "plan_research_progress reports no stage transition of its own",
+      );
+      const types = events.map((event) => event.type);
+      assert.equal(
+        types[types.indexOf("plan_updated") - 1],
+        "agent_stage",
+        "the planning stage precedes the plan event it describes",
+      );
+    } finally {
+      restoreDb();
     }
   });
 });

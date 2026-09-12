@@ -1,6 +1,7 @@
 import { config } from "../../package.json";
 import {
   buildMineruFilenameMatcher,
+  getMineruMaxAutoPages,
   isGlobalAutoParseEnabled,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
@@ -8,6 +9,7 @@ import {
   parsePdfWithMineru,
   MineruRateLimitError,
   MineruCancelledError,
+  MineruPageLimitError,
 } from "../utils/mineruClient";
 import {
   writeMineruCacheFiles,
@@ -428,6 +430,7 @@ async function processQueue(): Promise<void> {
             pdfPath as string,
             report,
             sharedSignal,
+            { maxPages: getMineruMaxAutoPages() },
           );
           if (sharedSignal?.aborted) throw new MineruCancelledError();
           if (!parsed?.mdContent) return parsed;
@@ -522,6 +525,15 @@ async function processQueue(): Promise<void> {
         );
         currentStatusMessage = "MinerU auto-parse paused: daily quota reached.";
         break;
+      }
+      if (e instanceof MineruPageLimitError) {
+        clearItemStatus(entry.attachmentId);
+        ztoolkit.log(
+          `MinerU auto-parse: skipped ${entry.title} - ${e.message}`,
+        );
+        currentStatusMessage = `Skipped: ${entry.title} (${e.pageCount} pages)`;
+        notifyProgress();
+        continue;
       }
       errorCount++;
       const errorMsg = (e as Error).message || String(e);

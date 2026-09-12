@@ -112,6 +112,18 @@ export class MineruRateLimitError extends Error {
   }
 }
 
+export class MineruPageLimitError extends Error {
+  constructor(
+    public readonly pageCount: number,
+    public readonly maxPages: number,
+  ) {
+    super(
+      `PDF has ${pageCount} pages, exceeding the automatic MinerU limit of ${maxPages}`,
+    );
+    this.name = "MineruPageLimitError";
+  }
+}
+
 export class MineruCancelledError extends Error {
   constructor() {
     super("Cancelled");
@@ -1213,7 +1225,9 @@ async function runExternalCommand(
   command: string,
   args: string[],
   timeoutMs = 300000,
+  signal?: AbortSignal,
 ): Promise<ExternalCommandResult> {
+  throwIfAborted(signal);
   const Subprocess = getSubprocess();
   if (!Subprocess?.call) {
     return { exitCode: -1, stdout: "", stderr: "Subprocess unavailable" };
@@ -1224,6 +1238,14 @@ async function runExternalCommand(
       command,
       arguments: args,
     });
+    if (signal?.aborted) {
+      try {
+        proc.kill();
+      } catch {
+        /* ignore */
+      }
+      throw new MineruCancelledError();
+    }
     const readPipe = async (pipe: any): Promise<string> => {
       if (!pipe?.readString) return "";
       const chunks: string[] = [];
@@ -1254,8 +1276,32 @@ async function runExternalCommand(
         resolve({ exitCode: -1, stdout: "", stderr: "Timed out" });
       }, timeoutMs);
     });
-    const result = await Promise.race([resultPromise, timeoutPromise]);
-    if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    let abortHandler: (() => void) | null = null;
+    const abortPromise = new Promise<ExternalCommandResult>(
+      (_resolve, reject) => {
+        if (!signal) return;
+        abortHandler = () => {
+          try {
+            proc.kill();
+          } catch {
+            /* ignore */
+          }
+          reject(new MineruCancelledError());
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      },
+    );
+    let result: ExternalCommandResult;
+    try {
+      result = await Promise.race([
+        resultPromise,
+        timeoutPromise,
+        abortPromise,
+      ]);
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      if (abortHandler) signal?.removeEventListener("abort", abortHandler);
+    }
     if (timedOut) {
       try {
         proc.kill();
@@ -1265,6 +1311,7 @@ async function runExternalCommand(
     }
     return result;
   } catch (error) {
+    if (error instanceof MineruCancelledError) throw error;
     return {
       exitCode: -1,
       stdout: "",
@@ -1297,7 +1344,10 @@ function fileExists(filePath: string): boolean {
   }
 }
 
-async function resolvePdfSplitterPath(): Promise<string | null> {
+async function resolvePdfSplitterPath(
+  signal?: AbortSignal,
+): Promise<string | null> {
+  throwIfAborted(signal);
   const isWindows = Boolean((Zotero as any).isWin);
   const pathValue = (() => {
     try {
@@ -1315,7 +1365,7 @@ async function resolvePdfSplitterPath(): Promise<string | null> {
   if (pathCandidate) return pathCandidate;
 
   if (!isWindows) {
-    const probe = await runExternalCommand("which", ["pdftk"], 5000);
+    const probe = await runExternalCommand("which", ["pdftk"], 5000, signal);
     const resolved = probe.stdout
       .split(/\r?\n/u)
       .map((line) => line.trim())
@@ -1328,13 +1378,14 @@ async function resolvePdfSplitterPath(): Promise<string | null> {
         "C:\\Program Files\\PDFtk Server\\bin\\pdftk.exe",
         "C:\\Program Files (x86)\\PDFtk Server\\bin\\pdftk.exe",
       ]
-    : ["/usr/bin/pdftk", "/usr/local/bin/pdftk"];
+    : ["/usr/bin/pdftk", "/usr/local/bin/pdftk", "/opt/homebrew/bin/pdftk"];
   return candidates.find(fileExists) || null;
 }
 
 async function readPdfPageCountWithPdftk(
   splitterPath: string,
   pdfPath: string,
+  signal?: AbortSignal,
 ): Promise<number | null> {
   const io = getIOUtils();
   const tempDirectory = getMineruTempDirectoryPath();
@@ -1348,13 +1399,15 @@ async function readPdfPageCountWithPdftk(
       splitterPath,
       buildMineruDumpDataArguments(pdfPath, outputPath),
       120000,
+      signal,
     );
     if (result.exitCode !== 0) return null;
     const data = await io.read(outputPath);
     const bytes =
       data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
     return extractMineruPageCountFromDumpData(new TextDecoder().decode(bytes));
-  } catch {
+  } catch (error) {
+    if (error instanceof MineruCancelledError) throw error;
     return null;
   } finally {
     try {
@@ -1408,14 +1461,14 @@ async function splitPdfByPageRange(
   outputPath: string,
   startPage: number,
   endPage: number,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const result = await runExternalCommand(splitterPath, [
-    pdfPath,
-    "cat",
-    `${startPage}-${endPage}`,
-    "output",
-    outputPath,
-  ]);
+  const result = await runExternalCommand(
+    splitterPath,
+    [pdfPath, "cat", `${startPage}-${endPage}`, "output", outputPath],
+    300000,
+    signal,
+  );
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim();
     throw new Error(
@@ -2057,6 +2110,7 @@ export async function parsePdfWithMineru(
   pdfPath: string,
   onProgress?: MinerUProgressCallback,
   signal?: AbortSignal,
+  options: { maxPages?: number } = {},
 ): Promise<MinerUResult> {
   const report = (stage: string) => {
     ztoolkit.log(`MinerU: ${stage}`);
@@ -2069,17 +2123,25 @@ export async function parsePdfWithMineru(
     const detectedPageCount = pdfBytes
       ? extractPdfPageCountFromBytes(pdfBytes)
       : null;
-    let splitterPath = await resolvePdfSplitterPath();
+    let splitterPath = await resolvePdfSplitterPath(signal);
     const pdftkPageCount = splitterPath
-      ? await readPdfPageCountWithPdftk(splitterPath, pdfPath)
+      ? await readPdfPageCountWithPdftk(splitterPath, pdfPath, signal)
       : null;
     const pageCount = selectMineruPageCount(detectedPageCount, pdftkPageCount);
+    if (
+      options.maxPages &&
+      options.maxPages > 0 &&
+      pageCount !== null &&
+      pageCount > options.maxPages
+    ) {
+      throw new MineruPageLimitError(pageCount, options.maxPages);
+    }
     if (!pageCount || pageCount <= MINERU_PAGE_CHUNK_SIZE) {
       return parsePdfWithMineruSingle(pdfPath, onProgress, signal);
     }
 
     const ranges = buildMineruPageRanges(pageCount);
-    splitterPath ||= await resolvePdfSplitterPath();
+    splitterPath ||= await resolvePdfSplitterPath(signal);
     if (!splitterPath) {
       report(
         `PDF has ${pageCount} pages, but pdftk was not found; unable to split for MinerU`,
@@ -2104,9 +2166,10 @@ export async function parsePdfWithMineru(
           partPath,
           range.startPage,
           range.endPage,
+          signal,
         );
         validateMineruSplitPageCount(
-          await readPdfPageCountWithPdftk(splitterPath, partPath),
+          await readPdfPageCountWithPdftk(splitterPath, partPath, signal),
           range,
         );
 
@@ -2131,7 +2194,13 @@ export async function parsePdfWithMineru(
       await cleanupMineruChunkDirectory(chunkDirectory);
     }
   } catch (error) {
-    if (error instanceof MineruCancelledError) throw error;
+    if (
+      error instanceof MineruCancelledError ||
+      error instanceof MineruRateLimitError ||
+      error instanceof MineruPageLimitError
+    ) {
+      throw error;
+    }
     report(`Error: ${(error as Error).message}`);
     return null;
   }

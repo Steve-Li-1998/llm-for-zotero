@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createBuiltInToolRegistry } from "../src/agent/tools";
 
 /**
  * The trace must not decide what a row means by what a tool is called.
@@ -25,40 +26,84 @@ const SCANNED_FILES = [
   "src/modules/contextPanel/chat.ts",
 ] as const;
 
-type NameMeaningPattern = {
-  id: string;
-  /** Whether this line uses a tool name to decide something. */
-  matches: (line: string) => boolean;
-};
+type NameMeaningPattern = { id: string; regex: RegExp };
 
-/**
- * A `typeof x === "string"` guard reads a value's type, never its identity,
- * so it is removed before the line is scanned rather than allowlisted once
- * per occurrence.
- */
-function scannableLine(line: string): string {
-  return line.replace(/typeof\s+[^=!;]+[=!]==\s*"[^"]*"/g, " ");
-}
+/** A name-ish identifier, with or without the object it hangs off. */
+const NAME_REFERENCE = String.raw`(?:[\w$]+\??\.)*(?:name|toolName)`;
 
 const NAME_MEANING_PATTERNS: NameMeaningPattern[] = [
   {
     id: 'name === "…"',
-    matches: (line) => /\bname\s*[=!]==\s*"/.test(scannableLine(line)),
+    regex: new RegExp(String.raw`\bname\s*[=!]==\s*"`, "g"),
   },
   {
     id: 'toolName === "…"',
-    matches: (line) => /\btoolName\s*[=!]==\s*"/.test(scannableLine(line)),
+    regex: new RegExp(String.raw`\btoolName\s*[=!]==\s*"`, "g"),
   },
   {
-    id: ".has(entry.payload.name)",
-    matches: (line) => line.includes(".has(entry.payload.name)"),
+    id: 'switch (name) { case "…"',
+    regex: new RegExp(
+      String.raw`\bswitch\s*\(\s*${NAME_REFERENCE}\s*\)\s*\{\s*case\s*"`,
+      "g",
+    ),
+  },
+  {
+    id: ".has(name)",
+    regex: new RegExp(String.raw`\.has\(\s*${NAME_REFERENCE}\s*[,)]`, "g"),
   },
   {
     id: "normalizeMcpToolName(…) === …",
-    matches: (line) =>
-      /normalizeMcpToolName\([^)]*\)[^;]*===/.test(scannableLine(line)),
+    regex: new RegExp(
+      String.raw`normalizeMcpToolName\([^)]*\)[^;{}]*[=!]==`,
+      "g",
+    ),
   },
 ];
+
+/**
+ * The file as one line, with a record of where each character came from.
+ *
+ * A comparison split over several lines by the formatter is the same
+ * comparison, so the scan reads the file with its line breaks collapsed and
+ * maps each match back to the line it started on.
+ */
+function flattenSource(source: string): { text: string; lineOf: number[] } {
+  const lineOf: number[] = [];
+  let text = "";
+  let line = 1;
+  let gap = false;
+  for (const character of source) {
+    if (character === "\n") {
+      line += 1;
+      gap = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      gap = true;
+      continue;
+    }
+    if (gap && text) {
+      text += " ";
+      lineOf.push(line);
+    }
+    gap = false;
+    text += character;
+    lineOf.push(line);
+  }
+  return { text, lineOf };
+}
+
+/**
+ * A `typeof x === "string"` guard reads a value's type, never its identity,
+ * so it is blanked before the scan rather than allowlisted once per
+ * occurrence. The replacement keeps the text's length so positions still map
+ * back to their lines.
+ */
+function blankTypeGuards(text: string): string {
+  return text.replace(/typeof\s+[^=!;]+[=!]==\s*"[^"]*"/g, (match) =>
+    " ".repeat(match.length),
+  );
+}
 
 type AllowedSite = {
   file: (typeof SCANNED_FILES)[number];
@@ -106,23 +151,33 @@ const ALLOWED_SITES: AllowedSite[] = [
 
 type Offence = { file: string; line: number; text: string; pattern: string };
 
-function scanFile(file: string): { offences: Offence[]; lineCount: number } {
-  const source = readFileSync(resolve(process.cwd(), file), "utf8");
-  const lines = source.split("\n");
+function scanText(
+  file: string,
+  source: string,
+): { offences: Offence[]; lineCount: number } {
+  const { text, lineOf } = flattenSource(source);
+  const scannable = blankTypeGuards(text);
   const offences: Offence[] = [];
-  for (const [index, line] of lines.entries()) {
-    for (const pattern of NAME_MEANING_PATTERNS) {
-      if (!pattern.matches(line)) continue;
+  for (const pattern of NAME_MEANING_PATTERNS) {
+    const regex = new RegExp(pattern.regex.source, "g");
+    let match = regex.exec(scannable);
+    while (match) {
       offences.push({
         file,
-        line: index + 1,
-        text: line.trim(),
+        line: lineOf[match.index] || 0,
+        // Enough of what precedes the match for an allowlist entry to name
+        // the object whose `name` is being read.
+        text: text.slice(Math.max(0, match.index - 40), match.index + 90),
         pattern: pattern.id,
       });
-      break;
+      match = regex.exec(scannable);
     }
   }
-  return { offences, lineCount: lines.length };
+  return { offences, lineCount: source.split("\n").length };
+}
+
+function scanFile(file: string): { offences: Offence[]; lineCount: number } {
+  return scanText(file, readFileSync(resolve(process.cwd(), file), "utf8"));
 }
 
 describe("agent trace derives no meaning from tool names", function () {
@@ -187,20 +242,99 @@ describe("agent trace derives no meaning from tool names", function () {
       'if (name === "file_io") return null;',
       'if (toolName === "Read") rowSuffix = range;',
       "if (INTERNAL_PLAN_TOOL_NAMES.has(entry.payload.name)) return true;",
+      "if (HIDDEN.has(toolName)) return true;",
       'normalizeMcpToolName(toolName) === "paper_read"',
       'codeBlock && name !== "file_io" ? label : displayText',
+      'switch (entry.payload.name) {\n  case "file_io":\n    return null;\n}',
+      // The formatter splits long comparisons; the scan reads past the break.
+      'if (\n  entry.payload.name ===\n  "submit_document"\n) return true;',
     ];
     for (const sample of samples) {
-      assert.isTrue(
-        NAME_MEANING_PATTERNS.some((pattern) => pattern.matches(sample)),
+      assert.isNotEmpty(
+        scanText("sample.ts", sample).offences,
         `the scan would miss: ${sample}`,
       );
     }
-    assert.isFalse(
-      NAME_MEANING_PATTERNS.some((pattern) =>
-        pattern.matches('typeof entry.name === "string" && entry.name.trim()'),
-      ),
+    assert.isEmpty(
+      scanText(
+        "sample.ts",
+        'typeof entry.name === "string" && entry.name.trim()',
+      ).offences,
       "a type guard is not a name comparison",
     );
+  });
+});
+
+/**
+ * The nine names the renderer used to hold as `INTERNAL_PLAN_TOOL_NAMES`.
+ *
+ * The list is gone from production; this is the record of what it covered, so
+ * the registry can be asked whether every one of them still declares the fact
+ * that replaced it.
+ */
+const PREVIOUSLY_HIDDEN_PLAN_TOOL_NAMES = [
+  "amend_plan",
+  "approve_research_expansion",
+  "approve_research_mutation",
+  "request_user_input",
+  "research_update",
+  "submit_document",
+  "submit_plan_document",
+  "task_update",
+  "update_plan",
+] as const;
+
+/**
+ * Every tool the built registry keeps out of the trace.
+ *
+ * `prepare_plan_execution` is the native-Codex form of `update_plan` and is
+ * built by spreading it, so it inherits the flag. It was not in the deleted
+ * name list -- that list simply predated the tool -- and hiding it is the
+ * same decision for the same reason: it stages a plan the plan card shows.
+ */
+const EXPECTED_HIDDEN_TOOL_NAMES = [
+  ...PREVIOUSLY_HIDDEN_PLAN_TOOL_NAMES,
+  "prepare_plan_execution",
+].sort();
+
+describe("the trace's hidden tools are declared by the registry", function () {
+  const registry = createBuiltInToolRegistry({
+    zoteroGateway: {} as never,
+    pdfService: {} as never,
+    pdfPageService: {} as never,
+    retrievalService: {} as never,
+  });
+  const definitions = registry.listToolDefinitions();
+  const hidden = definitions
+    .filter((tool) => tool.presentation?.hiddenInTrace === true)
+    .map((tool) => tool.spec.name)
+    .sort();
+
+  it("builds the registry the running plugin builds", function () {
+    assert.isAbove(
+      definitions.length,
+      40,
+      "the production factory registered almost nothing; the assertions below would pass vacuously",
+    );
+  });
+
+  it("hides every tool the deleted name list hid", function () {
+    for (const name of PREVIOUSLY_HIDDEN_PLAN_TOOL_NAMES) {
+      const tool = definitions.find((entry) => entry.spec.name === name);
+      assert.isDefined(tool, `${name} is not registered any more`);
+      assert.isTrue(
+        tool?.presentation?.hiddenInTrace,
+        `${name} would now show rows the trace used to suppress`,
+      );
+    }
+    assert.lengthOf(
+      PREVIOUSLY_HIDDEN_PLAN_TOOL_NAMES,
+      9,
+      "the recorded list is the whole of what INTERNAL_PLAN_TOOL_NAMES covered",
+    );
+  });
+
+  it("hides nothing else", function () {
+    assert.deepEqual(hidden, EXPECTED_HIDDEN_TOOL_NAMES);
   });
 });

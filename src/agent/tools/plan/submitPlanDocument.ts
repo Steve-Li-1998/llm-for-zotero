@@ -590,6 +590,9 @@ export function createSubmitPlanDocumentTool(
 ): AgentToolDefinition<SubmitPlanDocumentInput, SubmitPlanDocumentResult> {
   const tool = createSubmitDocumentTool(gateway);
   return {
+    // Everything but the spec is inherited, `presentation` included, so this
+    // tool stays out of the trace exactly as the one it wraps does. The
+    // registry test in `test/agentTraceNoNameMeaning.test.ts` pins that.
     ...tool,
     spec: {
       ...tool.spec,

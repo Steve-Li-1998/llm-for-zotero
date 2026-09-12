@@ -696,7 +696,6 @@ function buildClaudeBridgeNotesDirectoryInstruction(): string {
     "- The notes directory is already configured by the user. Do not use Bash, Glob, Find, LS, or Read to rediscover the vault path, inspect likely note folders, or probe write access when this section is present.",
     "- When the user asks to save a file-based note into the configured notes directory, use the configured Default target path unless the user explicitly names a different folder or absolute path.",
     "- Do not create a Papers, papers, Notes, or other alternate subfolder unless the user explicitly requested that exact folder.",
-    "- A note you are asked to write is a Zotero note: use the Zotero note_write tool, not Claude Code's Write tool. note_write is the only note path Zotero can authorize, journal, and verify against the saved note, so a note written straight to disk leaves the host with no record of what changed.",
     "- Claude Code's Write tool stays available for files that are not notes, and for a file-based note the user explicitly asked for: pass a `.md` file path under the configured Default target path. Use the configured Attachments path for copied figure or image assets.",
   ].join("\n");
 }
@@ -713,6 +712,10 @@ function buildClaudeBridgeCustomInstruction(
       ? "Claude Code receives Zotero MCP access for metadata and write operations. For raw-PDF identities, use the exact current-turn local paths instead of Zotero paper-content retrieval."
       : "Claude Code receives Zotero access through the scoped MCP tools for this turn. When those tools are available, use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets. Use zotero_script for Zotero-native API inspection or scripted library operations only when the semantic Zotero tools cannot cover the request.",
     'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", "inside this folder", and "this tag" against those selected Zotero scopes. Do not ask the user which folder or tag they mean unless no selected scope is present or multiple selected scopes make the reference genuinely ambiguous.',
+    // Unconditional on purpose: where notes belong is a property of Zotero, not
+    // of whether this user happens to have configured a notes directory. The
+    // directory block below only carves out the file writes that are not notes.
+    "A note you are asked to write is a Zotero note: use the Zotero note_write tool, not Claude Code's Write tool. note_write is the only note path Zotero can authorize, journal, and verify against the saved note, so a note written straight to disk leaves the host with no record of what changed.",
     buildClaudeBridgeNotesDirectoryInstruction(),
     options.rawPdfMode ? RAW_PDF_TRANSPORT_POLICY_BLOCK : "",
   ]

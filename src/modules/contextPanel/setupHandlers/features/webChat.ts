@@ -12,6 +12,14 @@ export type WebChatFeatureDeps = {
   hasExistingWebChatSession: () => boolean;
   /** Model name used to resolve the relay's active target site. */
   getCurrentModelName: () => string | null | undefined;
+  /**
+   * Ask the relay whether the browser extension is alive. Defaults to the live
+   * relay client, which is what the panel always uses. It is injectable so a
+   * test can drive the poll without importing the relay module into a process
+   * that has no Zotero global — that import fails and stays failed for every
+   * later importer.
+   */
+  probeRelayConnection?: () => Promise<boolean>;
 };
 
 /** Abort token for an in-flight preload — Gecko has no `AbortController`. */
@@ -52,6 +60,16 @@ export type WebChatFeature = {
 export function createWebChatFeature(deps: WebChatFeatureDeps): WebChatFeature {
   const { isWebChatMode, hasExistingWebChatSession, getCurrentModelName } =
     deps;
+  const probeRelayConnection =
+    deps.probeRelayConnection ||
+    (async () => {
+      // Always use dynamic port — saved apiBase may be stale
+      const { getRelayBaseUrl } =
+        await import("../../../../webchat/relayServer");
+      const host = getRelayBaseUrl();
+      const { testConnection } = await import("../../../../webchat/client");
+      return testConnection(host);
+    });
   let connectionTimer: ReturnType<typeof setInterval> | null = null;
   // Simple abort token — Zotero's Gecko context lacks AbortController.
   let preloadAbort: WebChatPreloadToken | null = null;
@@ -78,12 +96,7 @@ export function createWebChatFeature(deps: WebChatFeatureDeps): WebChatFeature {
     stopConnectionCheck();
     const check = async () => {
       try {
-        // Always use dynamic port — saved apiBase may be stale
-        const { getRelayBaseUrl } =
-          await import("../../../../webchat/relayServer");
-        const host = getRelayBaseUrl();
-        const { testConnection } = await import("../../../../webchat/client");
-        const alive = await testConnection(host);
+        const alive = await probeRelayConnection();
         dot.className = alive
           ? "llm-webchat-dot llm-webchat-dot-connected"
           : "llm-webchat-dot llm-webchat-dot-disconnected";

@@ -4,16 +4,12 @@ import {
   type LibraryIndexItem,
   type LibraryIndexSnapshot,
 } from "../../services/libraryIndexService";
-import {
-  importNoteImageAsset,
-  type NoteImageImportInput,
-} from "../../services/notes/noteImages";
+import type { NoteImageImportInput } from "../../services/notes/noteImages";
 import {
   getSelectedContextAttachment,
   resolveSelectedContextItem,
 } from "../../services/context/contextSelectionBridge";
 import { resolvePaperContextRefFromAttachment } from "../../services/paperContent/paperAttribution";
-import { ensureMineruCacheDirForAttachment } from "../../services/mineru/sync";
 import type { AgentRuntimeRequest } from "../types";
 import { getTurnPapers } from "../context/requestTurnPaperScope";
 import type {
@@ -75,14 +71,10 @@ import {
   normalizeText,
 } from "./zotero/internal/normalize";
 import {
-  FULLTEXT_INDEX_STATE_MAP,
   buildItemTargetFromItem,
   buildItemTargetsForIds,
   buildPaperTargetFromItem,
   buildPaperTargetsForIds,
-  getAllChildAttachments,
-  measureReadableTextChars,
-  resolveAnyAttachmentTitle,
 } from "./zotero/internal/targetBuilders";
 import type {
   AgentLibraryFilters,
@@ -92,6 +84,7 @@ import type {
   LibraryItemTargetAttachment,
   LibraryPaperTarget,
 } from "./zotero/internal/types";
+import { AttachmentCapability } from "./zotero/attachmentCapability";
 import { ImportCapability } from "./zotero/importCapability";
 import {
   NoteCapability,
@@ -201,6 +194,15 @@ export class ZoteroGateway {
    * capability, for the same reason.
    */
   private readonly noteCapability = new NoteCapability({
+    getItem: (itemId) => this.getItem(itemId),
+    resolveBibliographicItem: (item) => this.resolveBibliographicItem(item),
+  });
+
+  /**
+   * The attachment paths, split out of this file. Same thunk wiring as the
+   * import capability, for the same reason.
+   */
+  private readonly attachmentCapability = new AttachmentCapability({
     getItem: (itemId) => this.getItem(itemId),
     resolveBibliographicItem: (item) => this.resolveBibliographicItem(item),
   });
@@ -386,52 +388,11 @@ export class ZoteroGateway {
       .filter((itemId) => Number.isInteger(itemId) && itemId > 0);
   }
 
+  /** See `AttachmentCapability.getAllChildAttachmentInfos`. */
   async getAllChildAttachmentInfos(
     itemId: number,
   ): Promise<LibraryItemTargetAttachment[]> {
-    const item = this.getItem(itemId);
-    if (!item) return [];
-    const allAtts = getAllChildAttachments(
-      item.isRegularItem?.()
-        ? item
-        : this.resolveBibliographicItem(item) || item,
-    );
-    const results: LibraryItemTargetAttachment[] = [];
-    for (let i = 0; i < allAtts.length; i++) {
-      const att = allAtts[i];
-      const contentType =
-        normalizeText(att.attachmentContentType) || "application/octet-stream";
-      let indexingState: LibraryItemTargetAttachment["indexingState"];
-      let mineruCacheDir: string | undefined;
-      if (contentType === "application/pdf") {
-        try {
-          const stateNum = await Zotero.Fulltext.getIndexedState(att);
-          indexingState = FULLTEXT_INDEX_STATE_MAP[stateNum] ?? "unavailable";
-        } catch (err) {
-          ztoolkit.log("LLM: Fulltext index state check failed", err);
-          indexingState = "unavailable";
-        }
-        // Check if MinerU has parsed this PDF
-        try {
-          mineruCacheDir = await ensureMineruCacheDirForAttachment(att);
-        } catch (err) {
-          ztoolkit.log("LLM: MinerU cache check failed", err);
-        }
-      }
-      const readableTextChars =
-        contentType === "application/pdf"
-          ? await measureReadableTextChars(att, mineruCacheDir)
-          : undefined;
-      results.push({
-        contextItemId: att.id,
-        title: resolveAnyAttachmentTitle(att, i, allAtts.length),
-        contentType,
-        indexingState,
-        mineruCacheDir,
-        ...(readableTextChars !== undefined ? { readableTextChars } : {}),
-      });
-    }
-    return results;
+    return this.attachmentCapability.getAllChildAttachmentInfos(itemId);
   }
 
   async listLibraryPaperTargets(params: {
@@ -1915,6 +1876,7 @@ export class ZoteroGateway {
     return this.noteCapability.getStandaloneNoteContent(params);
   }
 
+  /** See `AttachmentCapability.getAttachmentInfo`. */
   getAttachmentInfo(params: { attachmentId: number }): {
     attachmentId: number;
     parentItemId?: number;
@@ -1924,36 +1886,7 @@ export class ZoteroGateway {
     hasFile: boolean;
     linkMode: string;
   } | null {
-    const item = this.getItem(params.attachmentId);
-    if (!item || !item.isAttachment?.()) return null;
-    const filename = normalizeText(
-      (item as any).attachmentFilename || item.getField?.("title") || "",
-    );
-    const hasFile = !!(item as any).hasFile;
-    const rawLinkMode = (item as any).attachmentLinkMode;
-    const linkModeMap: Record<number, string> = {
-      0: "imported_file",
-      1: "imported_url",
-      2: "linked_file",
-      3: "linked_url",
-    };
-    const linkMode =
-      typeof rawLinkMode === "number"
-        ? linkModeMap[rawLinkMode] || String(rawLinkMode)
-        : "unknown";
-    return {
-      attachmentId: item.id,
-      parentItemId: item.parentID || undefined,
-      title:
-        normalizeText(item.getField?.("title")) ||
-        filename ||
-        `Attachment ${item.id}`,
-      contentType:
-        normalizeText(item.attachmentContentType) || "application/octet-stream",
-      filename: filename || undefined,
-      hasFile,
-      linkMode,
-    };
+    return this.attachmentCapability.getAttachmentInfo(params);
   }
 
   async searchAllLibraryItems(params: {
@@ -2046,28 +1979,13 @@ export class ZoteroGateway {
     return this.noteCapability.searchAllNotes(params);
   }
 
+  /** See `AttachmentCapability.indexPdfAttachment`. */
   async indexPdfAttachment(params: { attachmentId: number }): Promise<{
     attachmentId: number;
     indexingState: string;
     triggered: boolean;
   }> {
-    const item = this.getItem(params.attachmentId);
-    if (!item?.isAttachment?.()) throw new Error("Not an attachment item");
-    if (!(item as any).isPDFAttachment?.())
-      throw new Error("Not a PDF attachment");
-    await Zotero.Fulltext.indexItems([params.attachmentId]);
-    let indexingState = "unavailable";
-    try {
-      const stateNum = await Zotero.Fulltext.getIndexedState(item);
-      indexingState = FULLTEXT_INDEX_STATE_MAP[stateNum] ?? "unavailable";
-    } catch (err) {
-      ztoolkit.log("LLM: Attachment indexing state check failed", err);
-    }
-    return {
-      attachmentId: params.attachmentId,
-      indexingState,
-      triggered: true,
-    };
+    return this.attachmentCapability.indexPdfAttachment(params);
   }
 
   async listLibraryTags(params: {
@@ -4394,47 +4312,20 @@ export class ZoteroGateway {
   // ── Attachment management ──────────────────────────────────────────
 
   /**
-   * Delete an attachment (moves to trash).
+   * Delete an attachment (moves to trash). See
+   * `AttachmentCapability.deleteAttachment`.
    */
   async deleteAttachment(params: { attachmentId: number }): Promise<{
     attachmentId: number;
     title: string;
     status: "deleted" | "not_found";
   }> {
-    const item = this.getItem(params.attachmentId);
-    if (!item || !item.isAttachment?.()) {
-      return {
-        attachmentId: params.attachmentId,
-        title: "",
-        status: "not_found",
-      };
-    }
-    const title = String(
-      (item as unknown as { attachmentFilename?: string }).attachmentFilename ||
-        item.getField?.("title") ||
-        `Attachment ${params.attachmentId}`,
-    );
-    item.deleted = true;
-    await item.saveTx();
-    return { attachmentId: params.attachmentId, title, status: "deleted" };
+    return this.attachmentCapability.deleteAttachment(params);
   }
 
   /**
-   * Rename an attachment's filename on disk.
-   */
-  /**
-   * Renames an attachment's file on disk.
-   *
-   * This used to probe `Zotero.Attachments.renameAttachmentFile`, which does
-   * not exist — the method lives on `Zotero.Item.prototype`. The probe was
-   * therefore always false, every rename silently fell through to setting the
-   * *title* field, and the result still said `status: "renamed"`. The file on
-   * disk never moved.
-   *
-   * `updateTitle` mirrors Zotero's own behaviour: the title follows the
-   * filename only when it was tracking it to begin with. `unique` means a
-   * name collision produces `paper-1.pdf` rather than failing, so the actual
-   * filename is read back rather than assumed.
+   * Renames an attachment's file on disk. See
+   * `AttachmentCapability.renameAttachment`.
    */
   async renameAttachment(params: {
     attachmentId: number;
@@ -4447,128 +4338,12 @@ export class ZoteroGateway {
     titleUpdated?: boolean;
     reason?: string;
   }> {
-    const item = this.getItem(params.attachmentId);
-    if (!item || !item.isAttachment?.()) {
-      return {
-        attachmentId: params.attachmentId,
-        previousName: "",
-        newName: params.newName,
-        status: "not_found",
-      };
-    }
-    const attachment = item as unknown as {
-      attachmentFilename?: string;
-      attachmentLinkMode?: number;
-      renameAttachmentFile?: (
-        newName: string,
-        options?: {
-          overwrite?: boolean;
-          unique?: boolean;
-          updateTitle?: boolean;
-          out?: { noChange?: boolean; titleUpdated?: boolean };
-        },
-      ) => Promise<boolean | -1 | -2>;
-    };
-    const previousName = String(attachment.attachmentFilename || "");
-
-    // A linked URL has no file, so "rename" can only mean the title. Handled
-    // explicitly rather than by silently falling through, which is what made
-    // the old bug invisible.
-    if (
-      attachment.attachmentLinkMode === 3 ||
-      !attachment.renameAttachmentFile
-    ) {
-      try {
-        item.setField("title", params.newName);
-        await item.saveTx();
-        return {
-          attachmentId: params.attachmentId,
-          previousName: String(item.getField?.("title") || previousName),
-          newName: params.newName,
-          status: "renamed",
-          titleUpdated: true,
-        };
-      } catch (error) {
-        return {
-          attachmentId: params.attachmentId,
-          previousName,
-          newName: params.newName,
-          status: "error",
-          reason: error instanceof Error ? error.message : String(error),
-        };
-      }
-    }
-
-    try {
-      const out: { noChange?: boolean; titleUpdated?: boolean } = {};
-      const outcome = await attachment.renameAttachmentFile(params.newName, {
-        unique: true,
-        updateTitle: true,
-        out,
-      });
-      if (outcome === false) {
-        return {
-          attachmentId: params.attachmentId,
-          previousName,
-          newName: params.newName,
-          status: "no_file",
-          reason:
-            "The attachment's file is missing, so there is nothing to rename. Re-link it to a file first.",
-        };
-      }
-      if (outcome === -1) {
-        return {
-          attachmentId: params.attachmentId,
-          previousName,
-          newName: params.newName,
-          status: "error",
-          reason: "A file with that name already exists.",
-        };
-      }
-      if (outcome === -2) {
-        return {
-          attachmentId: params.attachmentId,
-          previousName,
-          newName: params.newName,
-          status: "error",
-          reason: "Zotero could not rename the file.",
-        };
-      }
-      // `unique` may have appended a suffix, so report what the file is
-      // actually called rather than what was requested.
-      const actualName = String(
-        attachment.attachmentFilename || params.newName,
-      );
-      return {
-        attachmentId: params.attachmentId,
-        previousName,
-        newName: actualName,
-        status: out.noChange ? "unchanged" : "renamed",
-        titleUpdated: !!out.titleUpdated,
-      };
-    } catch (error) {
-      return {
-        attachmentId: params.attachmentId,
-        previousName,
-        newName: params.newName,
-        status: "error",
-        reason: error instanceof Error ? error.message : String(error),
-      };
-    }
+    return this.attachmentCapability.renameAttachment(params);
   }
 
   /**
-   * Points an attachment at a different file on disk.
-   *
-   * This used to refuse anything that was not `linkMode === 2`, so a user
-   * whose *stored* PDF had gone missing — the common case, and exactly what
-   * Zotero's own "Locate File…" repairs — was told "Only linked-file
-   * attachments can be re-linked". Zotero refuses only linked *URLs*.
-   *
-   * It also assigned `attachmentPath` directly, skipping filename
-   * sanitisation, the copy-into-storage step that stored attachments need,
-   * the cached file-state refresh, and the notifier event that clears the
-   * missing-file emblem. Delegating to Zotero's own method gets all four.
+   * Points an attachment at a different file on disk. See
+   * `AttachmentCapability.relinkAttachment`.
    */
   async relinkAttachment(params: {
     attachmentId: number;
@@ -4580,68 +4355,19 @@ export class ZoteroGateway {
     status: "relinked" | "not_found" | "not_linked_file" | "error";
     reason?: string;
   }> {
-    const item = this.getItem(params.attachmentId);
-    if (!item || !item.isAttachment?.()) {
-      return {
-        attachmentId: params.attachmentId,
-        previousPath: "",
-        newPath: params.newPath,
-        status: "not_found",
-      };
-    }
-    const attachment = item as unknown as {
-      attachmentLinkMode?: number;
-      attachmentPath?: string;
-      getFilePathAsync?: () => Promise<string | false>;
-      relinkAttachmentFile?: (path: string) => Promise<boolean>;
-    };
-    // 3 = LINK_MODE_LINKED_URL, the only mode Zotero itself rejects.
-    if (attachment.attachmentLinkMode === 3) {
-      return {
-        attachmentId: params.attachmentId,
-        previousPath: "",
-        newPath: params.newPath,
-        status: "not_linked_file",
-        reason:
-          "This attachment is a linked URL, which has no file to re-link.",
-      };
-    }
-    const previousPath = String((await attachment.getFilePathAsync?.()) || "");
-    try {
-      if (attachment.relinkAttachmentFile) {
-        await attachment.relinkAttachmentFile(params.newPath);
-      } else {
-        attachment.attachmentPath = params.newPath;
-        await item.saveTx();
-      }
-      return {
-        attachmentId: params.attachmentId,
-        previousPath,
-        newPath: String(
-          (await attachment.getFilePathAsync?.()) || params.newPath,
-        ),
-        status: "relinked",
-      };
-    } catch (error) {
-      return {
-        attachmentId: params.attachmentId,
-        previousPath,
-        newPath: params.newPath,
-        status: "error",
-        reason: error instanceof Error ? error.message : String(error),
-      };
-    }
+    return this.attachmentCapability.relinkAttachment(params);
   }
   // ── Embed image in note ──────────────────────────────────────────
 
   /**
    * Import an image file as an embedded note attachment and return its key.
    * The key can then be used in note HTML: <img data-attachment-key="KEY" />
+   * See `AttachmentCapability.importNoteImage`.
    */
   async importNoteImage(
     params: NoteImageImportInput,
   ): Promise<{ key: string } | null> {
-    return importNoteImageAsset(params);
+    return this.attachmentCapability.importNoteImage(params);
   }
 
   // ── Import local files ──────────────────────────────────────────

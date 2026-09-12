@@ -10500,6 +10500,209 @@ describe("agent trace stage grouping", function () {
     assert.deepEqual(rows[0], ["Using Query Library", "Using Read Paper"]);
     disposeAgentTrace(root as unknown as HTMLElement);
   });
+
+  /**
+   * A template whose parsed content can be walked, as chrome's parser gives it.
+   *
+   * The saved-note card renders the note's own sanitized HTML, so a test that
+   * asserts the card exists has to let that parse succeed.
+   */
+  class FakeTemplateElement extends FakeElement {
+    public readonly content = new FakeElement("div");
+
+    constructor() {
+      super("template");
+    }
+
+    set innerHTML(_value: string) {}
+
+    get innerHTML(): string {
+      return "";
+    }
+  }
+
+  const noteCardDocument = {
+    createElement: (tagName: string) =>
+      tagName === "template"
+        ? new FakeTemplateElement()
+        : new FakeElement(tagName),
+    createElementNS: (_namespace: string, tagName: string) =>
+      new FakeElement(tagName),
+    createTextNode: (text: string) => {
+      const node = new FakeElement("span");
+      node.textContent = text;
+      return node;
+    },
+    querySelectorAll: () => [],
+  } as unknown as Document;
+
+  /** The deliverable a successful note creation owes the reader. */
+  const savedNoteCard = {
+    kind: "saved_note" as const,
+    actionId: "note-create-1",
+    title: "Representational drift",
+    destination: "Zotero",
+    bodyHtml: "<p>What the note says.</p>",
+    note: { itemId: 77, libraryID: 1, key: "ABCD1234" },
+  };
+
+  /** The deliverable a successful note edit owes the reader. */
+  const noteChangeCard = {
+    kind: "note_change" as const,
+    actionId: "note-edit-1",
+    title: "Representational drift",
+    description: "Rewrote the discussion section.",
+    note: { itemId: 77, libraryID: 1, key: "ABCD1234" },
+    conversationKey: 5,
+    state: "applied" as const,
+    afterVerified: true,
+    before: { checksum: "sha256:before", recoveryId: "recovery-before" },
+    after: { checksum: "sha256:after", recoveryId: "recovery-after" },
+  };
+
+  /** One note write, with or without the stage events the runtime emits. */
+  function noteWriteEvents(declaresStages: boolean): AgentRunEventRecord[] {
+    const events = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "started",
+        callId: "w1",
+        toolName: "note_write",
+        toolLabel: "Note Write",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "w1",
+        name: "note_write",
+        args: { noteId: 77 },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+      stageEvent(3, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "completed",
+        callId: "w1",
+        toolName: "note_write",
+        toolLabel: "Note Write",
+        receiptIds: [noteReceipt.id],
+      }),
+      event(4, {
+        type: "tool_result",
+        callId: "w1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: [noteReceipt],
+        content: { noteId: 77 },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+    ];
+    return declaresStages
+      ? events
+      : events.filter((entry) => entry.payload.type !== "agent_stage");
+  }
+
+  /** Render the note write with the card its own presentation produces. */
+  function renderNoteWriteTrace(
+    card: typeof savedNoteCard | typeof noteChangeCard,
+    declaresStages: boolean,
+  ): FakeElement {
+    const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
+    const originalZotero = globalScope.Zotero;
+    globalScope.Zotero = {
+      ...((originalZotero as Record<string, unknown>) || {}),
+      Libraries: { userLibraryID: 1, get: () => undefined },
+    };
+    try {
+      return withToolPresentationsReturning(
+        {
+          note_write: {
+            label: "Note Write",
+            summaries: { onSuccess: "Note saved" },
+            buildResultCards: () => [card],
+          },
+        },
+        () =>
+          renderAgentTrace({
+            doc: noteCardDocument,
+            message: {
+              role: "assistant" as const,
+              text: "",
+              timestamp: 1,
+              runMode: "agent" as const,
+              agentRunId: "run-journey",
+              streaming: false,
+            },
+            events: noteWriteEvents(declaresStages),
+          }) as unknown as FakeElement,
+      );
+    } finally {
+      globalScope.Zotero = originalZotero;
+    }
+  }
+
+  for (const declaresStages of [true, false]) {
+    const route = declaresStages
+      ? "the run's own stage events"
+      : "stages projected for a run that emitted none";
+
+    it(`shows the saved note below the activity with ${route}`, function () {
+      const root = renderNoteWriteTrace(savedNoteCard, declaresStages);
+      const disclosure = root.findByClass("llm-agent-activity-details");
+      const cards = root.findAllByClass("llm-saved-note-card");
+
+      assert.exists(disclosure, "the activity disclosure must still render");
+      assert.lengthOf(
+        cards,
+        1,
+        "grouping the row into a stage must not lose the saved note",
+      );
+      assert.lengthOf(
+        disclosure!.findAllByClass("llm-saved-note-card"),
+        0,
+        "the deliverable belongs below the disclosure, not inside it",
+      );
+      assert.equal(cards[0].dataset.noteId, "77");
+      assert.include(
+        cards[0]
+          .findAllByClass("llm-saved-note-destination")
+          .map((link) => link.textContent)
+          .join(" "),
+        "Open note in Zotero",
+      );
+      disposeAgentTrace(root as unknown as HTMLElement);
+    });
+
+    it(`shows the note change below the activity with ${route}`, function () {
+      const root = renderNoteWriteTrace(noteChangeCard, declaresStages);
+      const disclosure = root.findByClass("llm-agent-activity-details");
+      const cards = root.findAllByClass("llm-note-change-card");
+
+      assert.exists(disclosure, "the activity disclosure must still render");
+      assert.lengthOf(
+        cards,
+        1,
+        "grouping the row into a stage must not lose the note change",
+      );
+      assert.lengthOf(
+        disclosure!.findAllByClass("llm-note-change-card"),
+        0,
+        "the deliverable belongs below the disclosure, not inside it",
+      );
+      assert.equal(cards[0].dataset.actionId, "note-edit-1");
+      assert.include(
+        cards[0]
+          .findAllByTag("button")
+          .map((button) => button.textContent)
+          .join(" "),
+        "Undo",
+        "the reader must keep the control that reverses the change",
+      );
+      disposeAgentTrace(root as unknown as HTMLElement);
+    });
+  }
 });
 
 describe("agent trace presentation without tool names", function () {

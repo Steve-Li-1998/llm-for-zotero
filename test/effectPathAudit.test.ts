@@ -54,8 +54,9 @@ import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
  * `test/runCommandTool.test.ts`, `test/fileIOTool.test.ts`,
  * `test/undoLastAction.test.ts` (a real journal, a real inverse replay and its
  * per-step native re-read), `test/revertChanges.test.ts` and
- * `test/zoteroScriptConfirmation.test.ts`. Phase 3 tasks 4 and 5 extend that
- * to the remaining bespoke branches and the external bridges.
+ * `test/zoteroScriptConfirmation.test.ts`, and the whole-receipt
+ * characterizations in `test/agentActionContract.test.ts`. Phase 3 task 5
+ * extends that to the external bridges.
  */
 
 type Verification = AgentActionReceipt["verification"];

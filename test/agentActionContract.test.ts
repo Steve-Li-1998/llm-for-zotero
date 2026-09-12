@@ -8,6 +8,8 @@ import type {
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
   AgentToolDefinition,
+  AgentToolActionDescriptor,
+  AgentToolEffect,
 } from "../src/agent/types";
 import type {
   LibraryMutationOperation,
@@ -2491,5 +2493,847 @@ describe("Action Contract V2", function () {
         .state,
       "satisfied",
     );
+  });
+});
+
+/**
+ * Every receipt the finalize path mints for a write whose proof is not a
+ * library mutation operation, pinned whole.
+ *
+ * These branches are being consolidated onto one evidence record, and the only
+ * way to show that a consolidation changed nothing is to have written down
+ * beforehand every field the branch produced — not just its verification.
+ * Each case therefore asserts the entire receipt with `deepEqual`.
+ */
+describe("Bespoke finalize-branch receipts", function () {
+  async function receiptFor(params: {
+    harness: ReturnType<typeof createHarness>;
+    proposal: AgentToolActionDescriptor;
+    content?: unknown;
+    effect?: AgentToolEffect;
+    ok?: boolean;
+  }) {
+    const prepared = await params.harness.service.prepare(
+      { ...mutationTool(), describeAction: () => [params.proposal] },
+      {},
+    );
+    const receipts = await params.harness.service.finalize(
+      undefined,
+      prepared,
+      {
+        ok: params.ok ?? true,
+        effect: params.effect ?? "applied",
+        content: params.content,
+      },
+    );
+    assert.lengthOf(receipts, 1);
+    return receipts[0];
+  }
+
+  describe("note_write", function () {
+    const html = "<p>Grounded summary.</p>";
+
+    function noteHarness(parentItemId = 41) {
+      const harness = createHarness();
+      harness.items.set(41, {
+        tags: [],
+        collections: [],
+        fields: { title: "Paper" },
+      });
+      harness.items.set(700, {
+        tags: [],
+        collections: [],
+        fields: {},
+        kind: "note",
+        parentItemId,
+        noteHtml: html,
+      });
+      return harness;
+    }
+
+    function noteProposal(
+      operation: "note_create" | "note_edit" | "note_append",
+      parameters: Record<string, unknown>,
+      requestedTargets: string[],
+    ): AgentToolActionDescriptor {
+      return {
+        id: `${operation}:700`,
+        proofDomain: "zotero_state",
+        capability: "zotero.notes",
+        operation,
+        source: "zotero_native",
+        parameters,
+        requestedTargets,
+        destinationCollectionIds: [],
+      };
+    }
+
+    it("credits the parent paper and names the native HTML digest on a created note", async function () {
+      const parameters = {
+        noteMode: "create",
+        targetItemId: 41,
+        documentId: "doc-material-1",
+        documentVersion: 2,
+        contentHash: "sha256:frozen-content-hash",
+      };
+      const receipt = await receiptFor({
+        harness: noteHarness(),
+        proposal: noteProposal("note_create", parameters, ["item:41"]),
+        content: {
+          actionId: "action-note-1",
+          noteId: 700,
+          noteVerification: {
+            schemaVersion: 1,
+            noteId: 700,
+            matches: true,
+            html,
+            expectedHtml: html,
+          },
+        },
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "note_create:700:unmatched:action-note-1",
+        obligationId: undefined,
+        proposalId: "note_create:700",
+        proofDomain: "zotero_state",
+        capability: "zotero.notes",
+        operation: "note_create",
+        requestedTargets: ["item:41"],
+        rejectedTargets: [],
+        normalizedParameters: parameters,
+        reasons: [],
+        verifiedFacts: [
+          "created_note:item:700",
+          `native_note:700:html_sha256:${await sha256Text(html)}`,
+        ],
+        materialRef: {
+          documentId: "doc-material-1",
+          documentVersion: 2,
+          contentHash: "sha256:frozen-content-hash",
+        },
+        evidenceRef: "action-note-1",
+        verification: "verified",
+        status: "applied",
+        appliedTargets: ["item:41"],
+        alreadySatisfiedTargets: [],
+      });
+    });
+
+    it("marks a no-effect create already satisfied on the weaker text match", async function () {
+      const parameters = {
+        noteMode: "create",
+        targetItemId: 41,
+        expectedText: "Grounded summary.",
+      };
+      const receipt = await receiptFor({
+        harness: noteHarness(),
+        proposal: noteProposal("note_create", parameters, ["item:41"]),
+        content: { noteId: 700 },
+        effect: "none",
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "note_create:700:unmatched:result",
+        obligationId: undefined,
+        proposalId: "note_create:700",
+        proofDomain: "zotero_state",
+        capability: "zotero.notes",
+        operation: "note_create",
+        requestedTargets: ["item:41"],
+        rejectedTargets: [],
+        normalizedParameters: parameters,
+        reasons: [],
+        verifiedFacts: ["created_note:item:700", "native_note:700:text_match"],
+        materialRef: undefined,
+        evidenceRef: undefined,
+        verification: "verified",
+        status: "already_satisfied",
+        appliedTargets: [],
+        alreadySatisfiedTargets: ["item:41"],
+      });
+    });
+
+    for (const operation of ["note_edit", "note_append"] as const) {
+      it(`covers the note itself on a verified ${operation}`, async function () {
+        const parameters = {
+          noteMode: operation === "note_edit" ? "edit" : "append",
+          targetNoteId: 700,
+          expectedText: "Grounded summary.",
+        };
+        const receipt = await receiptFor({
+          harness: noteHarness(),
+          proposal: noteProposal(operation, parameters, ["item:700"]),
+          content: { noteId: 700 },
+        });
+        assert.deepEqual(receipt, {
+          version: 2,
+          id: `${operation}:700:unmatched:result`,
+          obligationId: undefined,
+          proposalId: `${operation}:700`,
+          proofDomain: "zotero_state",
+          capability: "zotero.notes",
+          operation,
+          requestedTargets: ["item:700"],
+          rejectedTargets: [],
+          normalizedParameters: parameters,
+          reasons: [],
+          verifiedFacts: ["native_note:700:text_match"],
+          materialRef: undefined,
+          evidenceRef: undefined,
+          verification: "verified",
+          status: "applied",
+          appliedTargets: ["item:700"],
+          alreadySatisfiedTargets: [],
+        });
+      });
+    }
+
+    const noteFailures: Array<{
+      name: string;
+      parentItemId?: number;
+      content: unknown;
+      reason: string;
+    }> = [
+      {
+        name: "the result names no note",
+        content: {},
+        reason: "The note mutation returned no stable note ID to verify.",
+      },
+      {
+        name: "the created note hangs off another paper",
+        parentItemId: 42,
+        content: { noteId: 700 },
+        reason: "Created note 700 is not attached to requested item 41.",
+      },
+      {
+        name: "the native read-back does not prove the prepared change",
+        content: {
+          noteId: 700,
+          noteVerification: {
+            schemaVersion: 1,
+            noteId: 700,
+            matches: false,
+            html,
+            expectedHtml: html,
+          },
+        },
+        reason:
+          "The native note evidence does not prove the prepared change on the bound note.",
+      },
+    ];
+
+    for (const failure of noteFailures) {
+      it(`leaves the receipt unverified when ${failure.name}`, async function () {
+        const parameters = { noteMode: "create", targetItemId: 41 };
+        const receipt = await receiptFor({
+          harness: noteHarness(failure.parentItemId),
+          proposal: noteProposal("note_create", parameters, ["item:41"]),
+          content: failure.content,
+        });
+        assert.deepEqual(receipt, {
+          version: 2,
+          id: "note_create:700:unmatched:result",
+          obligationId: undefined,
+          proposalId: "note_create:700",
+          proofDomain: "zotero_state",
+          capability: "zotero.notes",
+          operation: "note_create",
+          requestedTargets: ["item:41"],
+          rejectedTargets: [],
+          normalizedParameters: parameters,
+          reasons: [failure.reason],
+          verifiedFacts: [],
+          materialRef: undefined,
+          evidenceRef: undefined,
+          verification: "unverified",
+          status: "unverified",
+          appliedTargets: [],
+          alreadySatisfiedTargets: [],
+        });
+      });
+    }
+  });
+
+  describe("library_settings", function () {
+    function settingsProposal(
+      settingsValue: string,
+    ): AgentToolActionDescriptor {
+      return {
+        id: "settings_update:automaticTags",
+        proofDomain: "zotero_state",
+        capability: "zotero.settings",
+        operation: "settings_update",
+        source: "zotero_native",
+        parameters: { settingsKey: "automaticTags", settingsValue },
+        requestedTargets: ["setting:automaticTags"],
+        destinationCollectionIds: [],
+      };
+    }
+
+    function settingsReceipt(params: {
+      verification: "verified" | "unverified";
+      status: "applied" | "already_satisfied" | "unverified";
+      settingsValue: string;
+      appliedTargets: string[];
+      alreadySatisfiedTargets: string[];
+      rejectedTargets: string[];
+    }) {
+      return {
+        version: 2,
+        id: "settings_update:automaticTags:unmatched:result",
+        obligationId: undefined,
+        proposalId: "settings_update:automaticTags",
+        proofDomain: "zotero_state",
+        capability: "zotero.settings",
+        operation: "settings_update",
+        requestedTargets: ["setting:automaticTags"],
+        rejectedTargets: params.rejectedTargets,
+        normalizedParameters: {
+          settingsKey: "automaticTags",
+          settingsValue: params.settingsValue,
+        },
+        reasons: [],
+        verifiedFacts: [],
+        materialRef: undefined,
+        evidenceRef: undefined,
+        verification: params.verification,
+        status: params.status,
+        appliedTargets: params.appliedTargets,
+        alreadySatisfiedTargets: params.alreadySatisfiedTargets,
+      };
+    }
+
+    it("verifies a preference the native state now holds", async function () {
+      const harness = createHarness();
+      harness.settings.set("automaticTags", true);
+      const receipt = await receiptFor({
+        harness,
+        proposal: settingsProposal(JSON.stringify(true)),
+      });
+      assert.deepEqual(
+        receipt,
+        settingsReceipt({
+          verification: "verified",
+          status: "applied",
+          settingsValue: "true",
+          appliedTargets: ["setting:automaticTags"],
+          alreadySatisfiedTargets: [],
+          rejectedTargets: [],
+        }),
+      );
+    });
+
+    it("reports a no-effect set as already satisfied", async function () {
+      const harness = createHarness();
+      harness.settings.set("automaticTags", true);
+      const receipt = await receiptFor({
+        harness,
+        proposal: settingsProposal(JSON.stringify(true)),
+        effect: "none",
+      });
+      assert.deepEqual(
+        receipt,
+        settingsReceipt({
+          verification: "verified",
+          status: "already_satisfied",
+          settingsValue: "true",
+          appliedTargets: [],
+          alreadySatisfiedTargets: ["setting:automaticTags"],
+          rejectedTargets: [],
+        }),
+      );
+    });
+
+    it("refuses a preference whose native value is not the authorized one", async function () {
+      const harness = createHarness();
+      harness.settings.set("automaticTags", false);
+      const receipt = await receiptFor({
+        harness,
+        proposal: settingsProposal(JSON.stringify(true)),
+      });
+      assert.deepEqual(
+        receipt,
+        settingsReceipt({
+          verification: "unverified",
+          status: "unverified",
+          settingsValue: "true",
+          appliedTargets: [],
+          alreadySatisfiedTargets: [],
+          rejectedTargets: ["setting:automaticTags"],
+        }),
+      );
+    });
+
+    it("refuses a preference that is not set at all", async function () {
+      const receipt = await receiptFor({
+        harness: createHarness(),
+        proposal: settingsProposal(JSON.stringify(true)),
+      });
+      assert.deepEqual(
+        receipt,
+        settingsReceipt({
+          verification: "unverified",
+          status: "unverified",
+          settingsValue: "true",
+          appliedTargets: [],
+          alreadySatisfiedTargets: [],
+          rejectedTargets: ["setting:automaticTags"],
+        }),
+      );
+    });
+
+    it("refuses a native value that only matches the request after coercion", async function () {
+      // The proposal froze the literal argument; the gateway writes a coerced
+      // one. The receipt compares against what the user authorized, so a
+      // string "true" written as boolean true is not proof of that request.
+      const harness = createHarness();
+      harness.settings.set("automaticTags", true);
+      const receipt = await receiptFor({
+        harness,
+        proposal: settingsProposal(JSON.stringify("true")),
+      });
+      assert.deepEqual(
+        receipt,
+        settingsReceipt({
+          verification: "unverified",
+          status: "unverified",
+          settingsValue: '"true"',
+          appliedTargets: [],
+          alreadySatisfiedTargets: [],
+          rejectedTargets: ["setting:automaticTags"],
+        }),
+      );
+    });
+  });
+
+  describe("annotate_pdf", function () {
+    function annotationHarness(params: {
+      annotationParent?: number;
+      isAnnotation?: boolean;
+    }) {
+      const harness = createHarness();
+      harness.items.set(900, {
+        tags: [],
+        collections: [],
+        fields: {},
+        kind: "attachment",
+      });
+      harness.items.set(901, {
+        tags: [],
+        collections: [],
+        fields: {},
+        kind: params.isAnnotation === false ? "note" : "annotation",
+        parentItemId: params.annotationParent ?? 900,
+      });
+      return harness;
+    }
+
+    const annotationProposal: AgentToolActionDescriptor = {
+      id: "annotation_write:900:1",
+      proofDomain: "zotero_state",
+      capability: "zotero.annotations",
+      operation: "annotation_write",
+      source: "zotero_native",
+      parameters: { targetItemId: 900, pageIndex: 1 },
+      requestedTargets: ["item:900"],
+      destinationCollectionIds: [],
+    };
+
+    function annotationReceipt(params: {
+      verification: "verified" | "unverified";
+      status: "applied" | "unverified";
+      target: string;
+      appliedTargets: string[];
+      rejectedTargets: string[];
+    }) {
+      return {
+        version: 2,
+        id: "annotation_write:900:1:unmatched:result",
+        obligationId: undefined,
+        proposalId: "annotation_write:900:1",
+        proofDomain: "zotero_state",
+        capability: "zotero.annotations",
+        operation: "annotation_write",
+        requestedTargets: [params.target],
+        rejectedTargets: params.rejectedTargets,
+        normalizedParameters: { targetItemId: 900, pageIndex: 1 },
+        reasons: [],
+        verifiedFacts: [],
+        materialRef: undefined,
+        evidenceRef: undefined,
+        verification: params.verification,
+        status: params.status,
+        appliedTargets: params.appliedTargets,
+        alreadySatisfiedTargets: [],
+      };
+    }
+
+    it("retargets the receipt onto the annotation Zotero committed", async function () {
+      const receipt = await receiptFor({
+        harness: annotationHarness({}),
+        proposal: annotationProposal,
+        content: { annotationId: 901 },
+      });
+      assert.deepEqual(
+        receipt,
+        annotationReceipt({
+          verification: "verified",
+          status: "applied",
+          target: "item:901",
+          appliedTargets: ["item:901"],
+          rejectedTargets: [],
+        }),
+      );
+    });
+
+    it("falls back to the requested attachment when no annotation ID came back", async function () {
+      const receipt = await receiptFor({
+        harness: annotationHarness({}),
+        proposal: annotationProposal,
+        content: {},
+      });
+      assert.deepEqual(
+        receipt,
+        annotationReceipt({
+          verification: "unverified",
+          status: "unverified",
+          target: "item:900",
+          appliedTargets: [],
+          rejectedTargets: ["item:900"],
+        }),
+      );
+    });
+
+    it("refuses an annotation that belongs to another attachment", async function () {
+      const receipt = await receiptFor({
+        harness: annotationHarness({ annotationParent: 902 }),
+        proposal: annotationProposal,
+        content: { annotationId: 901 },
+      });
+      assert.deepEqual(
+        receipt,
+        annotationReceipt({
+          verification: "unverified",
+          status: "unverified",
+          target: "item:901",
+          appliedTargets: [],
+          rejectedTargets: ["item:901"],
+        }),
+      );
+    });
+
+    it("refuses an item that is not an annotation", async function () {
+      const receipt = await receiptFor({
+        harness: annotationHarness({ isAnnotation: false }),
+        proposal: annotationProposal,
+        content: { annotationId: 901 },
+      });
+      assert.deepEqual(
+        receipt,
+        annotationReceipt({
+          verification: "unverified",
+          status: "unverified",
+          target: "item:901",
+          appliedTargets: [],
+          rejectedTargets: ["item:901"],
+        }),
+      );
+    });
+  });
+
+  describe("undo and revert", function () {
+    const undoProposal: AgentToolActionDescriptor = {
+      id: "undo:action-7",
+      proofDomain: "zotero_state",
+      capability: "zotero.undo",
+      operation: "undo",
+      source: "zotero_native",
+      requestedTargets: ["journal-action:action-7"],
+      destinationCollectionIds: [],
+    };
+
+    it("verifies an undo whose every replayed step re-read as matched", async function () {
+      const receipt = await receiptFor({
+        harness: createHarness(),
+        proposal: undoProposal,
+        content: {
+          status: "undone",
+          actionId: "action-7",
+          actionIds: ["action-7"],
+          revertedSteps: [
+            { actionId: "action-7", sequence: 1, verification: "matched" },
+          ],
+        },
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "undo:action-7:unmatched:action-7",
+        obligationId: undefined,
+        proposalId: "undo:action-7",
+        proofDomain: "zotero_state",
+        capability: "zotero.undo",
+        operation: "undo",
+        requestedTargets: ["journal-action:action-7"],
+        rejectedTargets: [],
+        normalizedParameters: undefined,
+        reasons: [],
+        verifiedFacts: ["reverted_step:action-7:1:matched"],
+        materialRef: undefined,
+        evidenceRef: "action-7",
+        verification: "verified",
+        status: "applied",
+        appliedTargets: ["journal-action:action-7"],
+        alreadySatisfiedTargets: [],
+      });
+    });
+
+    it("refuses an undo whose step re-read as mismatched", async function () {
+      const receipt = await receiptFor({
+        harness: createHarness(),
+        proposal: undoProposal,
+        content: {
+          status: "undone",
+          actionId: "action-7",
+          actionIds: ["action-7"],
+          revertedSteps: [
+            {
+              actionId: "action-7",
+              sequence: 1,
+              verification: "mismatched",
+              reason: "the note changed again",
+            },
+          ],
+        },
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "undo:action-7:unmatched:action-7",
+        obligationId: undefined,
+        proposalId: "undo:action-7",
+        proofDomain: "zotero_state",
+        capability: "zotero.undo",
+        operation: "undo",
+        requestedTargets: ["journal-action:action-7"],
+        rejectedTargets: ["journal-action:action-7"],
+        normalizedParameters: undefined,
+        reasons: [
+          "Reverted step 1 of action-7 re-read as mismatched: the note changed again.",
+        ],
+        verifiedFacts: [],
+        materialRef: undefined,
+        evidenceRef: "action-7",
+        verification: "unverified",
+        status: "unverified",
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+      });
+    });
+  });
+
+  describe("file_io and execution", function () {
+    const fileProposal: AgentToolActionDescriptor = {
+      id: "file_write:/tmp/report.md",
+      proofDomain: "file_state",
+      capability: "file.write",
+      operation: "file_write",
+      source: "file_io",
+      parameters: { filePath: "/tmp/report.md" },
+      requestedTargets: ["file:/tmp/report.md"],
+      destinationCollectionIds: [],
+      expectedContentHash: "abc",
+      expectedFiles: [
+        { path: "/tmp/report.md", contentHash: "abc", byteLength: 12 },
+      ],
+    };
+
+    it("verifies a file write from its readback identity", async function () {
+      const receipt = await receiptFor({
+        harness: createHarness(),
+        proposal: fileProposal,
+        content: {
+          filePath: "/tmp/report.md",
+          exists: true,
+          contentHash: "abc",
+          exportedFiles: [
+            {
+              filePath: "/tmp/report.md",
+              exists: true,
+              contentHash: "abc",
+              bytesWritten: 12,
+            },
+          ],
+        },
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "file_write:/tmp/report.md:unmatched:result:sha256:abc",
+        obligationId: undefined,
+        proposalId: "file_write:/tmp/report.md",
+        proofDomain: "file_state",
+        capability: "file.write",
+        operation: "file_write",
+        requestedTargets: ["file:/tmp/report.md"],
+        rejectedTargets: [],
+        normalizedParameters: { filePath: "/tmp/report.md" },
+        reasons: [],
+        verifiedFacts: ["/tmp/report.md:sha256:abc"],
+        materialRef: undefined,
+        evidenceRef: "sha256:abc",
+        verification: "verified",
+        status: "applied",
+        appliedTargets: ["file:/tmp/report.md"],
+        alreadySatisfiedTargets: [],
+      });
+    });
+
+    it("refuses a file write that was never read back", async function () {
+      const receipt = await receiptFor({
+        harness: createHarness(),
+        proposal: fileProposal,
+        content: { filePath: "/tmp/report.md" },
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "file_write:/tmp/report.md:unmatched:result:unverified",
+        obligationId: undefined,
+        proposalId: "file_write:/tmp/report.md",
+        proofDomain: "file_state",
+        capability: "file.write",
+        operation: "file_write",
+        requestedTargets: ["file:/tmp/report.md"],
+        rejectedTargets: [],
+        normalizedParameters: { filePath: "/tmp/report.md" },
+        reasons: [
+          "The written file was not read back with an exact path and content hash.",
+        ],
+        verifiedFacts: [],
+        materialRef: undefined,
+        evidenceRef: undefined,
+        verification: "unverified",
+        status: "unverified",
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+      });
+    });
+
+    const commandProposal: AgentToolActionDescriptor = {
+      id: "command_execute:fp",
+      proofDomain: "execution",
+      capability: "command.execute",
+      operation: "command_execute",
+      source: "command",
+      parameters: { commandFingerprint: "fp" },
+      requestedTargets: [],
+      destinationCollectionIds: [],
+    };
+
+    it("keeps a command with no re-readable state at execution_only", async function () {
+      const receipt = await receiptFor({
+        harness: createHarness(),
+        proposal: commandProposal,
+        content: { exitCode: 0 },
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "command_execute:fp:unmatched:result",
+        obligationId: undefined,
+        proposalId: "command_execute:fp",
+        proofDomain: "execution",
+        capability: "command.execute",
+        operation: "command_execute",
+        requestedTargets: [],
+        rejectedTargets: [],
+        normalizedParameters: { commandFingerprint: "fp" },
+        reasons: [],
+        verifiedFacts: [],
+        materialRef: undefined,
+        evidenceRef: undefined,
+        verification: "execution_only",
+        status: "observed",
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+      });
+    });
+
+    const scriptProposal: AgentToolActionDescriptor = {
+      id: "zotero_script_execute:fp",
+      proofDomain: "execution",
+      capability: "zotero.script",
+      operation: "zotero_script_execute",
+      source: "zotero_script",
+      requestedTargets: ["item:1"],
+      destinationCollectionIds: [],
+    };
+
+    it("verifies a script run from its journalled post-image", async function () {
+      const receipt = await receiptFor({
+        harness: createHarness(),
+        proposal: scriptProposal,
+        content: {
+          executionPostState: {
+            verified: true,
+            facts: ["script_postcondition:act-1:1:satisfied:2 targets"],
+          },
+        },
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "zotero_script_execute:fp:unmatched:result",
+        obligationId: undefined,
+        proposalId: "zotero_script_execute:fp",
+        proofDomain: "execution",
+        capability: "zotero.script",
+        operation: "zotero_script_execute",
+        requestedTargets: ["item:1"],
+        rejectedTargets: [],
+        normalizedParameters: undefined,
+        reasons: [],
+        verifiedFacts: ["script_postcondition:act-1:1:satisfied:2 targets"],
+        materialRef: undefined,
+        evidenceRef: undefined,
+        verification: "verified",
+        status: "applied",
+        appliedTargets: ["item:1"],
+        alreadySatisfiedTargets: [],
+      });
+    });
+
+    it("refuses a script run whose post-image no longer re-reads", async function () {
+      const receipt = await receiptFor({
+        harness: createHarness(),
+        proposal: scriptProposal,
+        content: {
+          executionPostState: {
+            verified: false,
+            facts: ["script_postcondition:act-1:1:mismatched"],
+            reason:
+              "The script's recorded effect could not be confirmed: an item changed again.",
+          },
+        },
+      });
+      assert.deepEqual(receipt, {
+        version: 2,
+        id: "zotero_script_execute:fp:unmatched:result",
+        obligationId: undefined,
+        proposalId: "zotero_script_execute:fp",
+        proofDomain: "execution",
+        capability: "zotero.script",
+        operation: "zotero_script_execute",
+        requestedTargets: ["item:1"],
+        rejectedTargets: ["item:1"],
+        normalizedParameters: undefined,
+        reasons: [
+          "The script's recorded effect could not be confirmed: an item changed again.",
+        ],
+        verifiedFacts: ["script_postcondition:act-1:1:mismatched"],
+        materialRef: undefined,
+        evidenceRef: undefined,
+        verification: "unverified",
+        status: "unverified",
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+      });
+    });
   });
 });

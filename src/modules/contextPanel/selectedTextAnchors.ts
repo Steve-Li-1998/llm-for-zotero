@@ -11,10 +11,6 @@ import {
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
 } from "../../services/quotes/quoteTextSearch";
-export {
-  formatSelectedTextLocator,
-  renderSelectedTextAnchorContext,
-} from "../../services/context/selectedTextAnchorFormatting";
 import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { sanitizeText } from "../../utils/textSanitization";
 

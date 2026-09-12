@@ -17,11 +17,6 @@ import {
   type QuoteTextIndex,
 } from "../../services/quotes/quoteTextNormalization";
 
-export {
-  splitQuoteAtEllipsis,
-  stripBoundaryEllipsis,
-} from "../../services/quotes/quoteTextSearch";
-
 export type LivePdfPageText = {
   pageIndex: number;
   pageLabel?: string;

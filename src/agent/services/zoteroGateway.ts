@@ -42,12 +42,7 @@
  * (`getItemByLibraryAndKey`, `invalidateLibrarySearchCache`).
  */
 
-import {
-  libraryIndexService,
-  normalizeLibraryIndexText,
-  type LibraryIndexItem,
-  type LibraryIndexSnapshot,
-} from "../../services/libraryIndexService";
+import { libraryIndexService } from "../../services/libraryIndexService";
 import type { NoteImageImportInput } from "../../services/notes/noteImages";
 import {
   getSelectedContextAttachment,
@@ -81,40 +76,15 @@ import {
 } from "./zotero/internal/collections";
 import {
   getItem,
-  getItemTypeName,
-  isFieldValidForItemType,
-  listEditableFieldsForItem,
   resolveBibliographicItem,
-  resolveMatrixItem,
-  resolveRegularItem,
 } from "./zotero/internal/itemResolution";
 import {
-  buildAgentLibrarySearch,
   indexItemMatchesAggregateTagScope,
-  indexItemMatchesType,
-  libraryItemTargetMatchesFilters,
-  libraryItemTargetMatchesYear,
   orderedGatewayPaperIds,
-  orderedIndexIds,
   pageIds,
-  sortAndPageIndexIds,
-  validateSearchConditions,
 } from "./zotero/internal/libraryIndex";
+import { normalizePaperContexts } from "./zotero/internal/normalize";
 import {
-  AGENT_WRITABLE_PREFS,
-  EDITABLE_ARTICLE_METADATA_FIELDS,
-  NON_EDITABLE_METADATA_FIELDS,
-  normalizeCreatorForSnapshot,
-} from "./zotero/internal/metadataTables";
-import {
-  normalizeMetadataValue,
-  normalizePaperContexts,
-  normalizeResultLimit,
-  normalizeText,
-} from "./zotero/internal/normalize";
-import {
-  buildItemTargetFromItem,
-  buildItemTargetsForIds,
   buildPaperTargetFromItem,
   buildPaperTargetsForIds,
 } from "./zotero/internal/targetBuilders";

@@ -2513,6 +2513,7 @@ describe("Bespoke finalize-branch receipts", function () {
     content?: unknown;
     effect?: AgentToolEffect;
     ok?: boolean;
+    actionEvidence?: AgentActionEvidence[];
   }) {
     const prepared = await params.harness.service.prepare(
       { ...mutationTool(), describeAction: () => [params.proposal] },
@@ -2525,6 +2526,7 @@ describe("Bespoke finalize-branch receipts", function () {
         ok: params.ok ?? true,
         effect: params.effect ?? "applied",
         content: params.content,
+        actionEvidence: params.actionEvidence,
       },
     );
     assert.lengthOf(receipts, 1);
@@ -2772,6 +2774,49 @@ describe("Bespoke finalize-branch receipts", function () {
       };
     }
 
+    /**
+     * The record `library_settings` attaches in production: the preference as
+     * the plan found it, as the write recorded it, and as the user authorized
+     * it.
+     */
+    function settingsEvidence(params: {
+      previous?: unknown;
+      recorded: unknown;
+      authorized: unknown;
+    }): AgentActionEvidence[] {
+      return [
+        {
+          version: 1,
+          source: "external_mutation",
+          operation: "update_preference",
+          preImage: {
+            kind: "preference",
+            key: "automaticTags",
+            existed: params.previous !== undefined,
+            value: params.previous,
+          },
+          postImage: {
+            kind: "preference",
+            key: "automaticTags",
+            existed: true,
+            value: params.recorded,
+          },
+          authorizedPostImage: {
+            kind: "preference",
+            key: "automaticTags",
+            existed: true,
+            value: params.authorized,
+          },
+          journalStepId: "settings-action:1",
+          effect: "applied",
+        },
+      ];
+    }
+
+    const UNVERIFIED_REASON =
+      "This update_preference write could not be verified: live Zotero state " +
+      "does not hold what this write was authorized to produce.";
+
     function settingsReceipt(params: {
       verification: "verified" | "unverified";
       status: "applied" | "already_satisfied" | "unverified";
@@ -2794,10 +2839,14 @@ describe("Bespoke finalize-branch receipts", function () {
           settingsKey: "automaticTags",
           settingsValue: params.settingsValue,
         },
-        reasons: [],
+        // Two fields moved when this operation joined the generic evidence
+        // path, and only these two: an unverified receipt now says why, and
+        // the receipt names the durable step rather than its action, as every
+        // library-mutation receipt already did.
+        reasons: params.verification === "verified" ? [] : [UNVERIFIED_REASON],
         verifiedFacts: [],
         materialRef: undefined,
-        evidenceRef: undefined,
+        evidenceRef: "settings-action:1",
         verification: params.verification,
         status: params.status,
         appliedTargets: params.appliedTargets,
@@ -2811,6 +2860,11 @@ describe("Bespoke finalize-branch receipts", function () {
       const receipt = await receiptFor({
         harness,
         proposal: settingsProposal(JSON.stringify(true)),
+        actionEvidence: settingsEvidence({
+          previous: false,
+          recorded: true,
+          authorized: true,
+        }),
       });
       assert.deepEqual(
         receipt,
@@ -2832,6 +2886,11 @@ describe("Bespoke finalize-branch receipts", function () {
         harness,
         proposal: settingsProposal(JSON.stringify(true)),
         effect: "none",
+        actionEvidence: settingsEvidence({
+          previous: true,
+          recorded: true,
+          authorized: true,
+        }),
       });
       assert.deepEqual(
         receipt,
@@ -2852,6 +2911,11 @@ describe("Bespoke finalize-branch receipts", function () {
       const receipt = await receiptFor({
         harness,
         proposal: settingsProposal(JSON.stringify(true)),
+        actionEvidence: settingsEvidence({
+          previous: false,
+          recorded: true,
+          authorized: true,
+        }),
       });
       assert.deepEqual(
         receipt,
@@ -2870,6 +2934,7 @@ describe("Bespoke finalize-branch receipts", function () {
       const receipt = await receiptFor({
         harness: createHarness(),
         proposal: settingsProposal(JSON.stringify(true)),
+        actionEvidence: settingsEvidence({ recorded: true, authorized: true }),
       });
       assert.deepEqual(
         receipt,
@@ -2893,6 +2958,13 @@ describe("Bespoke finalize-branch receipts", function () {
       const receipt = await receiptFor({
         harness,
         proposal: settingsProposal(JSON.stringify("true")),
+        // The gateway coerces "true" to the boolean the preference holds, and
+        // records that. Only the authorized literal refuses it.
+        actionEvidence: settingsEvidence({
+          previous: false,
+          recorded: true,
+          authorized: "true",
+        }),
       });
       assert.deepEqual(
         receipt,

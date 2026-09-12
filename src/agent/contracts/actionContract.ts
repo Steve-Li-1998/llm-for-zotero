@@ -1466,30 +1466,6 @@ export class ActionContractService {
             reasons: [...base.reasons, verification.reason],
           };
     }
-
-    if (proposal.operation === "settings_update") {
-      const key = proposal.parameters?.settingsKey || "";
-      const state = key ? this.gateway.getSettingNativeState?.(key) : undefined;
-      const verified = Boolean(
-        state?.exists &&
-        JSON.stringify(state.value) === proposal.parameters?.settingsValue,
-      );
-      const target = `setting:${key || "unknown"}`;
-      return {
-        ...base,
-        verification: verified ? "verified" : "unverified",
-        status: verified
-          ? params.effect === "none"
-            ? "already_satisfied"
-            : "applied"
-          : "unverified",
-        requestedTargets: [target],
-        appliedTargets: verified && params.effect !== "none" ? [target] : [],
-        alreadySatisfiedTargets:
-          verified && params.effect === "none" ? [target] : [],
-        rejectedTargets: verified ? [] : [target],
-      };
-    }
     if (proposal.operation === "annotation_write") {
       const result = innermostToolResult(params.content);
       const annotationId = Number(result.annotationId);

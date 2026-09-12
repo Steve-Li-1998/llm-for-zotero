@@ -217,6 +217,17 @@ export function createLibrarySettingsTool(
               existed: Boolean(current && current.value !== undefined),
               value: current?.value,
             },
+            // What the user approved, in the shape the post-image is recorded
+            // in. The gateway coerces a value to the preference's own type, so
+            // a receipt that re-read only the recorded post-image would credit
+            // a write that landed as something other than the literal frozen
+            // in the proposal.
+            authorizedPostcondition: {
+              kind: "preference",
+              key,
+              existed: true,
+              value: input.value,
+            },
             reversibility: current ? ("full" as const) : ("none" as const),
             reason: current
               ? undefined

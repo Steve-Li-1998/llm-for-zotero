@@ -562,13 +562,16 @@ export function evaluateActionContract(
 }
 
 /**
- * The per-receipt status block, written for whoever reads the answer.
+ * The per-receipt status block, written for the model that reads the answer.
  *
- * This text is appended to the final answer the user sees as well as to the
- * correction the model receives, so the verification reads in the same words
- * the trace chip uses instead of the internal token. A receipt journaled before
- * the field existed states no proof, and the block leaves it out rather than
- * printing an empty claim.
+ * This text is appended to the answer the runtime finalizes, which is at once
+ * the transcript the model reads next turn, the correction it receives this
+ * turn, and the string the panel renders. The first two audiences need the
+ * machine-readable statement; the reader gets the same facts as a card at the
+ * end of the trace, so the panel removes the block at display time with
+ * `stripReceiptStatusForDisplay` and nothing changes about what is persisted.
+ * A receipt journaled before the verification field existed states no proof,
+ * and the block leaves it out rather than printing an empty claim.
  */
 export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
   return receipts
@@ -585,4 +588,34 @@ export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
       return `[Action status: ${receipt.operation} — ${receipt.status}${coverage};${proof} proof:${receipt.proofDomain}]`;
     })
     .join("\n");
+}
+
+/** One finished block line, exactly as `formatReceiptStatus` writes it. */
+const RECEIPT_STATUS_LINE = /^\[Action status:[^\n]*\]\s*$/;
+
+/**
+ * The block's last line while the answer is still streaming, before its
+ * closing bracket has arrived.
+ */
+const RECEIPT_STATUS_PARTIAL_LINE = /^\[Action status:[^\]\n]*$/;
+
+/**
+ * The answer without the block `formatReceiptStatus` appended to it.
+ *
+ * The runtime concatenates the block onto the end of the final text, so this
+ * removes the trailing run of block lines and the blank line that separated
+ * them from the answer, and nothing else: an action-status line the answer
+ * itself quotes sits before other content and is left alone. The incremental
+ * render path sees the block one delta at a time, so a last line that has
+ * opened the block without closing it goes too, rather than flashing a half
+ * written receipt at the reader.
+ */
+export function stripReceiptStatusForDisplay(text: string): string {
+  const lines = text.split("\n");
+  let end = lines.length;
+  if (end && RECEIPT_STATUS_PARTIAL_LINE.test(lines[end - 1])) end -= 1;
+  while (end && RECEIPT_STATUS_LINE.test(lines[end - 1])) end -= 1;
+  if (end === lines.length) return text;
+  while (end && !lines[end - 1].trim()) end -= 1;
+  return lines.slice(0, end).join("\n");
 }

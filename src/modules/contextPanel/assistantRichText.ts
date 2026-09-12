@@ -2,6 +2,7 @@ import type { Message } from "./types";
 import type { WebSourceAnchor } from "../../webAccess/types";
 import { stripWebSourceMarkersForDisplay } from "../../webAccess/attribution";
 import { sanitizeText } from "../../utils/textSanitization";
+import { stripReceiptStatusForDisplay } from "../../agent/contracts/actionEvaluation";
 import {
   buildQuoteDisplayMarkdown,
   buildQuoteExpandedMarkdown,
@@ -45,7 +46,12 @@ export function buildAssistantDisplayMarkdownForRender(
     : buildQuoteDisplayMarkdown;
   return buildDisplay({
     markdown: injectWebSourceAnchorTokens(
-      stripWebSourceMarkersForDisplay(sanitizeText(display.markdown)),
+      stripWebSourceMarkersForDisplay(
+        // The action-status block the runtime appends is written for the model
+        // that reads the transcript; the reader is shown the same receipts as
+        // the summary card at the end of the trace.
+        stripReceiptStatusForDisplay(sanitizeText(display.markdown)),
+      ),
       webSourceAnchors,
     ),
     quoteCitations: display.quoteCitations,

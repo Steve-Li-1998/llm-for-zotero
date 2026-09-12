@@ -6513,9 +6513,9 @@ export function renderAgentTrace({
       }
 
       if (itemEntry.type === "card_list") {
-        for (const card of itemEntry.cards)
-          if (card.kind === "action_summary")
-            place(renderActionSummaryCard(doc, card));
+        // Saved notes, note changes and the turn's action summary are outcomes
+        // rather than steps: they are appended below the activity disclosure so
+        // the reader sees them without opening it.
         const papers = itemEntry.cards.filter(
           (card) =>
             card.kind !== "saved_note" &&
@@ -6730,6 +6730,13 @@ export function renderAgentTrace({
         ? renderNoteChangeCard(doc, card)
         : renderSavedNoteCard(doc, card),
     );
+
+  for (const item of processItems) {
+    if (item.type !== "card_list") continue;
+    for (const card of item.cards)
+      if (card.kind === "action_summary")
+        wrap.appendChild(renderActionSummaryCard(doc, card));
+  }
 
   const planProjection = getPlanProjection(events);
   const visiblePlanProjection =

@@ -10859,4 +10859,20 @@ describe("agent trace action summary card", function () {
     );
     assert.include(collectFakeText(card), "Attention in transformers");
   });
+
+  it("keeps the card outside the collapsed activity disclosure", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+    }) as unknown as FakeElement;
+
+    const disclosure = trace.findByClass("llm-agent-activity-details");
+    assert.exists(disclosure, "a finished run collapses its activity list");
+    assert.isNull(
+      disclosure!.findByClass("llm-agent-action-summary-card"),
+      "the summary is not hidden behind the disclosure the reader must open",
+    );
+    assert.exists(trace.findByClass("llm-agent-action-summary-card"));
+  });
 });

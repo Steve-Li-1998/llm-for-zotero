@@ -613,9 +613,11 @@ const RECEIPT_STATUS_PARTIAL_LINE = /^\[Action status:[^\]\n]*$/;
 export function stripReceiptStatusForDisplay(text: string): string {
   const lines = text.split("\n");
   let end = lines.length;
+  while (end && !lines[end - 1].trim()) end -= 1;
+  const blockEnd = end;
   if (end && RECEIPT_STATUS_PARTIAL_LINE.test(lines[end - 1])) end -= 1;
   while (end && RECEIPT_STATUS_LINE.test(lines[end - 1])) end -= 1;
-  if (end === lines.length) return text;
+  if (end === blockEnd) return text;
   while (end && !lines[end - 1].trim()) end -= 1;
   return lines.slice(0, end).join("\n");
 }

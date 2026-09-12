@@ -83,6 +83,16 @@ describe("assistant rich text action-status block", function () {
     assert.equal(rendered.trim(), "Done.");
   });
 
+  it("removes a block a trailing newline follows", function () {
+    const block = formatReceiptStatus([receipt()]);
+
+    assert.equal(
+      stripReceiptStatusForDisplay(`Done.\n\n${block}\n`),
+      "Done.",
+      "a trailing break must not hide the block from the strip",
+    );
+  });
+
   it("keeps an action-status line the answer itself quotes", function () {
     const quoted =
       "The previous turn reported:\n\n" +

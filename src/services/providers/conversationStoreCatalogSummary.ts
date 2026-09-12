@@ -1,6 +1,5 @@
 declare const Zotero: any;
 
-import type { ClaudeConversationKind } from "../../shared/types";
 import {
   AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON,
   canMigrateLegacyAmbiguousPaperRegistryScope,
@@ -18,6 +17,7 @@ import {
 } from "../../shared/conversationStore/keyNormalization";
 import {
   repairRecoverableStoreCatalogMessageConversationIDs,
+  type ConversationCatalogKind,
   type ConversationStoreIdentityConfig,
 } from "./conversationStoreIdentityRepair";
 
@@ -30,7 +30,7 @@ export type ConversationCatalogSummary = {
   conversationID: string;
   conversationKey: number;
   libraryID: number;
-  kind: ClaudeConversationKind;
+  kind: ConversationCatalogKind;
   paperItemID?: number;
   createdAt: number;
   updatedAt: number;
@@ -111,7 +111,7 @@ export function sameStoreCatalogScope(
   existing: ConversationCatalogSummary,
   params: {
     libraryID: number;
-    kind: ClaudeConversationKind;
+    kind: ConversationCatalogKind;
     paperItemID?: number | null;
   },
 ): boolean {

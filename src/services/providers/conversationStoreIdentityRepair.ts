@@ -1,9 +1,6 @@
 declare const Zotero: any;
 
-import type {
-  ConversationSystem,
-  ClaudeConversationKind,
-} from "../../shared/types";
+import type { ConversationSystem } from "../../shared/types";
 import type { PaperContextJsonColumns } from "../../shared/conversationRegistry";
 import { generateConversationInstanceID } from "../../shared/conversationRegistry";
 import { repairRecoverableCatalogMessageConversationIDs } from "../../shared/conversationMessageIdentityRepair";
@@ -13,6 +10,9 @@ import {
   normalizePaperItemID,
 } from "../../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../../shared/conversationStore/diagnostics";
+
+/** Both backend catalogs classify a conversation the same two ways. */
+export type ConversationCatalogKind = "global" | "paper";
 
 /**
  * What a backend conversation store has to tell the shared identity mechanics
@@ -28,7 +28,7 @@ export type ConversationStoreIdentityConfig = {
   messagesTable: string;
   buildConversationID: (params: {
     conversationKey: number;
-    kind: ClaudeConversationKind;
+    kind: ConversationCatalogKind;
     libraryID: number;
     paperItemID?: number | null;
   }) => string;

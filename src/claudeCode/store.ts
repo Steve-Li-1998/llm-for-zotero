@@ -128,7 +128,6 @@ import {
   filterValidStoreConversationSummaries,
   refreshStoreConversationCatalogSummary,
   sameStoreCatalogScope,
-  validateOrRepairStoreConversationSummary,
   type ConversationStoreCatalogConfig,
 } from "../services/providers/conversationStoreCatalogSummary";
 import {
@@ -1855,15 +1854,6 @@ async function filterValidClaudeConversationSummaries(
     CLAUDE_STORE_CATALOG_CONFIG,
     summaries,
     expectedPaperItemID,
-  );
-}
-
-async function validateOrRepairClaudeConversationSummary(
-  summary: ClaudeConversationSummary,
-): Promise<ClaudeConversationSummary | null> {
-  return await validateOrRepairStoreConversationSummary(
-    CLAUDE_STORE_CATALOG_CONFIG,
-    summary,
   );
 }
 

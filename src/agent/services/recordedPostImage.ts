@@ -1,7 +1,9 @@
 import { canonicalNoteHtml } from "../../utils/noteHtml";
-import type { LibraryMutationOperation } from "./libraryMutationService";
-import { LibraryMutationService } from "./libraryMutationService";
-import type { AgentToolContext } from "../types";
+import type {
+  LibraryMutationOperation,
+  LibraryMutationState,
+} from "./libraryMutation/contracts";
+import type { AgentPostImageState } from "../types";
 import { sha256Bytes, sha256Text } from "../store/journalRecoveryBlobStore";
 import { isRegisteredLibraryMutationOperation } from "./libraryMutation/handlerOperations";
 import { canonicalJson } from "./libraryMutation/canonicalJson";
@@ -24,17 +26,36 @@ const stable = canonicalJson;
 export type RecordedPostImage = {
   /** What the write recorded as true immediately after it applied. */
   expected: unknown;
-  /** The forward payload, which for a library mutation is its operation. */
-  forward: unknown;
-  /** The step result, which some captures need to resolve created objects. */
-  result: unknown;
+  /**
+   * The forward payload, which for a library mutation is its operation, and
+   * the step result some captures need to resolve created objects. Only a
+   * captured library-operation state needs either; a caller that holds just
+   * the image leaves them out, and that shape then reads as not re-readable.
+   */
+  forward?: unknown;
+  result?: unknown;
 };
 
-export type RecordedPostImageState = {
-  kind: "satisfied" | "mismatched" | "not_re_readable";
-  /** How many objects the recorded post-image covers. */
-  comparedTargets: number;
-  reason?: string;
+export type RecordedPostImageState = AgentPostImageState;
+
+/**
+ * The native reads a post-image can need.
+ *
+ * Two readers exist and they are not equally capable: the reverter holds the
+ * full mutation service, while the action contract holds only its own narrow
+ * Zotero gateway. An image whose shape needs a capability the reader does not
+ * have reads back as "not re-readable", which is a different answer from
+ * "read it, and it differs" and must stay so.
+ */
+export type PostImageReader = {
+  getItem(itemId: number): Zotero.Item | null;
+  /** The current value of one preference, `undefined` when it is unset. */
+  readSetting?(key: string): unknown;
+  /** Live state captured in the shape of one library mutation operation. */
+  captureOperationState?(
+    operation: LibraryMutationOperation,
+    result?: unknown,
+  ): Promise<LibraryMutationState>;
 };
 
 export const MUTATION_STATE_SECTIONS = [
@@ -49,6 +70,27 @@ export function isMutationOperation(
   value: unknown,
 ): value is LibraryMutationOperation {
   return isRegisteredLibraryMutationOperation(value);
+}
+
+/**
+ * A capability a reader may not have is never silently treated as a mismatch:
+ * the caller turns the thrown refusal into "not re-readable".
+ */
+function readSetting(reader: PostImageReader, key: string): unknown {
+  if (!reader.readSetting) {
+    throw new Error("this reader cannot read preferences back");
+  }
+  return reader.readSetting(key);
+}
+
+async function captureOperationState(
+  reader: PostImageReader,
+  operation: LibraryMutationOperation,
+): Promise<LibraryMutationState> {
+  if (!reader.captureOperationState) {
+    throw new Error("this reader cannot capture library operation state");
+  }
+  return reader.captureOperationState(operation);
 }
 
 export async function readFileBytes(path: string): Promise<Uint8Array | null> {
@@ -69,7 +111,7 @@ export async function readFileBytes(path: string): Promise<Uint8Array | null> {
 
 export function captureCurrentScriptItems(
   expectedItems: unknown[],
-  service: LibraryMutationService,
+  reader: PostImageReader,
 ): unknown[] {
   return expectedItems.map((entry) => {
     const itemId = Number(
@@ -77,7 +119,7 @@ export function captureCurrentScriptItems(
         ? (entry as { itemId?: unknown }).itemId
         : 0,
     );
-    const item = service.getGateway().getItem(itemId) as any;
+    const item = reader.getItem(itemId) as any;
     if (!item) return { itemId, exists: false };
     let json: unknown;
     try {
@@ -106,8 +148,7 @@ export function captureCurrentScriptItems(
 
 export async function captureCurrentScriptDeclaredGuard(params: {
   expected: unknown;
-  service: LibraryMutationService;
-  context: AgentToolContext;
+  reader: PostImageReader;
 }): Promise<unknown> {
   if (!params.expected || typeof params.expected !== "object") {
     throw new Error("The script declaration guard is invalid");
@@ -120,15 +161,12 @@ export async function captureCurrentScriptDeclaredGuard(params: {
     return {
       kind: "library_operation",
       operation: guard.operation,
-      state: await params.service.captureOperationState(
-        guard.operation,
-        params.context,
-      ),
+      state: await captureOperationState(params.reader, guard.operation),
     };
   }
   if (guard.kind === "note_html") {
     const noteId = Number(guard.noteId);
-    const item = params.service.getGateway().getItem(noteId);
+    const item = params.reader.getItem(noteId);
     return {
       kind: "note_html",
       noteId,
@@ -147,15 +185,12 @@ export async function captureCurrentScriptDeclaredGuard(params: {
   }
   if (guard.kind === "preference") {
     const key = String(guard.key || "");
-    const setting = params.service
-      .getGateway()
-      .listSettings()
-      .find((entry) => entry.key === key);
+    const value = readSetting(params.reader, key);
     return {
       kind: "preference",
       key,
-      existed: setting?.value !== undefined,
-      value: setting?.value,
+      existed: value !== undefined,
+      value,
     };
   }
   throw new Error("The script declaration guard type is unsupported");
@@ -169,8 +204,7 @@ export async function captureCurrentScriptDeclaredGuard(params: {
  */
 export async function readRecordedPostImage(params: {
   image: RecordedPostImage;
-  service: LibraryMutationService;
-  context: AgentToolContext;
+  reader: PostImageReader;
 }): Promise<unknown> {
   const expected = params.image.expected;
   if (
@@ -181,11 +215,8 @@ export async function readRecordedPostImage(params: {
   ) {
     const operation = params.image.forward;
     if (!isMutationOperation(operation)) return undefined;
-    return params.service.captureOperationState(
-      operation,
-      params.context,
-      params.image.result,
-    );
+    if (!params.reader.captureOperationState) return undefined;
+    return params.reader.captureOperationState(operation, params.image.result);
   }
   if (
     expected &&
@@ -194,7 +225,7 @@ export async function readRecordedPostImage(params: {
   ) {
     const expectedItems = (expected as { items?: unknown }).items;
     if (!Array.isArray(expectedItems)) return undefined;
-    const items = captureCurrentScriptItems(expectedItems, params.service);
+    const items = captureCurrentScriptItems(expectedItems, params.reader);
     return { kind: "script_items", items };
   }
   if (
@@ -212,14 +243,13 @@ export async function readRecordedPostImage(params: {
       declared.push(
         await captureCurrentScriptDeclaredGuard({
           expected: guard,
-          service: params.service,
-          context: params.context,
+          reader: params.reader,
         }),
       );
     }
     return {
       kind: "script_effects",
-      items: captureCurrentScriptItems(expectedItems, params.service),
+      items: captureCurrentScriptItems(expectedItems, params.reader),
       declared,
     };
   }
@@ -230,7 +260,7 @@ export async function readRecordedPostImage(params: {
   ) {
     const record = expected as Record<string, unknown>;
     const itemId = Number(record.itemId);
-    const item = params.service.getGateway().getItem(itemId);
+    const item = params.reader.getItem(itemId);
     const current: Record<string, unknown> = {
       kind: "created_item",
       itemId,
@@ -259,7 +289,7 @@ export async function readRecordedPostImage(params: {
     (expected as { kind?: unknown }).kind === "note_html"
   ) {
     const noteId = Number((expected as { noteId?: unknown }).noteId);
-    const item = params.service.getGateway().getItem(noteId);
+    const item = params.reader.getItem(noteId);
     if (Object.prototype.hasOwnProperty.call(expected, "canonicalChecksum")) {
       if (!item || item.deleted)
         throw new Error("The original note is unavailable");
@@ -328,10 +358,7 @@ export async function readRecordedPostImage(params: {
     (expected as { kind?: unknown }).kind === "preference"
   ) {
     const key = String((expected as { key?: unknown }).key || "");
-    const value = params.service
-      .getGateway()
-      .listSettings()
-      .find((setting) => setting.key === key)?.value;
+    const value = readSetting(params.reader, key);
     return { kind: "preference", key, existed: value !== undefined, value };
   }
   return undefined;
@@ -372,8 +399,7 @@ export function countPostImageTargets(expected: unknown): number {
  */
 export async function verifyRecordedPostImage(params: {
   image: RecordedPostImage;
-  service: LibraryMutationService;
-  context: AgentToolContext;
+  reader: PostImageReader;
 }): Promise<RecordedPostImageState> {
   const expected = params.image.expected;
   if (expected === undefined) {

@@ -290,9 +290,24 @@ export type AgentActionReceipt = {
   evidenceRef?: string;
 };
 
+/**
+ * What re-reading a recorded post-image found.
+ *
+ * `not_re_readable` is deliberately separate from `mismatched`: a receipt that
+ * could not check must never be filed as one that checked and disagreed. The
+ * reader that produces it lives in `services/recordedPostImage`.
+ */
+export type AgentPostImageState = {
+  kind: "satisfied" | "mismatched" | "not_re_readable";
+  /** How many objects the recorded post-image covers. */
+  comparedTargets: number;
+  reason?: string;
+};
+
 /** Internal authoritative state captured at a journaled mutation boundary. */
-export type AgentActionEvidence = {
+export type AgentLibraryMutationEvidence = {
   version: 1;
+  source: "library_mutation";
   proofDomain: "zotero_state";
   operationValue: LibraryMutationOperation;
   preState: LibraryMutationState;
@@ -300,6 +315,39 @@ export type AgentActionEvidence = {
   journalStepId?: string;
   effect: "applied" | "partial" | "none";
 };
+
+/**
+ * The same evidence for a write that no library mutation operation describes.
+ *
+ * A note edit, a preference change, an annotation, a file write, a command and
+ * a script all journal a pre-image and a post-image; what they lack is an
+ * authorized operation the contract could re-check the post-image against. So
+ * the record carries both images verbatim and the receipt owner re-reads live
+ * state in the shape of the post-image before it credits anything. A receipt
+ * built from this proves the effect is still in the library, not that the tool
+ * said it landed.
+ *
+ * It carries the two images and nothing else of the write. The forward payload
+ * and the step result are already durable in the journal step this record
+ * names, and a note body or a command's output has no business being copied
+ * into a second audit row.
+ */
+export type AgentExternalMutationEvidence = {
+  version: 1;
+  source: "external_mutation";
+  /** The journalled step operation, e.g. `update_preference`. */
+  operation: string;
+  /** What the plan recorded as true before the write. */
+  preImage?: unknown;
+  /** What the write recorded as true immediately after it applied. */
+  postImage?: unknown;
+  journalStepId?: string;
+  effect: "applied" | "partial" | "none";
+};
+
+export type AgentActionEvidence =
+  | AgentLibraryMutationEvidence
+  | AgentExternalMutationEvidence;
 
 /** Concrete proposals returned by a tool's validated action adapter. */
 export type AgentToolActionDescriptor = AgentActionProposal;

@@ -8,7 +8,11 @@ import {
  * Tool for reading and writing files on the local filesystem.
  * Enables the agent to read data files, write scripts, export results, etc.
  */
-import type { AgentToolContext, AgentWriteToolDefinition } from "../../types";
+import type {
+  AgentActionEvidence,
+  AgentToolContext,
+  AgentWriteToolDefinition,
+} from "../../types";
 import {
   readOnlyInvocationPlan,
   stateChangeInvocationPlan,
@@ -958,6 +962,7 @@ export function createFileIOTool(): AgentWriteToolDefinition<
       const exportedFiles = [];
       let changed = false;
       let actionId: string | undefined;
+      const actionEvidence: AgentActionEvidence[] = [];
       for (const file of bundle.files) {
         const expectedHash = await sha256Bytes(file.bytes);
         // Reconcile verified members on retry without replaying their write.
@@ -978,6 +983,7 @@ export function createFileIOTool(): AgentWriteToolDefinition<
         changed ||= result.effect !== "none";
         actionId = (result.content as any).actionId || actionId;
         exportedFiles.push(result.content);
+        actionEvidence.push(...(result.actionEvidence || []));
       }
       const primary = exportedFiles[exportedFiles.length - 1];
       return {
@@ -988,6 +994,10 @@ export function createFileIOTool(): AgentWriteToolDefinition<
           documentId: bundle.documentId,
           exportedFiles,
         },
+        // One record per journalled file, in write order. The receipt for a
+        // file write is proved by its own readback identity, so these carry
+        // the durable step of each member rather than a verdict.
+        actionEvidence,
       };
     },
   };

@@ -32,9 +32,30 @@ import {
   readFileBytes,
   readRecordedPostImage,
   verifyRecordedPostImage,
+  type PostImageReader,
   type RecordedPostImage,
   type RecordedPostImageState,
 } from "./recordedPostImage";
+
+/**
+ * The reverter reads through the full mutation service, so every recorded
+ * post-image shape is re-readable here.
+ */
+function postImageReader(
+  service: LibraryMutationService,
+  context: AgentToolContext,
+): PostImageReader {
+  return {
+    getItem: (itemId) => service.getGateway().getItem(itemId),
+    readSetting: (key) =>
+      service
+        .getGateway()
+        .listSettings()
+        .find((setting) => setting.key === key)?.value,
+    captureOperationState: (operation, result) =>
+      service.captureOperationState(operation, context, result),
+  };
+}
 export { isMutationOperation } from "./recordedPostImage";
 import {
   atomizeMutationOperationFromHandler,
@@ -280,8 +301,7 @@ async function currentStepPostcondition(params: {
 }): Promise<unknown> {
   return readRecordedPostImage({
     image: recordedPostImageOfStep(params.step),
-    service: params.service,
-    context: params.context,
+    reader: postImageReader(params.service, params.context),
   });
 }
 
@@ -1463,8 +1483,7 @@ async function classifyScriptReplayUnit(params: {
     try {
       const current = await captureCurrentScriptDeclaredGuard({
         expected: unit.value.guard,
-        service,
-        context,
+        reader: postImageReader(service, context),
       });
       return stable(current) === stable(unit.value.guard)
         ? { kind: "pending" }
@@ -1492,7 +1511,10 @@ async function classifyScriptReplayUnit(params: {
     if (!unit.expected) {
       return { kind: "conflict", reason: "The created-item guard is missing." };
     }
-    const current = captureCurrentScriptItems([unit.expected], service)[0];
+    const current = captureCurrentScriptItems(
+      [unit.expected],
+      postImageReader(service, context),
+    )[0];
     return stable(current) === stable(unit.expected)
       ? { kind: "pending" }
       : {
@@ -1506,7 +1528,10 @@ async function classifyScriptReplayUnit(params: {
   if (!unit.expected) {
     return { kind: "conflict", reason: "The script item guard is missing." };
   }
-  const current = captureCurrentScriptItems([unit.expected], service)[0];
+  const current = captureCurrentScriptItems(
+    [unit.expected],
+    postImageReader(service, context),
+  )[0];
   return stable(current) === stable(unit.expected)
     ? { kind: "pending" }
     : {
@@ -2130,8 +2155,10 @@ export async function verifyJournalStepPostcondition(params: {
 }): Promise<JournalStepPostState> {
   return verifyRecordedPostImage({
     image: recordedPostImageOfStep(params.step),
-    service: new LibraryMutationService(params.zoteroGateway),
-    context: params.context,
+    reader: postImageReader(
+      new LibraryMutationService(params.zoteroGateway),
+      params.context,
+    ),
   });
 }
 

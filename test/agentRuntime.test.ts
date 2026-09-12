@@ -7742,6 +7742,7 @@ describe("shallow guard round-limit safety", function () {
                 actionEvidence: [
                   {
                     version: 1 as const,
+                    source: "library_mutation" as const,
                     proofDomain: "zotero_state" as const,
                     operationValue: operation,
                     preState: {

@@ -100,6 +100,7 @@ export async function executeJournaledStep<T>(params: {
   affectedCount: number;
   expectedPostcondition?: unknown;
   precondition?: unknown;
+  operation: string;
   journalStepId?: string;
 }> {
   const { context, actionId, sequence } = params;
@@ -251,6 +252,7 @@ export async function executeJournaledStep<T>(params: {
         affectedCount: outcome.affectedCount,
         expectedPostcondition: outcome.expectedPostcondition,
         precondition: plan.precondition,
+        operation: plan.operation,
         journalStepId: stepId || undefined,
       };
     };
@@ -392,6 +394,22 @@ export async function executeExternalMutation<T>(params: {
     return {
       content: content as T,
       effect: executed.effect,
+      // The same record a library mutation attaches, for a write that no
+      // library mutation operation describes. It deliberately carries no
+      // verdict: this coordinator sits below the mutation service and cannot
+      // read Zotero state back without closing an import cycle, so the receipt
+      // owner re-reads the post-image and judges it.
+      actionEvidence: [
+        {
+          version: 1,
+          source: "external_mutation",
+          operation: executed.operation,
+          preImage: executed.precondition,
+          postImage: executed.expectedPostcondition,
+          journalStepId: executed.journalStepId,
+          effect: executed.effect,
+        },
+      ],
       ...(actionId ? { journalStep: { actionId, sequence } } : {}),
     };
   } catch (error) {

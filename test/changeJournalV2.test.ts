@@ -1830,6 +1830,64 @@ describe("durable change journal v2", function () {
     assert.equal(dryRunExecution.effect, "none");
   });
 
+  it("attaches one evidence record carrying both journalled images", async function () {
+    // Every external write now leaves the receipt owner the same record a
+    // library mutation leaves: the two images the durable step recorded and
+    // the step they belong to. It carries no verdict — the coordinator cannot
+    // read Zotero state back — so the images are exactly what was journalled.
+    const outcome = await executeExternalMutation({
+      context,
+      toolName: "library_settings",
+      plan: {
+        operation: "update_preference",
+        description: "Change Zotero preference automaticTags",
+        forward: { key: "automaticTags", value: true },
+        precondition: {
+          kind: "preference",
+          key: "automaticTags",
+          existed: true,
+          value: false,
+        },
+        reversibility: "full",
+      },
+      execute: async () => ({
+        result: { status: "updated", key: "automaticTags", value: true },
+        expectedPostcondition: {
+          kind: "preference",
+          key: "automaticTags",
+          existed: true,
+          value: true,
+        },
+        affectedCount: 1,
+        effect: "applied" as const,
+      }),
+    });
+
+    assert.lengthOf(outcome.actionEvidence || [], 1);
+    const evidence = outcome.actionEvidence![0];
+    assert.deepEqual(evidence, {
+      version: 1,
+      source: "external_mutation",
+      operation: "update_preference",
+      preImage: {
+        kind: "preference",
+        key: "automaticTags",
+        existed: true,
+        value: false,
+      },
+      postImage: {
+        kind: "preference",
+        key: "automaticTags",
+        existed: true,
+        value: true,
+      },
+      journalStepId: outcome.journalStep
+        ? `${outcome.journalStep.actionId}:${outcome.journalStep.sequence}`
+        : undefined,
+      effect: "applied",
+    });
+  });
+
   it("closes a pre-write journal failure without running the external write", async function () {
     let executed = false;
     db.failWhen = (sql, params) =>

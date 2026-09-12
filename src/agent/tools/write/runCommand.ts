@@ -7,6 +7,7 @@
  */
 import type {
   AgentToolContext,
+  AgentActionEvidence,
   AgentToolEffect,
   AgentWriteToolDefinition,
 } from "../../types";
@@ -1194,6 +1195,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
       const formatResult = (
         commandResult: Awaited<ReturnType<typeof executeCommand>>,
         effect: AgentToolEffect,
+        actionEvidence?: AgentActionEvidence[],
       ) => {
         const maxLen = 8000;
         const stdout =
@@ -1214,6 +1216,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
             command: input.command,
           },
           effect,
+          ...(actionEvidence ? { actionEvidence } : {}),
         };
       };
       if (context.invocationPlan?.impact === "read_only") {
@@ -1315,7 +1318,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           };
         },
       });
-      return formatResult(result.content, result.effect);
+      return formatResult(result.content, result.effect, result.actionEvidence);
     },
   };
 }

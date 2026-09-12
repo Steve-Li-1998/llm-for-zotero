@@ -12,6 +12,7 @@ import type {
   AgentJournalActionScope,
   AgentJournalStepOutcome,
   AgentActionEvidence,
+  AgentLibraryMutationEvidence,
   AgentToolContext,
   AgentToolEffect,
   AgentWriteToolOutput,
@@ -492,11 +493,13 @@ export async function executeLibraryMutationAction(params: {
       ) {
         actionEvidence.push({
           version: 1,
+          source: "library_mutation",
           proofDomain: "zotero_state",
           operationValue: operation,
-          preState: executed.precondition as AgentActionEvidence["preState"],
+          preState:
+            executed.precondition as AgentLibraryMutationEvidence["preState"],
           postState:
-            executed.expectedPostcondition as AgentActionEvidence["postState"],
+            executed.expectedPostcondition as AgentLibraryMutationEvidence["postState"],
           journalStepId: executed.journalStepId,
           effect: executed.effect,
         });

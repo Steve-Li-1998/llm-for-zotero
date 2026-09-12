@@ -271,6 +271,7 @@ function mutationEvidence(
   return [
     {
       version: 1,
+      source: "library_mutation",
       proofDomain: "zotero_state",
       operationValue,
       preState,
@@ -3039,6 +3040,136 @@ describe("Bespoke finalize-branch receipts", function () {
           rejectedTargets: ["item:901"],
         }),
       );
+    });
+  });
+
+  describe("an external write with no operation-specific verifier", function () {
+    // The consolidation target: a Zotero write that carries no library
+    // mutation operation and no branch of its own is verified from the record
+    // the mutation boundary attached, by re-reading its post-image now.
+    const proposal: AgentToolActionDescriptor = {
+      id: "save_note:700",
+      proofDomain: "zotero_state",
+      capability: "zotero.notes",
+      operation: "save_note",
+      source: "zotero_native",
+      requestedTargets: ["item:700"],
+      destinationCollectionIds: [],
+    };
+
+    function preferenceEvidence(value: unknown): AgentActionEvidence[] {
+      return [
+        {
+          version: 1,
+          source: "external_mutation",
+          operation: "update_preference",
+          preImage: {
+            kind: "preference",
+            key: "automaticTags",
+            existed: false,
+            value: undefined,
+          },
+          postImage: {
+            kind: "preference",
+            key: "automaticTags",
+            existed: true,
+            value,
+          },
+          journalStepId: "action-ext:1",
+          effect: "applied",
+        },
+      ];
+    }
+
+    async function receiptWith(params: {
+      harness: ReturnType<typeof createHarness>;
+      actionEvidence?: AgentActionEvidence[];
+      effect?: AgentToolEffect;
+    }) {
+      const prepared = await params.harness.service.prepare(
+        { ...mutationTool(), describeAction: () => [proposal] },
+        {},
+      );
+      const receipts = await params.harness.service.finalize(
+        undefined,
+        prepared,
+        {
+          ok: true,
+          effect: params.effect ?? "applied",
+          content: {},
+          actionEvidence: params.actionEvidence,
+        },
+      );
+      return receipts[0];
+    }
+
+    it("verifies the write when live state still holds its post-image", async function () {
+      const harness = createHarness();
+      harness.settings.set("automaticTags", true);
+      const receipt = await receiptWith({
+        harness,
+        actionEvidence: preferenceEvidence(true),
+      });
+      assert.equal(receipt.verification, "verified");
+      assert.equal(receipt.status, "applied");
+      assert.deepEqual(receipt.appliedTargets, ["item:700"]);
+      assert.deepEqual(receipt.reasons, []);
+      assert.equal(receipt.evidenceRef, "action-ext:1");
+    });
+
+    it("reports a write whose post-image no longer reads back", async function () {
+      const harness = createHarness();
+      harness.settings.set("automaticTags", false);
+      const receipt = await receiptWith({
+        harness,
+        actionEvidence: preferenceEvidence(true),
+      });
+      assert.equal(receipt.verification, "unverified");
+      assert.equal(receipt.status, "unverified");
+      assert.deepEqual(receipt.rejectedTargets, ["item:700"]);
+      assert.match(
+        receipt.reasons.join(" "),
+        /This update_preference write could not be verified: native state no longer matches/,
+      );
+    });
+
+    it("credits a no-effect write as already satisfied", async function () {
+      const harness = createHarness();
+      harness.settings.set("automaticTags", true);
+      const receipt = await receiptWith({
+        harness,
+        actionEvidence: preferenceEvidence(true),
+        effect: "none",
+      });
+      assert.equal(receipt.verification, "verified");
+      assert.equal(receipt.status, "already_satisfied");
+      assert.deepEqual(receipt.alreadySatisfiedTargets, ["item:700"]);
+    });
+
+    it("refuses a write that attached no evidence at all", async function () {
+      const receipt = await receiptWith({ harness: createHarness() });
+      assert.equal(receipt.verification, "unverified");
+      assert.deepEqual(receipt.reasons, [
+        "No native Zotero post-state verifier is registered for this action.",
+      ]);
+    });
+
+    it("refuses to pick one record out of a multi-step result", async function () {
+      // A multi-file export journals one step per file. Matching the first
+      // would credit the whole receipt with one member's proof.
+      const harness = createHarness();
+      harness.settings.set("automaticTags", true);
+      const receipt = await receiptWith({
+        harness,
+        actionEvidence: [
+          ...preferenceEvidence(true),
+          ...preferenceEvidence(true),
+        ],
+      });
+      assert.equal(receipt.verification, "unverified");
+      assert.deepEqual(receipt.reasons, [
+        "No native Zotero post-state verifier is registered for this action.",
+      ]);
     });
   });
 

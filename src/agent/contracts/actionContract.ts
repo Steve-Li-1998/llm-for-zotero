@@ -12,6 +12,8 @@ import type {
   AgentActionProgressLedger,
   AgentActionProposal,
   AgentActionReceipt,
+  AgentExternalMutationEvidence,
+  AgentLibraryMutationEvidence,
   AgentRuntimeRequest,
   AgentToolDefinition,
   AgentToolEffect,
@@ -37,6 +39,10 @@ import { getOriginalAgentPermissionMode } from "../originalAgentPermissionMode";
 import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPermissionMode";
 import { canonicalJsonEqual } from "../services/libraryMutation/canonicalJson";
 import { mutationPostconditionIsSatisfied } from "../services/libraryMutation/handlerOperations";
+import {
+  verifyRecordedPostImage,
+  type PostImageReader,
+} from "../services/recordedPostImage";
 import type { RevertedStep } from "../services/changeReverter";
 import { innermostToolResult, toolResultString } from "./toolResultEnvelope";
 import { readFlatMaterialRef } from "../documents/materialRef";
@@ -284,11 +290,29 @@ function targetDelta(previous: readonly number[], current: readonly number[]) {
   };
 }
 
+/**
+ * What the action contract can read back for itself.
+ *
+ * It holds its own narrow Zotero gateway, not the mutation service, so a
+ * post-image whose shape needs the mutation handlers reads back as "not
+ * re-readable" here rather than as agreement.
+ */
+function contractPostImageReader(
+  gateway: ActionContractGateway,
+): PostImageReader {
+  return {
+    getItem: (itemId) => gateway.getItem(itemId),
+    ...(gateway.getSettingNativeState
+      ? { readSetting: (key) => gateway.getSettingNativeState!(key).value }
+      : {}),
+  };
+}
+
 function readEvidenceRef(content: unknown): string | undefined {
   return toolResultString(content, ["actionId", "journalStepId"]);
 }
 
-function evidenceTargets(evidence: AgentActionEvidence): string[] {
+function evidenceTargets(evidence: AgentLibraryMutationEvidence): string[] {
   return [
     ...(evidence.postState.items || []).map((item) => `item:${item.itemId}`),
     ...(evidence.postState.collections || []).map(
@@ -303,13 +327,35 @@ function evidenceTargets(evidence: AgentActionEvidence): string[] {
 function matchingNativeEvidence(
   proposal: AgentActionProposal,
   evidence: AgentActionEvidence[] | undefined,
-): AgentActionEvidence | undefined {
+): AgentLibraryMutationEvidence | undefined {
   return evidence?.find(
-    (entry) =>
+    (entry): entry is AgentLibraryMutationEvidence =>
+      entry.source === "library_mutation" &&
       entry.proofDomain === "zotero_state" &&
       proposal.operationValue !== undefined &&
       canonicalJsonEqual(entry.operationValue, proposal.operationValue),
   );
+}
+
+/**
+ * The record the mutation boundary attached for a write that no library
+ * mutation operation describes.
+ *
+ * One `executeExternalMutation` call journals exactly one such step and
+ * attaches exactly one record, and a proposal that reaches this point has no
+ * operation of its own to match evidence against. Identity therefore comes
+ * from the call, and a result carrying several records — a multi-file export
+ * writes one per file — is not matched at all rather than matched to whichever
+ * came first.
+ */
+function externalMutationEvidence(
+  evidence: AgentActionEvidence[] | undefined,
+): AgentExternalMutationEvidence | undefined {
+  const external = (evidence || []).filter(
+    (entry): entry is AgentExternalMutationEvidence =>
+      entry.source === "external_mutation",
+  );
+  return external.length === 1 ? external[0] : undefined;
 }
 
 /**
@@ -1547,17 +1593,7 @@ export class ActionContractService {
 
     const operation = proposal.operationValue;
     if (!operation) {
-      return {
-        ...base,
-        verification: "unverified",
-        status: "unverified",
-        appliedTargets: [],
-        alreadySatisfiedTargets: [],
-        reasons: [
-          ...base.reasons,
-          "No native Zotero post-state verifier is registered for this action.",
-        ],
-      };
+      return this.externalMutationReceipt(base, proposal, params);
     }
     const evidence = matchingNativeEvidence(proposal, params.actionEvidence);
     const verified = Boolean(
@@ -1596,6 +1632,75 @@ export class ActionContractService {
               evidence
                 ? `The mutation handler rejected the captured native post-state for ${operation.type}.`
                 : `No captured native post-state was attached for ${operation.type}.`,
+            ]),
+      ],
+    };
+  }
+
+  /**
+   * The receipt for a Zotero write that no library mutation operation
+   * describes and that has no operation-specific verifier of its own.
+   *
+   * Its evidence is the pre-image and post-image the mutation boundary
+   * journalled. Neither proves anything by itself — both were written by the
+   * call being judged — so the post-image is re-read here, against live Zotero
+   * state, at the moment the receipt is minted. `verified` therefore means the
+   * effect is still in the library now, not that the tool reported success.
+   */
+  private async externalMutationReceipt(
+    base: Omit<
+      AgentActionReceipt,
+      "verification" | "status" | "appliedTargets" | "alreadySatisfiedTargets"
+    >,
+    proposal: AgentActionProposal,
+    params: {
+      effect?: AgentToolEffect;
+      actionEvidence?: AgentActionEvidence[];
+    },
+  ): Promise<AgentActionReceipt> {
+    const evidence = externalMutationEvidence(params.actionEvidence);
+    if (!evidence) {
+      return {
+        ...base,
+        verification: "unverified",
+        status: "unverified",
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+        reasons: [
+          ...base.reasons,
+          "No native Zotero post-state verifier is registered for this action.",
+        ],
+      };
+    }
+    const postImage = await verifyRecordedPostImage({
+      image: { expected: evidence.postImage },
+      reader: contractPostImageReader(this.gateway),
+    });
+    const verified = postImage.kind === "satisfied";
+    const targets = proposal.requestedTargets;
+    // A write that changed nothing already held the state its post-image
+    // records, which is the same "already satisfied" the library path reports
+    // for an operation whose pre-image already met its postcondition.
+    const alreadySatisfied = verified && params.effect === "none";
+    return {
+      ...base,
+      evidenceRef: evidence.journalStepId || base.evidenceRef,
+      verification: verified ? "verified" : "unverified",
+      status: verified
+        ? alreadySatisfied
+          ? "already_satisfied"
+          : "applied"
+        : "unverified",
+      requestedTargets: targets,
+      appliedTargets: verified && !alreadySatisfied ? targets : [],
+      alreadySatisfiedTargets: alreadySatisfied ? targets : [],
+      rejectedTargets: verified ? [] : targets,
+      reasons: [
+        ...base.reasons,
+        ...(verified || !postImage.reason
+          ? []
+          : [
+              `This ${evidence.operation} write could not be verified: ${postImage.reason}.`,
             ]),
       ],
     };

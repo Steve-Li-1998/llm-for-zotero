@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { DatabaseSync } from "node:sqlite";
 import { createWriteNotesBatchTool } from "../src/agent/tools/write/writeNotesBatch";
+import { LibraryMutationService } from "../src/agent/services/libraryMutationService";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import {
   initPlanDocumentStore,
@@ -14,6 +15,8 @@ import {
   getBatchJob,
   initAgentBatchJobStore,
 } from "../src/agent/store/batchJobStore";
+import { describeLibraryMutationActions } from "../src/agent/contracts/actionOperationEvidence";
+import { canonicalJsonEqual } from "../src/agent/services/libraryMutation/canonicalJson";
 import type { AgentToolContext } from "../src/agent/types";
 import { installNativeNoteStore } from "./helpers/nativeNoteStore";
 
@@ -238,6 +241,62 @@ describe("note batch material", function () {
       (output.batchItems || []).map((entry) => entry.status),
       ["saved", "failed", "saved"],
     );
+  });
+
+  it("executes the very operation the action contract proposed", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    const input = validated(tool);
+    const proposed = describeLibraryMutationActions(input);
+    const output = await tool.execute(input, context());
+
+    // A receipt counts as verified only when the recorded evidence names the
+    // same operation the user approved, so host bookkeeping must not ride
+    // inside the operation value.
+    assert.lengthOf(output.actionEvidence || [], 1);
+    assert.isTrue(
+      canonicalJsonEqual(
+        output.actionEvidence![0].operationValue,
+        proposed[0].operationValue,
+      ),
+      "the executed operation must still equal the proposed one",
+    );
+  });
+
+  it("refuses a batch whose rows do not describe its notes", async function () {
+    const service = new LibraryMutationService(gateway);
+    let failure: unknown;
+    try {
+      await service.executeOperation(
+        { type: "save_notes_batch", notes: notes() },
+        {
+          ...context(),
+          // Misaligned rows would write paper 1's approved material onto
+          // paper 2, durably, so nothing may be written at all.
+          batchBinding: {
+            batchId: "batch-wrong",
+            items: [
+              {
+                itemKey: "item:3",
+                targetItemId: 3,
+                material: {
+                  documentId: "run-batch-1:document:1",
+                  documentVersion: 1,
+                  contentHash: "sha256:whatever",
+                },
+              },
+            ],
+          },
+        } as never,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    assert.instanceOf(failure, Error);
+    assert.include(
+      (failure as Error).message,
+      "The batch rows do not describe these notes",
+    );
+    assert.equal(native.notes.size, 0, "no note may be written");
   });
 
   it("never announces a batch item as the turn's finalized material", async function () {

@@ -1031,6 +1031,24 @@ export type AgentToolResult = {
   batchItems?: AgentBatchItemOutcome[];
 };
 
+/**
+ * Host-owned binding between a batch operation's items and their durable rows.
+ *
+ * It travels on the tool context rather than inside the operation: the
+ * operation value is the semantic change the user approved, and the action
+ * contract only verifies a receipt when the executed operation is byte-equal
+ * to the proposed one.
+ */
+export type AgentBatchBinding = {
+  batchId: string;
+  /** One entry per note of the operation, in that operation's own order. */
+  items: ReadonlyArray<{
+    itemKey: string;
+    targetItemId: number;
+    material: MaterialRef;
+  }>;
+};
+
 /** One item of a durable batch, with the material it wrote. */
 export type AgentBatchItemOutcome = {
   batchId: string;
@@ -1163,6 +1181,8 @@ export type AgentToolContext = {
   journalToolName?: string;
   /** Internal parent action used by composite tools such as library_batch. */
   journalActionScope?: AgentJournalActionScope;
+  /** Internal durable batch this call's items belong to. */
+  batchBinding?: AgentBatchBinding;
   /** Host-owned registered operation bridge. Each call retains its own authorization and native receipts. */
   invokeRegisteredOperation?: (
     name: string,

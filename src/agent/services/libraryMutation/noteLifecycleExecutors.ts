@@ -2,6 +2,7 @@ import { executeNoteCreation } from "../noteCreation";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
 import { buildSaveNoteInverse } from "./forwardExecutionSupport";
+import type { AgentBatchBinding } from "../../types";
 import type { MaterialRef } from "../../documents/materialRef";
 import { loadPlanDocument } from "../../documents/store";
 import { assertMaterialRefMatches } from "../../documents/workflowMaterial";
@@ -33,6 +34,28 @@ async function noteHtmlForBatchItem(params: {
   return document.visibleHtml;
 }
 
+/**
+ * The batch rows this operation's notes belong to, position by position.
+ *
+ * A binding that does not line up with the notes would write one paper's
+ * approved material onto another paper, durably, so a mismatch stops the
+ * batch before its first write rather than being repaired per item.
+ */
+function batchBindingFor(
+  binding: AgentBatchBinding | undefined,
+  notes: ReadonlyArray<{ targetItemId: number }>,
+): AgentBatchBinding | undefined {
+  if (!binding) return undefined;
+  const alignedToNotes =
+    binding.items.length === notes.length &&
+    binding.items.every(
+      (item, index) => item.targetItemId === notes[index].targetItemId,
+    );
+  if (!alignedToNotes)
+    throw new Error("The batch rows do not describe these notes");
+  return binding;
+}
+
 type DomainOperation =
   | "save_notes_batch"
   | "create_items"
@@ -51,7 +74,8 @@ export const noteLifecycleExecutors = {
       status: "created" | "error";
       reason?: string;
     }> = [];
-    const batchId = operation.batchId;
+    const binding = batchBindingFor(context.batchBinding, operation.notes);
+    const batchId = binding?.batchId;
     let appliedCount = 0;
     // Progress is written after each note lands, never before: a cursor ahead
     // of the library would skip an unwritten note on resume.
@@ -89,6 +113,7 @@ export const noteLifecycleExecutors = {
     };
     for (const [index, entry] of operation.notes.entries()) {
       const position = index + 1;
+      const bound = binding?.items[index];
       const target = zoteroGateway.getItem(entry.targetItemId);
       const title = target
         ? String(target.getDisplayTitle?.() || `Item ${entry.targetItemId}`)
@@ -102,7 +127,7 @@ export const noteLifecycleExecutors = {
           reason,
         });
         await recordProgress({
-          itemKey: entry.itemKey,
+          itemKey: bound?.itemKey,
           position,
           error: reason,
         });
@@ -117,7 +142,7 @@ export const noteLifecycleExecutors = {
           collections:
             operation.target === "standalone" ? entry.collections : undefined,
           html: await noteHtmlForBatchItem({
-            material: entry.material,
+            material: bound?.material,
             content: entry.content,
           }),
         });
@@ -134,7 +159,7 @@ export const noteLifecycleExecutors = {
           status: "created",
         });
         await recordProgress({
-          itemKey: entry.itemKey,
+          itemKey: bound?.itemKey,
           position,
           journalStep: execution.journalStep,
           noteId: saved.noteId,
@@ -149,7 +174,7 @@ export const noteLifecycleExecutors = {
           reason,
         });
         await recordProgress({
-          itemKey: entry.itemKey,
+          itemKey: bound?.itemKey,
           position,
           error: reason,
         });

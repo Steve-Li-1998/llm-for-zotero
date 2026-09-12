@@ -7,6 +7,7 @@
  * was never the binding constraint — consent was.
  */
 import type {
+  AgentBatchBinding,
   AgentBatchItemOutcome,
   AgentToolContext,
   AgentWriteToolDefinition,
@@ -77,7 +78,7 @@ export function createWriteNotesBatchTool(
   async function prepareBatch(
     input: WriteNotesBatchInput,
     context: AgentToolContext,
-  ): Promise<{ batchId: string; operation: SaveNotesBatchOperation }> {
+  ): Promise<AgentBatchBinding> {
     const runId = context.runId;
     if (!runId) throw new Error("The note batch has no run identity");
     const now = Date.now();
@@ -85,7 +86,7 @@ export function createWriteNotesBatchTool(
       .toString(36)
       .slice(2, 10)}`;
     const keys = batchItemKeys(input.operation.notes);
-    const notes: SaveNotesBatchOperation["notes"] = [];
+    const items: AgentBatchBinding["items"][number][] = [];
     const rows: NewBatchItem[] = [];
     for (const [index, note] of input.operation.notes.entries()) {
       const { document } = await finalizer.finalizeNoteBody({
@@ -96,7 +97,11 @@ export function createWriteNotesBatchTool(
         now,
       });
       const materialRef = materialRefFromDocument(document);
-      notes.push({ ...note, itemKey: keys[index], material: materialRef });
+      items.push({
+        itemKey: keys[index],
+        targetItemId: note.targetItemId,
+        material: materialRef,
+      });
       rows.push({ itemKey: keys[index], position: index + 1, materialRef });
     }
     await createBatchJob({
@@ -108,7 +113,7 @@ export function createWriteNotesBatchTool(
       now,
     });
     await createBatchItems(batchId, rows, now);
-    return { batchId, operation: { ...input.operation, batchId, notes } };
+    return { batchId, items };
   }
 
   return {
@@ -287,20 +292,20 @@ export function createWriteNotesBatchTool(
       planLibraryMutations(mutationService, [input.operation], context),
 
     async execute(input, context) {
-      const { batchId, operation } = await prepareBatch(input, context);
+      const batchBinding = await prepareBatch(input, context);
       const result = await executeAndRecordUndo(
         mutationService,
-        operation,
-        context,
+        input.operation,
+        { ...context, batchBinding },
         "write_notes_batch",
       );
-      const batchItems = await readBatchOutcomes(batchId);
+      const batchItems = await readBatchOutcomes(batchBinding.batchId);
       // The rows are the authority on what still needs writing, so the job is
       // closed only once every item of it has landed. A throw above leaves it
       // open on purpose: the startup sweep will mark it interrupted and its
       // pending rows stay resumable.
       await finishBatchJob({
-        jobId: batchId,
+        jobId: batchBinding.batchId,
         status: batchItems.every((item) => item.status === "saved")
           ? "completed"
           : "failed",

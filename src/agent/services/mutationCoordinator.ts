@@ -371,14 +371,14 @@ export async function executeLibraryMutationAction(params: {
   const ownsAction = Boolean(actionId && !parentScope);
 
   const results: LibraryMutationExecutionResult[] = [];
-  // A reopened action's applied work counts towards this call's summary, so a
-  // resume that lands cannot downgrade an action to a smaller affected count
-  // than it already earned, and one that fails cannot report it as failed.
-  const completedOutcomes: AgentJournalStepOutcome[] = resumed?.prior
-    ? [resumed.prior]
-    : [];
+  const completedOutcomes: AgentJournalStepOutcome[] = [];
+  // What a reopened action already applied. It never counts as this call's
+  // own effect, but the action's own status and affected count have to keep
+  // it: a resume must not shrink the action it continues, nor report an
+  // action that already wrote notes as having failed outright.
+  const priorOutcome = resumed?.prior || null;
   const actionEvidence: AgentActionEvidence[] = [];
-  let affectedCount = resumed?.prior?.affectedCount || 0;
+  let affectedCount = priorOutcome?.affectedCount || 0;
   let localSequence = resumed?.lastSequence || 0;
   // One allocator for the whole action, so an operation that contributes N
   // steps cannot collide with the sequences of its siblings.
@@ -461,19 +461,31 @@ export async function executeLibraryMutationAction(params: {
     }
     const summary = summarizeMutationOutcomes(completedOutcomes);
     const effect = summary.effect;
+    const status =
+      effect === "none"
+        ? "no_effect"
+        : effect === "partial"
+          ? "partially_applied"
+          : summary.reversibility === "none"
+            ? "irreversible"
+            : "applied";
     if (actionId && ownsAction) {
+      // The caller is told what this call changed; the action records what it
+      // holds altogether, so a resume adds to the work its first attempt
+      // applied and can never record an action that wrote notes as having
+      // done nothing.
       await updateJournalAction({
         actionId,
         status:
-          effect === "none"
-            ? "no_effect"
-            : effect === "partial"
-              ? "partially_applied"
-              : summary.reversibility === "none"
-                ? "irreversible"
-                : "applied",
-        reversibility: summary.reversibility,
-        affectedCount: summary.affectedCount,
+          priorOutcome && status === "no_effect" ? "partially_applied" : status,
+        reversibility: priorOutcome
+          ? combineReversibility([
+              priorOutcome.reversibility,
+              summary.reversibility,
+            ])
+          : summary.reversibility,
+        affectedCount:
+          (priorOutcome?.affectedCount || 0) + summary.affectedCount,
       });
     }
     return {
@@ -484,9 +496,11 @@ export async function executeLibraryMutationAction(params: {
       actionEvidence,
     };
   } catch (error) {
-    const changedOutcomes = [...completedOutcomes, ...inFlightOutcomes].filter(
-      (outcome) => outcome.effect !== "none",
-    );
+    const changedOutcomes = [
+      ...(priorOutcome ? [priorOutcome] : []),
+      ...completedOutcomes,
+      ...inFlightOutcomes,
+    ].filter((outcome) => outcome.effect !== "none");
     for (const outcome of inFlightOutcomes) {
       if (outcome.effect !== "none") affectedCount += outcome.affectedCount;
     }

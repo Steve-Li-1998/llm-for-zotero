@@ -36,7 +36,7 @@ describe("note batch resume", function () {
   let db: DatabaseSync;
   let native: ReturnType<typeof installNativeNoteStore>;
   let originalZotero: unknown;
-  let failOnParent: number | undefined;
+  const failOnParents = new Set<number>();
   let unavailableTarget: number | undefined;
   /** Zotero goes away only once this many notes have landed. */
   let unavailableAfterNotes = 0;
@@ -111,7 +111,7 @@ describe("note batch resume", function () {
 
   beforeEach(async function () {
     originalZotero = globalScope.Zotero;
-    failOnParent = undefined;
+    failOnParents.clear();
     unavailableTarget = undefined;
     unavailableAfterNotes = 0;
     db = new DatabaseSync(":memory:");
@@ -134,7 +134,7 @@ describe("note batch resume", function () {
     native = installNativeNoteStore({
       startId: 500,
       onSave: (note: { parentID?: number }) => {
-        if (failOnParent !== undefined && note.parentID === failOnParent)
+        if (note.parentID !== undefined && failOnParents.has(note.parentID))
           throw new Error("Zotero refused the note write");
       },
     });
@@ -188,13 +188,13 @@ describe("note batch resume", function () {
     assert.isTrue(validated.ok);
     if (!validated.ok) throw new Error("unreachable");
     await instance.planInvocation(validated.value, context());
-    failOnParent = 2;
+    failOnParents.add(2);
     // The library becomes unreachable only after the first note has landed,
     // which is how a real interruption leaves later items never attempted.
     unavailableTarget = 3;
     unavailableAfterNotes = 1;
     await rejects(instance.execute(validated.value, context()));
-    failOnParent = undefined;
+    failOnParents.clear();
     unavailableTarget = undefined;
     unavailableAfterNotes = 0;
     const [batch] = await listResumableBatches(8801);
@@ -286,6 +286,33 @@ describe("note batch resume", function () {
     );
   });
 
+  it("keeps the action's applied work when the resume writes nothing", async function () {
+    const instance = tool();
+    const batchId = await interruptedBatch(instance);
+    const opened = (await listBatchItems(batchId))[0].actionId!;
+
+    // Zotero refuses both remaining notes, so each item fails on its own and
+    // the call still completes.
+    failOnParents.add(2).add(3);
+    const output = await run(instance, { resumeBatchId: batchId });
+    failOnParents.clear();
+
+    assert.equal(
+      output.effect,
+      "none",
+      "the result says what this call changed, which is nothing",
+    );
+    const [action] = await listJournalActions({ actionId: opened });
+    // The action still holds the note the first attempt wrote. Recording it as
+    // no_effect would put it beyond the reach of undo.
+    assert.equal(action.status, "partially_applied");
+    assert.equal(action.affectedCount, 1);
+    assert.deepEqual(
+      (await listBatchItems(batchId)).map((row) => row.status),
+      ["saved", "failed", "failed"],
+    );
+  });
+
   it("opens a new action when the batch's action is no longer open", async function () {
     const instance = tool();
     const batchId = await interruptedBatch(instance);
@@ -318,7 +345,6 @@ describe("note batch resume", function () {
     assert.isTrue(validated.ok);
     if (!validated.ok) throw new Error("unreachable");
     await instance.planInvocation(validated.value, context());
-    failOnParent = undefined;
     unavailableTarget = 2;
     unavailableAfterNotes = 1;
     await rejects(instance.execute(validated.value, context()));

@@ -30,6 +30,12 @@ import {
 } from "../codexAppServer/mcpSetup";
 import { dbg, dbgError } from "../utils/debugLogger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
+import {
+  externalRuntimeCommandEffect,
+  externalRuntimeFileEffect,
+  recordExternalRuntimeEffect,
+  type ExternalRuntimeEffect,
+} from "./contracts/externalRuntimeEffects";
 import type { AgentRuntime } from "./runtime";
 import {
   addZoteroMcpToolActivityObserver,
@@ -269,6 +275,9 @@ type SessionInvalidationResponse = {
 };
 
 const EXTERNAL_ACTION_PREFIX = "cc_tool::";
+
+/** Distinguishes two provider actions dispatched within the same millisecond. */
+let externalActionSequence = 0;
 
 type ContextEnvelope = {
   activeItemId?: number;
@@ -945,6 +954,60 @@ async function invalidateExternalBridgeSession(params: {
 
 function toExternalActionName(toolName: string): string {
   return `${EXTERNAL_ACTION_PREFIX}${toolName}`;
+}
+
+/**
+ * Claude Code's own tools that change something outside the host.
+ *
+ * Only these need a receipt: everything else Claude Code runs here is a read,
+ * and every Zotero effect arrives instead as an MCP tool call that already has
+ * the full proposal, authorization, journal and verification path.
+ */
+const CLAUDE_RUNTIME_EFFECT_TOOLS: Readonly<
+  Record<string, "file_write" | "command_execute">
+> = {
+  Write: "file_write",
+  Edit: "file_write",
+  MultiEdit: "file_write",
+  NotebookEdit: "file_write",
+  Bash: "command_execute",
+};
+
+const CLAUDE_RUNTIME_FILE_PATH_KEYS = [
+  "file_path",
+  "filePath",
+  "notebook_path",
+  "notebookPath",
+  "path",
+] as const;
+
+/** The catalogued effect one of Claude Code's own tool calls performs. */
+export function describeClaudeRuntimeToolEffect(
+  toolName: string,
+  input: unknown,
+): ExternalRuntimeEffect | null {
+  const operation = Object.prototype.hasOwnProperty.call(
+    CLAUDE_RUNTIME_EFFECT_TOOLS,
+    toolName,
+  )
+    ? CLAUDE_RUNTIME_EFFECT_TOOLS[toolName]
+    : undefined;
+  if (!operation) return null;
+  const record =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+  if (operation === "command_execute") {
+    return externalRuntimeCommandEffect(
+      "claude_code",
+      typeof record.command === "string" ? record.command : "",
+    );
+  }
+  const path = CLAUDE_RUNTIME_FILE_PATH_KEYS.map((key) => record[key]).find(
+    (value): value is string =>
+      typeof value === "string" && Boolean(value.trim()),
+  );
+  return externalRuntimeFileEffect("claude_code", path ? [path] : []);
 }
 
 function fromExternalActionName(actionName: string): string | null {
@@ -2741,6 +2804,12 @@ export function createExternalBackendBridgeRuntime(options: {
           ? getConversationWriteGeneration(actionConversationKey)
           : 0;
       const actionScope = conversationScopeByKey.get(actionConversationKey);
+      const actionCallId = `${toolName}:${Date.now()}:${++externalActionSequence}`;
+      // Set when the host never let the action run at all — the user answered
+      // the review card with No, or the conversation moved on first. That is a
+      // different outcome from a run that was attempted and failed, and only
+      // one of the two may claim an effect was even started.
+      let cancelled = false;
 
       onProgress({
         type: "step_start",
@@ -2759,6 +2828,7 @@ export function createExternalBackendBridgeRuntime(options: {
               actionGeneration,
             ))
         ) {
+          cancelled = true;
           return {
             ok: false,
             error:
@@ -2848,16 +2918,19 @@ export function createExternalBackendBridgeRuntime(options: {
                   actionGeneration,
                 ))
             ) {
+              cancelled = true;
               return {
                 ok: false,
                 error: "Conversation lifecycle changed before action approval",
               };
             }
             if (!resolution.approved) {
+              cancelled = true;
               return { ok: false, error: "User denied action" };
             }
             return doRun(true);
           }
+          cancelled = true;
           return { ok: false, error: "Approval required" };
         }
 
@@ -2868,6 +2941,18 @@ export function createExternalBackendBridgeRuntime(options: {
       };
 
       const result = await doRun(false);
+      // A `cc_tool::` action is Claude Code's own Write/Edit/Bash, run inside
+      // the connected runtime. The host authorized it and can never re-read
+      // what it did, so the receipt says exactly that and no more.
+      const effect = describeClaudeRuntimeToolEffect(toolName, input);
+      if (effect)
+        await recordExternalRuntimeEffect({
+          effect,
+          outcome: result.ok ? "executed" : cancelled ? "declined" : "failed",
+          callId: actionCallId,
+          reason: result.ok ? undefined : result.error,
+          conversationKey: actionConversationKey,
+        });
       onProgress({
         type: "step_done",
         step: `Run ${toolName}`,

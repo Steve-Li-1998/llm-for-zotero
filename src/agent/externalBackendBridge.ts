@@ -1399,7 +1399,14 @@ function buildClaudeZoteroMcpScope(
   };
 }
 
-function buildClaudeMcpToolActivityEvent(
+/**
+ * The trace row for a Zotero MCP call Claude made.
+ *
+ * The receipts travel with the row: they are what the verification chip reads,
+ * so a write the connected client ran over MCP would otherwise reach the trace
+ * with no verdict at all — indistinguishable from one nobody verified.
+ */
+export function buildClaudeMcpToolActivityEvent(
   event: ZoteroMcpToolActivityEvent,
 ): AgentEvent {
   return {
@@ -1413,6 +1420,7 @@ function buildClaudeMcpToolActivityEvent(
     ok: event.ok,
     text: event.error,
     artifacts: event.artifacts,
+    actionReceipts: event.actionReceipts,
     workCategory: event.workCategory,
   };
 }

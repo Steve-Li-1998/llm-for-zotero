@@ -20,6 +20,7 @@ import {
   selectToolResultTraceCards,
 } from "../src/modules/contextPanel/agentTrace/render";
 import { buildNoteChangeResultCards } from "../src/agent/tools/write/noteChangePresentation";
+import { buildClaudeMcpToolActivityEvent } from "../src/agent/externalBackendBridge";
 import {
   createCodexNativeActivityTraceControllerForTests,
   resolveAssistantResponseMenuContent,
@@ -4186,6 +4187,39 @@ describe("agentTrace render", function () {
       "Verified",
       "Authorized by connected client",
     ]);
+  });
+
+  it("carries a Claude-driven MCP write's receipts to its trace row", function () {
+    // The Claude bridge builds this row itself instead of reusing the Codex
+    // builder, so the receipts have to be forwarded explicitly or a write the
+    // connected client ran over MCP reaches the trace with no verdict at all.
+    const event = buildClaudeMcpToolActivityEvent({
+      requestId: "mcp-claude-1",
+      phase: "completed",
+      toolName: "note_write",
+      serverName: "llm_for_zotero_profile_test",
+      ok: true,
+      timestamp: 1,
+      actionReceipts: [
+        verificationReceipt({
+          capability: "zotero.notes",
+          operation: "note_create",
+          executionAuthority: "external_runtime",
+        }),
+      ],
+    });
+    assert.deepEqual(
+      traceChipLabels([
+        {
+          runId: "run-claude-mcp",
+          seq: 1,
+          eventType: "codex_tool_activity",
+          payload: event,
+          createdAt: 1,
+        },
+      ] as unknown as AgentRunEventRecord[]),
+      ["Verified", "Authorized by connected client"],
+    );
   });
 
   it("renders a verification chip as text, not markup", function () {

@@ -50,7 +50,6 @@ import {
   AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON,
   buildConversationID,
   canMigrateLegacyAmbiguousPaperRegistryScope,
-  getConversationScopeValidationDetails,
   getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
   generateConversationInstanceID,
@@ -121,7 +120,6 @@ import {
 } from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
 import {
-  messageJoinCondition,
   resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
   type MessageConversationSelector,
 } from "../shared/conversationStore/messageConversationSelector";
@@ -132,8 +130,14 @@ import {
   backfillStoreCatalogConversationInstanceIDs,
   backfillStoreCatalogConversationTimestamps,
   repairRecoverableStoreCatalogMessageConversationIDs,
-  type ConversationStoreIdentityConfig,
 } from "../services/providers/conversationStoreIdentityRepair";
+import {
+  filterValidStoreConversationSummaries,
+  refreshStoreConversationCatalogSummary,
+  sameStoreCatalogScope,
+  validateOrRepairStoreConversationSummary,
+  type ConversationStoreCatalogConfig,
+} from "../services/providers/conversationStoreCatalogSummary";
 import {
   deleteStoreConversationSearchIndex,
   refreshStoreConversationSearchIndex,
@@ -708,51 +712,15 @@ async function ensureCodexConversationCatalogColumns(
 }
 
 async function backfillCodexConversationTimestamps(): Promise<void> {
-  await backfillStoreCatalogConversationTimestamps(CODEX_STORE_IDENTITY_CONFIG);
+  await backfillStoreCatalogConversationTimestamps(CODEX_STORE_CATALOG_CONFIG);
 }
 
 async function refreshCodexConversationCatalogSummary(
   conversationKey?: number,
 ): Promise<void> {
-  const normalizedKey =
-    conversationKey === undefined
-      ? null
-      : normalizeConversationKey(conversationKey);
-  if (conversationKey !== undefined && !normalizedKey) return;
-  await repairRecoverableCodexCatalogMessageConversationIDs(
-    normalizedKey || undefined,
-  );
-  const whereSql = normalizedKey ? "WHERE conversation_key = ?" : "";
-  const params = normalizedKey ? [normalizedKey] : [];
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CODEX_CONVERSATIONS_TABLE}
-     SET first_user_title = (
-           SELECT m0.text
-           FROM ${CODEX_MESSAGES_TABLE} m0
-           WHERE ${messageJoinCondition("m0", CODEX_CONVERSATIONS_TABLE)}
-             AND m0.role = 'user'
-           ORDER BY m0.timestamp ASC, m0.id ASC
-           LIMIT 1
-         ),
-         last_activity_at = COALESCE(
-           (
-             SELECT MAX(m.timestamp)
-             FROM ${CODEX_MESSAGES_TABLE} m
-             WHERE ${messageJoinCondition("m", CODEX_CONVERSATIONS_TABLE)}
-           ),
-           updated_at,
-           created_at
-         ),
-         user_turn_count = COALESCE(
-           (
-             SELECT SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END)
-             FROM ${CODEX_MESSAGES_TABLE} m
-             WHERE ${messageJoinCondition("m", CODEX_CONVERSATIONS_TABLE)}
-           ),
-           0
-         )
-     ${whereSql}`,
-    params,
+  await refreshStoreConversationCatalogSummary(
+    CODEX_STORE_CATALOG_CONFIG,
+    conversationKey,
   );
 }
 
@@ -940,13 +908,14 @@ async function getCodexMessagePaperContextRows(
   );
 }
 
-const CODEX_STORE_IDENTITY_CONFIG: ConversationStoreIdentityConfig = {
+const CODEX_STORE_CATALOG_CONFIG: ConversationStoreCatalogConfig = {
   system: "codex",
   storeLabel: "Codex",
   catalogTable: CODEX_CONVERSATIONS_TABLE,
   messagesTable: CODEX_MESSAGES_TABLE,
   buildConversationID: buildCodexConversationID,
   getPaperContextRows: getCodexMessagePaperContextRows,
+  rememberPaperConversationKey: setLastUsedCodexPaperConversationKey,
 };
 
 async function repairRecoverableCodexCatalogMessageConversationIDs(
@@ -957,13 +926,13 @@ async function repairRecoverableCodexCatalogMessageConversationIDs(
   refused: number;
 }> {
   return await repairRecoverableStoreCatalogMessageConversationIDs(
-    CODEX_STORE_IDENTITY_CONFIG,
+    CODEX_STORE_CATALOG_CONFIG,
     conversationKey,
   );
 }
 
 async function backfillCodexConversationIDs(): Promise<void> {
-  await backfillStoreCatalogConversationIDs(CODEX_STORE_IDENTITY_CONFIG);
+  await backfillStoreCatalogConversationIDs(CODEX_STORE_CATALOG_CONFIG);
 }
 
 async function backfillCodexConversationInstanceIDs(): Promise<void> {
@@ -2305,15 +2274,7 @@ function sameCodexCatalogScope(
     paperItemID?: number | null;
   },
 ): boolean {
-  const requestedPaperItemID =
-    params.kind === "paper"
-      ? normalizePaperItemID(Number(params.paperItemID))
-      : null;
-  return (
-    existing.libraryID === params.libraryID &&
-    existing.kind === params.kind &&
-    (existing.paperItemID || null) === (requestedPaperItemID || null)
-  );
+  return sameStoreCatalogScope(existing, params);
 }
 
 async function refreshCodexConversationSearchIndex(
@@ -2339,148 +2300,20 @@ async function filterValidCodexConversationSummaries(
   summaries: CodexConversationSummary[],
   expectedPaperItemID?: number | null,
 ): Promise<CodexConversationSummary[]> {
-  const filtered: CodexConversationSummary[] = [];
-  for (const summary of summaries) {
-    const validSummary =
-      await validateOrRepairCodexConversationSummary(summary);
-    if (!validSummary) continue;
-    const normalizedExpectedPaperItemID = normalizePaperItemID(
-      Number(expectedPaperItemID),
-    );
-    if (
-      normalizedExpectedPaperItemID &&
-      validSummary.kind === "paper" &&
-      validSummary.paperItemID !== normalizedExpectedPaperItemID
-    ) {
-      continue;
-    }
-    filtered.push(validSummary);
-  }
-  return filtered;
+  return await filterValidStoreConversationSummaries(
+    CODEX_STORE_CATALOG_CONFIG,
+    summaries,
+    expectedPaperItemID,
+  );
 }
 
 async function validateOrRepairCodexConversationSummary(
   summary: CodexConversationSummary,
 ): Promise<CodexConversationSummary | null> {
-  const validation = await getConversationScopeValidationDetails({
-    conversationID: summary.conversationID,
-    conversationKey: summary.conversationKey,
-    system: "codex",
-    kind: summary.kind,
-    libraryID: summary.libraryID,
-    paperItemID: summary.paperItemID,
-  });
-  if (validation.valid) return summary;
-
-  const registered =
-    validation.registered ||
-    (await getRegisteredConversationScope(summary.conversationKey));
-  if (
-    canMigrateLegacyAmbiguousPaperRegistryScope(registered, {
-      system: "codex",
-      kind: summary.kind,
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-    })
-  ) {
-    await repairRegisteredConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "codex",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    logConversationStoreWarning(
-      `Migrated Codex conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
-    );
-    return summary;
-  }
-  if (registered) return null;
-
-  if (summary.kind === "global") {
-    const registeredMissingGlobal = await registerConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "codex",
-      kind: summary.kind,
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    return registeredMissingGlobal ? summary : null;
-  }
-
-  if (summary.paperItemID) {
-    const registeredMissingPaper = await registerConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "codex",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    return registeredMissingPaper ? summary : null;
-  }
-
-  const evidence = getPaperContextOwnershipEvidenceFromRows(
-    await getCodexMessagePaperContextRows(summary.conversationKey),
+  return await validateOrRepairStoreConversationSummary(
+    CODEX_STORE_CATALOG_CONFIG,
+    summary,
   );
-  const inferredPaperItemID = evidence.singlePaperItemID;
-  if (inferredPaperItemID) {
-    const repairedConversationID = buildCodexConversationID({
-      conversationKey: summary.conversationKey,
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: inferredPaperItemID,
-    });
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CODEX_CONVERSATIONS_TABLE}
-       SET conversation_id = ?,
-           paper_item_id = ?
-       WHERE conversation_key = ?`,
-      [repairedConversationID, inferredPaperItemID, summary.conversationKey],
-    );
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CODEX_MESSAGES_TABLE}
-       SET conversation_id = ?
-       WHERE conversation_key = ?`,
-      [repairedConversationID, summary.conversationKey],
-    );
-    setLastUsedCodexPaperConversationKey(
-      summary.libraryID,
-      inferredPaperItemID,
-      summary.conversationKey,
-    );
-    await repairRegisteredConversationScope({
-      conversationKey: summary.conversationKey,
-      system: "codex",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: inferredPaperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    logConversationStoreWarning(
-      `Repaired Codex conversation ${summary.conversationKey} to paper ${inferredPaperItemID} while loading history.`,
-    );
-    return {
-      ...summary,
-      conversationID: repairedConversationID,
-      paperItemID: inferredPaperItemID,
-    };
-  }
-
-  return null;
 }
 
 export async function getCodexConversationSummary(

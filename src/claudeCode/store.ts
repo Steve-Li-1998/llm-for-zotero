@@ -43,7 +43,6 @@ import {
   AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON,
   buildConversationID,
   canMigrateLegacyAmbiguousPaperRegistryScope,
-  getConversationScopeValidationDetails,
   getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
   generateConversationInstanceID,
@@ -114,7 +113,6 @@ import {
 } from "../shared/conversationStore/keyNormalization";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
 import {
-  messageJoinCondition,
   resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
   type MessageConversationSelector,
 } from "../shared/conversationStore/messageConversationSelector";
@@ -125,8 +123,14 @@ import {
   backfillStoreCatalogConversationInstanceIDs,
   backfillStoreCatalogConversationTimestamps,
   repairRecoverableStoreCatalogMessageConversationIDs,
-  type ConversationStoreIdentityConfig,
 } from "../services/providers/conversationStoreIdentityRepair";
+import {
+  filterValidStoreConversationSummaries,
+  refreshStoreConversationCatalogSummary,
+  sameStoreCatalogScope,
+  validateOrRepairStoreConversationSummary,
+  type ConversationStoreCatalogConfig,
+} from "../services/providers/conversationStoreCatalogSummary";
 import {
   deleteStoreConversationSearchIndex,
   refreshStoreConversationSearchIndex,
@@ -529,53 +533,15 @@ async function ensureClaudeConversationCatalogColumns(
 }
 
 async function backfillClaudeConversationTimestamps(): Promise<void> {
-  await backfillStoreCatalogConversationTimestamps(
-    CLAUDE_STORE_IDENTITY_CONFIG,
-  );
+  await backfillStoreCatalogConversationTimestamps(CLAUDE_STORE_CATALOG_CONFIG);
 }
 
 async function refreshClaudeConversationCatalogSummary(
   conversationKey?: number,
 ): Promise<void> {
-  const normalizedKey =
-    conversationKey === undefined
-      ? null
-      : normalizeConversationKey(conversationKey);
-  if (conversationKey !== undefined && !normalizedKey) return;
-  await repairRecoverableClaudeCatalogMessageConversationIDs(
-    normalizedKey || undefined,
-  );
-  const whereSql = normalizedKey ? "WHERE conversation_key = ?" : "";
-  const params = normalizedKey ? [normalizedKey] : [];
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-     SET first_user_title = (
-           SELECT m0.text
-           FROM ${CLAUDE_MESSAGES_TABLE} m0
-           WHERE ${messageJoinCondition("m0", CLAUDE_CONVERSATIONS_TABLE)}
-             AND m0.role = 'user'
-           ORDER BY m0.timestamp ASC, m0.id ASC
-           LIMIT 1
-         ),
-         last_activity_at = COALESCE(
-           (
-             SELECT MAX(m.timestamp)
-             FROM ${CLAUDE_MESSAGES_TABLE} m
-             WHERE ${messageJoinCondition("m", CLAUDE_CONVERSATIONS_TABLE)}
-           ),
-           updated_at,
-           created_at
-         ),
-         user_turn_count = COALESCE(
-           (
-             SELECT SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END)
-             FROM ${CLAUDE_MESSAGES_TABLE} m
-             WHERE ${messageJoinCondition("m", CLAUDE_CONVERSATIONS_TABLE)}
-           ),
-           0
-         )
-     ${whereSql}`,
-    params,
+  await refreshStoreConversationCatalogSummary(
+    CLAUDE_STORE_CATALOG_CONFIG,
+    conversationKey,
   );
 }
 
@@ -588,13 +554,14 @@ async function getClaudeMessagePaperContextRows(
   );
 }
 
-const CLAUDE_STORE_IDENTITY_CONFIG: ConversationStoreIdentityConfig = {
+const CLAUDE_STORE_CATALOG_CONFIG: ConversationStoreCatalogConfig = {
   system: "claude_code",
   storeLabel: "Claude",
   catalogTable: CLAUDE_CONVERSATIONS_TABLE,
   messagesTable: CLAUDE_MESSAGES_TABLE,
   buildConversationID: buildClaudeConversationID,
   getPaperContextRows: getClaudeMessagePaperContextRows,
+  rememberPaperConversationKey: setLastUsedClaudePaperConversationKey,
 };
 
 async function repairRecoverableClaudeCatalogMessageConversationIDs(
@@ -605,13 +572,13 @@ async function repairRecoverableClaudeCatalogMessageConversationIDs(
   refused: number;
 }> {
   return await repairRecoverableStoreCatalogMessageConversationIDs(
-    CLAUDE_STORE_IDENTITY_CONFIG,
+    CLAUDE_STORE_CATALOG_CONFIG,
     conversationKey,
   );
 }
 
 async function backfillClaudeConversationIDs(): Promise<void> {
-  await backfillStoreCatalogConversationIDs(CLAUDE_STORE_IDENTITY_CONFIG);
+  await backfillStoreCatalogConversationIDs(CLAUDE_STORE_CATALOG_CONFIG);
 }
 
 async function backfillClaudeConversationInstanceIDs(): Promise<void> {
@@ -1877,163 +1844,27 @@ function sameClaudeCatalogScope(
     paperItemID?: number | null;
   },
 ): boolean {
-  const requestedPaperItemID =
-    params.kind === "paper"
-      ? normalizePaperItemID(Number(params.paperItemID))
-      : null;
-  return (
-    existing.libraryID === params.libraryID &&
-    existing.kind === params.kind &&
-    (existing.paperItemID || null) === (requestedPaperItemID || null)
-  );
+  return sameStoreCatalogScope(existing, params);
 }
 
 async function filterValidClaudeConversationSummaries(
   summaries: ClaudeConversationSummary[],
   expectedPaperItemID?: number | null,
 ): Promise<ClaudeConversationSummary[]> {
-  const filtered: ClaudeConversationSummary[] = [];
-  for (const summary of summaries) {
-    const validSummary =
-      await validateOrRepairClaudeConversationSummary(summary);
-    if (!validSummary) continue;
-    const normalizedExpectedPaperItemID = normalizePaperItemID(
-      Number(expectedPaperItemID),
-    );
-    if (
-      normalizedExpectedPaperItemID &&
-      validSummary.kind === "paper" &&
-      validSummary.paperItemID !== normalizedExpectedPaperItemID
-    ) {
-      continue;
-    }
-    filtered.push(validSummary);
-  }
-  return filtered;
+  return await filterValidStoreConversationSummaries(
+    CLAUDE_STORE_CATALOG_CONFIG,
+    summaries,
+    expectedPaperItemID,
+  );
 }
 
 async function validateOrRepairClaudeConversationSummary(
   summary: ClaudeConversationSummary,
 ): Promise<ClaudeConversationSummary | null> {
-  const validation = await getConversationScopeValidationDetails({
-    conversationID: summary.conversationID,
-    conversationKey: summary.conversationKey,
-    system: "claude_code",
-    kind: summary.kind,
-    libraryID: summary.libraryID,
-    paperItemID: summary.paperItemID,
-  });
-  if (validation.valid) return summary;
-
-  const registered =
-    validation.registered ||
-    (await getRegisteredConversationScope(summary.conversationKey));
-  if (
-    canMigrateLegacyAmbiguousPaperRegistryScope(registered, {
-      system: "claude_code",
-      kind: summary.kind,
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-    })
-  ) {
-    await repairRegisteredConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "claude_code",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    logConversationStoreWarning(
-      `Migrated Claude conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
-    );
-    return summary;
-  }
-  if (registered) return null;
-
-  if (summary.kind === "global") {
-    const registeredMissingGlobal = await registerConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "claude_code",
-      kind: summary.kind,
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    return registeredMissingGlobal ? summary : null;
-  }
-
-  if (summary.paperItemID) {
-    const registeredMissingPaper = await registerConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "claude_code",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    return registeredMissingPaper ? summary : null;
-  }
-
-  const evidence = getPaperContextOwnershipEvidenceFromRows(
-    await getClaudeMessagePaperContextRows(summary.conversationKey),
+  return await validateOrRepairStoreConversationSummary(
+    CLAUDE_STORE_CATALOG_CONFIG,
+    summary,
   );
-  const inferredPaperItemID = evidence.singlePaperItemID;
-  if (inferredPaperItemID) {
-    const repairedConversationID = buildClaudeConversationID({
-      conversationKey: summary.conversationKey,
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: inferredPaperItemID,
-    });
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-       SET conversation_id = ?,
-           paper_item_id = ?
-       WHERE conversation_key = ?`,
-      [repairedConversationID, inferredPaperItemID, summary.conversationKey],
-    );
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_MESSAGES_TABLE}
-       SET conversation_id = ?
-       WHERE conversation_key = ?`,
-      [repairedConversationID, summary.conversationKey],
-    );
-    setLastUsedClaudePaperConversationKey(
-      summary.libraryID,
-      inferredPaperItemID,
-      summary.conversationKey,
-    );
-    await repairRegisteredConversationScope({
-      conversationKey: summary.conversationKey,
-      system: "claude_code",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: inferredPaperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    logConversationStoreWarning(
-      `Repaired Claude conversation ${summary.conversationKey} to paper ${inferredPaperItemID} while loading history.`,
-    );
-    return {
-      ...summary,
-      conversationID: repairedConversationID,
-      paperItemID: inferredPaperItemID,
-    };
-  }
-
-  return null;
 }
 
 export async function getClaudeConversationSummary(

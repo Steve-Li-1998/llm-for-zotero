@@ -190,6 +190,14 @@ export function createWriteNotesBatchTool(
       itemKey: item.itemKey,
       position: index + 1,
       materialRef: item.material,
+      // A row with no material has nothing a resume could write, so it opens
+      // as the failure it already is rather than as pending work.
+      ...(item.material
+        ? {}
+        : {
+            status: "failed" as const,
+            error: item.failure || "The note body was not finalized",
+          }),
     }));
     await createBatchItems(batchId, rows, now);
     return {
@@ -274,11 +282,15 @@ export function createWriteNotesBatchTool(
               ? (inner.result as Record<string, unknown>)
               : {};
           const created = Number(innermost.createdCount || 0);
+          const alreadySaved = Number(innermost.alreadySavedCount || 0);
           const failed = Number(innermost.failedCount || 0);
-          if (!created) return "No notes written";
+          if (!created)
+            return alreadySaved
+              ? `${alreadySaved} note${alreadySaved === 1 ? " was" : "s were"} already written`
+              : "No notes written";
           return `Wrote ${created} note${created === 1 ? "" : "s"}${
-            failed ? ` (${failed} failed)` : ""
-          }`;
+            alreadySaved ? ` (${alreadySaved} already written)` : ""
+          }${failed ? ` (${failed} failed)` : ""}`;
         },
       },
     },

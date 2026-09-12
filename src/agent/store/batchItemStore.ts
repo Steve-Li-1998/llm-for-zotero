@@ -43,6 +43,13 @@ export type NewBatchItem = {
   itemKey: string;
   position: number;
   materialRef?: MaterialRef;
+  /**
+   * State to open the row in. An item whose body could not be finalized is
+   * seeded `failed`: a `pending` row promises a resume material it does not
+   * have, and a crash before the write would leave that promise standing.
+   */
+  status?: BatchItemStatus;
+  error?: string;
 };
 
 /** A batch with at least one item still unwritten. */
@@ -164,7 +171,7 @@ export async function createBatchItems(
          (batch_id, item_key, position, material_document_id, material_version,
           material_content_hash, action_id, step_sequence, note_id, status,
           error, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'pending', NULL, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`,
         [
           batchId,
           row.itemKey,
@@ -172,6 +179,8 @@ export async function createBatchItems(
           row.materialRef?.documentId ?? null,
           row.materialRef?.documentVersion ?? null,
           row.materialRef?.contentHash ?? null,
+          row.status ?? "pending",
+          row.error ?? null,
           now,
           now,
         ],

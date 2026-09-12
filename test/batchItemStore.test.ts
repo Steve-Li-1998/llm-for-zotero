@@ -167,6 +167,37 @@ describe("batch item store", function () {
     assert.equal(rows[0].noteId, 500);
   });
 
+  it("opens a row with no material as failed, not as pending work", async function () {
+    await batch("batch-1");
+    await createBatchItems(
+      "batch-1",
+      [
+        { itemKey: "item:1", position: 1, materialRef: materialRef("1") },
+        {
+          itemKey: "item:2",
+          position: 2,
+          status: "failed",
+          error: "The body could not be finalized",
+        },
+      ],
+      1000,
+    );
+
+    const rows = await listBatchItems("batch-1");
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["pending", "failed"],
+    );
+    // A pending row promises a resume material it does not have.
+    assert.isUndefined(rows[1].materialRef);
+    assert.equal(rows[1].error, "The body could not be finalized");
+    const [resumable] = await listResumableBatches(42);
+    assert.deepEqual(
+      { pending: resumable.pending, failed: resumable.failed },
+      { pending: 1, failed: 1 },
+    );
+  });
+
   it("records the journal step that wrote a saved note", async function () {
     await batch("batch-1");
     await createBatchItems(

@@ -87,20 +87,8 @@ import {
   installPlanDocumentSqlite,
   type InstalledMockDb,
 } from "./helpers/agentRuntimeMockDb";
+import { createTestActionContractService } from "./helpers/actionContractService";
 import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
-
-function createTestActionContractService(
-  getItem: (itemId: number) => Zotero.Item | null = () => null,
-): ActionContractService {
-  return new ActionContractService({
-    getCollectionSummary: () => null,
-    listCollectionSummaries: () => [],
-    listCollectionPaperTargets: async () => ({ papers: [] }),
-    listCollectionItemTargets: async () => ({ items: [] }),
-    getItem,
-    getEditableArticleMetadata: () => null,
-  });
-}
 
 function registerZeroEffectLibraryUpdate(registry: AgentToolRegistry): void {
   registry.register({

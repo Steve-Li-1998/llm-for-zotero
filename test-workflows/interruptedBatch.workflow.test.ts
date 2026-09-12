@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { registerPreparedLibraryActions } from "../src/agent/tools/preparedLibraryActions";

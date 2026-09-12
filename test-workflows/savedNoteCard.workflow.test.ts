@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { AgentToolRegistry } from "../src/agent/tools/registry";

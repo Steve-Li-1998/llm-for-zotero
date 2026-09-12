@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";

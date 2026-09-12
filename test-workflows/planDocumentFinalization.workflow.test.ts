@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { createDocumentPlan } from "../test/helpers/documentPlan";
 import { PlanDocumentFinalizer } from "../src/agent/documents/planFinalization";

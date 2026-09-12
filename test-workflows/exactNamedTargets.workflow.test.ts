@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";

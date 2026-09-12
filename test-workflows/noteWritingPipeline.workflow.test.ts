@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { executePreparedNoteChange } from "../src/agent/tools/write/preparedNoteChange";
 import { executeNoteCreation } from "../src/agent/services/noteCreation";

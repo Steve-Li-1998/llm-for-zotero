@@ -1406,5 +1406,5 @@ export type PreparedToolExecution =
       execute: (
         resolution: AgentConfirmationResolution,
       ) => Promise<PreparedToolExecution>;
-      deny: (resolutionData?: unknown) => PreparedToolExecutionResult;
+      deny: (resolutionData?: unknown) => Promise<PreparedToolExecutionResult>;
     };

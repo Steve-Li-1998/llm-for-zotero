@@ -144,20 +144,24 @@ describe("finalized document file export", function () {
     const markdown = new TextDecoder().decode(files.get("/vault/report.md"));
     assert.include(markdown, "![Figure 1](report_assets/figure-1.png)");
     assert.equal(
-      service.finalize(undefined, prepared, {
-        ok: true,
-        effect: result.effect,
-        content: result.content,
-      })[0].verification,
+      (
+        await service.finalize(undefined, prepared, {
+          ok: true,
+          effect: result.effect,
+          content: result.content,
+        })
+      )[0].verification,
       "verified",
     );
     const corrupted = { ...(result.content as any), exportedFiles: [] };
     assert.equal(
-      service.finalize(undefined, prepared, {
-        ok: true,
-        effect: result.effect,
-        content: corrupted,
-      })[0].verification,
+      (
+        await service.finalize(undefined, prepared, {
+          ok: true,
+          effect: result.effect,
+          content: corrupted,
+        })
+      )[0].verification,
       "unverified",
     );
   });

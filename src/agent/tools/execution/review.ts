@@ -19,7 +19,7 @@ export async function resolvePreparedActionReview(
   let resolution: AgentConfirmationResolution | undefined;
   while (current.kind === "confirmation") {
     resolution = await resolve(current.action, current.requestId);
-    if (!isExecutionAllowed()) return current.deny();
+    if (!isExecutionAllowed()) return await current.deny();
     current = await current.execute(resolution);
   }
   return resolution

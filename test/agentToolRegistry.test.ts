@@ -864,7 +864,7 @@ describe("AgentToolRegistry", function () {
       ["selectedOperations", "operationsJson"],
       "internal authorization diagnostics must not become user-editable review fields",
     );
-    assert.equal(result.deny().result.ok, false);
+    assert.equal((await result.deny()).result.ok, false);
     const approved = await result.execute({
       approved: true,
       data: {

@@ -1,4 +1,5 @@
 import type { ActionConstraint } from "../authorization/types";
+import type { MaterialRef } from "../documents/materialRef";
 import type {
   LibraryMutationOperation,
   LibraryMutationState,
@@ -264,7 +265,23 @@ export type AgentActionReceipt = {
   rejectedTargets: string[];
   normalizedParameters?: AgentActionParameters;
   reasons: string[];
+  /**
+   * What this action's verification actually proved, one fact per claim.
+   *
+   * Note-write facts name their evidence strength:
+   * - `native_note:<noteId>:html_sha256:<hex>` — a forced native read-back
+   *   matched the expected HTML. The digest is taken over the read-back string
+   *   that came back with the tool result, which the verifier proved
+   *   *canonically* equal to the stored note (whitespace normalized, attributes
+   *   sorted, Zotero wrapper divs stripped) — not over the stored bytes. Treat
+   *   it as a strength token and as a receipt-to-receipt equality token only;
+   *   recomputing it from a live note will not reliably match.
+   * - `native_note:<noteId>:text_match` — only the weaker plain-text check ran.
+   * - neither — content was not proved at all; the receipt covers identity only.
+   */
   verifiedFacts: string[];
+  /** The exact material version this action consumed, frozen in the proposal. */
+  materialRef?: MaterialRef;
   evidenceRef?: string;
 };
 

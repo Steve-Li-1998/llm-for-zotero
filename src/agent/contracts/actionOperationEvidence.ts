@@ -13,6 +13,7 @@ import {
 import { innermostToolResult } from "./toolResultEnvelope";
 import { operationAuthorityIsConsistent } from "./operationCatalog";
 import { normalizeNotePlainText, stripNoteHtml } from "../../utils/noteText";
+import { sha256Text } from "../store/journalRecoveryBlobStore";
 
 export type CollectionSummary = {
   collectionId: number;
@@ -184,14 +185,25 @@ function itemCollections(item: Zotero.Item | null): number[] {
 }
 
 export type NoteWriteVerification =
-  | { targets: string[]; reason?: never }
-  | { targets: null; reason: string };
+  | {
+      targets: string[];
+      /**
+       * Content evidence this verification actually consumed, as receipt facts.
+       * A native read-back yields a digest fact, the weaker plain-text fallback
+       * yields only a text-match fact, so the two evidence strengths stay
+       * distinguishable on the receipt. See the digest's provenance limit where
+       * the `html_sha256` fact is built below.
+       */
+      facts: string[];
+      reason?: never;
+    }
+  | { targets: null; facts?: never; reason: string };
 
-export function verifyNoteWriteTarget(
+export async function verifyNoteWriteTarget(
   proposal: AgentActionProposal,
   content: unknown,
   gateway: ActionContractGateway,
-): NoteWriteVerification {
+): Promise<NoteWriteVerification> {
   if (
     proposal.operation !== "note_create" &&
     proposal.operation !== "note_edit" &&
@@ -281,7 +293,22 @@ export function verifyNoteWriteTarget(
           "The native note evidence does not prove the prepared change on the bound note.",
       };
     }
-    return { targets: [itemTarget(noteId)] };
+    // Provenance limit, and it is narrow: the digest is taken over the
+    // read-back string the tool result supplied, not over the stored note
+    // bytes. The checks above prove that string is *canonically* equal to
+    // `note.getNote()` and to the expected HTML — `noteHtmlMatches` normalizes
+    // whitespace, sorts attributes and strips Zotero's wrapper divs — so two
+    // semantically identical spellings of the same note hash differently. The
+    // fact therefore means "a forced native read-back matched the expected
+    // HTML", and it is only usable as a strength token and as a
+    // receipt-to-receipt equality token. Never recompute it from a live note
+    // and expect a match.
+    return {
+      targets: [itemTarget(noteId)],
+      facts: [
+        `native_note:${noteId}:html_sha256:${await sha256Text(verification.html)}`,
+      ],
+    };
   }
   if (proposal.parameters?.expectedText?.trim()) {
     const actual = normalizeNotePlainText(
@@ -296,8 +323,12 @@ export function verifyNoteWriteTarget(
         reason: `Stored content for note ${noteId} does not satisfy the requested note text.`,
       };
     }
+    return {
+      targets: [itemTarget(noteId)],
+      facts: [`native_note:${noteId}:text_match`],
+    };
   }
-  return { targets: [itemTarget(noteId)] };
+  return { targets: [itemTarget(noteId)], facts: [] };
 }
 
 export async function prepareActionExecution(

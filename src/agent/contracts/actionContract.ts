@@ -38,6 +38,7 @@ import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPerm
 import { canonicalJsonEqual } from "../services/libraryMutation/canonicalJson";
 import { mutationPostconditionIsSatisfied } from "../services/libraryMutation/handlerOperations";
 import { innermostToolResult, toolResultString } from "./toolResultEnvelope";
+import type { MaterialRef } from "../documents/materialRef";
 
 export type {
   ActionContractGateway,
@@ -283,6 +284,23 @@ function targetDelta(previous: readonly number[], current: readonly number[]) {
 
 function readEvidenceRef(content: unknown): string | undefined {
   return toolResultString(content, ["actionId", "journalStepId"]);
+}
+
+/**
+ * The receipt names the exact material version the approved proposal froze.
+ * Only a complete ref identifies one revision, so a partially frozen proposal
+ * names nothing rather than half a ref. The completeness rule is the one
+ * `materialRefFromDocument` enforces when the proposal is first frozen.
+ */
+function frozenMaterialRef(
+  parameters: AgentActionParameters | undefined,
+): MaterialRef | undefined {
+  const { documentId, documentVersion, contentHash } = parameters || {};
+  if (!documentId || !contentHash) return undefined;
+  if (typeof documentVersion !== "number") return undefined;
+  if (!Number.isSafeInteger(documentVersion) || documentVersion < 1)
+    return undefined;
+  return { documentId, documentVersion, contentHash };
 }
 
 function evidenceTargets(evidence: AgentActionEvidence): string[] {
@@ -1122,7 +1140,7 @@ export class ActionContractService {
     return null;
   }
 
-  finalize(
+  async finalize(
     contract: AgentActionContract | undefined,
     prepared: PreparedActionExecution,
     params: {
@@ -1138,10 +1156,10 @@ export class ActionContractService {
       obligationId: string;
       addedTargetIds: readonly number[];
     }>,
-  ): AgentActionReceipt[] {
+  ): Promise<AgentActionReceipt[]> {
     if (contract)
       contract = resolveCreatedDestinations(this.gateway, contract, progress);
-    return prepared.proposals.flatMap((proposal) => {
+    const batches = prepared.proposals.map((proposal) => {
       let obligations: Array<AgentActionObligation | undefined>;
       if (!contract) {
         obligations = [undefined];
@@ -1166,8 +1184,12 @@ export class ActionContractService {
           : matches;
       }
       return (obligations.length ? obligations : [undefined]).map(
-        (obligation) => {
-          const receipt = this.finalizeProposal(proposal, obligation, params);
+        async (obligation) => {
+          const receipt = await this.finalizeProposal(
+            proposal,
+            obligation,
+            params,
+          );
           return obligation && isSourceCollectionItemObligation(obligation)
             ? narrowReceiptToBoundary(
                 receipt,
@@ -1180,9 +1202,12 @@ export class ActionContractService {
         },
       );
     });
+    return (
+      await Promise.all(batches.map((batch) => Promise.all(batch)))
+    ).flat();
   }
 
-  private finalizeProposal(
+  private async finalizeProposal(
     proposal: AgentActionProposal,
     obligation: AgentActionObligation | undefined,
     params: {
@@ -1193,7 +1218,7 @@ export class ActionContractService {
       content?: unknown;
       actionEvidence?: AgentActionEvidence[];
     },
-  ): AgentActionReceipt {
+  ): Promise<AgentActionReceipt> {
     const evidenceRef = readEvidenceRef(params.content);
     const base = {
       version: 2 as const,
@@ -1209,6 +1234,7 @@ export class ActionContractService {
       reasons: params.reason ? [params.reason] : [],
       verifiedFacts:
         proposal.operation === "read_full" ? ["read_mode:full"] : [],
+      materialRef: frozenMaterialRef(proposal.parameters),
       evidenceRef,
     };
     if (params.cancelled) {
@@ -1294,7 +1320,7 @@ export class ActionContractService {
       proposal.operation === "note_edit" ||
       proposal.operation === "note_append"
     ) {
-      const verification = verifyNoteWriteTarget(
+      const verification = await verifyNoteWriteTarget(
         proposal,
         params.content,
         this.gateway,
@@ -1318,6 +1344,7 @@ export class ActionContractService {
               ...(proposal.operation === "note_create"
                 ? verification.targets.map((target) => `created_note:${target}`)
                 : []),
+              ...verification.facts,
             ],
             appliedTargets: params.effect === "none" ? [] : coveredTargets!,
             alreadySatisfiedTargets:

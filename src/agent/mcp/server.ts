@@ -2317,7 +2317,10 @@ async function handleToolsCall(
       const resolution = await scope.requestInteraction(prepared.action);
       prepared = resolution.approved
         ? await prepared.execute(resolution)
-        : { kind: "result", execution: prepared.deny(resolution.data) };
+        : {
+            kind: "result" as const,
+            execution: await prepared.deny(resolution.data),
+          };
     }
     if (scope) {
       scope.actionContract = toolContext.request.actionContract;

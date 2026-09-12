@@ -16,6 +16,8 @@ import type {
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 import { parseActionIntents } from "../src/agent/model/actionIntent";
 import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
+import { sha256Text } from "../src/agent/store/journalRecoveryBlobStore";
+import { decodeActionReceipt } from "../src/agent/plans/contracts";
 
 type FakeItemState = {
   tags: string[];
@@ -701,7 +703,7 @@ describe("Action Contract V2", function () {
           { progress },
         ),
       );
-      const receipts = service.finalize(
+      const receipts = await service.finalize(
         contract,
         prepared,
         {
@@ -1116,7 +1118,7 @@ describe("Action Contract V2", function () {
       exists: true,
       tags: ["topic:drift"],
     }));
-    const receipts = service.finalize(
+    const receipts = await service.finalize(
       contract,
       prepared,
       {
@@ -1206,7 +1208,7 @@ describe("Action Contract V2", function () {
     assert.isNull(
       await service.validateScope(contract, prepared, { progress }),
     );
-    const receipts = service.finalize(
+    const receipts = await service.finalize(
       contract,
       prepared,
       {
@@ -1747,7 +1749,7 @@ describe("Action Contract V2", function () {
     const prepared = await service.prepare(mutationTool(), { operation });
     items.get(1)!.tags.push("topic:drift");
     items.get(3)!.tags.push("topic:drift");
-    const receipts = service.finalize(contract, prepared, {
+    const receipts = await service.finalize(contract, prepared, {
       ok: true,
       effect: "partial",
       content: { actionId: "journal-1" },
@@ -1946,7 +1948,7 @@ describe("Action Contract V2", function () {
         );
       }
       entry.mutate();
-      const receipts = service.finalize(contract, prepared, {
+      const receipts = await service.finalize(contract, prepared, {
         ok: true,
         effect: "applied",
         content: { actionId: entry.journalStepId.split(":")[0] },
@@ -2001,13 +2003,13 @@ describe("Action Contract V2", function () {
     const preparedFile = await service.prepare(fileTool, {
       filePath: "/tmp/acv2.md",
     });
-    const noReadback = service.finalize(fileContract, preparedFile, {
+    const noReadback = await service.finalize(fileContract, preparedFile, {
       ok: true,
       effect: "applied",
       content: { filePath: "/tmp/acv2.md" },
     });
     assert.equal(noReadback[0].verification, "unverified");
-    const verified = service.finalize(fileContract, preparedFile, {
+    const verified = await service.finalize(fileContract, preparedFile, {
       ok: true,
       effect: "applied",
       content: {
@@ -2107,7 +2109,7 @@ describe("Action Contract V2", function () {
           {},
         );
         assert.isNull(await service.validateScope(contract, prepared));
-        const receipts = service.finalize(contract, prepared, {
+        const receipts = await service.finalize(contract, prepared, {
           ok: true,
           effect: "applied",
           content: { noteId: 700 },
@@ -2125,6 +2127,151 @@ describe("Action Contract V2", function () {
       },
     );
   }
+
+  async function noteWriteReceipt(params: {
+    parameters: Record<string, unknown>;
+    content: unknown;
+    noteHtml: string;
+  }) {
+    const { service, items } = createHarness();
+    items.set(41, { tags: [], collections: [], fields: { title: "Paper" } });
+    items.set(700, {
+      tags: [],
+      collections: [],
+      fields: {},
+      kind: "note",
+      parentItemId: 41,
+      noteHtml: params.noteHtml,
+    });
+    const prepared = await service.prepare(
+      {
+        ...mutationTool(),
+        describeAction: () => [
+          {
+            id: "note-for-paper",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "note_create",
+            source: "zotero_native",
+            parameters: params.parameters,
+            requestedTargets: ["item:41"],
+            destinationCollectionIds: [],
+          },
+        ],
+      },
+      {},
+    );
+    const receipts = await service.finalize(undefined, prepared, {
+      ok: true,
+      effect: "applied",
+      content: params.content,
+    });
+    return receipts[0];
+  }
+
+  it("names the material and the native HTML digest on a material-backed note write", async function () {
+    const html = "<p>Grounded summary.</p>";
+    const receipt = await noteWriteReceipt({
+      noteHtml: html,
+      parameters: {
+        noteMode: "create",
+        targetItemId: 41,
+        documentId: "doc-material-1",
+        documentVersion: 2,
+        contentHash: "sha256:frozen-content-hash",
+      },
+      content: {
+        noteId: 700,
+        noteVerification: {
+          schemaVersion: 1,
+          noteId: 700,
+          matches: true,
+          html,
+          expectedHtml: html,
+        },
+      },
+    });
+    assert.deepEqual(receipt.materialRef, {
+      documentId: "doc-material-1",
+      documentVersion: 2,
+      contentHash: "sha256:frozen-content-hash",
+    });
+    assert.equal(receipt.verification, "verified");
+    assert.include(receipt.verifiedFacts, "created_note:item:700");
+    assert.include(
+      receipt.verifiedFacts,
+      `native_note:700:html_sha256:${await sha256Text(html)}`,
+    );
+    assert.notInclude(receipt.verifiedFacts, "native_note:700:text_match");
+  });
+
+  it("leaves materialRef unset when the note write froze no material", async function () {
+    const receipt = await noteWriteReceipt({
+      noteHtml: "<p>Grounded summary.</p>",
+      parameters: {
+        noteMode: "create",
+        targetItemId: 41,
+        expectedText: "Grounded summary.",
+      },
+      content: { noteId: 700 },
+    });
+    assert.isUndefined(receipt.materialRef);
+    assert.include(receipt.verifiedFacts, "created_note:item:700");
+    assert.include(receipt.verifiedFacts, "native_note:700:text_match");
+    assert.notInclude(receipt.verifiedFacts.join(" "), "html_sha256");
+  });
+
+  it("marks the weaker text-match evidence when no native note verification was produced", async function () {
+    // The already-satisfied save of a document with embedded assets returns no
+    // noteVerification, so the receipt must not claim native HTML evidence.
+    const receipt = await noteWriteReceipt({
+      noteHtml: "<p>Grounded summary.</p>",
+      parameters: {
+        noteMode: "create",
+        targetItemId: 41,
+        expectedText: "Grounded summary.",
+        documentId: "doc-material-2",
+        documentVersion: 3,
+        contentHash: "sha256:asset-backed-hash",
+      },
+      content: { noteId: 700 },
+    });
+    assert.deepEqual(receipt.materialRef, {
+      documentId: "doc-material-2",
+      documentVersion: 3,
+      contentHash: "sha256:asset-backed-hash",
+    });
+    assert.include(receipt.verifiedFacts, "native_note:700:text_match");
+    assert.notInclude(receipt.verifiedFacts.join(" "), "html_sha256");
+  });
+
+  it("round-trips a material-backed note receipt through persistence", async function () {
+    const html = "<p>Grounded summary.</p>";
+    const receipt = await noteWriteReceipt({
+      noteHtml: html,
+      parameters: {
+        noteMode: "create",
+        targetItemId: 41,
+        documentId: "doc-material-3",
+        documentVersion: 4,
+        contentHash: "sha256:round-trip-hash",
+      },
+      content: {
+        noteId: 700,
+        noteVerification: {
+          schemaVersion: 1,
+          noteId: 700,
+          matches: true,
+          html,
+          expectedHtml: html,
+        },
+      },
+    });
+    const decoded = decodeActionReceipt(JSON.parse(JSON.stringify(receipt)));
+    assert.deepEqual(decoded.materialRef, receipt.materialRef);
+    assert.deepEqual(decoded.verifiedFacts, receipt.verifiedFacts);
+    assert.equal(decoded.normalizedParameters?.documentVersion, 4);
+  });
 
   it("closes Zotero-note and file-export obligations independently", async function () {
     const { service, items } = createHarness();
@@ -2178,7 +2325,7 @@ describe("Action Contract V2", function () {
       },
       {},
     );
-    const noteReceipts = service.finalize(contract, notePrepared, {
+    const noteReceipts = await service.finalize(contract, notePrepared, {
       ok: true,
       effect: "applied",
       content: { actionId: "note-step", result: { noteId: 700 } },
@@ -2206,7 +2353,7 @@ describe("Action Contract V2", function () {
       },
       {},
     );
-    const fileReceipts = service.finalize(contract, filePrepared, {
+    const fileReceipts = await service.finalize(contract, filePrepared, {
       ok: true,
       effect: "applied",
       content: {
@@ -2247,7 +2394,7 @@ describe("Action Contract V2", function () {
         tags: ["topic:drift"],
       },
     });
-    const receipts = service.finalize(contract, prepared, {
+    const receipts = await service.finalize(contract, prepared, {
       ok: true,
       effect: "applied",
       content: { actionId: "journal-once" },
@@ -2270,7 +2417,7 @@ describe("Action Contract V2", function () {
         tags: ["topic:drift"],
       },
     });
-    const receipts = service.finalize(contract, prepared, {
+    const receipts = await service.finalize(contract, prepared, {
       ok: false,
       cancelled: true,
       reason: "User denied action",
@@ -2308,7 +2455,7 @@ describe("Action Contract V2", function () {
         tags: ["topic:drift"],
       })),
     };
-    const success = service.finalize(contract, prepared, {
+    const success = await service.finalize(contract, prepared, {
       ok: true,
       effect: "none",
       content: { actionId: "journal-success" },
@@ -2320,7 +2467,7 @@ describe("Action Contract V2", function () {
         "none",
       ),
     });
-    const cancelled = service.finalize(contract, prepared, {
+    const cancelled = await service.finalize(contract, prepared, {
       ok: false,
       cancelled: true,
       reason: "User denied redundant action",

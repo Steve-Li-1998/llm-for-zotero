@@ -109,7 +109,7 @@ export class InvocationController {
         return this.execute(assessed, assessed.proposal.payloadDigest);
       return await this.dispatch(assessed);
     } catch (error) {
-      return this.result(this.failure(input, error));
+      return this.result(await this.failure(input, error));
     }
   }
 
@@ -119,7 +119,7 @@ export class InvocationController {
     return { kind: "result", execution };
   }
 
-  private receipts(
+  private async receipts(
     outcome: ReceiptOutcome,
     assessed?: AssessedInvocation,
     input?: unknown,
@@ -129,7 +129,7 @@ export class InvocationController {
     const details = this.amendment?.failure.amendableObligation;
     const receipts =
       prepared && this.contracts
-        ? this.contracts.finalize(
+        ? await this.contracts.finalize(
             this.context.request.actionContract,
             prepared,
             outcome,
@@ -169,12 +169,12 @@ export class InvocationController {
       : allReceipts;
   }
 
-  private failure(
+  private async failure(
     input: unknown,
     error: unknown,
     assessed?: AssessedInvocation,
     cancelled = false,
-  ): PreparedToolExecutionResult {
+  ): Promise<PreparedToolExecutionResult> {
     const reason = error instanceof Error ? error.message : String(error);
     return {
       tool: this.tool,
@@ -186,7 +186,7 @@ export class InvocationController {
         ...(error instanceof ToolInputRejection
           ? { inputRejected: true as const }
           : {}),
-        actionReceipts: this.receipts(
+        actionReceipts: await this.receipts(
           {
             ok: false,
             reason,
@@ -334,7 +334,11 @@ export class InvocationController {
       return this.result(this.scopeFailure(assessed));
     if (assessed.authorization.kind === "block")
       return this.result(
-        this.failure(assessed.input, assessed.authorization.reason, assessed),
+        await this.failure(
+          assessed.input,
+          assessed.authorization.reason,
+          assessed,
+        ),
       );
     const toolReview =
       this.tool.spec.interaction === "user_input" &&
@@ -407,7 +411,7 @@ export class InvocationController {
         (!confirmation.actionId && !resolution.approved)
       )
         return this.result(
-          this.failure(input, "User denied action", displayed, true),
+          await this.failure(input, "User denied action", displayed, true),
         );
       if (applyToolResolution && this.tool.applyConfirmation) {
         const resolved = this.tool.applyConfirmation(
@@ -453,7 +457,7 @@ export class InvocationController {
       return this.execute(assessed, assessed.proposal.payloadDigest);
     } catch (error) {
       await this.failAmendment(error);
-      return this.result(this.failure(input, error, displayed));
+      return this.result(await this.failure(input, error, displayed));
     }
   }
 
@@ -650,7 +654,7 @@ export class InvocationController {
       grant = await this.stageAuthority(prepared, userApproval);
     } catch (error) {
       await this.failAmendment(error);
-      return this.result(this.failure(prepared.input, error, prepared));
+      return this.result(await this.failure(prepared.input, error, prepared));
     }
     const run = async (): Promise<PreparedToolExecution> => {
       let assessed = prepared;
@@ -765,7 +769,7 @@ export class InvocationController {
             effect,
             authority:
               authority === "yolo_judgment" ? "yolo_judgment" : undefined,
-            actionReceipts: this.receipts(
+            actionReceipts: await this.receipts(
               {
                 ok: true,
                 effect,
@@ -788,7 +792,7 @@ export class InvocationController {
           error: String(error),
         });
         await this.failAmendment(error);
-        return this.result(this.failure(assessed.input, error, assessed));
+        return this.result(await this.failure(assessed.input, error, assessed));
       }
     };
     return prepared.plan.impact !== "read_only" && this.options.executeWithLock

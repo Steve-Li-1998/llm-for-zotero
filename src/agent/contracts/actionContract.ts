@@ -38,7 +38,7 @@ import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPerm
 import { canonicalJsonEqual } from "../services/libraryMutation/canonicalJson";
 import { mutationPostconditionIsSatisfied } from "../services/libraryMutation/handlerOperations";
 import { innermostToolResult, toolResultString } from "./toolResultEnvelope";
-import type { MaterialRef } from "../documents/materialRef";
+import { readFlatMaterialRef } from "../documents/materialRef";
 
 export type {
   ActionContractGateway,
@@ -284,23 +284,6 @@ function targetDelta(previous: readonly number[], current: readonly number[]) {
 
 function readEvidenceRef(content: unknown): string | undefined {
   return toolResultString(content, ["actionId", "journalStepId"]);
-}
-
-/**
- * The receipt names the exact material version the approved proposal froze.
- * Only a complete ref identifies one revision, so a partially frozen proposal
- * names nothing rather than half a ref. The completeness rule is the one
- * `materialRefFromDocument` enforces when the proposal is first frozen.
- */
-function frozenMaterialRef(
-  parameters: AgentActionParameters | undefined,
-): MaterialRef | undefined {
-  const { documentId, documentVersion, contentHash } = parameters || {};
-  if (!documentId || !contentHash) return undefined;
-  if (typeof documentVersion !== "number") return undefined;
-  if (!Number.isSafeInteger(documentVersion) || documentVersion < 1)
-    return undefined;
-  return { documentId, documentVersion, contentHash };
 }
 
 function evidenceTargets(evidence: AgentActionEvidence): string[] {
@@ -1234,7 +1217,7 @@ export class ActionContractService {
       reasons: params.reason ? [params.reason] : [],
       verifiedFacts:
         proposal.operation === "read_full" ? ["read_mode:full"] : [],
-      materialRef: frozenMaterialRef(proposal.parameters),
+      materialRef: readFlatMaterialRef(proposal.parameters),
       evidenceRef,
     };
     if (params.cancelled) {

@@ -15,6 +15,7 @@ import {
   prepareJournalStep,
 } from "../src/agent/store/changeJournal";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import { actionContractFixture } from "./helpers/semanticIntent";
 
 /**
  * The executable audit of the effect path.
@@ -22,19 +23,20 @@ import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
  * Phase 3 asks six properties of every effect the Agent performs: a typed
  * proposal, a frozen operation and target digest, central authorization,
  * journalled execution, native post-state verification, and a scoped receipt
- * whose `verification` reflects that post-state. Five of them already run
- * through one shared pipeline; this file is what stops a new tool from
- * quietly joining the registry outside it.
+ * whose `verification` reflects that post-state. All six now run through one
+ * shared pipeline for every row below, except where a proof domain makes the
+ * fifth impossible and the sixth says so; this file is what stops a new tool
+ * from quietly joining the registry outside it.
  *
  * The table below is the audit, written as data: a tool that is registered as
  * an external effect but absent here fails, and a row here that no longer
  * matches the registry fails. Adding a tool therefore means deciding its
  * operations, its proof domain and its receipt verification on purpose.
  *
- * Two kinds of assertion live here, and they are not worth the same.
+ * Three kinds of assertion live here, and they are not worth the same.
  *
- * **Observed from production.** These build the real registry and call the
- * real tools, so they fail when production drifts:
+ * **Declared by production.** These build the real registry and ask the real
+ * tools what they declare, so they fail when production drifts:
  * - "audits exactly the external effects the registry holds"
  * - "exempts control tools by class, not by name"
  * - "gives every external effect a typed action adapter"
@@ -43,20 +45,31 @@ import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
  * - "pins what each tool proposes on the inputs it plans as read-only"
  * - "never plans a mutating call as a trusted read"
  *
+ * **Observed from production.** These run one real call per proof domain
+ * through the whole path — `prepareExecution`, the central policy, the tool's
+ * execute, the journal and `finalize` — and read the receipt it mints, so the
+ * table's verification column is an observation of the shipped behaviour and
+ * not a claim about it:
+ * - "observes a zotero_state write verified from live Zotero state"
+ * - "observes a file_state write verified from a readback of the file"
+ * - "observes an execution effect that runs with no state to read back"
+ * - "witnesses every proof domain the audit table uses" (which forces a new
+ *   proof domain to bring an observed call with it)
+ *
  * **Table-internal.** These read the table against `OPERATION_CATALOG` and
  * touch no tool and no receipt. They record a decision so that changing it is
  * a visible edit; they are not evidence that production behaves that way:
  * - "pins the audit table's proof domain per tool against the catalog"
  * - "pins the audit table's expected verification per proof domain"
  *
- * No assertion in this file observes a receipt. The receipt evidence lives in
- * the per-tool tests, which mint receipts from real tool results:
- * `test/runCommandTool.test.ts`, `test/fileIOTool.test.ts`,
+ * One tool per domain is observed here. Every other row's verification is
+ * evidenced by its own per-tool test, which mints receipts from real tool
+ * results: `test/runCommandTool.test.ts`, `test/fileIOTool.test.ts`,
  * `test/undoLastAction.test.ts` (a real journal, a real inverse replay and its
  * per-step native re-read), `test/revertChanges.test.ts` and
- * `test/zoteroScriptConfirmation.test.ts`, and the whole-receipt
- * characterizations in `test/agentActionContract.test.ts`. Phase 3 task 5
- * extends that to the external bridges.
+ * `test/zoteroScriptConfirmation.test.ts`, the whole-receipt characterizations
+ * in `test/agentActionContract.test.ts`, and — for the effects a connected
+ * client runs in its own runtime — `test/externalRuntimeEffectReceipts.test.ts`.
  */
 
 type Verification = AgentActionReceipt["verification"];
@@ -72,8 +85,8 @@ type AuditRow = {
   verification: Verification;
   /**
    * Why this row's verification is what it is, whenever that needs saying:
-   * a remaining gap for the rows Phase 3 tasks 4 and 5 still move, or the
-   * ruling behind a row that will never be `verified`.
+   * what the re-read actually compares, or the ruling behind a row that can
+   * never be `verified` because its proof domain leaves nothing to re-read.
    */
   verificationNote?: string;
   /** A representative input that actually performs the effect. */
@@ -385,7 +398,7 @@ const CONTROL_TOOLS_WITHOUT_EFFECTS = ["library_batch", "workflow_script"];
  * returns live state: the audit asks what a tool *declares* about an effect,
  * never what the effect would do.
  */
-function auditGateway() {
+function auditGateway(live: Record<string, unknown> = {}) {
   return {
     getItem: () => null,
     getCollectionSummary: () => null,
@@ -402,12 +415,13 @@ function auditGateway() {
     listLibraryTags: () => [],
     getSavedSearch: () => null,
     listSavedSearches: () => [],
+    ...live,
   } as never;
 }
 
-function auditRegistry() {
+function auditRegistry(gateway = auditGateway()) {
   const registry = createBuiltInToolRegistry({
-    zoteroGateway: auditGateway(),
+    zoteroGateway: gateway,
     pdfService: {} as never,
     pdfPageService: {} as never,
     retrievalService: {} as never,
@@ -418,10 +432,84 @@ function auditRegistry() {
     createLibraryBatchTool({
       actionRegistry: {} as never,
       toolRegistry: registry,
-      zoteroGateway: auditGateway(),
+      zoteroGateway: gateway,
     }),
   );
   return registry;
+}
+
+/**
+ * The Gecko filesystem `file_io` writes through, in memory.
+ *
+ * The tool reads the file back after writing it and the receipt is verified
+ * from that readback, so the fake has to store what it was given and return
+ * exactly that — a store that echoed the request would verify a write that
+ * never landed.
+ */
+function installFakeFiles() {
+  const stored = new Map<string, Uint8Array>();
+  const scope = globalThis as { IOUtils?: unknown };
+  const original = scope.IOUtils;
+  scope.IOUtils = {
+    exists: async (path: string) => stored.has(path),
+    read: async (path: string) => {
+      const bytes = stored.get(path);
+      if (!bytes) throw new Error(`No such file: ${path}`);
+      return bytes;
+    },
+    write: async (path: string, bytes: Uint8Array) => {
+      stored.set(path, Uint8Array.from(bytes));
+      return bytes.byteLength;
+    },
+    makeDirectory: async () => undefined,
+    remove: async (path: string) => {
+      stored.delete(path);
+    },
+  };
+  return {
+    stored,
+    restore: () => {
+      scope.IOUtils = original;
+    },
+  };
+}
+
+/**
+ * The Gecko shell seam `run_command` runs through.
+ *
+ * The platform is pinned to the pipe-reading branch so the observation does
+ * not depend on which machine runs the suite: on Windows the tool redirects
+ * output to a temp file instead, which is a different code path and not the
+ * one this audit witnesses.
+ */
+function installFakeShell() {
+  const commands: string[] = [];
+  const scope = globalThis as { ChromeUtils?: unknown; Zotero?: any };
+  const originalChromeUtils = scope.ChromeUtils;
+  const originalIsMac = scope.Zotero?.isMac;
+  if (scope.Zotero) scope.Zotero.isMac = true;
+  const closedPipe = { readString: async () => "" };
+  scope.ChromeUtils = {
+    importESModule: () => ({
+      Subprocess: {
+        call: async (params: { arguments: string[] }) => {
+          commands.push(params.arguments[params.arguments.length - 1]);
+          return {
+            stdout: closedPipe,
+            stderr: closedPipe,
+            wait: async () => ({ exitCode: 0 }),
+          };
+        },
+      },
+    }),
+  };
+  return {
+    commands,
+    restore: () => {
+      scope.ChromeUtils = originalChromeUtils;
+      if (scope.Zotero) scope.Zotero.isMac = originalIsMac;
+    },
+  };
 }
 
 function auditContext(): AgentToolContext {
@@ -570,10 +658,10 @@ describe("effect path audit", function () {
   });
 
   // Table-internal: the expected verification per proof domain is a decision
-  // recorded here. Receipts are observed by the per-tool characterizations
-  // (runCommandTool, fileIOTool, undoLastAction, revertChanges) and will be
-  // observed end to end once Phase 3 tasks 3 to 5 land.
-  it("pins the audit table's expected verification per proof domain — verified against receipts in the per-tool tests and, end to end, in Task 6", function () {
+  // recorded here. One tool per domain is then observed producing exactly
+  // this value at the end of this file; the remaining rows are evidenced by
+  // their own per-tool receipt tests.
+  it("pins the audit table's expected verification per proof domain", function () {
     const byDomain: Record<string, Set<Verification>> = {};
     for (const row of Object.values(AUDIT)) {
       for (const operation of row.operations) {
@@ -696,5 +784,177 @@ describe("effect path audit", function () {
         Object.entries(AUDIT).map(([name, row]) => [name, row.impact]),
       ),
     );
+  });
+
+  /**
+   * ── Observed receipts, one representative call per proof domain ──────────
+   *
+   * Everything above asks a tool what it *declares*. The tests below run one
+   * real call per proof domain all the way through production —
+   * `prepareExecution`, the invocation assessor, the central policy, the
+   * durable authorization grant, the tool's own execute, the change journal
+   * and `ActionContractService.finalize` — and read the receipt that comes
+   * out. Only the seams a Gecko host owns are faked: the preference store,
+   * the filesystem and the shell.
+   *
+   * One witness per domain, each the domain's most representative tool:
+   *   `zotero_state` → `library_settings`, the write Task 4 moved onto the
+   *     shared external-evidence path, so what it proves is what every Zotero
+   *     write without a bespoke verifier proves.
+   *   `file_state`  → `file_io`, the only tool in the domain.
+   *   `execution`   → `run_command`, the domain's ruling case: an effect with
+   *     no re-readable state, whose receipt is `execution_only` by design.
+   *
+   * The other rows' verification stays a table decision checked by their own
+   * per-tool tests; these three are what make the table's per-domain values
+   * an observation of production rather than a claim about it.
+   */
+  const PROOF_DOMAIN_WITNESS: Record<
+    AgentActionProofDomain,
+    { tool: string; verification: Verification }
+  > = {
+    zotero_state: { tool: "library_settings", verification: "verified" },
+    file_state: { tool: "file_io", verification: "verified" },
+    execution: { tool: "run_command", verification: "execution_only" },
+  };
+
+  it("witnesses every proof domain the audit table uses", function () {
+    const domains = new Set(
+      Object.values(AUDIT).flatMap((row) =>
+        row.operations.map(
+          (operation) => OPERATION_CATALOG[operation].proofDomain,
+        ),
+      ),
+    );
+    assert.deepEqual(
+      [...domains].sort(),
+      Object.keys(PROOF_DOMAIN_WITNESS).sort(),
+      "a proof domain no observed call covers is a table nobody checks",
+    );
+    for (const [domain, witness] of Object.entries(PROOF_DOMAIN_WITNESS)) {
+      assert.equal(
+        AUDIT[witness.tool].verification,
+        witness.verification,
+        `${witness.tool} witnesses ${domain}: its row must claim what the observed call asserts`,
+      );
+    }
+  });
+
+  /**
+   * The production path for one audited fixture, start to finish.
+   *
+   * The call is the row's own representative input, so the observation and
+   * the table cannot drift apart, and the contract is built from the same
+   * operation the row declares. A confirmation is approved rather than
+   * bypassed: the receipt has to be the one a user's approval produces.
+   */
+  async function driveAuditedCall(toolName: string, gateway: unknown) {
+    const registry = auditRegistry(gateway as never);
+    const row = AUDIT[toolName];
+    const contract = actionContractFixture(row.operations[0]);
+    const context = auditContext();
+    const request = {
+      ...context.request,
+      libraryID: 1,
+      actionContract: contract,
+      classifiedIntent: contract.intent,
+      actionProgress: registry.createActionProgress(contract),
+    };
+    let prepared = await registry.prepareExecution(
+      { id: `audit:${toolName}`, name: toolName, arguments: row.fixture },
+      { ...context, request } as never,
+    );
+    if (prepared.kind === "confirmation")
+      prepared = await prepared.execute({ approved: true });
+    assert.equal(
+      prepared.kind,
+      "result",
+      `${toolName} never reached execution`,
+    );
+    if (prepared.kind !== "result") throw new Error("unreachable");
+    const result = prepared.execution.result;
+    assert.isTrue(
+      result.ok,
+      `${toolName} failed: ${JSON.stringify(result.content)}`,
+    );
+    const receipts = result.actionReceipts || [];
+    assert.lengthOf(receipts, 1, `${toolName} minted no single receipt`);
+    return receipts[0];
+  }
+
+  it("observes a zotero_state write verified from live Zotero state", async function () {
+    const witness = PROOF_DOMAIN_WITNESS.zotero_state;
+    // The preference store this write changes and the receipt re-reads.
+    const preference = { value: false as unknown };
+    const receipt = await driveAuditedCall(
+      witness.tool,
+      auditGateway({
+        listSettings: () => [
+          {
+            key: "recursiveCollections",
+            value: preference.value,
+            description: "Show items from subcollections",
+          },
+        ],
+        updateSetting: async ({
+          key,
+          value,
+        }: {
+          key: string;
+          value: unknown;
+        }) => {
+          preference.value = Boolean(value);
+          return { status: "updated", key, value: preference.value };
+        },
+        getSettingNativeState: (key: string) => ({
+          key,
+          value: preference.value,
+        }),
+      }),
+    );
+    assert.equal(receipt.proofDomain, "zotero_state");
+    assert.equal(receipt.operation, "settings_update");
+    assert.equal(receipt.verification, witness.verification);
+    assert.equal(receipt.status, "applied");
+    assert.deepEqual(receipt.appliedTargets, ["setting:recursiveCollections"]);
+    assert.isTrue(preference.value, "the audited call really wrote");
+  });
+
+  it("observes a file_state write verified from a readback of the file", async function () {
+    const witness = PROOF_DOMAIN_WITNESS.file_state;
+    const files = installFakeFiles();
+    try {
+      const receipt = await driveAuditedCall(witness.tool, auditGateway());
+      assert.equal(receipt.proofDomain, "file_state");
+      assert.equal(receipt.operation, "file_write");
+      assert.equal(receipt.verification, witness.verification);
+      assert.equal(receipt.status, "applied");
+      assert.deepEqual(receipt.appliedTargets, ["file:/tmp/audit.txt"]);
+      assert.equal(
+        new TextDecoder().decode(files.stored.get("/tmp/audit.txt")),
+        "audit",
+        "the audited call really wrote",
+      );
+    } finally {
+      files.restore();
+    }
+  });
+
+  it("observes an execution effect that runs with no state to read back", async function () {
+    const witness = PROOF_DOMAIN_WITNESS.execution;
+    const shell = installFakeShell();
+    try {
+      const receipt = await driveAuditedCall(witness.tool, auditGateway());
+      assert.equal(receipt.proofDomain, "execution");
+      assert.equal(receipt.operation, "command_execute");
+      assert.equal(receipt.verification, witness.verification);
+      // `observed`, not `applied`: the host saw the command run and can say
+      // nothing about what it changed.
+      assert.equal(receipt.status, "observed");
+      assert.deepEqual(receipt.appliedTargets, []);
+      assert.deepEqual(shell.commands, ["rm -rf /tmp/audit-target"]);
+    } finally {
+      shell.restore();
+    }
   });
 });

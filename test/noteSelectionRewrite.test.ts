@@ -353,6 +353,17 @@ describe("selection recovery and embedded content", function () {
       result!,
     );
   });
+  it("escapes every HTML-significant character in replacement text", function () {
+    const result = replaceTextContentInHtml(
+      "<p>Replace me.</p>",
+      "Replace me.",
+      "a & b < c > d \" e ' f",
+    );
+    assert.strictEqual(
+      result,
+      "<p>a &amp; b &lt; c &gt; d &quot; e &#39; f</p>",
+    );
+  });
   it("rejects a note changed since selection instead of rebasing the edit", async function () {
     const { tool, context, request } = fixture();
     request.activeNoteContext!.noteHtml = before.replace(

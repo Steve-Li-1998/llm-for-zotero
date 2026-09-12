@@ -34,8 +34,6 @@ export type {
 import {
   getCollection,
   getCollectionSummary,
-  buildCollectionPathMap,
-  listLibraryCollections,
 } from "./zotero/internal/collections";
 import {
   getItem,

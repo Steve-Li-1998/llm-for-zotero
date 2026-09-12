@@ -7,6 +7,10 @@ import type {
   AgentActionReceipt,
   AgentToolEffect,
 } from "../types";
+import {
+  AGENT_ACTION_VERIFICATION_LABELS,
+  readAgentActionVerification,
+} from "./actionVerificationLabels";
 import { innermostToolResult } from "./toolResultEnvelope";
 import { operationCatalogEntry } from "./operationCatalog";
 
@@ -500,6 +504,15 @@ export function evaluateActionContract(
   };
 }
 
+/**
+ * The per-receipt status block, written for whoever reads the answer.
+ *
+ * This text is appended to the final answer the user sees as well as to the
+ * correction the model receives, so the verification reads in the same words
+ * the trace chip uses instead of the internal token. A receipt journaled before
+ * the field existed states no proof, and the block leaves it out rather than
+ * printing an empty claim.
+ */
 export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
   return receipts
     .map((receipt) => {
@@ -508,7 +521,11 @@ export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
       const coverage = receipt.requestedTargets.length
         ? ` ${verified}/${receipt.requestedTargets.length}`
         : "";
-      return `[Action status: ${receipt.operation} — ${receipt.status}${coverage}; ${receipt.verification}; proof:${receipt.proofDomain}]`;
+      const verification = readAgentActionVerification(receipt.verification);
+      const proof = verification
+        ? ` ${AGENT_ACTION_VERIFICATION_LABELS[verification]};`
+        : "";
+      return `[Action status: ${receipt.operation} — ${receipt.status}${coverage};${proof} proof:${receipt.proofDomain}]`;
     })
     .join("\n");
 }

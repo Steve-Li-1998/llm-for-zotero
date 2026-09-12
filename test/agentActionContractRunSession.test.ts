@@ -476,8 +476,8 @@ describe("ActionContractRunSession state machine", function () {
     assert.equal(
       harness.session.receiptStatus(),
       [
-        "[Action status: command_execute — applied; verified; proof:execution]",
-        "[Action status: command_execute — already_satisfied; verified; proof:execution]",
+        "[Action status: command_execute — applied; Verified; proof:execution]",
+        "[Action status: command_execute — already_satisfied; Verified; proof:execution]",
       ].join("\n"),
     );
     assert.lengthOf(harness.events, 2);

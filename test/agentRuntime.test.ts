@@ -1205,7 +1205,7 @@ describe("AgentRuntime", function () {
       if (outcome.kind !== "completed") return;
       assert.equal(
         outcome.text,
-        "Saved.\n\n[Action status: note_create — applied 1/1; verified; proof:zotero_state]",
+        "Saved.\n\n[Action status: note_create — applied 1/1; Verified; proof:zotero_state]",
       );
       assert.isTrue(events.some((event) => event.type === "tool_call"));
       assert.isTrue(events.some((event) => event.type === "tool_result"));

@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   evaluateActionContract,
   evaluatePreparedActionContract,
+  formatReceiptStatus,
 } from "../src/agent/contracts/actionEvaluation";
 import {
   semanticContractFixture,
@@ -176,6 +177,78 @@ describe("prepared action completion", function () {
     assert.equal(
       evaluateActionContract(contract, [tagReceipt("failed")]).state,
       "failed",
+    );
+  });
+});
+
+describe("receipt status vocabulary", function () {
+  type Receipt = import("../src/agent/contracts/types").AgentActionReceipt;
+
+  function receipt(
+    verification: Receipt["verification"],
+    extra: Partial<Receipt> = {},
+  ): Receipt {
+    return {
+      version: 2,
+      id: "contract:unmatched:apply_tags",
+      proposalId: "proposal:apply_tags",
+      proofDomain: "zotero_state",
+      capability: "zotero.tags",
+      operation: "apply_tags",
+      verification,
+      status: "applied",
+      requestedTargets: ["item:41"],
+      appliedTargets: ["item:41"],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [],
+      ...extra,
+    };
+  }
+
+  // The status block is appended to the answer the user reads, so it names a
+  // verification value the same way the trace chip does.
+  it("names every verification value in the words the trace uses", function () {
+    assert.equal(
+      formatReceiptStatus([receipt("verified")]),
+      "[Action status: apply_tags — applied 1/1; Verified; proof:zotero_state]",
+    );
+    assert.equal(
+      formatReceiptStatus([receipt("execution_only")]),
+      "[Action status: apply_tags — applied 1/1; Ran (no state proof); proof:zotero_state]",
+    );
+    assert.equal(
+      formatReceiptStatus([receipt("unverified")]),
+      "[Action status: apply_tags — applied 1/1; Unverified; proof:zotero_state]",
+    );
+    assert.equal(
+      formatReceiptStatus([
+        receipt("not_applicable", {
+          status: "cancelled",
+          appliedTargets: [],
+        }),
+      ]),
+      "[Action status: apply_tags — cancelled 0/1; Not applicable; proof:zotero_state]",
+    );
+  });
+
+  it("keeps a receipt written before the value existed readable", function () {
+    const legacy = receipt("verified");
+    delete (legacy as { verification?: unknown }).verification;
+    assert.equal(
+      formatReceiptStatus([legacy]),
+      "[Action status: apply_tags — applied 1/1; proof:zotero_state]",
+    );
+  });
+
+  it("reports one line per receipt", function () {
+    assert.equal(
+      formatReceiptStatus([receipt("verified"), receipt("unverified")]),
+      [
+        "[Action status: apply_tags — applied 1/1; Verified; proof:zotero_state]",
+        "[Action status: apply_tags — applied 1/1; Unverified; proof:zotero_state]",
+      ].join("\n"),
     );
   });
 });

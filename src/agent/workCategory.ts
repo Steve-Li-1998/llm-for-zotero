@@ -53,6 +53,16 @@ export const CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY: AgentWorkCategory =
 export const SKILL_ACTIVATION_WORK_CATEGORY: AgentWorkCategory = "planning";
 
 /**
+ * The label a skill activation carries into the trace.
+ *
+ * The bridge stamps it on the events it emits and the trace reads it back to
+ * recognise the row; both sides therefore read it from here, because a label
+ * written twice is a label that can disagree with itself. Nothing looks a
+ * tool up by this word -- a skill is not a registered tool and has no spec.
+ */
+export const SKILL_ACTIVATION_TRACE_LABEL = "Skill";
+
+/**
  * Activity kinds native Codex reports for work it runs itself. These never
  * reach a host `ToolSpec`, so the panel resolves their meaning here instead of
  * spelling a second taxonomy at each render site.

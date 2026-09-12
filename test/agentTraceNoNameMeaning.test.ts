@@ -24,6 +24,9 @@ const SCANNED_FILES = [
   "src/modules/contextPanel/agentTrace/toolResultTraceInfo.ts",
   "src/modules/contextPanel/agentTrace/toolActivityDedupe.ts",
   "src/modules/contextPanel/chat.ts",
+  // The panel's reading of a connected runtime's items moved here; the same
+  // rule follows it.
+  "src/codexAppServer/nativeActivityStages.ts",
 ] as const;
 
 type NameMeaningPattern = { id: string; regex: RegExp };
@@ -50,6 +53,10 @@ const NAME_MEANING_PATTERNS: NameMeaningPattern[] = [
   {
     id: ".has(name)",
     regex: new RegExp(String.raw`\.has\(\s*${NAME_REFERENCE}\s*[,)]`, "g"),
+  },
+  {
+    id: '["…"].includes(name)',
+    regex: new RegExp(String.raw`\.includes\(\s*${NAME_REFERENCE}\s*[,)]`, "g"),
   },
   {
     id: "normalizeMcpToolName(…) === …",
@@ -225,6 +232,8 @@ describe("agent trace derives no meaning from tool names", function () {
       "if (INTERNAL_PLAN_TOOL_NAMES.has(entry.payload.name)) return true;",
       "if (HIDDEN.has(toolName)) return true;",
       'normalizeMcpToolName(toolName) === "paper_read"',
+      '["research_update", "update_plan"].includes(event.name)',
+      "if (HIDDEN_NAMES.includes(entry.payload.toolName)) return true;",
       'codeBlock && name !== "file_io" ? label : displayText',
       'switch (entry.payload.name) {\n  case "file_io":\n    return null;\n}',
       // The formatter splits long comparisons; the scan reads past the break.

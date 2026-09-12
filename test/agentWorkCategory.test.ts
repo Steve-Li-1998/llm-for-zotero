@@ -6,6 +6,7 @@ import {
   resolveAgentToolCallWorkCategory,
   resolveAgentWorkCategory,
   resolveCodexNativeWorkCategory,
+  SKILL_ACTIVATION_TRACE_LABEL,
   SKILL_ACTIVATION_WORK_CATEGORY,
 } from "../src/agent/workCategory";
 import { mapCodexNativeSkillActivationToEvents } from "../src/codexAppServer/nativeActivityStages";
@@ -302,6 +303,30 @@ describe("agent work categories", function () {
       SKILL_ACTIVATION_WORK_CATEGORY,
     );
     assert.isNull(mapCodexNativeSkillActivationToEvents("  "));
+  });
+
+  it("labels a skill activation from one constant both sides read", function () {
+    // The bridge stamps the label and the trace reads it back; a label
+    // written twice is a label that can disagree with itself.
+    const events = mapCodexNativeSkillActivationToEvents("graphwalk");
+    assert.equal(events?.stage?.toolLabel, SKILL_ACTIVATION_TRACE_LABEL);
+    assert.equal(events?.activity?.toolLabel, SKILL_ACTIVATION_TRACE_LABEL);
+    for (const path of [
+      "src/codexAppServer/nativeActivityStages.ts",
+      "src/modules/contextPanel/agentTrace/render.ts",
+    ]) {
+      const source = readFileSync(join(root, path), "utf8");
+      assert.include(
+        source,
+        "SKILL_ACTIVATION_TRACE_LABEL",
+        `${path} must read the shared label`,
+      );
+      assert.notMatch(
+        source.replace(/SKILL_ACTIVATION_TRACE_LABEL/g, ""),
+        /toolLabel[^\n]*"Skill"|label !== "Skill"/,
+        `${path} must not spell the label a second time`,
+      );
+    }
   });
 
   it("leaves the panel and both bridges no second work-category taxonomy", function () {

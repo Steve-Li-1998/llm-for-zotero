@@ -46,6 +46,7 @@ import type {
   PlanArtifact,
   PlanExecutionLedger,
 } from "../../../agent/types";
+import { SKILL_ACTIVATION_TRACE_LABEL } from "../../../agent/workCategory";
 import { getConversationWriteGeneration } from "../../../shared/conversationWriteFence";
 import type { GeneratedChatImage } from "../../../shared/types";
 import { toFileUrl } from "../../../utils/pathFileUrl";
@@ -3453,14 +3454,13 @@ function buildAgentTraceArgsDetails(
 }
 
 /**
- * The label a skill activation carries, when the event is one.
+ * The words for a skill activation, when the event is one.
  *
- * Skill activation reaches the trace as an event the host labelled "Skill",
- * with the skill it activated in its arguments. The label is the event's own
- * word for what happened; the row never asks what the call was named.
+ * Skill activation reaches the trace as an event its producer labelled, with
+ * the skill it activated in the event's arguments. Both sides read that label
+ * from one constant, so the row recognises exactly what the bridge stamped
+ * and never asks what the call was named.
  */
-const SKILL_ACTIVATION_TRACE_LABEL = "Skill";
-
 function skillActivationText(label: string, args: unknown): string | null {
   if (label !== SKILL_ACTIVATION_TRACE_LABEL) return null;
   const record =
@@ -4766,6 +4766,18 @@ function appendSharedAgentTraceEvent(
   }
 }
 
+/**
+ * How this run names the papers it talks about, as the run itself said.
+ *
+ * A result that resolved paper identities to reader-facing labels reports
+ * them under `displayLabels`. That field is the fact; which tool produced it
+ * is not, so a result is read for it whenever it carries one. A run that
+ * never resolved any has none, and identities stay as they are.
+ */
+function readPaperDisplayLabels(value: unknown): unknown {
+  return isAgentTraceRecord(value) ? value.displayLabels : undefined;
+}
+
 function researchDisplayLabels(
   events: readonly AgentRunEventRecord[],
 ): Map<string, string> | undefined {
@@ -4776,11 +4788,8 @@ function researchDisplayLabels(
       event.providerType === "paper_display_labels" &&
       event.payload?.version === 1
         ? event.payload.displayLabels
-        : event.type === "tool_result" &&
-            event.ok &&
-            ["research_update", "update_plan"].includes(event.name) &&
-            isAgentTraceRecord(event.content)
-          ? event.content.displayLabels
+        : event.type === "tool_result" && event.ok
+          ? readPaperDisplayLabels(event.content)
           : undefined;
     if (values && typeof values === "object")
       return new Map(

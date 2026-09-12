@@ -9629,6 +9629,52 @@ describe("agentTrace render", function () {
 });
 
 describe("new research progress presentation", function () {
+  it("reads paper labels from the field that carries them, not the tool name", function () {
+    // Any result that resolved paper identities reports them under
+    // `displayLabels`. A trace that had to know which tools do that would
+    // lose the labels the day one is renamed or a new one starts reporting.
+    const events = [
+      {
+        type: "tool_result",
+        name: "a_tool_this_trace_has_never_heard_of",
+        callId: "call-1",
+        ok: true,
+        content: { displayLabels: { "1:AAAA1111": "(Smith, 2024)" } },
+      },
+      { type: "message_delta", text: "Inspecting AAAA1111 after recovery." },
+      {
+        type: "message_rollback",
+        text: "Inspecting AAAA1111 after recovery.",
+        length: 39,
+      },
+      {
+        type: "reasoning",
+        round: 1,
+        details: "Evidence for 1:AAAA1111 is retained.",
+      },
+    ].map((payload, index) => ({
+      runId: "labels-by-field",
+      seq: index,
+      eventType: payload.type,
+      payload,
+      createdAt: index,
+    })) as AgentRunEventRecord[];
+    const serialized = JSON.stringify(
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+      }).items,
+    );
+    assert.notInclude(serialized, "AAAA1111");
+    assert.include(
+      serialized,
+      "(Smith, 2024)",
+      "a result carrying display labels names its papers however it is called",
+    );
+  });
+
   for (const fromToolResult of [false, true])
     it("maps known paper references without altering the progress layout", function () {
       const events = [

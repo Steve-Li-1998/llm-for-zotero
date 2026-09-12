@@ -22,6 +22,7 @@ import {
 } from "../agent/stageEvents";
 import {
   resolveCodexNativeWorkCategory,
+  SKILL_ACTIVATION_TRACE_LABEL,
   SKILL_ACTIVATION_WORK_CATEGORY,
   type CodexNativeWorkKind,
 } from "../agent/workCategory";
@@ -439,15 +440,6 @@ export function mapCodexNativeItemToEvents(
 }
 
 /**
- * The label a skill activation carries into the trace.
- *
- * The row and the stage say "Skill" because that is what happened; the skill
- * itself is in the row's arguments. Nothing downstream looks up a tool by
- * this word -- a skill is not a registered tool and has no spec.
- */
-export const CODEX_NATIVE_SKILL_ACTIVATION_LABEL = "Skill";
-
-/**
  * The stage and row one skill activation produces.
  *
  * A connected runtime activates a skill on its own, so there is no tool call
@@ -464,13 +456,13 @@ export function mapCodexNativeSkillActivationToEvents(
     stage: buildAgentStageEvent({
       stage: SKILL_ACTIVATION_WORK_CATEGORY,
       status: "completed",
-      toolLabel: CODEX_NATIVE_SKILL_ACTIVATION_LABEL,
+      toolLabel: SKILL_ACTIVATION_TRACE_LABEL,
     }),
     activity: {
       type: "codex_tool_activity",
       itemId: `skill:${cleanSkillId}`,
       phase: "completed",
-      toolLabel: CODEX_NATIVE_SKILL_ACTIVATION_LABEL,
+      toolLabel: SKILL_ACTIVATION_TRACE_LABEL,
       args: {
         skill: cleanSkillId,
         ...(options.source ? { source: options.source } : {}),

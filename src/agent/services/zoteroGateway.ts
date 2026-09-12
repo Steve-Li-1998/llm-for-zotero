@@ -22,27 +22,15 @@ import {
 } from "../../services/context/contextSelectionBridge";
 import { resolvePaperContextRefFromAttachment } from "../../services/paperContent/paperAttribution";
 import { invalidateCachedContextText } from "../../services/paperContent/pdfContext";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
-import { joinLocalPath } from "../../utils/localPath";
 import { ensureMineruCacheDirForAttachment } from "../../services/mineru/sync";
 import { persistVerifiedNoteHtml } from "../../services/notePersistence";
 import type { AgentRuntimeRequest } from "../types";
 import { getTurnPapers } from "../context/requestTurnPaperScope";
 import type {
   GeneratedChatImage,
-  PaperContentSourceMode,
   PaperContextRef,
   TagContextRef,
 } from "../../shared/types";
-import {
-  isGlobalPortalItem,
-  isPaperPortalItem,
-  resolvePaperPortalBaseItem,
-} from "../../services/context/portalItems";
-import {
-  refusalFor,
-  type LibraryOperation,
-} from "../capabilities/libraryObjects";
 import type {
   BatchTagAssignment,
   EditableArticleCreator,
@@ -62,75 +50,88 @@ export type {
   EditableArticleMetadataPatch,
   EditableArticleMetadataSnapshot,
 } from "./libraryMutation/valueTypes";
+import {
+  getCollection,
+  getCollectionSummary,
+  buildCollectionPathMap,
+  listLibraryCollections,
+} from "./zotero/internal/collections";
+import { toLocalFileHandle } from "./zotero/internal/fileHandles";
+import {
+  getItem,
+  getItemTypeName,
+  isFieldValidForItemType,
+  listEditableFieldsForItem,
+  resolveBibliographicItem,
+  resolveMatrixItem,
+  resolveRegularItem,
+} from "./zotero/internal/itemResolution";
+import {
+  buildAgentLibrarySearch,
+  indexItemMatchesAggregateTagScope,
+  indexItemMatchesType,
+  libraryItemTargetMatchesFilters,
+  libraryItemTargetMatchesYear,
+  orderedGatewayPaperIds,
+  orderedIndexIds,
+  pageIds,
+  sortAndPageIndexIds,
+  validateSearchConditions,
+} from "./zotero/internal/libraryIndex";
+import {
+  AGENT_WRITABLE_PREFS,
+  EDITABLE_ARTICLE_METADATA_FIELDS,
+  NON_EDITABLE_METADATA_FIELDS,
+  normalizeCreatorForSnapshot,
+} from "./zotero/internal/metadataTables";
+import {
+  normalizeMetadataValue,
+  normalizePaperContexts,
+  normalizeResultLimit,
+  normalizeText,
+} from "./zotero/internal/normalize";
+import {
+  FULLTEXT_INDEX_STATE_MAP,
+  buildItemTargetFromItem,
+  buildItemTargetsForIds,
+  buildPaperTargetFromItem,
+  buildPaperTargetsForIds,
+  getAllChildAttachments,
+  getItemTags,
+  getPdfChildAttachments,
+  measureReadableTextChars,
+  resolveAnyAttachmentTitle,
+} from "./zotero/internal/targetBuilders";
+import type {
+  AgentLibraryFilters,
+  AgentSearchCondition,
+  CollectionSummary,
+  LibraryItemTarget,
+  LibraryItemTargetAttachment,
+  LibraryPaperTarget,
+} from "./zotero/internal/types";
 
-export const EDITABLE_ARTICLE_METADATA_FIELDS = [
-  "title",
-  "shortTitle",
-  "abstractNote",
-  "publicationTitle",
-  "journalAbbreviation",
-  "proceedingsTitle",
-  "date",
-  "volume",
-  "issue",
-  "pages",
-  "DOI",
-  "url",
-  "language",
-  "extra",
-  "ISSN",
-  "ISBN",
-  "publisher",
-  "place",
-] as const;
-
-export type LibraryPaperTargetAttachment = {
-  contextItemId: number;
-  title: string;
-};
-
-export type LibraryPaperTarget = {
-  itemId: number;
-  libraryID?: number;
-  title: string;
-  firstCreator?: string;
-  year?: string;
-  dateAdded?: string;
-  attachments: LibraryPaperTargetAttachment[];
-  tags: string[];
-  collectionIds: number[];
-};
-
-export type LibraryItemTargetAttachment = {
-  contextItemId: number;
-  title: string;
-  contentType: string;
-  /** For PDF attachments: Zotero full-text indexing state. Omitted for non-PDFs. */
-  indexingState?:
-    | "indexed"
-    | "partial"
-    | "unindexed"
-    | "queued"
-    | "unavailable";
-  /** If MinerU has parsed this PDF, the cache directory path containing markdown + images. */
-  mineruCacheDir?: string;
-  /** Size of the readable text the host already holds for this PDF, when measurable without extraction. */
-  readableTextChars?: number;
-};
-
-export type LibraryItemTarget = {
-  itemId: number;
-  libraryID?: number;
-  itemType: string;
-  title: string;
-  firstCreator?: string;
-  year?: string;
-  dateAdded?: string;
-  attachments: LibraryItemTargetAttachment[];
-  tags: string[];
-  collectionIds: number[];
-  noteKind?: "item" | "standalone";
-};
+/**
+ * The shared substrate every capability needs, re-exported under the names
+ * callers already use.
+ *
+ * `src/agent/services/zotero/` is the gateway's internals: the architecture
+ * check refuses an import into it from anywhere but this file, so this is the
+ * one place the names cross the boundary.
+ */
+export type {
+  AgentLibraryFilters,
+  AgentSearchCondition,
+  AgentSearchConditionError,
+  CollectionSummary,
+  LibraryItemTarget,
+  LibraryItemTargetAttachment,
+  LibraryPaperTarget,
+  LibraryPaperTargetAttachment,
+} from "./zotero/internal/types";
+export { listEditableFieldsForItem } from "./zotero/internal/itemResolution";
+export { validateSearchConditions } from "./zotero/internal/libraryIndex";
+export { EDITABLE_ARTICLE_METADATA_FIELDS } from "./zotero/internal/metadataTables";
 
 export type CollectionBrowseNode = {
   collectionId: number;
@@ -148,13 +149,6 @@ export type CollectionBrowseNode = {
  * existed two layers down and was thrown away on the way up (issue #374).
  */
 export type SaveAnswerToNoteResult = AssistantNoteWriteResult;
-
-export type CollectionSummary = {
-  collectionId: number;
-  name: string;
-  libraryID: number;
-  path?: string;
-};
 
 export type BatchTagItemResult = {
   itemId: number;
@@ -218,1061 +212,17 @@ export type DuplicateGroup = {
   papers: LibraryPaperTarget[];
 };
 
-function normalizeMetadataValue(value: unknown): string {
-  return `${value ?? ""}`.trim();
-}
-
-function normalizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
-
-/**
- * Resolves an item for a collection-membership write and reports why it may
- * not proceed, using the declared capability matrix rather than the old
- * regular-item filter.
- *
- * The behaviour change that matters: standalone notes and standalone
- * attachments are legal collection members in Zotero and are now filed
- * instead of being reported as "Item not found", and a child attachment is
- * refused explicitly instead of silently filing its parent.
- *
- * Portal pseudo-items are still unwrapped first — they stand in for a real
- * paper and must be resolved before the matrix sees them.
- */
-function resolveMatrixItem(
-  item: Zotero.Item | null | undefined,
-  itemId: number,
-  operation: LibraryOperation,
-): { item: Zotero.Item } | { refusal: string } {
-  if (!item) {
-    return { refusal: `No item with ID ${itemId} exists in this library` };
-  }
-  if (isGlobalPortalItem(item)) {
-    return { refusal: "The library portal is not an item that can be filed" };
-  }
-  const resolved = isPaperPortalItem(item)
-    ? resolvePaperPortalBaseItem(item)
-    : item;
-  if (!resolved) {
-    return { refusal: `No item with ID ${itemId} exists in this library` };
-  }
-  const refusal = refusalFor(operation, resolved, itemId);
-  return refusal ? { refusal } : { item: resolved };
-}
-
-function resolveRegularItem(
-  item: Zotero.Item | null | undefined,
-): Zotero.Item | null {
-  if (!item) return null;
-  if (isGlobalPortalItem(item)) return null;
-  if (isPaperPortalItem(item)) {
-    return resolvePaperPortalBaseItem(item);
-  }
-  if (item.isAttachment() && item.parentID) {
-    const parent = Zotero.Items.get(item.parentID) || null;
-    return parent?.isRegularItem?.() ? parent : null;
-  }
-  return item?.isRegularItem?.() ? item : null;
-}
-
-function getItemTypeName(item: Zotero.Item): string {
-  try {
-    const name = (
-      Zotero as unknown as { ItemTypes?: { getName?: (id: number) => string } }
-    ).ItemTypes?.getName?.(item.itemTypeID);
-    return typeof name === "string" && name.trim() ? name.trim() : "";
-  } catch (_error) {
-    void _error;
-    return "";
-  }
-}
-
-/**
- * Fields that are never patchable, whatever the item type.
- *
- * These are primary or computed columns rather than `itemData` fields.
- * `setField` throws for most of them, and the few it accepts (`dateAdded`,
- * `dateModified`) would let the agent rewrite provenance -- so they are
- * refused here with a reason rather than surfacing as a raw Zotero throw.
- */
-const NON_EDITABLE_METADATA_FIELDS = new Set([
-  "id",
-  "key",
-  "libraryID",
-  "itemID",
-  "itemType",
-  "itemTypeID",
-  "dateAdded",
-  "dateModified",
-  "version",
-  "synced",
-  "deleted",
-  "firstCreator",
-  "numChildren",
-  "parentItem",
-  "parentID",
-  "parentKey",
-  "relations",
-  "collections",
-  "tags",
-  "note",
-  "createdByUserID",
-  "lastModifiedByUserID",
-]);
-
-/**
- * Whether a field can be written on this particular item.
- *
- * Two defects here, both of which reported success while doing the wrong
- * thing:
- *
- * - No base-field mapping. `publicationTitle` is a *base* field whose
- *   type-specific name is `bookTitle` on a book section and
- *   `proceedingsTitle` on a conference paper. Checking the base id against
- *   the type said "invalid" for fields Zotero writes happily. `setField`
- *   itself resolves this with `getFieldIDFromTypeAndBase`, so the check has
- *   to as well or it disagrees with the write it is guarding.
- * - Fail-open. The `catch` returned `true`, so if `Zotero.ItemFields` were
- *   missing every field was declared valid and the error surfaced later as a
- *   raw throw from `setField`. No test defines `ItemFields`, so that branch
- *   has never run in CI.
- */
-/**
- * Builds the file handle Zotero's file APIs expect.
- *
- * Zotero accepts an `nsIFile` on these paths and a plain path string on some
- * of them; constructing the `nsIFile` when `Components` is available keeps
- * both happy, and falling back to the string keeps this callable from the
- * node test harness.
- */
-/**
- * Zotero preferences the agent may read and write.
- *
- * An allowlist rather than open access to `Zotero.Prefs`: the pref tree
- * includes sync credentials, data directory paths and proxy settings, and an
- * agent that can rewrite those can lock a user out of their own library. Each
- * entry here changes behaviour the user might reasonably ask about.
- */
-const AGENT_WRITABLE_PREFS: Record<
-  string,
-  { type: "boolean" | "number" | "string"; description: string }
-> = {
-  recursiveCollections: {
-    type: "boolean",
-    description: "Show items from subcollections in a collection",
-  },
-  sortNotesChronologically: {
-    type: "boolean",
-    description: "Sort child notes by date rather than title",
-  },
-  showTrashWhenEmpty: {
-    type: "boolean",
-    description: "Keep the Trash row visible when it is empty",
-  },
-  automaticSnapshots: {
-    type: "boolean",
-    description: "Save a snapshot when creating an item from a web page",
-  },
-  automaticTags: {
-    type: "boolean",
-    description: "Add keywords and subject headings as automatic tags",
-  },
-  trashAutoEmptyDays: {
-    type: "number",
-    description: "Days before trashed items are erased automatically",
-  },
-  "export.quickCopy.setting": {
-    type: "string",
-    description: "The Quick Copy citation style or export format",
-  },
-  "export.quickCopy.locale": {
-    type: "string",
-    description: "Locale used for Quick Copy citations",
-  },
-  attachmentRenameTemplate: {
-    type: "string",
-    description: "Filename template used when renaming attachments",
-  },
-  autoRenameFiles: {
-    type: "boolean",
-    description: "Rename attachment files from their parent's metadata",
-  },
-  "annotations.noteTemplates.title": {
-    type: "string",
-    description: "Template for the title of a note built from annotations",
-  },
-  "annotations.noteTemplates.note": {
-    type: "string",
-    description: "Template for each annotation in such a note",
-  },
-  fontSize: { type: "number", description: "Interface font size" },
-  "note.fontSize": { type: "number", description: "Note editor font size" },
-  layout: {
-    type: "string",
-    description: "Item pane layout ('standard' or 'stacked')",
-  },
-};
-
-function toLocalFileHandle(filePath: string): unknown {
-  try {
-    const components = (
-      globalThis as unknown as {
-        Components?: {
-          classes: Record<
-            string,
-            { createInstance: (iid: unknown) => unknown }
-          >;
-          interfaces: Record<string, unknown>;
-        };
-      }
-    ).Components;
-    if (components?.classes?.["@mozilla.org/file/local;1"]) {
-      const file = components.classes[
-        "@mozilla.org/file/local;1"
-      ].createInstance(components.interfaces.nsIFile) as {
-        initWithPath: (path: string) => void;
-      };
-      file.initWithPath(filePath);
-      return file;
-    }
-  } catch {
-    // Fall through to the path string.
-  }
-  return filePath;
-}
-
-function isFieldValidForItemType(
-  item: Zotero.Item,
-  fieldName: string,
-): boolean {
-  if (NON_EDITABLE_METADATA_FIELDS.has(fieldName)) return false;
-  const itemFields = (
-    Zotero as unknown as {
-      ItemFields?: {
-        getID?: (name: string) => number | false;
-        isValidForType?: (fieldId: number, itemTypeId: number) => boolean;
-        getFieldIDFromTypeAndBase?: (
-          itemTypeId: number,
-          baseFieldId: number,
-        ) => number | false;
-      };
-    }
-  ).ItemFields;
-  // Fail closed: without the schema there is no way to tell a valid field
-  // from a typo, and guessing "valid" turns a typo into a thrown write.
-  if (!itemFields?.getID || typeof itemFields.isValidForType !== "function") {
-    return false;
-  }
-  try {
-    const baseFieldId = itemFields.getID(fieldName);
-    if (!baseFieldId) return false;
-    const itemTypeID = item.itemTypeID;
-    // Mirrors setField: prefer the type-specific field, fall back to the base.
-    const fieldId =
-      itemFields.getFieldIDFromTypeAndBase?.(itemTypeID, baseFieldId) ||
-      baseFieldId;
-    return Boolean(itemFields.isValidForType(fieldId, itemTypeID));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Every field this item type accepts, for telling the model what it may set.
- */
-export function listEditableFieldsForItem(item: Zotero.Item): string[] {
-  const itemFields = (
-    Zotero as unknown as {
-      ItemFields?: {
-        getItemTypeFields?: (itemTypeId: number) => number[];
-        getName?: (fieldId: number) => string;
-      };
-    }
-  ).ItemFields;
-  if (!itemFields?.getItemTypeFields || !itemFields.getName) return [];
-  try {
-    return itemFields
-      .getItemTypeFields(item.itemTypeID)
-      .map((fieldId) => itemFields.getName?.(fieldId) || "")
-      .filter((name) => name && !NON_EDITABLE_METADATA_FIELDS.has(name));
-  } catch {
-    return [];
-  }
-}
-
-function normalizeCreatorForSnapshot(
-  creator: _ZoteroTypes.Item.CreatorJSON | _ZoteroTypes.Item.Creator,
-): EditableArticleCreator | null {
-  const creatorType =
-    typeof (creator as { creatorType?: unknown }).creatorType === "string" &&
-    (creator as { creatorType?: string }).creatorType?.trim()
-      ? (creator as { creatorType: string }).creatorType.trim()
-      : "author";
-  const name =
-    typeof (creator as { name?: unknown }).name === "string" &&
-    (creator as { name?: string }).name?.trim()
-      ? (creator as { name: string }).name.trim()
-      : undefined;
-  const firstName =
-    typeof (creator as { firstName?: unknown }).firstName === "string" &&
-    (creator as { firstName?: string }).firstName?.trim()
-      ? (creator as { firstName: string }).firstName.trim()
-      : undefined;
-  const lastName =
-    typeof (creator as { lastName?: unknown }).lastName === "string" &&
-    (creator as { lastName?: string }).lastName?.trim()
-      ? (creator as { lastName: string }).lastName.trim()
-      : undefined;
-  const fieldMode =
-    Number((creator as { fieldMode?: unknown }).fieldMode) === 1 || name
-      ? 1
-      : 0;
-  if (!name && !firstName && !lastName) return null;
-  return {
-    creatorType,
-    name,
-    firstName,
-    lastName,
-    fieldMode,
-  };
-}
-
-function isPaperContentSourceMode(
-  value: unknown,
-): value is PaperContentSourceMode {
-  return (
-    value === "text" ||
-    value === "mineru" ||
-    value === "pdf" ||
-    value === "markdown" ||
-    value === "html" ||
-    value === "txt" ||
-    value === "docx"
-  );
-}
-
-function normalizePaperContexts(
-  entries: PaperContextRef[] | undefined,
-): PaperContextRef[] {
-  if (!Array.isArray(entries)) return [];
-  const out: PaperContextRef[] = [];
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    if (!entry) continue;
-    const libraryID = Number(entry.libraryID);
-    const itemId = Number(entry.itemId);
-    const contextItemId = Number(entry.contextItemId);
-    if (!Number.isFinite(itemId) || !Number.isFinite(contextItemId)) continue;
-    const normalized: PaperContextRef = {
-      ...(Number.isFinite(libraryID) && libraryID > 0
-        ? { libraryID: Math.floor(libraryID) }
-        : {}),
-      itemId: Math.floor(itemId),
-      contextItemId: Math.floor(contextItemId),
-      title: `${entry.title || `Paper ${Math.floor(itemId)}`}`.trim(),
-      attachmentTitle: entry.attachmentTitle?.trim() || undefined,
-      citationKey: entry.citationKey?.trim() || undefined,
-      firstCreator: entry.firstCreator?.trim() || undefined,
-      year: entry.year?.trim() || undefined,
-    };
-    if (isPaperContentSourceMode(entry.contentSourceMode)) {
-      normalized.contentSourceMode = entry.contentSourceMode;
-    }
-    if (entry.mineruCacheDir?.trim()) {
-      normalized.mineruCacheDir = entry.mineruCacheDir.trim();
-    }
-    const key = `${normalized.libraryID || 0}:${normalized.itemId}:${normalized.contextItemId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(normalized);
-  }
-  return out;
-}
-
-function getCollectionIDs(item: Zotero.Item | null | undefined): number[] {
-  if (!item) return [];
-  try {
-    return item
-      .getCollections()
-      .map((id) => Number(id))
-      .filter((id) => Number.isFinite(id) && id > 0)
-      .map((id) => Math.floor(id));
-  } catch (_error) {
-    void _error;
-    return [];
-  }
-}
-
-function getPdfChildAttachments(item: Zotero.Item): Zotero.Item[] {
-  const out: Zotero.Item[] = [];
-  if (!item?.isRegularItem?.()) return out;
-  for (const attachmentId of item.getAttachments()) {
-    const attachment = Zotero.Items.get(attachmentId) || null;
-    const filename = normalizeText(
-      (attachment as (Zotero.Item & { attachmentFilename?: string }) | null)
-        ?.attachmentFilename,
-    );
-    if (
-      attachment &&
-      attachment.isAttachment?.() &&
-      (normalizeText(attachment.attachmentContentType).toLowerCase() ===
-        "application/pdf" ||
-        filename.toLowerCase().endsWith(".pdf"))
-    ) {
-      out.push(attachment);
-    }
-  }
-  return out;
-}
-
-function getAllChildAttachments(item: Zotero.Item): Zotero.Item[] {
-  const out: Zotero.Item[] = [];
-  if (!item?.isRegularItem?.()) return out;
-  for (const attachmentId of item.getAttachments()) {
-    const att = Zotero.Items.get(attachmentId) || null;
-    if (att && att.isAttachment?.()) out.push(att);
-  }
-  return out;
-}
-
-function resolveAttachmentTitle(
-  attachment: Zotero.Item,
-  index: number,
-  total: number,
-): string {
-  const title = normalizeText(attachment.getField?.("title"));
-  if (title) return title;
-  const filename = normalizeText(
-    (attachment as unknown as { attachmentFilename?: string })
-      .attachmentFilename,
-  );
-  if (filename) return filename;
-  return total > 1 ? `PDF ${index + 1}` : "PDF";
-}
-
-function resolveAnyAttachmentTitle(
-  attachment: Zotero.Item,
-  index: number,
-  total: number,
-): string {
-  const title = normalizeText(attachment.getField?.("title"));
-  if (title) return title;
-  const filename = normalizeText(
-    (attachment as unknown as { attachmentFilename?: string })
-      .attachmentFilename,
-  );
-  if (filename) return filename;
-  const contentType = normalizeText(attachment.attachmentContentType);
-  if (contentType) {
-    const ext = contentType.split("/").pop() || contentType;
-    return total > 1 ? `${ext.toUpperCase()} ${index + 1}` : ext.toUpperCase();
-  }
-  return total > 1 ? `Attachment ${index + 1}` : "Attachment";
-}
-
-function getItemTags(
-  item: Zotero.Item | null | undefined,
-  options: { includeAutomatic?: boolean } = {},
-): string[] {
-  if (!item) return [];
-  const includeAutomatic = options.includeAutomatic !== false;
-  try {
-    const out = (item.getTags?.() || [])
-      .map((entry) => {
-        if (typeof entry === "string") return entry;
-        if (entry && typeof entry === "object") {
-          const typed = entry as {
-            tag?: unknown;
-            name?: unknown;
-            type?: unknown;
-          };
-          if (typed.type === 1 && !includeAutomatic) return "";
-          return typeof typed.tag === "string"
-            ? typed.tag
-            : typeof typed.name === "string"
-              ? typed.name
-              : "";
-        }
-        return "";
-      })
-      .map((entry) => normalizeText(entry))
-      .filter(Boolean);
-    return Array.from(new Set(out)).sort((left, right) =>
-      left.localeCompare(right, undefined, { sensitivity: "base" }),
-    );
-  } catch (_error) {
-    void _error;
-    return [];
-  }
-}
-
-function buildPaperTargetFromItem(
-  item: Zotero.Item,
-): LibraryPaperTarget | null {
-  const target = resolveRegularItem(item);
-  if (!target) return null;
-  const attachments = getPdfChildAttachments(target).map(
-    (attachment, index, list) => ({
-      contextItemId: attachment.id,
-      title: resolveAttachmentTitle(attachment, index, list.length),
-    }),
-  );
-  if (!attachments.length) return null;
-  return {
-    itemId: target.id,
-    libraryID: Number(target.libraryID) || undefined,
-    title:
-      normalizeText(target.getField?.("title")) ||
-      normalizeText(target.getDisplayTitle?.()) ||
-      `Item ${target.id}`,
-    firstCreator:
-      normalizeText(target.firstCreator) ||
-      normalizeText(target.getField?.("firstCreator")) ||
-      undefined,
-    year:
-      normalizeText(target.getField?.("date")).match(/\b(19|20)\d{2}\b/)?.[0] ||
-      undefined,
-    dateAdded: normalizeText(target.getField?.("dateAdded")) || undefined,
-    attachments,
-    tags: getItemTags(target),
-    collectionIds: getCollectionIDs(target),
-  };
-}
-
-function buildItemTargetFromItem(item: Zotero.Item): LibraryItemTarget | null {
-  // Standalone attachment/file (no parent item)
-  if (item.isAttachment?.() && !item.parentID) {
-    const title = resolveAnyAttachmentTitle(item, 0, 1);
-    return {
-      itemId: item.id,
-      libraryID: Number(item.libraryID) || undefined,
-      itemType: "attachment",
-      title,
-      dateAdded: normalizeText(item.getField?.("dateAdded")) || undefined,
-      attachments: [
-        {
-          contextItemId: item.id,
-          title,
-          contentType:
-            normalizeText(item.attachmentContentType) ||
-            "application/octet-stream",
-        },
-      ],
-      tags: getItemTags(item),
-      collectionIds: getCollectionIDs(item),
-    };
-  }
-  // Standalone note (no parent)
-  if ((item as any).isNote?.() && !item.parentID) {
-    const rawTitle = normalizeText(
-      (item as any).getNoteTitle?.() || item.getDisplayTitle?.() || "",
-    );
-    return {
-      itemId: item.id,
-      libraryID: Number(item.libraryID) || undefined,
-      itemType: "note",
-      title: rawTitle || `Note ${item.id}`,
-      dateAdded: normalizeText(item.getField?.("dateAdded")) || undefined,
-      attachments: [],
-      tags: getItemTags(item),
-      collectionIds: getCollectionIDs(item),
-      noteKind: "standalone",
-    };
-  }
-  // Regular item (with or without PDF)
-  const target = resolveRegularItem(item);
-  if (!target) return null;
-  const allAtts = getAllChildAttachments(target);
-  return {
-    itemId: target.id,
-    libraryID: Number(target.libraryID) || undefined,
-    itemType: getItemTypeName(target),
-    title:
-      normalizeText(target.getField?.("title")) ||
-      normalizeText(target.getDisplayTitle?.()) ||
-      `Item ${target.id}`,
-    firstCreator:
-      normalizeText(target.firstCreator) ||
-      normalizeText(target.getField?.("firstCreator")) ||
-      undefined,
-    year:
-      normalizeText(target.getField?.("date")).match(/\b(19|20)\d{2}\b/)?.[0] ||
-      undefined,
-    dateAdded: normalizeText(target.getField?.("dateAdded")) || undefined,
-    attachments: allAtts.map((att, index, list) => ({
-      contextItemId: att.id,
-      title: resolveAnyAttachmentTitle(att, index, list.length),
-      contentType:
-        normalizeText(att.attachmentContentType) || "application/octet-stream",
-    })),
-    tags: getItemTags(target),
-    collectionIds: getCollectionIDs(target),
-  };
-}
-
-function indexItemMatchesType(
-  item: LibraryIndexItem,
-  requestedType?: string,
-): boolean {
-  const normalized = requestedType?.trim().toLowerCase();
-  return !normalized || item.itemType.toLowerCase() === normalized;
-}
-
-function indexItemHasGatewayPdf(
-  snapshot: LibraryIndexSnapshot,
-  itemId: number,
-): boolean {
-  return (snapshot.childAttachmentIdsByItemId.get(itemId) || []).some(
-    (attachmentId) => snapshot.attachmentById.get(attachmentId)?.isPdf,
-  );
-}
-
-function indexItemMatchesAggregateTagScope(
-  item: LibraryIndexItem,
-  scope: "allTagged" | "untagged",
-  includeAutomatic: boolean,
-): boolean {
-  const tagged =
-    item.tags.length > 0 || (includeAutomatic && item.automaticTags.length > 0);
-  return scope === "allTagged" ? tagged : !tagged;
-}
-
-function orderedIndexIds(
-  snapshot: LibraryIndexSnapshot,
-  predicate: (item: LibraryIndexItem) => boolean,
-): number[] {
-  return snapshot.topLevelItemOrder.filter((itemId) => {
-    const item = snapshot.itemById.get(itemId);
-    return Boolean(item && !item.deleted && predicate(item));
-  });
-}
-
-function orderedGatewayPaperIds(snapshot: LibraryIndexSnapshot): number[] {
-  return orderedIndexIds(
-    snapshot,
-    (item) =>
-      item.kind === "regular" && indexItemHasGatewayPdf(snapshot, item.itemId),
-  ).sort((leftId, rightId) => {
-    const left = snapshot.itemById.get(leftId)!;
-    const right = snapshot.itemById.get(rightId)!;
-    const modifiedDelta = right.modifiedAt - left.modifiedAt;
-    if (modifiedDelta !== 0) return modifiedDelta;
-    return left.title.localeCompare(right.title, undefined, {
-      sensitivity: "base",
-    });
-  });
-}
-
-function pageIds(ids: number[], limit: unknown): number[] {
-  const normalized = normalizeResultLimit(limit);
-  return normalized ? ids.slice(0, normalized) : ids;
-}
-
-function sortAndPageIndexIds(
-  snapshot: LibraryIndexSnapshot,
-  ids: number[],
-  options: {
-    sort?: "dateAdded" | "title";
-    order?: "asc" | "desc";
-    offset?: number;
-    limit?: number;
-  },
-): number[] {
-  const sorted =
-    options.sort === "dateAdded" || options.sort === "title"
-      ? [...ids].sort((leftId, rightId) => {
-          const left = snapshot.itemById.get(leftId);
-          const right = snapshot.itemById.get(rightId);
-          const leftValue =
-            options.sort === "title"
-              ? left?.title || ""
-              : left?.dateAdded || "";
-          const rightValue =
-            options.sort === "title"
-              ? right?.title || ""
-              : right?.dateAdded || "";
-          if (!leftValue && !rightValue) return 0;
-          if (!leftValue) return 1;
-          if (!rightValue) return -1;
-          const compared =
-            options.sort === "title"
-              ? leftValue.localeCompare(rightValue)
-              : leftValue < rightValue
-                ? -1
-                : leftValue > rightValue
-                  ? 1
-                  : 0;
-          const descending =
-            options.sort === "title"
-              ? options.order === "desc"
-              : options.order !== "asc";
-          return descending ? -compared : compared;
-        })
-      : ids;
-  const offset =
-    Number.isFinite(options.offset) && Number(options.offset) > 0
-      ? Math.floor(Number(options.offset))
-      : 0;
-  return pageIds(offset ? sorted.slice(offset) : sorted, options.limit);
-}
-
-function buildPaperTargetsForIds(
-  gateway: ZoteroGateway,
-  ids: number[],
-): LibraryPaperTarget[] {
-  const results: LibraryPaperTarget[] = [];
-  for (const id of ids) {
-    const item = gateway.resolveBibliographicItem(gateway.getItem(id));
-    if (!item) continue;
-    const target = buildPaperTargetFromItem(item);
-    if (target) results.push(target);
-  }
-  return results;
-}
-
-function buildItemTargetsForIds(
-  gateway: ZoteroGateway,
-  ids: number[],
-): LibraryItemTarget[] {
-  const results: LibraryItemTarget[] = [];
-  for (const id of ids) {
-    const item = gateway.getItem(id);
-    if (!item) continue;
-    const target = buildItemTargetFromItem(item);
-    if (target) results.push(target);
-  }
-  return results;
-}
-
-function listLibraryCollections(libraryID: number): Zotero.Collection[] {
-  if (!Number.isFinite(libraryID) || libraryID <= 0) return [];
-  try {
-    return Zotero.Collections.getByLibrary(Math.floor(libraryID), true) || [];
-  } catch (_error) {
-    void _error;
-    return [];
-  }
-}
-
-function buildCollectionPathMap(
-  collections: Zotero.Collection[],
-): Map<number, string> {
-  const byId = new Map<number, Zotero.Collection>();
-  const pathById = new Map<number, string>();
-  for (const collection of collections) {
-    byId.set(collection.id, collection);
-  }
-  const resolvePath = (collectionId: number): string => {
-    const cached = pathById.get(collectionId);
-    if (cached) return cached;
-    const collection = byId.get(collectionId);
-    if (!collection) return "";
-    const name =
-      normalizeText(collection.name) || `Collection ${collection.id}`;
-    const parentId = Number(collection.parentID);
-    if (!Number.isFinite(parentId) || parentId <= 0 || !byId.has(parentId)) {
-      pathById.set(collectionId, name);
-      return name;
-    }
-    const path = `${resolvePath(Math.floor(parentId))} / ${name}`;
-    pathById.set(collectionId, path);
-    return path;
-  };
-  for (const collection of collections) {
-    resolvePath(collection.id);
-  }
-  return pathById;
-}
-
-function normalizeResultLimit(limit: unknown): number | undefined {
-  return Number.isFinite(limit) && Number(limit) > 0
-    ? Math.max(1, Math.floor(Number(limit)))
-    : undefined;
-}
-
-function libraryItemTargetHasPdf(target: LibraryItemTarget): boolean {
-  return target.attachments.some((attachment) => {
-    const contentType = normalizeText(attachment.contentType).toLowerCase();
-    const title = normalizeText(attachment.title).toLowerCase();
-    return (
-      contentType === "application/pdf" ||
-      title.endsWith(".pdf") ||
-      title === "pdf"
-    );
-  });
-}
-
-function libraryItemTargetMatchesFilters(
-  target: LibraryItemTarget,
-  filters?: { hasPdf?: boolean },
-): boolean {
-  if (filters?.hasPdf === undefined) return true;
-  return libraryItemTargetHasPdf(target) === filters.hasPdf;
-}
-
-// ── Zotero.Search-backed listing helpers ──────────────────────────────────────
-
-export type AgentLibraryFilters = {
-  collectionId?: number;
-  unfiled?: boolean;
-  hasPdf?: boolean;
-  itemType?: string;
-  author?: string;
-  yearFrom?: number;
-  yearTo?: number;
-  tag?: string;
-  /** List the trash instead of the library. */
-  deleted?: boolean;
-};
-
-/**
- * One clause of an advanced search, forwarded to `Zotero.Search`.
- *
- * The agent previously had nine hand-written filters against Zotero's own
- * ~130 conditions x 15 operators. Re-implementing that vocabulary a filter at
- * a time is how it stayed nine for so long, so this forwards the vocabulary
- * instead of mirroring it: new Zotero versions add conditions for free.
- */
-export type AgentSearchCondition = {
-  condition: string;
-  operator: string;
-  value?: string | number;
-  /**
-   * Sub-mode for the few conditions that take one, e.g. `fulltextContent`
-   * with `phrase` or `regexp`. Zotero spells this `condition/mode`.
-   */
-  mode?: string;
-  /** Zotero's per-condition `required` flag. */
-  required?: boolean;
-};
-
-export type AgentSearchConditionError = {
-  condition: string;
-  reason: string;
-  validOperators?: string[];
-};
-
-/**
- * Checks conditions before any of them reach `Zotero.Search`.
- *
- * `addCondition` throws for both an unknown condition and an unsupported
- * operator, and a throw mid-build leaves a half-populated search. Worse, the
- * callers used to swallow it into an empty result, which is how a year filter
- * silently reported "no matching library results" on every library. Validate
- * first, and tell the model which operators the condition actually takes --
- * an error it cannot act on is as useless as an empty result.
- */
-export function validateSearchConditions(
-  conditions: AgentSearchCondition[],
-): AgentSearchConditionError[] {
-  const registry = (
-    Zotero as unknown as {
-      SearchConditions?: {
-        get?: (
-          name: string,
-        ) => { operators?: Record<string, boolean> } | undefined;
-      };
-    }
-  ).SearchConditions;
-  if (!registry?.get) return [];
-  const errors: AgentSearchConditionError[] = [];
-  for (const entry of conditions) {
-    const name = String(entry?.condition || "").trim();
-    if (!name) {
-      errors.push({ condition: "", reason: "A condition name is required" });
-      continue;
-    }
-    // A block flips joinMode for the WHOLE query: any block sets
-    // hasQuicksearch, and joinModeAny is `_joinMode == 'any' || hasQuicksearch`.
-    // Exposing them would let one clause silently turn an AND search into OR.
-    if (name === "blockStart" || name === "blockEnd") {
-      errors.push({
-        condition: name,
-        reason:
-          "Grouping blocks are not available: opening one flips every other condition in the query from AND to OR. Use joinMode instead, or run separate searches.",
-      });
-      continue;
-    }
-    const declared = registry.get(name);
-    if (!declared) {
-      errors.push({
-        condition: name,
-        reason: `"${name}" is not a Zotero search condition`,
-      });
-      continue;
-    }
-    const operator = String(entry?.operator || "").trim();
-    const validOperators = Object.keys(declared.operators || {});
-    if (!operator || !declared.operators?.[operator]) {
-      errors.push({
-        condition: name,
-        reason: `"${operator || "(missing)"}" is not a valid operator for "${name}"`,
-        validOperators,
-      });
-    }
-  }
-  return errors;
-}
-
-/**
- * Applies the exact year range in JS.
- *
- * The SQL side can only narrow: Zotero compares dates as strings, and an
- * `isAfter` on a bare year matches everything later in *that same* year. So
- * the range is enforced here, on the parsed year, exactly as the in-memory
- * fallback path already did. Items with no parseable year are excluded, which
- * is what a year-bounded question means.
- */
-function libraryItemTargetMatchesYear(
-  target: LibraryItemTarget,
-  filters?: { yearFrom?: number; yearTo?: number },
-): boolean {
-  if (filters?.yearFrom == null && filters?.yearTo == null) return true;
-  const year = parseInt(String(target.year ?? ""), 10);
-  if (Number.isNaN(year)) return false;
-  if (filters.yearFrom != null && year < filters.yearFrom) return false;
-  if (filters.yearTo != null && year > filters.yearTo) return false;
-  return true;
-}
-
-/**
- * Builds the `Zotero.Search` behind the agent's structured filters.
- *
- * Two conditions here were wrong in ways that silently produced empty or
- * over-broad results:
- *
- * 1. `year` was given `isGreaterThan`/`isLessThan`, which it does not accept
- *    (`searchConditions.js` allows only is/isNot/contains/doesNotContain).
- *    `addCondition` *throws* on an unsupported operator, and both callers
- *    swallowed the throw — so every text search combined with a year filter
- *    reported "no matching library results", always. The list path happened
- *    to fall back to an in-memory filter, which is why this went unnoticed.
- *    Year is now narrowed with `date`, which does support ranges, and made
- *    exact by `libraryItemTargetMatchesYear`.
- *
- * 2. The author filter was an OR block. Any block sets `hasQuicksearch`, and
- *    `joinModeAny` is `_joinMode == 'any' || hasQuicksearch` — so opening a
- *    block flipped *every other condition* in the query from AND to OR. A
- *    search for "papers by Peyrache in collection X" returned everything by
- *    Peyrache plus everything in X. `creator` matches all creator roles in
- *    one condition, so no block is needed.
- */
-function buildAgentLibrarySearch(
-  libraryID: number,
-  filters: AgentLibraryFilters,
-): Zotero.Search {
-  const search = new Zotero.Search({ libraryID });
-  if (filters.collectionId) {
-    search.addCondition("collectionID", "is", filters.collectionId);
-  }
-  if (filters.unfiled) {
-    search.addCondition("unfiled", "true", "");
-  }
-  if (filters.itemType) {
-    search.addCondition("itemType", "is", filters.itemType);
-  }
-  if (filters.author) {
-    // `creator` spans author, editor, bookAuthor and the rest.
-    search.addCondition("creator", "contains", filters.author);
-  }
-  if (filters.yearFrom != null) {
-    // `> 'YYYY-00-00'`, so this may admit part of the preceding year; the
-    // exact bound is applied afterwards.
-    search.addCondition("date", "isAfter", String(filters.yearFrom - 1));
-  }
-  if (filters.yearTo != null) {
-    // `< 'YYYY-00-00'` for the following year, which is an exact upper bound.
-    search.addCondition("date", "isBefore", String(filters.yearTo + 1));
-  }
-  if (filters.tag) {
-    search.addCondition("tag", "is", filters.tag);
-  }
-  if (filters.deleted) {
-    // Zotero excludes trashed items from every search unless asked, so
-    // without this the trash could not be enumerated -- and restoring
-    // something the user deleted meant knowing its id already.
-    search.addCondition("deleted", "true" as never, "");
-  }
-  return search;
-}
-
-const FULLTEXT_INDEX_STATE_MAP: Record<
-  number,
-  LibraryItemTargetAttachment["indexingState"]
-> = {
-  0: "unavailable",
-  1: "unindexed",
-  2: "partial",
-  3: "indexed",
-  4: "queued",
-};
-
-/**
- * Cheap, extraction-free size of the text the host can read for a PDF: the
- * cached extraction when present, otherwise Zotero's full-text cache file or
- * the MinerU markdown on disk. Undefined when nothing measurable exists.
- */
-async function measureReadableTextChars(
-  attachment: Zotero.Item,
-  mineruCacheDir: string | undefined,
-): Promise<number | undefined> {
-  const cached = pdfTextCache.get(attachment.id);
-  if (cached?.fullLength) return cached.fullLength;
-  const stat = async (path: string) => {
-    try {
-      const io = (globalThis as unknown as { IOUtils?: any }).IOUtils;
-      const info = await io?.stat?.(path);
-      const size = Number(info?.size);
-      return Number.isFinite(size) && size > 0 ? size : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  try {
-    const fulltext = (
-      Zotero as unknown as {
-        Fulltext?: { getItemCacheFile?: (item: Zotero.Item) => nsIFile };
-      }
-    ).Fulltext;
-    const cacheFile = fulltext?.getItemCacheFile?.(attachment);
-    if (
-      cacheFile &&
-      (typeof cacheFile.exists !== "function" || cacheFile.exists())
-    ) {
-      const size = Number((cacheFile as { fileSize?: number }).fileSize);
-      if (Number.isFinite(size) && size > 0) return size;
-      if (cacheFile.path) {
-        const measured = await stat(cacheFile.path);
-        if (measured) return measured;
-      }
-    }
-  } catch {
-    // Fall through to MinerU.
-  }
-  if (mineruCacheDir?.trim()) {
-    const measured = await stat(
-      joinLocalPath(mineruCacheDir.trim(), "full.md"),
-    );
-    if (measured) return measured;
-  }
-  return undefined;
-}
-
 export class ZoteroGateway {
   getItemByLibraryAndKey(libraryID: number, key: string): Zotero.Item | null {
     return Zotero.Items.getByLibraryAndKey(libraryID, key) || null;
   }
 
   getItem(itemId: number | undefined): Zotero.Item | null {
-    if (!Number.isFinite(itemId) || !itemId || itemId <= 0) return null;
-    return Zotero.Items.get(Math.floor(itemId)) || null;
+    return getItem(itemId);
   }
 
   getCollection(collectionId: number | undefined): Zotero.Collection | null {
-    if (!Number.isFinite(collectionId) || !collectionId || collectionId <= 0) {
-      return null;
-    }
-    return Zotero.Collections.get(Math.floor(collectionId)) || null;
+    return getCollection(collectionId);
   }
 
   resolveLibraryID(params: {
@@ -1308,31 +258,7 @@ export class ZoteroGateway {
   getCollectionSummary(
     collectionId: number | undefined,
   ): CollectionSummary | null {
-    const collection = this.getCollection(collectionId);
-    if (!collection) return null;
-    const libraryID = Number(collection.libraryID) || 0;
-    const snapshot = libraryIndexService.peekSnapshot(libraryID);
-    const indexed = snapshot?.collectionById.get(collection.id);
-    if (indexed) {
-      return {
-        collectionId: indexed.collectionId,
-        name: indexed.name,
-        libraryID: indexed.libraryID,
-        path:
-          snapshot?.collectionPathById.get(indexed.collectionId) ||
-          indexed.name,
-      };
-    }
-    const pathMap = buildCollectionPathMap(listLibraryCollections(libraryID));
-    return {
-      collectionId: collection.id,
-      name: normalizeText(collection.name) || `Collection ${collection.id}`,
-      libraryID,
-      path:
-        pathMap.get(collection.id) ||
-        normalizeText(collection.name) ||
-        `Collection ${collection.id}`,
-    };
+    return getCollectionSummary(collectionId);
   }
 
   /** Uncached native state used to verify collection mutation receipts. */
@@ -1639,7 +565,7 @@ export class ZoteroGateway {
   resolveBibliographicItem(
     item: Zotero.Item | null | undefined,
   ): Zotero.Item | null {
-    return resolveRegularItem(item);
+    return resolveBibliographicItem(item);
   }
 
   resolveMetadataItem(params: {

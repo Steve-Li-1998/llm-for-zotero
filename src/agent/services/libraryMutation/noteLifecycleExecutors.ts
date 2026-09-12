@@ -7,6 +7,7 @@ import { loadPlanDocument } from "../../documents/store";
 import { assertMaterialRefMatches } from "../../documents/workflowMaterial";
 import { advanceBatchJob } from "../../store/batchJobStore";
 import {
+  listBatchItems,
   markBatchItemFailed,
   markBatchItemSaved,
 } from "../../store/batchItemStore";
@@ -75,12 +76,23 @@ export const noteLifecycleExecutors = {
       noteId?: number;
       actionId?: string;
       title: string;
-      status: "created" | "error";
+      status: "created" | "already_saved" | "error";
       reason?: string;
     }> = [];
     const binding = batchBindingFor(context.batchBinding, operation.notes);
     const batchId = binding?.batchId;
-    let appliedCount = 0;
+    // What this batch has already written. A note is written once: inside a
+    // batch action `executeNoteCreation` has no journal action of its own to
+    // recover, so nothing downstream would recognise the second attempt.
+    const priorRows = new Map(
+      (batchId ? await listBatchItems(batchId) : []).map((row) => [
+        row.itemKey,
+        row,
+      ]),
+    );
+    let appliedCount = [...priorRows.values()].filter(
+      (row) => row.status === "saved",
+    ).length;
     // Progress is written after each note lands, never before: a cursor ahead
     // of the library would skip an unwritten note on resume.
     const recordProgress = async (params: {
@@ -89,10 +101,14 @@ export const noteLifecycleExecutors = {
       journalStep?: { actionId: string; sequence: number };
       noteId?: number;
       error?: string;
+      alreadySaved?: boolean;
     }) => {
       if (!batchId || !params.itemKey) return;
       const now = Date.now();
-      if (params.noteId !== undefined) {
+      if (params.alreadySaved) {
+        // The row already names the note this item wrote; rewriting it would
+        // replace that note's id with a second note's.
+      } else if (params.noteId !== undefined) {
         appliedCount += 1;
         await markBatchItemSaved(batchId, params.itemKey, {
           actionId: params.journalStep?.actionId,
@@ -122,6 +138,21 @@ export const noteLifecycleExecutors = {
       const title = target
         ? String(target.getDisplayTitle?.() || `Item ${entry.targetItemId}`)
         : `Item ${entry.targetItemId}`;
+      const prior = bound ? priorRows.get(bound.itemKey) : undefined;
+      if (prior?.status === "saved") {
+        rows.push({
+          targetItemId: entry.targetItemId,
+          noteId: prior.noteId,
+          title,
+          status: "already_saved",
+        });
+        await recordProgress({
+          itemKey: bound?.itemKey,
+          position,
+          alreadySaved: true,
+        });
+        continue;
+      }
       if (!target) {
         const reason = `No item with ID ${entry.targetItemId} exists in this library`;
         rows.push({
@@ -190,6 +221,9 @@ export const noteLifecycleExecutors = {
         operationId: operation.id,
         result: {
           createdCount: rows.filter((row) => row.status === "created").length,
+          alreadySavedCount: rows.filter(
+            (row) => row.status === "already_saved",
+          ).length,
           failedCount: rows.filter((row) => row.status === "error").length,
           actionIds: [
             ...new Set(

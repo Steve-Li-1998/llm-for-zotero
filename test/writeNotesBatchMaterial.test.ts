@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { rejects } from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createWriteNotesBatchTool } from "../src/agent/tools/write/writeNotesBatch";
 import { LibraryMutationService } from "../src/agent/services/libraryMutationService";
@@ -38,6 +39,7 @@ describe("note batch material", function () {
   let native: ReturnType<typeof installNativeNoteStore>;
   let originalZotero: unknown;
   let failOnParent: number | undefined;
+  let libraryUnavailable = false;
 
   function libraryItem(id: number) {
     return {
@@ -64,7 +66,10 @@ describe("note batch material", function () {
 
   const gateway = {
     resolveLibraryID: () => 1,
-    getItem: (id: number) => targets.get(id) || native.notes.get(id) || null,
+    getItem: (id: number) => {
+      if (libraryUnavailable) throw new Error("Zotero is unavailable");
+      return targets.get(id) || native.notes.get(id) || null;
+    },
     trashItems: async ({ itemIds }: { itemIds: number[] }) => ({
       trashedCount: itemIds.length,
       items: itemIds.map((itemId) => ({ itemId, status: "trashed" })),
@@ -103,6 +108,7 @@ describe("note batch material", function () {
   beforeEach(async function () {
     originalZotero = globalScope.Zotero;
     failOnParent = undefined;
+    libraryUnavailable = false;
     db = new DatabaseSync(":memory:");
     globalScope.Zotero = {
       DB: {
@@ -382,6 +388,7 @@ describe("note batch material", function () {
     // A fresh batch id per call would leave the first batch resumable for
     // ever, and Task 3 would then write every note a second time.
     assert.equal(second.batchItems![0].batchId, batchId);
+    assert.equal(native.notes.size, 3, "only the failed item is written again");
     const rows = await listBatchItems(batchId);
     assert.deepEqual(
       rows.map((row) => row.status),
@@ -520,6 +527,78 @@ describe("note batch material", function () {
         renderRawNoteHtml(bodies[index === 0 ? 0 : 2].content),
       );
     }
+  });
+
+  it("writes nothing again for an item its rows already name", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    const first = await tool.execute(
+      await prepare(tool, validated(tool)),
+      context(),
+    );
+    const batchId = first.batchItems![0].batchId;
+    const written = await listBatchItems(batchId);
+    assert.equal(native.notes.size, 3);
+
+    const second = await tool.execute(
+      await prepare(tool, validated(tool)),
+      context(),
+    );
+
+    // Inside a batch action `executeNoteCreation` has no journal recovery to
+    // deduplicate against, so an unskipped item would mint a second note and
+    // the row would forget the first one.
+    assert.equal(native.notes.size, 3, "no second note for a written item");
+    const rows = await listBatchItems(batchId);
+    assert.deepEqual(
+      rows.map((row) => row.noteId),
+      written.map((row) => row.noteId),
+      "each row still names the note it wrote",
+    );
+    const payload = (
+      second.content as { result: { result: Record<string, unknown> } }
+    ).result.result;
+    assert.equal(payload.createdCount, 0);
+    assert.equal(payload.alreadySavedCount, 3);
+    assert.deepEqual(
+      (payload.notes as Array<{ status: string }>).map((row) => row.status),
+      ["already_saved", "already_saved", "already_saved"],
+    );
+    assert.equal(second.effect, "none");
+  });
+
+  it("seeds an item that has no material as failed, never pending", async function () {
+    const tool = createWriteNotesBatchTool(gateway);
+    const input = tool.validate({
+      notes: [
+        { targetItemId: 1, content: "A fine note." },
+        { targetItemId: 2, content: "x".repeat(2 * 1024 * 1024 + 16) },
+      ],
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    await prepare(tool, input.value);
+
+    // The rows are seeded, then the write never reaches them. A `pending` row
+    // with no material would tell a resume to write a note it cannot build.
+    libraryUnavailable = true;
+    await rejects(tool.execute(input.value, context()));
+
+    const seeded = db
+      .prepare(
+        `SELECT status, error, material_document_id AS materialDocumentId
+         FROM llm_for_zotero_agent_batch_items ORDER BY position`,
+      )
+      .all() as Array<{
+      status: string;
+      error: string | null;
+      materialDocumentId: string | null;
+    }>;
+    assert.deepEqual(
+      seeded.map((row) => row.status),
+      ["pending", "failed"],
+    );
+    assert.isNull(seeded[1].materialDocumentId);
+    assert.include(seeded[1].error || "", "2 MiB");
   });
 
   it("never announces a batch item as the turn's finalized material", async function () {

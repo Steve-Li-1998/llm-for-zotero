@@ -10802,6 +10802,39 @@ describe("agent trace action summary card", function () {
     );
   });
 
+  it("states an observed effect that changed nothing it could read back", function () {
+    const card = summaryCard(
+      buildAgentTraceDisplayItems(
+        [
+          event(1, {
+            type: "tool_result",
+            callId: "call-read",
+            name: "paper_read",
+            ok: true,
+            actionReceipts: [
+              receipt({
+                id: "read_full:fallback",
+                capability: "zotero.read",
+                operation: "read_full",
+                status: "observed",
+                requestedTargets: [],
+                appliedTargets: [],
+              }),
+            ],
+            content: {},
+          }),
+        ],
+        null,
+      ).items,
+    );
+
+    assert.deepEqual(
+      card?.entries.map((entry) => entry.text),
+      ["Read full text"],
+      "an observation states itself, and states no targets it did not change",
+    );
+  });
+
   it("shows no card when the run changed nothing", function () {
     const { items } = buildAgentTraceDisplayItems(
       [

@@ -1,4 +1,6 @@
 import { assert } from "chai";
+import { rejects } from "node:assert/strict";
+import { MutationNoEffectError } from "../src/agent/services/externalMutationCoordinator";
 import { LibraryMutationService } from "../src/agent/services/libraryMutationService";
 import { executeLibraryMutationAction } from "../src/agent/services/mutationCoordinator";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
@@ -294,5 +296,78 @@ describe("note batch journal ownership", function () {
       (again.content as { status?: string }).status,
       "nothing_reversible",
     );
+  });
+
+  it("keeps the notes that landed on the action when the batch itself throws", async function () {
+    await install();
+    // A library read that fails between two notes sits outside the per-note
+    // guard, so the whole operation throws after the first note committed.
+    // It reads cleanly while the batch is still being planned.
+    const failing = {
+      ...gateway(),
+      getItem: (id: number) => {
+        if (id === 2 && native.notes.size > 0)
+          throw new Error("the library read failed");
+        return targets.get(id) || native.notes.get(id) || null;
+      },
+    };
+    const service = new LibraryMutationService(failing as never);
+
+    await rejects(
+      executeLibraryMutationAction({
+        service,
+        operations: [notesBatch(3)],
+        context,
+        facadeToolName: "note_write_batch",
+      }),
+      /the library read failed/,
+    );
+
+    const action = [...db.actions.values()][0];
+    const actionId = String(action.action_id);
+    assert.equal(action.status, "partially_applied");
+    assert.equal(action.affected_count, 1);
+    const steps = orderedSteps();
+    assert.lengthOf(steps, 1);
+    assert.equal(steps[0].status, "applied");
+    assert.deepEqual(inverseItemIds(steps[0]), [[500]]);
+
+    // The note that did land is still undoable from the batch action.
+    const tool = createUndoLastActionTool(gateway() as never);
+    await tool.execute!({}, context);
+    assert.deepEqual(trashed, [[500]]);
+    assert.equal(db.actions.get(actionId)?.status, "reverted");
+  });
+
+  it("keeps a provably empty batch failed rather than uncertain", async function () {
+    await install();
+    const service = {
+      planOperation: async () => ({
+        effect: "write" as const,
+        reversibility: "full" as const,
+        description: "write notes",
+      }),
+      executeOperation: async () => {
+        throw new MutationNoEffectError("no note target was writable");
+      },
+      captureOperationState: async () => ({
+        version: 1,
+        operation: "save_notes_batch",
+      }),
+    };
+
+    await rejects(
+      executeLibraryMutationAction({
+        service: service as never,
+        operations: [notesBatch(1)],
+        context,
+        facadeToolName: "note_write_batch",
+      }),
+      (error: unknown) =>
+        error instanceof MutationNoEffectError &&
+        /no note target was writable/.test(error.message),
+    );
+
+    assert.equal([...db.actions.values()][0].status, "failed");
   });
 });

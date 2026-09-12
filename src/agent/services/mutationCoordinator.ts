@@ -2,6 +2,7 @@ import {
   executeJournaledStep,
   runIdFor,
   MutationMayHaveAppliedError,
+  MutationNoEffectError,
   getActiveJournalActionId,
   withActiveJournalAction,
   type JournalActionSeed,
@@ -140,6 +141,11 @@ async function executeComposite(params: {
   parentScope?: AgentJournalActionScope;
   allocateSequence: () => number;
   prepareAction?: (plan: MutationStepPlan) => JournalActionSeed;
+  /**
+   * Reported as each step lands, so an operation that throws midway still
+   * leaves its applied steps visible to the action that owns them.
+   */
+  onStepOutcome?: (outcome: AgentJournalStepOutcome) => void;
 }) {
   const { service, operation, context, actionId, parentScope } = params;
   const run = async () => {
@@ -158,6 +164,7 @@ async function executeComposite(params: {
           allocateSequence: params.allocateSequence,
           recordStep: (outcome) => {
             stepOutcomes.push(outcome);
+            params.onStepOutcome?.(outcome);
             parentScope?.recordStep(outcome);
           },
         }
@@ -177,6 +184,9 @@ async function executeComposite(params: {
         executed.result,
       );
     } catch (error) {
+      // Native evidence of no effect is a proof, not a doubt: pass it on so
+      // the action is recorded as failed rather than uncertain.
+      if (error instanceof MutationNoEffectError) throw error;
       // The children own their own durable state; from here the composite
       // can only report that its window may have changed the library.
       throw new MutationMayHaveAppliedError(
@@ -306,6 +316,10 @@ export async function executeLibraryMutationAction(params: {
   // steps cannot collide with the sequences of its siblings.
   const allocateSequence = () =>
     parentScope ? parentScope.allocateSequence() : (localSequence += 1);
+  // Steps that landed inside the operation currently running. If it throws,
+  // its own summary never reaches completedOutcomes, and the action would
+  // otherwise forget durable steps that already changed the library.
+  let inFlightOutcomes: AgentJournalStepOutcome[] = [];
   try {
     for (let index = 0; index < operations.length; index += 1) {
       const operation = operations[index];
@@ -336,6 +350,7 @@ export async function executeLibraryMutationAction(params: {
             parentScope,
             allocateSequence,
             prepareAction,
+            onStepOutcome: (outcome) => inFlightOutcomes.push(outcome),
           })
         : await executeOne({
             service,
@@ -369,6 +384,8 @@ export async function executeLibraryMutationAction(params: {
         reversibility: executed.reversibility,
         affectedCount: executed.affectedCount,
       });
+      // The operation finished, so its own outcome now speaks for its steps.
+      inFlightOutcomes = [];
       if (executed.effect !== "none") {
         affectedCount += executed.affectedCount;
       }
@@ -398,9 +415,12 @@ export async function executeLibraryMutationAction(params: {
       actionEvidence,
     };
   } catch (error) {
-    const changedOutcomes = completedOutcomes.filter(
+    const changedOutcomes = [...completedOutcomes, ...inFlightOutcomes].filter(
       (outcome) => outcome.effect !== "none",
     );
+    for (const outcome of inFlightOutcomes) {
+      if (outcome.effect !== "none") affectedCount += outcome.affectedCount;
+    }
     const uncertain = error instanceof MutationMayHaveAppliedError;
     const recovery = changedOutcomes.length
       ? `${changedOutcomes.length} prior operation${

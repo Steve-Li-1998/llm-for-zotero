@@ -3895,6 +3895,319 @@ describe("agentTrace render", function () {
     assert.notInclude(actionTexts, "Note write failed");
   });
 
+  type TraceReceipt = import("../src/agent/contracts/types").AgentActionReceipt;
+
+  function verificationReceipt(
+    overrides: Partial<TraceReceipt> = {},
+  ): TraceReceipt {
+    return {
+      version: 2,
+      id: "apply_tags:unmatched:result",
+      proposalId: "apply_tags:proposal",
+      proofDomain: "zotero_state",
+      capability: "zotero.tags",
+      operation: "apply_tags",
+      verification: "verified",
+      status: "applied",
+      requestedTargets: ["item:41"],
+      appliedTargets: ["item:41"],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [],
+      ...overrides,
+    } as TraceReceipt;
+  }
+
+  /**
+   * One tool result carrying receipts.
+   *
+   * The content is deliberately an empty result set: tool presentation
+   * summaries are unavailable outside Zotero, and an empty result is what
+   * still produces a row here, which is what the chip attaches to.
+   */
+  function receiptResultEvents(
+    receipts: TraceReceipt[],
+    name = "apply_tags",
+  ): AgentRunEventRecord[] {
+    return [
+      {
+        runId: "run-verification",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "call-1",
+          name,
+          ok: true,
+          actionReceipts: receipts,
+          content: { results: [] },
+        },
+        createdAt: 1,
+      },
+    ] as unknown as AgentRunEventRecord[];
+  }
+
+  function traceChipLabels(events: AgentRunEventRecord[]): string[] {
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    return items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .flatMap((item) => (item.chips || []).map((chip) => chip.label));
+  }
+
+  it("names what a result's receipts proved, one chip per result", function () {
+    assert.deepEqual(
+      traceChipLabels(receiptResultEvents([verificationReceipt()])),
+      ["Verified"],
+    );
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({ verification: "execution_only" }),
+        ]),
+      ),
+      ["Ran (no state proof)"],
+    );
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({ verification: "unverified" }),
+        ]),
+      ),
+      ["Unverified"],
+    );
+  });
+
+  it("leaves an action that claimed nothing unchipped", function () {
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({
+            verification: "not_applicable",
+            status: "cancelled",
+            appliedTargets: [],
+          }),
+        ]),
+      ),
+      [],
+    );
+  });
+
+  it("shows the weakest proof when one result carries several receipts", function () {
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt(),
+          verificationReceipt({ id: "second", verification: "execution_only" }),
+        ]),
+      ),
+      ["Ran (no state proof)"],
+    );
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({ verification: "execution_only" }),
+          verificationReceipt({ id: "second", verification: "unverified" }),
+        ]),
+      ),
+      ["Unverified"],
+    );
+    // A cancelled receipt claims nothing, so it never hides a real proof.
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({
+            verification: "not_applicable",
+            status: "cancelled",
+          }),
+          verificationReceipt({ id: "second" }),
+        ]),
+      ),
+      ["Verified"],
+    );
+  });
+
+  it("says when the effect ran under a connected client's authorization", function () {
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({
+            verification: "execution_only",
+            executionAuthority: "external_runtime",
+          }),
+        ]),
+      ),
+      ["Ran (no state proof)", "Authorized by connected client"],
+    );
+  });
+
+  it("claims nothing for a receipt journaled before verification existed", function () {
+    const legacy = verificationReceipt();
+    delete (legacy as { verification?: unknown }).verification;
+    assert.deepEqual(traceChipLabels(receiptResultEvents([legacy])), []);
+  });
+
+  it("reads the chip from the receipts and never from the tool name", function () {
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents(
+          [verificationReceipt({ verification: "unverified" })],
+          "some_unregistered_tool",
+        ),
+      ),
+      ["Unverified"],
+    );
+  });
+
+  it("lets the Zotero evidence row speak for a verified note write", function () {
+    const events = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            verificationReceipt({
+              capability: "zotero.notes",
+              operation: "note_create",
+              verifiedFacts: ["native_note:77:html_sha256:abc123"],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            }),
+          ],
+          content: { noteId: 77, documentId: "run-earlier:document:1" },
+        },
+        createdAt: 1,
+      },
+    ] as unknown as AgentRunEventRecord[];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actions = items.filter(
+      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+        item.type === "action",
+    );
+    assert.include(
+      actions.map((item) => item.row.text),
+      "Zotero state verified",
+    );
+    assert.deepEqual(
+      actions.flatMap((item) => (item.chips || []).map((chip) => chip.label)),
+      [],
+      "the evidence row already says the state was verified",
+    );
+  });
+
+  it("still names a weaker proof beside the Zotero evidence row", function () {
+    const events = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            verificationReceipt({
+              capability: "zotero.notes",
+              operation: "note_create",
+              verifiedFacts: ["native_note:77:html_sha256:abc123"],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            }),
+            verificationReceipt({
+              id: "attachment",
+              capability: "zotero.items",
+              operation: "attachment_link",
+              verification: "unverified",
+            }),
+          ],
+          content: { noteId: 77, documentId: "run-earlier:document:1" },
+        },
+        createdAt: 1,
+      },
+    ] as unknown as AgentRunEventRecord[];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actions = items.filter(
+      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+        item.type === "action",
+    );
+    assert.include(
+      actions.map((item) => item.row.text),
+      "Zotero state verified",
+    );
+    assert.deepEqual(
+      actions.flatMap((item) => (item.chips || []).map((chip) => chip.label)),
+      ["Unverified"],
+    );
+  });
+
+  it("names the proof of a write a connected client ran over MCP", function () {
+    const events = [
+      {
+        runId: "run-mcp",
+        seq: 1,
+        eventType: "codex_tool_activity",
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "mcp-1",
+          phase: "completed",
+          toolName: "note_write",
+          ok: true,
+          args: {},
+          actionReceipts: [
+            verificationReceipt({
+              capability: "zotero.notes",
+              operation: "note_create",
+              executionAuthority: "external_runtime",
+            }),
+          ],
+        },
+        createdAt: 1,
+      },
+    ] as unknown as AgentRunEventRecord[];
+
+    assert.deepEqual(traceChipLabels(events), [
+      "Verified",
+      "Authorized by connected client",
+    ]);
+  });
+
+  it("renders a verification chip as text, not markup", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "Done.",
+        timestamp: 2,
+        runMode: "agent",
+      },
+      events: receiptResultEvents([
+        verificationReceipt({ verification: "unverified" }),
+      ]),
+    }) as unknown as FakeElement;
+
+    const chipLabels = trace
+      .findAllByClass("llm-agent-process-chip-label")
+      .map(collectFakeText);
+    assert.include(chipLabels, "Unverified");
+  });
+
   it("closes a run that generated material but failed to save it", function () {
     const events: AgentRunEventRecord[] = [
       {

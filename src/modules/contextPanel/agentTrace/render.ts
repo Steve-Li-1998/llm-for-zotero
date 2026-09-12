@@ -4,6 +4,11 @@ import type {
 } from "../../../agent/types";
 import { projectPaperReferences } from "../../../shared/paperDisplayLabels";
 import { getAgentRuntime } from "../../../agent";
+import type { AgentActionVerification } from "../../../agent/contracts/actionVerificationLabels";
+import {
+  AGENT_ACTION_VERIFICATION_LABELS,
+  worstAgentActionVerification,
+} from "../../../agent/contracts/actionVerificationLabels";
 import {
   exportPlanDocumentMarkdown,
   savePlanDocumentAsNote,
@@ -3646,6 +3651,63 @@ function readMaterialNoteWrite(
 }
 
 /**
+ * The glyph that carries each verdict at a glance, in the trace's own marks.
+ *
+ * `not_applicable` is absent on purpose: an action that claimed nothing gets no
+ * chip, and the compiler holds the builder to that.
+ */
+const AGENT_TRACE_VERIFICATION_CHIP_ICONS: Record<
+  Exclude<AgentActionVerification, "not_applicable">,
+  string
+> = {
+  verified: "✓",
+  execution_only: "▸",
+  unverified: "!",
+};
+
+/**
+ * What a result's receipts proved, and under whose authority they ran.
+ *
+ * One row carries one verdict, so several receipts collapse to the weakest
+ * proof among them: a verified tag write beside an unverified note write is not
+ * a verified result. Everything here is read from receipt fields — a tool's
+ * name, its wording, and its card builders cannot make an unverified effect
+ * look verified.
+ *
+ * `materialEvidence` says the row is already followed by the Phase 1 material
+ * journey row ("Zotero state verified" / "checked (text match)"), which names
+ * the same proof and its strength. When that row covers the whole result the
+ * chip would repeat it, so it is dropped; a weaker receipt elsewhere in the
+ * same result still gets its chip, because the evidence row speaks only for the
+ * note write it came from.
+ */
+function buildAgentTraceVerificationChips(
+  receipts: AgentActionReceipt[] | undefined,
+  options: { materialEvidence?: boolean } = {},
+): AgentTraceChip[] {
+  const chips: AgentTraceChip[] = [];
+  const verification = worstAgentActionVerification(receipts);
+  const coveredByEvidenceRow =
+    options.materialEvidence === true && verification === "verified";
+  if (
+    verification &&
+    verification !== "not_applicable" &&
+    !coveredByEvidenceRow
+  )
+    chips.push({
+      icon: AGENT_TRACE_VERIFICATION_CHIP_ICONS[verification],
+      label: AGENT_ACTION_VERIFICATION_LABELS[verification],
+    });
+  if (
+    (receipts || []).some(
+      (receipt) => receipt?.executionAuthority === "external_runtime",
+    )
+  )
+    chips.push({ icon: "↗", label: "Authorized by connected client" });
+  return chips;
+}
+
+/**
  * The cards a tool result contributes to the trace.
  *
  * Only the tool that produced the result knows whether its payload carries a
@@ -4413,20 +4475,29 @@ function appendLegacyAgentTraceEvent(
               text: `${toolLabelFromName(entry.payload.name)} completed (agent's own call)`,
             };
       }
+      const materialEvidence = entry.payload.ok
+        ? materialWrite?.evidence || null
+        : null;
       if (row) {
         ctx.items.push({
           type: "action",
           row,
+          chips: buildAgentTraceVerificationChips(
+            entry.payload.actionReceipts,
+            {
+              materialEvidence: Boolean(materialEvidence),
+            },
+          ),
           workCategory: entry.payload.workCategory,
         });
-        if (entry.payload.ok && materialWrite?.evidence) {
+        if (materialEvidence) {
           ctx.items.push({
             type: "action",
             row: {
               kind: "ok",
               icon: "\u2713",
               text:
-                materialWrite.evidence === "html_sha256"
+                materialEvidence === "html_sha256"
                   ? "Zotero state verified"
                   : "Zotero state checked (text match)",
             },
@@ -4507,13 +4578,18 @@ function appendCodexAgentTraceEvent(
           artifacts: entry.payload.artifacts,
         }),
         workCategory: entry.payload.workCategory,
-        chips: toolName
-          ? buildAgentTraceToolChips(
-              toolName,
-              entry.payload.args,
-              ctx.userMessage,
-            )
-          : undefined,
+        // A write the connected client ran reaches the trace here, so its
+        // receipts must be read for the same verdict an in-app write shows.
+        chips: [
+          ...(toolName
+            ? buildAgentTraceToolChips(
+                toolName,
+                entry.payload.args,
+                ctx.userMessage,
+              )
+            : []),
+          ...buildAgentTraceVerificationChips(entry.payload.actionReceipts),
+        ],
         details,
         detailKey: `codex:${entry.payload.itemId}`,
       });

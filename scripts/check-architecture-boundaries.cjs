@@ -69,14 +69,15 @@ const LAYERS = [
   },
 ];
 
-/** Tier of files that live directly under `src/` (the composition root). */
-const COMPOSITION_ROOT_TIER = LAYERS.length;
-
-// A root claimed by two tiers, or a tier out of order, would silently mis-place
-// a whole directory, so reject the table itself rather than its verdict.
-{
+/**
+ * Reject a malformed layer table rather than a verdict computed from one.
+ * A root claimed by two tiers, or a tier value out of step with its position,
+ * would silently mis-place a whole directory and make the check pass for the
+ * wrong reason. Returns the table so it can wrap a declaration.
+ */
+function validateLayers(layers) {
   const claimed = new Set();
-  LAYERS.forEach((layer, index) => {
+  layers.forEach((layer, index) => {
     if (layer.tier !== index) {
       throw new Error(
         `Layer "${layer.name}" declares tier ${layer.tier} at position ${index}.`,
@@ -89,7 +90,13 @@ const COMPOSITION_ROOT_TIER = LAYERS.length;
       claimed.add(root);
     }
   });
+  return layers;
 }
+
+validateLayers(LAYERS);
+
+/** Tier of files that live directly under `src/` (the composition root). */
+const COMPOSITION_ROOT_TIER = LAYERS.length;
 
 /**
  * Exact upward runtime imports present when the layer rule was introduced.
@@ -455,4 +462,5 @@ module.exports = {
   checkArchitectureBoundaries,
   collectImportEdges,
   formatBoundary,
+  validateLayers,
 };

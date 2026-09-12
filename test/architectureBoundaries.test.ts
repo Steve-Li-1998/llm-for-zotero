@@ -22,9 +22,12 @@ type CheckResult = {
   upwardTypeWarnings: Boundary[];
 };
 
+type Layer = { tier: number; name: string; roots: string[] };
+
 const {
   checkArchitectureBoundaries,
   formatBoundary,
+  validateLayers,
   LAYERS,
   MIGRATION_OBLIGATIONS,
 } = require("../scripts/check-architecture-boundaries.cjs") as {
@@ -33,7 +36,8 @@ const {
     options?: { obligations?: string[] },
   ) => CheckResult;
   formatBoundary: (boundary: Boundary) => string;
-  LAYERS: { tier: number; name: string; roots: string[] }[];
+  validateLayers: (layers: Layer[]) => Layer[];
+  LAYERS: Layer[];
   MIGRATION_OBLIGATIONS: string[];
 };
 
@@ -65,6 +69,44 @@ describe("architecture boundaries", function () {
     assert.include(roots, "src/services/");
     assert.include(roots, "src/agent/");
     assert.include(roots, "src/modules/");
+  });
+
+  describe("layer table validation", function () {
+    it("accepts the real layer table", function () {
+      assert.equal(validateLayers(LAYERS), LAYERS);
+    });
+
+    it("rejects a directory claimed by two layers", function () {
+      assert.throws(
+        () =>
+          validateLayers([
+            { tier: 0, name: "core", roots: ["src/core/"] },
+            { tier: 1, name: "foundation", roots: ["src/utils/", "src/core/"] },
+          ]),
+        /src\/core\/ is claimed by more than one layer/,
+      );
+    });
+
+    it("rejects a duplicated directory inside one layer", function () {
+      assert.throws(
+        () =>
+          validateLayers([
+            { tier: 0, name: "core", roots: ["src/core/", "src/core/"] },
+          ]),
+        /src\/core\/ is claimed by more than one layer/,
+      );
+    });
+
+    it("rejects a tier value that does not match its position", function () {
+      assert.throws(
+        () =>
+          validateLayers([
+            { tier: 0, name: "core", roots: ["src/core/"] },
+            { tier: 2, name: "services", roots: ["src/services/"] },
+          ]),
+        /"services" declares tier 2 at position 1/,
+      );
+    });
   });
 
   it("records the services-to-agent change journal edge as a migration obligation", function () {

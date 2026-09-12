@@ -288,28 +288,25 @@ export function createWriteNotesBatchTool(
 
     async execute(input, context) {
       const { batchId, operation } = await prepareBatch(input, context);
-      try {
-        return {
-          ...(await executeAndRecordUndo(
-            mutationService,
-            operation,
-            context,
-            "write_notes_batch",
-          )),
-          batchItems: await readBatchOutcomes(batchId),
-        };
-      } finally {
-        // The rows are the authority on what still needs writing, so the job
-        // is closed only once every item of it has landed.
-        const rows = await listBatchItems(batchId);
-        await finishBatchJob({
-          jobId: batchId,
-          status: rows.every((row) => row.status === "saved")
-            ? "completed"
-            : "failed",
-          now: Date.now(),
-        });
-      }
+      const result = await executeAndRecordUndo(
+        mutationService,
+        operation,
+        context,
+        "write_notes_batch",
+      );
+      const batchItems = await readBatchOutcomes(batchId);
+      // The rows are the authority on what still needs writing, so the job is
+      // closed only once every item of it has landed. A throw above leaves it
+      // open on purpose: the startup sweep will mark it interrupted and its
+      // pending rows stay resumable.
+      await finishBatchJob({
+        jobId: batchId,
+        status: batchItems.every((item) => item.status === "saved")
+          ? "completed"
+          : "failed",
+        now: Date.now(),
+      });
+      return { ...result, batchItems };
     },
   };
 }

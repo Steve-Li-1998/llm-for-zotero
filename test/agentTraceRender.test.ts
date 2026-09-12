@@ -3854,6 +3854,93 @@ describe("agentTrace render", function () {
     assert.notMatch(actionTexts.join("\n"), /Retry available/);
   });
 
+  it("keeps a streamed draft collapsed when the run announces its material", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-stream",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: "Drafting the guide." },
+        createdAt: 1,
+      },
+      {
+        runId: "run-stream",
+        seq: 2,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-stream:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "guide",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items, isInterleaved } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.isFalse(
+      isInterleaved,
+      "announcing material is not a step taken between drafts",
+    );
+    assert.isEmpty(
+      items.filter((item) => item.type === "inline_text"),
+      "the intermediate draft stays collapsed",
+    );
+    assert.include(actionTexts, "Drafting answer");
+    assert.include(actionTexts, "Generated guide: Representational drift");
+  });
+
+  it("does not hand the answer area to the trace when material is announced mid-run", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-stream",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: "Drafting the guide." },
+        createdAt: 1,
+      },
+      {
+        runId: "run-stream",
+        seq: 2,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-stream:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "guide",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { inlineTextReplacesAssistantText } = buildAgentTraceDisplayItems(
+      events,
+      null,
+    );
+
+    assert.isFalse(
+      inlineTextReplacesAssistantText,
+      "no final event yet must not promote the draft to the answer",
+    );
+  });
+
   it("renders Codex progress messages as separate activity messages", function () {
     const events: AgentRunEventRecord[] = [
       {

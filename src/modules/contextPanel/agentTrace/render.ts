@@ -4040,6 +4040,19 @@ type AgentTraceAdapterContext = {
   failedMaterialWrites: Set<string>;
 };
 
+/**
+ * Events whose row does not turn already-streamed text into an intermediate
+ * draft.
+ *
+ * `message_delta` and `message_rollback` are that text. `final` and
+ * `material_finalized` announce the answer itself rather than a step the agent
+ * took before writing it, so a run that streams a draft and then finalizes its
+ * material must still show one collapsed "Drafting answer" row.
+ */
+const NON_INTERLEAVING_TRACE_EVENT_TYPES = new Set<
+  AgentRunEventRecord["payload"]["type"]
+>(["message_delta", "message_rollback", "final", "material_finalized"]);
+
 function markLatestInlineTextAsIntermediate(
   ctx: AgentTraceAdapterContext,
   beforeIndex: number,
@@ -4802,9 +4815,7 @@ function buildAgentTraceDisplayItemsCanonical(
       appendSharedAgentTraceEvent(adapterContext, entry);
     if (
       handled &&
-      entry.payload.type !== "message_delta" &&
-      entry.payload.type !== "message_rollback" &&
-      entry.payload.type !== "final" &&
+      !NON_INTERLEAVING_TRACE_EVENT_TYPES.has(entry.payload.type) &&
       items.length > itemCountBeforeEvent
     ) {
       markLatestInlineTextAsIntermediate(adapterContext, itemCountBeforeEvent);

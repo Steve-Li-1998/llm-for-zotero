@@ -5,6 +5,7 @@ import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
 import { projectStageEvents } from "../src/modules/contextPanel/agentTrace/stageProjection";
+import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/chat";
 import { classifiedFixture } from "./helpers/semanticIntent";
 import { createTestActionContractService } from "./helpers/actionContractService";
 import { installMockDb } from "./helpers/agentRuntimeMockDb";
@@ -392,6 +393,58 @@ describe("agent trace stage projection", function () {
   it("returns a trace that already has stage events by reference", async function () {
     const legacy = records(await runLiveJourney());
     assert.strictEqual(projectStageEvents(legacy), legacy);
+  });
+
+  it("has nothing to do for a run the Codex bridge staged itself", function () {
+    // The bridge now emits the stages this projection used to synthesize, so
+    // a new native run must pass through untouched -- and the stages it
+    // emitted must be the ones the projection would have written, or a run
+    // recorded today and one recorded last month would read differently.
+    const message: {
+      role: "assistant";
+      text: string;
+      timestamp: number;
+      runMode: "agent";
+      pendingAgentTraceEvents?: AgentRunEventRecord[];
+    } = { role: "assistant", text: "", timestamp: 1, runMode: "agent" };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message as never,
+      () => undefined,
+    );
+    controller.appendItemStatus(
+      { id: "ws-1", type: "web_search", query: "drift" },
+      "started",
+    );
+    controller.appendItemStatus(
+      { id: "ws-1", type: "web_search", query: "drift" },
+      "completed",
+    );
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:3",
+      phase: "completed",
+      toolName: "write_note",
+      toolLabel: "Write note",
+      serverName: "llm_for_zotero",
+      workCategory: "zotero_action",
+      ok: true,
+    });
+    const live = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(live.map(shape), [
+      "agent_stage:retrieval:completed",
+      "codex_tool_activity",
+      "agent_stage:zotero_action:completed",
+      "codex_tool_activity",
+    ]);
+    assert.strictEqual(projectStageEvents(live), live);
+
+    // The same trace without its stages projects to the same sequence.
+    const withoutStages = live.filter(
+      (entry) => entry.payload.type !== "agent_stage",
+    );
+    assert.deepEqual(
+      projectStageEvents(withoutStages).map(shape),
+      live.map(shape),
+    );
   });
 
   it("projects a pre-Phase-0 trace to one undifferentiated stage", function () {

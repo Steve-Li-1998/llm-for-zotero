@@ -2867,7 +2867,14 @@ describe("agentTrace render", function () {
     const events = message.pendingAgentTraceEvents || [];
     assert.deepEqual(
       events.map((entry) => entry.payload.type),
-      ["codex_progress", "codex_tool_activity", "codex_progress", "final"],
+      [
+        "codex_progress",
+        // The bridge brackets the command with the stage it resolved.
+        "agent_stage",
+        "codex_tool_activity",
+        "codex_progress",
+        "final",
+      ],
     );
     assert.deepEqual(
       events
@@ -2914,6 +2921,102 @@ describe("agentTrace render", function () {
       activities.map((activity) => activity.workCategory),
       ["retrieval", "external_system"],
     );
+  });
+
+  it("brackets native structured work with the stage the bridge resolved", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.appendItemStatus(
+      { id: "command-1", type: "command_execution", command: "pwd" },
+      "started",
+    );
+    assert.deepEqual(
+      (message.pendingAgentTraceEvents || []).map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+      "the stage opens immediately before the row it describes",
+    );
+
+    controller.appendItemStatus(
+      {
+        id: "command-1",
+        type: "command_execution",
+        command: "pwd",
+        exitCode: 0,
+      },
+      "completed",
+    );
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+      "the completed phase updates the pair in place, as the row always did",
+    );
+    const stage = events[0].payload;
+    assert.equal(stage.type, "agent_stage");
+    assert.deepEqual(stage, {
+      type: "agent_stage",
+      stage: "external_system",
+      status: "completed",
+      toolName: "command",
+      toolLabel: "Command",
+    });
+  });
+
+  it("brackets a native Zotero MCP call with the stage its category declares", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:7",
+      phase: "started",
+      toolName: "library_search",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+    });
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:7",
+      phase: "completed",
+      toolName: "library_search",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+      ok: true,
+    });
+
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+    );
+    assert.deepEqual(events[0].payload, {
+      type: "agent_stage",
+      stage: "retrieval",
+      status: "completed",
+      toolName: "library_search",
+      toolLabel: "Search library",
+    });
   });
 
   it("preserves known quote anchors before agent trace DOM decoration", function () {

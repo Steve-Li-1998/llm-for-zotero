@@ -294,6 +294,7 @@ describe("agent work categories", function () {
     // from the specs without any test noticing.
     const scanned = [
       "src/modules/contextPanel/chat.ts",
+      "src/codexAppServer/nativeActivityStages.ts",
       "src/codexAppServer/nativeClient.ts",
       "src/agent/externalBackendBridge.ts",
     ].map((path) => ({
@@ -312,15 +313,24 @@ describe("agent work categories", function () {
         `${file.path} must not hard-code categories`,
       );
     }
-    const chat = scanned[0].source;
+    // The kinds are resolved once, where the protocol is spoken; the panel
+    // appends what that mapping hands it.
+    const bridge = scanned.find((file) =>
+      file.path.endsWith("nativeActivityStages.ts"),
+    )!.source;
     const used = Array.from(
-      chat.matchAll(/resolveCodexNativeWorkCategory\("([a-z_]+)"\)/g),
+      bridge.matchAll(/kind:\s*"([a-z_]+)"/g),
       (match) => match[1],
     );
     assert.deepEqual(
       Array.from(new Set(used)).sort(),
       Array.from(CODEX_NATIVE_WORK_KINDS).sort(),
-      "the mapping table must be exhaustive over the kinds chat.ts handles",
+      "the mapping table must be exhaustive over the kinds the bridge handles",
+    );
+    assert.notMatch(
+      scanned[0].source,
+      /resolveCodexNativeWorkCategory\(/,
+      "the panel must not resolve a native work category for itself",
     );
   });
 });

@@ -454,7 +454,18 @@ import type {
   AgentToolArtifact,
   AgentWorkCategory,
 } from "../../agent/types";
-import { resolveCodexNativeWorkCategory } from "../../agent/workCategory";
+import {
+  buildAgentStageEvent,
+  getCodexNativeRawString,
+  humanizeCodexNativeItemType,
+  isCodexNativeItemType,
+  mapCodexNativeItemToEvents,
+  normalizeCodexNativeItemTypeKey,
+  readCodexNativeRawField,
+  resolveCodexNativeStageStatus,
+  type AgentStageEvent,
+  type CodexNativeActivityItem,
+} from "../../codexAppServer/nativeActivityStages";
 import {
   sendAgentTurn,
   retryAgentTurn,
@@ -6400,36 +6411,13 @@ function finalizeCancelledAssistantMessage(
   message.webchatCompletionReason = null;
 }
 
-type CodexNativeTraceItemEvent = {
-  id?: string;
-  type?: string;
-  role?: string;
-  status?: string;
-  summary?: string;
-  details?: string;
-  error?: string;
-  name?: string;
-  toolName?: string;
-  title?: string;
-  serverName?: string;
-  arguments?: unknown;
-  query?: string;
-  action?: unknown;
-  command?: string;
-  cwd?: string;
-  path?: string;
-  result?: unknown;
-  savedPath?: string;
-  revisedPrompt?: string;
-  exitCode?: number;
-  durationMs?: number;
-  changes?: unknown;
-  success?: boolean;
-  namespace?: string;
-  model?: string;
-  receiverThreadIds?: unknown;
-  raw?: Record<string, unknown>;
-};
+/**
+ * One item of a native Codex turn, as the app-server client reports it.
+ *
+ * The shape is the client's; the panel only routes it. The alias keeps the
+ * panel's own callbacks readable without restating the protocol here.
+ */
+type CodexNativeTraceItemEvent = CodexNativeActivityItem;
 
 type CodexNativeTraceDeltaEvent = {
   itemId?: string;
@@ -6449,6 +6437,12 @@ type CodexNativeMcpToolActivityEvent = {
   artifacts?: AgentToolArtifact[];
   actionReceipts?: import("../../agent/contracts/types").AgentActionReceipt[];
   workCategory?: AgentWorkCategory;
+  /**
+   * The native item this MCP request belongs to, as the Codex client paired
+   * them inside the turn. Two identity spaces describe one call; this is the
+   * key that joins them, so the panel merges on a fact instead of a clock.
+   */
+  correlationId?: string;
 };
 
 type CodexToolActivityEventPayload = Extract<
@@ -6486,17 +6480,6 @@ function readCodexNativeRawName(value: unknown): string {
     if (text) return text;
   }
   return "";
-}
-
-function readCodexNativeRawField(
-  event: CodexNativeTraceItemEvent,
-  keys: string[],
-): unknown {
-  const raw = event.raw || {};
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(raw, key)) return raw[key];
-  }
-  return undefined;
 }
 
 function looksLikeCodexNativeToolName(value: string): boolean {
@@ -6563,14 +6546,6 @@ function resolveCodexNativeToolArguments(
   );
 }
 
-function humanizeCodexNativeItemType(type: string | undefined): string {
-  return sanitizeText(type || "")
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
 function compactCodexNativeTraceLine(
   text: string,
   maxLength = Number.MAX_SAFE_INTEGER,
@@ -6578,81 +6553,6 @@ function compactCodexNativeTraceLine(
   const clean = sanitizeText(text).replace(/\s+/g, " ").trim();
   if (clean.length <= maxLength) return clean;
   return `${clean.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
-}
-
-function normalizeCodexNativeItemTypeKey(type: string | undefined): string {
-  return sanitizeText(type || "")
-    .replace(/[-_\s]+/g, "")
-    .toLowerCase();
-}
-
-function getCodexNativeRawString(
-  event: CodexNativeTraceItemEvent,
-  keys: string[],
-  maxLength = 4000,
-): string {
-  for (const key of keys) {
-    const value =
-      (event as unknown as Record<string, unknown>)[key] ??
-      readCodexNativeRawField(event, [key]);
-    if (typeof value !== "string") continue;
-    const text = value.trim();
-    if (text) return text.slice(0, maxLength);
-  }
-  return "";
-}
-
-function getCodexNativeStatus(event: CodexNativeTraceItemEvent): string {
-  return (
-    sanitizeText(event.status || "").trim() ||
-    getCodexNativeRawString(event, ["status"], 120)
-  );
-}
-
-function isCodexNativeItemType(
-  event: CodexNativeTraceItemEvent,
-  keys: string[],
-): boolean {
-  const itemType = normalizeCodexNativeItemTypeKey(event.type);
-  return keys.some((key) => itemType.includes(key));
-}
-
-function compactCodexNativePathBasename(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() || path;
-}
-
-function getCodexNativeGeneratedImage(
-  event: CodexNativeTraceItemEvent,
-): GeneratedChatImage | null {
-  const itemId = sanitizeText(event.id || "").trim();
-  if (!itemId) return null;
-  const savedPath =
-    sanitizeText(event.savedPath || "").trim() ||
-    getCodexNativeRawString(event, ["savedPath", "saved_path"], 4000);
-  const result =
-    typeof event.result === "string"
-      ? event.result.trim()
-      : getCodexNativeRawString(event, ["result"], Number.MAX_SAFE_INTEGER);
-  const revisedPrompt =
-    sanitizeText(event.revisedPrompt || "").trim() ||
-    getCodexNativeRawString(event, ["revisedPrompt", "revised_prompt"], 8000);
-  if (savedPath) {
-    return {
-      id: itemId,
-      label: compactCodexNativePathBasename(savedPath),
-      path: savedPath,
-      ...(revisedPrompt ? { revisedPrompt } : {}),
-    };
-  }
-  if (isRenderableGeneratedImageSrc(result)) {
-    return {
-      id: itemId,
-      label: "Generated image",
-      src: result,
-      ...(revisedPrompt ? { revisedPrompt } : {}),
-    };
-  }
-  return null;
 }
 
 function createCodexNativeActivityTraceController(
@@ -6665,6 +6565,7 @@ function createCodexNativeActivityTraceController(
   const events: AgentRunEventRecord[] = [];
   const progressEventIndexes = new Map<string, number>();
   const toolEventIndexes = new Map<string, number>();
+  const stageEventIndexes = new Map<string, number>();
   const mcpRequestToolItemIds = new Map<string, string>();
   const activatedSkillIds = new Set<string>();
   const progressCoalescers = new Map<string, BlockStreamCoalescer>();
@@ -6759,41 +6660,6 @@ function createCodexNativeActivityTraceController(
     }
   };
 
-  const findRecentCompatibleToolActivity = (
-    phase: "started" | "completed",
-    serverName?: string,
-    toolName?: string,
-    toolLabel?: string,
-  ): string | null => {
-    const now = Date.now();
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const entry = events[index];
-      if (now - entry.createdAt > 8000) break;
-      if (entry?.payload.type !== "codex_tool_activity") continue;
-      if (entry.payload.phase !== phase) continue;
-      if (
-        serverName &&
-        entry.payload.serverName &&
-        entry.payload.serverName !== serverName
-      ) {
-        continue;
-      }
-      if (!entry.payload.toolName && !entry.payload.toolLabel) {
-        return entry.payload.itemId;
-      }
-      if (toolName && entry.payload.toolName === toolName) {
-        return entry.payload.itemId;
-      }
-      if (toolLabel && entry.payload.toolLabel === toolLabel) {
-        return entry.payload.itemId;
-      }
-      if (!toolName && !toolLabel) {
-        return entry.payload.itemId;
-      }
-    }
-    return null;
-  };
-
   const findRecentVisibleDuplicateToolActivity = (
     payload: CodexToolActivityEventPayload,
   ): string | null => {
@@ -6811,6 +6677,25 @@ function createCodexNativeActivityTraceController(
     return null;
   };
 
+  /**
+   * Keep one stage event beside the activity row it brackets.
+   *
+   * A native row is upserted as its phases arrive, so its stage is upserted
+   * with it: the trace holds one stage per row, in the status the latest
+   * phase reported.
+   */
+  const upsertStageEvent = (
+    itemId: string,
+    stage: AgentStageEvent | undefined,
+  ): void => {
+    if (!stage) return;
+    const existingIndex = stageEventIndexes.get(itemId);
+    if (existingIndex === undefined) return;
+    const existing = events[existingIndex];
+    if (existing?.payload.type !== "agent_stage") return;
+    events[existingIndex] = { ...existing, payload: stage };
+  };
+
   const upsertToolActivity = (
     activity: {
       itemId: string;
@@ -6826,7 +6711,7 @@ function createCodexNativeActivityTraceController(
       actionReceipts?: import("../../agent/contracts/types").AgentActionReceipt[];
       workCategory?: AgentWorkCategory;
     },
-    options: { matchRecentUnknown?: boolean } = {},
+    options: { stage?: AgentStageEvent } = {},
   ): string | null => {
     const cleanItemId = sanitizeText(activity.itemId || "").trim();
     if (!cleanItemId) return null;
@@ -6850,23 +6735,12 @@ function createCodexNativeActivityTraceController(
         : {}),
       ...(activity.workCategory ? { workCategory: activity.workCategory } : {}),
     });
-    const matchedUnknown =
-      options.matchRecentUnknown && (cleanToolName || cleanToolLabel)
-        ? findRecentCompatibleToolActivity(
-            activity.phase,
-            cleanServerName,
-            cleanToolName,
-            cleanToolLabel,
-          )
-        : null;
-    let itemId = matchedUnknown || cleanItemId;
+    let itemId = cleanItemId;
     let payload = buildPayload(itemId);
-    if (!matchedUnknown) {
-      const visibleDuplicate = findRecentVisibleDuplicateToolActivity(payload);
-      if (visibleDuplicate) {
-        itemId = visibleDuplicate;
-        payload = buildPayload(itemId);
-      }
+    const visibleDuplicate = findRecentVisibleDuplicateToolActivity(payload);
+    if (visibleDuplicate) {
+      itemId = visibleDuplicate;
+      payload = buildPayload(itemId);
     }
     const existingIndex = toolEventIndexes.get(itemId);
     if (existingIndex !== undefined) {
@@ -6877,7 +6751,16 @@ function createCodexNativeActivityTraceController(
         payload: mergeToolActivityPayload(existing.payload, payload),
         createdAt: Date.now(),
       };
+      upsertStageEvent(itemId, options.stage);
       return itemId;
+    }
+    // The stage opens immediately before the row it brackets, which is the
+    // order the runtime emits in and the order the compatibility projection
+    // reconstructs; a later phase replaces both in place, so one call stays
+    // one pair of events however many phases it reports.
+    if (options.stage) {
+      stageEventIndexes.set(itemId, events.length);
+      events.push(createEvent(options.stage));
     }
     toolEventIndexes.set(itemId, events.length);
     events.push(createEvent(payload));
@@ -6915,191 +6798,28 @@ function createCodexNativeActivityTraceController(
     return true;
   };
 
+  /**
+   * Append the bridge's reading of one native item.
+   *
+   * The Codex client owns what a native item means; this appends the stage
+   * and the row it was handed, and takes the generated image the mapping
+   * carried because only the panel owns the assistant message.
+   */
   const appendStructuredOperationStatus = (
     event: CodexNativeTraceItemEvent,
     phase: "started" | "completed",
   ): boolean => {
-    const itemType = normalizeCodexNativeItemTypeKey(event.type);
-    const itemId =
-      sanitizeText(event.id || "").trim() ||
-      `codex-${itemType || "item"}-${phase}-${seq + 1}`;
-    const status = getCodexNativeStatus(event);
-    const failed =
-      Boolean(event.error) ||
-      /failed|error|cancelled|denied|rejected/i.test(
-        sanitizeText(status || event.summary || event.details || ""),
-      ) ||
-      event.success === false;
-
-    const readWebSearchArgs = (): {
-      args?: Record<string, string>;
-      actionType: string;
-    } | null => {
-      const action = event.action || readCodexNativeRawField(event, ["action"]);
-      const record =
-        action && typeof action === "object" && !Array.isArray(action)
-          ? (action as Record<string, unknown>)
-          : null;
-      const actionType = sanitizeText(String(record?.type || "")).trim();
-      const query =
-        sanitizeText(event.query || "").trim() ||
-        getCodexNativeRawString(event, ["query"], 1000) ||
-        sanitizeText(String(record?.query || "")).trim() ||
-        (Array.isArray(record?.queries)
-          ? record.queries
-              .filter((entry): entry is string => typeof entry === "string")
-              .map((entry) => sanitizeText(entry).trim())
-              .filter(Boolean)
-              .join("; ")
-          : "");
-      const url = sanitizeText(String(record?.url || "")).trim();
-      const pattern = sanitizeText(String(record?.pattern || "")).trim();
-      const args: Record<string, string> = {};
-      if (query) args.query = query;
-      if (url) args.url = url;
-      if (pattern) args.pattern = pattern;
-      return Object.keys(args).length || actionType
-        ? { args: Object.keys(args).length ? args : undefined, actionType }
-        : null;
-    };
-
-    if (isCodexNativeItemType(event, ["websearch", "websearchcall"])) {
-      const webSearch = readWebSearchArgs();
-      const actionType = normalizeCodexNativeItemTypeKey(webSearch?.actionType);
-      const verb =
-        actionType === "openpage"
-          ? phase === "completed"
-            ? "Opened web page"
-            : "Opening web page"
-          : actionType === "findinpage"
-            ? phase === "completed"
-              ? "Searched within page"
-              : "Searching within page"
-            : phase === "completed"
-              ? "Searched web"
-              : "Searching web";
-      const query =
-        sanitizeText(event.query || "").trim() ||
-        getCodexNativeRawString(event, ["query"], 1000);
-      const updated = upsertToolActivity({
-        itemId,
-        phase,
-        toolName: "codex_web_search",
-        toolLabel: "Web search",
-        args: webSearch?.args || (query ? { query } : undefined),
-        ok: phase === "completed" ? !failed : undefined,
-        text: failed && phase === "completed" ? "Web search failed" : verb,
-        workCategory: resolveCodexNativeWorkCategory("web_search"),
-      });
-      return Boolean(updated);
-    }
-
-    if (isCodexNativeItemType(event, ["imagegeneration"])) {
-      const generatedImage =
-        phase === "completed" ? getCodexNativeGeneratedImage(event) : null;
-      const changedImage = addGeneratedImage(generatedImage);
-      const savedPath =
-        generatedImage?.path ||
-        sanitizeText(event.savedPath || "").trim() ||
-        getCodexNativeRawString(event, ["savedPath", "saved_path"], 4000);
-      const updated = upsertToolActivity({
-        itemId,
-        phase,
-        toolName: "image_generation",
-        toolLabel: "Generated image",
-        args: {
-          ...(status ? { status } : {}),
-          ...(savedPath
-            ? { saved: compactCodexNativePathBasename(savedPath) }
-            : {}),
-        },
-        ok: phase === "completed" ? !failed : undefined,
-        text:
-          phase === "completed"
-            ? failed
-              ? `Generated image: ${status || "failed"}`
-              : "Generated image"
-            : "Generating image",
-        workCategory: resolveCodexNativeWorkCategory("image_generation"),
-      });
-      return Boolean(updated) || changedImage;
-    }
-
-    if (isCodexNativeItemType(event, ["imageview"])) {
-      const path =
-        sanitizeText(event.path || "").trim() ||
-        getCodexNativeRawString(event, ["path"], 4000);
-      const updated = upsertToolActivity({
-        itemId,
-        phase,
-        toolName: "image_view",
-        toolLabel: "Viewed image",
-        args: path ? { path } : undefined,
-        ok: phase === "completed" ? !failed : undefined,
-        text: phase === "completed" ? "Viewed image" : "Viewing image",
-        workCategory: resolveCodexNativeWorkCategory("image_view"),
-      });
-      return Boolean(updated);
-    }
-
-    const command =
-      sanitizeText(event.command || "").trim() ||
-      getCodexNativeRawString(event, ["command"], 8000);
-    if (command || isCodexNativeItemType(event, ["command", "exec"])) {
-      const cwd =
-        sanitizeText(event.cwd || "").trim() ||
-        getCodexNativeRawString(event, ["cwd"], 4000);
-      const exitCode =
-        typeof event.exitCode === "number" && Number.isFinite(event.exitCode)
-          ? event.exitCode
-          : undefined;
-      const updated = upsertToolActivity({
-        itemId,
-        phase,
-        toolName: "command",
-        toolLabel: "Command",
-        args: {
-          ...(cwd ? { cwd } : {}),
-          ...(typeof exitCode === "number"
-            ? { status: `exit ${exitCode}` }
-            : {}),
-        },
-        ok: phase === "completed" ? !failed : undefined,
-        text:
-          phase === "completed"
-            ? failed || (typeof exitCode === "number" && exitCode !== 0)
-              ? "Command failed"
-              : "Ran command"
-            : "Running command",
-        codeBlock: command || undefined,
-        workCategory: resolveCodexNativeWorkCategory("command"),
-      });
-      return Boolean(updated);
-    }
-
-    if (
-      event.changes !== undefined ||
-      isCodexNativeItemType(event, ["filechange", "filechanges", "patch"])
-    ) {
-      const updated = upsertToolActivity({
-        itemId,
-        phase,
-        toolName: "file_changes",
-        toolLabel: "File changes",
-        args: event.changes,
-        ok: phase === "completed" ? !failed : undefined,
-        text:
-          phase === "completed"
-            ? failed
-              ? "File changes failed"
-              : "Updated files"
-            : "Updating files",
-        workCategory: resolveCodexNativeWorkCategory("file_changes"),
-      });
-      return Boolean(updated);
-    }
-
-    return false;
+    const mapped = mapCodexNativeItemToEvents(
+      event,
+      phase,
+      `codex-item-${phase}-${seq + 1}`,
+    );
+    if (!mapped?.activity) return false;
+    const changedImage = addGeneratedImage(mapped.generatedImage || null);
+    const updated = upsertToolActivity(mapped.activity, {
+      stage: mapped.stage,
+    });
+    return Boolean(updated) || changedImage;
   };
 
   const noteSkillActivated = (
@@ -7193,15 +6913,20 @@ function createCodexNativeActivityTraceController(
   ): void => {
     flushAllProgressCoalescers("event");
     const requestId = sanitizeText(event.requestId || "").trim();
+    // The bridge says which native item this request belongs to; the panel
+    // merges on that key and never on how recently something that looked
+    // similar went past.
+    const correlationId = sanitizeText(event.correlationId || "").trim();
     const existingItemId = requestId
       ? mcpRequestToolItemIds.get(requestId)
       : undefined;
-    const fallbackItemId =
+    const itemId =
+      correlationId ||
       existingItemId ||
       (requestId ? `mcp:${requestId}` : `mcp-tool-${event.phase}-${seq + 1}`);
     const updatedItemId = upsertToolActivity(
       {
-        itemId: fallbackItemId,
+        itemId,
         phase: event.phase,
         toolName: event.toolName,
         toolLabel: event.toolLabel,
@@ -7213,7 +6938,19 @@ function createCodexNativeActivityTraceController(
         actionReceipts: event.actionReceipts,
         workCategory: event.workCategory,
       },
-      { matchRecentUnknown: !existingItemId },
+      {
+        stage: event.workCategory
+          ? buildAgentStageEvent({
+              stage: event.workCategory,
+              status: resolveCodexNativeStageStatus(event.phase, event.ok),
+              toolName: event.toolName,
+              toolLabel: event.toolLabel,
+              receiptIds: event.actionReceipts?.length
+                ? event.actionReceipts.map((receipt) => receipt.id)
+                : undefined,
+            })
+          : undefined,
+      },
     );
     if (requestId && updatedItemId) {
       mcpRequestToolItemIds.set(requestId, updatedItemId);

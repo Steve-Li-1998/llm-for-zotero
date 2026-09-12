@@ -13,6 +13,7 @@ import {
   openStandaloneChat,
 } from "./modules/contextPanel";
 import { composeHostSurfaces } from "./modules/contextPanel/hostSurfaces";
+import { composePanelSurfaces } from "./modules/contextPanel/panelSurfaces";
 import { resolveActiveLibraryID } from "./utils/zoteroLibraryScope";
 import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
 import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
@@ -47,6 +48,7 @@ type ConversationStoreReadiness = {
 
 let startupUserSkillsLoadTask: Promise<void> | null = null;
 let disposeHostSurfaces: (() => void) | null = null;
+let disposePanelSurfaces: (() => void) | null = null;
 
 function getStartupPrefKey(key: string): string {
   return `${config.prefsPrefix}.${key}`;
@@ -311,6 +313,9 @@ async function onStartup() {
   // configured, so every later startup step - stores, the MCP server, any
   // agent path - must run against a composed surface.
   disposeHostSurfaces = composeHostSurfaces();
+  // The panel's own internal bridges compose the same way, right after, so a
+  // panel mounted by any later startup step already has them.
+  disposePanelSurfaces = composePanelSurfaces();
 
   await measureStartupPhase("Zotero readiness", () =>
     Promise.all([
@@ -508,6 +513,8 @@ async function onShutdown(): Promise<void> {
   }
   clearQueuedFollowUpState();
   clearAllState();
+  disposePanelSurfaces?.();
+  disposePanelSurfaces = null;
   disposeHostSurfaces?.();
   disposeHostSurfaces = null;
   // Remove addon object

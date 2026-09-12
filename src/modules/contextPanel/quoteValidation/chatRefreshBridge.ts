@@ -3,9 +3,11 @@
  *
  * The validator changes what an assistant message is allowed to display, and
  * only the renderer can repaint it -- but the renderer imports the validator,
- * so the validator cannot import the renderer back. The composition root
- * (`composeHostSurfaces`) knows both halves and installs one here at startup,
- * the same way every other host-surface capability is composed.
+ * so the validator cannot import the renderer back. The panel's composition
+ * root (`composePanelSurfaces`) knows both halves and installs one here at
+ * startup, the same way every other bridged capability is composed. It is
+ * composed there rather than in `hostSurfaces.ts` because installing it means
+ * importing the chat renderer, which workflow test bundles cannot carry.
  *
  * The bridge is deliberately loud: reaching it on a surface that never
  * composed is a wiring bug, not a condition to silently skip a repaint over.

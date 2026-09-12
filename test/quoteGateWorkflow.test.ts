@@ -217,8 +217,9 @@ describe("minimal source-match quote gate workflow", function () {
     };
     chatHistory.set(conversationKey, [userMessage, assistantMessage]);
 
-    // One mounted panel showing this conversation, and the renderer the
-    // composition root would have installed.
+    // One mounted panel showing this conversation, and the renderer the panel
+    // composition root (`composePanelSurfaces`) would have installed -- stubbed
+    // here so the test can see which messages it is asked to repaint.
     // The scheduler waits for the panel's own window to go idle, so the stub
     // panel has to carry one or validation never leaves the idle loop.
     const panelWindow = {

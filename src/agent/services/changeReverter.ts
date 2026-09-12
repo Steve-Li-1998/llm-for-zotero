@@ -25,6 +25,18 @@ import {
 } from "../store/journalRecoveryBlobStore";
 import { withActiveJournalAction } from "./externalMutationCoordinator";
 import {
+  captureCurrentScriptDeclaredGuard,
+  captureCurrentScriptItems,
+  isMutationOperation,
+  MUTATION_STATE_SECTIONS,
+  readFileBytes,
+  readRecordedPostImage,
+  verifyRecordedPostImage,
+  type RecordedPostImage,
+  type RecordedPostImageState,
+} from "./recordedPostImage";
+export { isMutationOperation } from "./recordedPostImage";
+import {
   atomizeMutationOperationFromHandler,
   isRegisteredLibraryMutationOperation,
   mutationPostconditionIsSatisfied,
@@ -164,12 +176,6 @@ function parseJson(value: string | undefined): unknown {
   return JSON.parse(value) as unknown;
 }
 
-export function isMutationOperation(
-  value: unknown,
-): value is LibraryMutationOperation {
-  return isRegisteredLibraryMutationOperation(value);
-}
-
 function isRecoveryPayload(value: unknown): value is RecoveryPayload {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -260,268 +266,31 @@ function parseInverse(step: JournalStep): JournalInverse | null {
   return parseInverseValue(parseJson(step.inverseJson));
 }
 
-function captureCurrentScriptItems(
-  expectedItems: unknown[],
-  service: LibraryMutationService,
-): unknown[] {
-  return expectedItems.map((entry) => {
-    const itemId = Number(
-      entry && typeof entry === "object"
-        ? (entry as { itemId?: unknown }).itemId
-        : 0,
-    );
-    const item = service.getGateway().getItem(itemId) as any;
-    if (!item) return { itemId, exists: false };
-    let json: unknown;
-    try {
-      json = item.toJSON?.();
-    } catch {
-      json = undefined;
-    }
-    let noteHtml: string | undefined;
-    try {
-      if (item.isNote?.()) noteHtml = String(item.getNote?.() ?? "");
-    } catch {
-      noteHtml = undefined;
-    }
-    return {
-      itemId,
-      exists: true,
-      ...(json === undefined ? {} : { json }),
-      parentID: Number(item.parentID) || null,
-      deleted: item.deleted === true,
-      tags: item.getTags?.() || [],
-      collectionIds: item.getCollections?.() || [],
-      ...(noteHtml === undefined ? {} : { noteHtml }),
-    };
-  });
-}
-
-async function captureCurrentScriptDeclaredGuard(params: {
-  expected: unknown;
-  service: LibraryMutationService;
-  context: AgentToolContext;
-}): Promise<unknown> {
-  if (!params.expected || typeof params.expected !== "object") {
-    throw new Error("The script declaration guard is invalid");
-  }
-  const guard = params.expected as Record<string, unknown>;
-  if (guard.kind === "library_operation") {
-    if (!isMutationOperation(guard.operation)) {
-      throw new Error("The script library-operation guard is invalid");
-    }
-    return {
-      kind: "library_operation",
-      operation: guard.operation,
-      state: await params.service.captureOperationState(
-        guard.operation,
-        params.context,
-      ),
-    };
-  }
-  if (guard.kind === "note_html") {
-    const noteId = Number(guard.noteId);
-    const item = params.service.getGateway().getItem(noteId);
-    return {
-      kind: "note_html",
-      noteId,
-      checksum: await sha256Text(item?.getNote?.() || ""),
-    };
-  }
-  if (guard.kind === "file") {
-    const path = String(guard.path || "");
-    const bytes = await readFileBytes(path);
-    return {
-      kind: "file",
-      path,
-      exists: bytes !== null,
-      checksum: bytes === null ? null : await sha256Bytes(bytes),
-    };
-  }
-  if (guard.kind === "preference") {
-    const key = String(guard.key || "");
-    const setting = params.service
-      .getGateway()
-      .listSettings()
-      .find((entry) => entry.key === key);
-    return {
-      kind: "preference",
-      key,
-      existed: setting?.value !== undefined,
-      value: setting?.value,
-    };
-  }
-  throw new Error("The script declaration guard type is unsupported");
-}
-
+/**
+ * Live state read back in the shape of one journal step's recorded post-image.
+ *
+ * The reader itself is shared with the mutation coordinator, which asks the
+ * same question of a write it has just applied; this adapter only unpacks the
+ * durable step into the three values the reader needs.
+ */
 async function currentStepPostcondition(params: {
   step: JournalStep;
   service: LibraryMutationService;
   context: AgentToolContext;
 }): Promise<unknown> {
-  const expected = parseJson(params.step.expectedPostconditionJson);
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { version?: unknown }).version === 1 &&
-    typeof (expected as { operation?: unknown }).operation === "string"
-  ) {
-    const operation = parseJson(params.step.forwardJson);
-    if (!isMutationOperation(operation)) return undefined;
-    return params.service.captureOperationState(
-      operation,
-      params.context,
-      parseJson(params.step.resultJson),
-    );
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "script_items"
-  ) {
-    const expectedItems = (expected as { items?: unknown }).items;
-    if (!Array.isArray(expectedItems)) return undefined;
-    const items = captureCurrentScriptItems(expectedItems, params.service);
-    return { kind: "script_items", items };
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "script_effects"
-  ) {
-    const expectedItems = (expected as { items?: unknown }).items;
-    const expectedDeclared = (expected as { declared?: unknown }).declared;
-    if (!Array.isArray(expectedItems) || !Array.isArray(expectedDeclared)) {
-      return undefined;
-    }
-    const declared = [];
-    for (const guard of expectedDeclared) {
-      declared.push(
-        await captureCurrentScriptDeclaredGuard({
-          expected: guard,
-          service: params.service,
-          context: params.context,
-        }),
-      );
-    }
-    return {
-      kind: "script_effects",
-      items: captureCurrentScriptItems(expectedItems, params.service),
-      declared,
-    };
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "created_item"
-  ) {
-    const record = expected as Record<string, unknown>;
-    const itemId = Number(record.itemId);
-    const item = params.service.getGateway().getItem(itemId);
-    const current: Record<string, unknown> = {
-      kind: "created_item",
-      itemId,
-      exists: Boolean(item),
-    };
-    if (Object.prototype.hasOwnProperty.call(record, "parentItemId")) {
-      current.parentItemId = item
-        ? Number((item as Zotero.Item & { parentID?: unknown }).parentID) ||
-          null
-        : null;
-    }
-    if (Object.prototype.hasOwnProperty.call(record, "html")) {
-      current.html = item?.getNote?.() || "";
-    }
-    if (Object.prototype.hasOwnProperty.call(record, "htmlChecksum")) {
-      current.htmlChecksum = await sha256Text(item?.getNote?.() || "");
-    }
-    if (Object.prototype.hasOwnProperty.call(record, "collections")) {
-      current.collections = item?.getCollections?.() || [];
-    }
-    return current;
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "note_html"
-  ) {
-    const noteId = Number((expected as { noteId?: unknown }).noteId);
-    const item = params.service.getGateway().getItem(noteId);
-    if (Object.prototype.hasOwnProperty.call(expected, "canonicalChecksum")) {
-      if (!item || item.deleted)
-        throw new Error("The original note is unavailable");
-      await item.reload(["note"], true);
-      return {
-        kind: "note_html",
-        noteId,
-        canonicalChecksum: await sha256Text(canonicalNoteHtml(item.getNote())),
-      };
-    }
-    const html = item?.getNote?.() || "";
-    const current: Record<string, unknown> = {
-      kind: "note_html",
-      noteId,
-    };
-    if (Object.prototype.hasOwnProperty.call(expected, "checksum")) {
-      current.checksum = await sha256Text(html);
-    } else {
-      current.html = html;
-    }
-    return current;
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "path"
-  ) {
-    const record = expected as Record<string, unknown>;
-    const path = String(record.path || "");
-    const io = (globalThis as { IOUtils?: any }).IOUtils;
-    const exists = Boolean(await io?.exists?.(path));
-    let pathKind: string | null = null;
-    if (exists && typeof io?.stat === "function") {
-      const stat = await io.stat(path);
-      pathKind =
-        stat?.type === "directory"
-          ? "directory"
-          : stat?.type === "regular" || stat?.type === "file"
-            ? "file"
-            : null;
-    }
-    return {
-      kind: "path",
-      path,
-      pathKind,
-      exists,
-    };
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "file"
-  ) {
-    const path = String((expected as { path?: unknown }).path || "");
-    const bytes = await readFileBytes(path);
-    return {
-      kind: "file",
-      path,
-      exists: bytes !== null,
-      checksum: bytes === null ? null : await sha256Bytes(bytes),
-    };
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "preference"
-  ) {
-    const key = String((expected as { key?: unknown }).key || "");
-    const value = params.service
-      .getGateway()
-      .listSettings()
-      .find((setting) => setting.key === key)?.value;
-    return { kind: "preference", key, existed: value !== undefined, value };
-  }
-  return undefined;
+  return readRecordedPostImage({
+    image: recordedPostImageOfStep(params.step),
+    service: params.service,
+    context: params.context,
+  });
+}
+
+function recordedPostImageOfStep(step: JournalStep): RecordedPostImage {
+  return {
+    expected: parseJson(step.expectedPostconditionJson),
+    forward: parseJson(step.forwardJson),
+    result: parseJson(step.resultJson),
+  };
 }
 
 async function conflictForStep(params: {
@@ -576,14 +345,6 @@ function atomizeLibraryOperations(
 ): LibraryMutationOperation[] {
   return operations.flatMap(atomizeMutationOperationFromHandler);
 }
-
-const MUTATION_STATE_SECTIONS = [
-  "items",
-  "collections",
-  "savedSearches",
-  "libraryTags",
-  "relations",
-] as const;
 
 type MutationStateSection = (typeof MUTATION_STATE_SECTIONS)[number];
 type MutationStateRow = Record<string, unknown>;
@@ -871,22 +632,6 @@ async function readFile(path: string): Promise<string | null> {
     if (typeof io.readUTF8 === "function") return await io.readUTF8(path);
     const bytes = await io.read(path);
     return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
-async function readFileBytes(path: string): Promise<Uint8Array | null> {
-  const io = (globalThis as { IOUtils?: any }).IOUtils;
-  try {
-    if (!(await io?.exists?.(path))) return null;
-    if (typeof io?.read === "function") {
-      return new Uint8Array(await io.read(path));
-    }
-    if (typeof io?.readUTF8 === "function") {
-      return new TextEncoder().encode(await io.readUTF8(path));
-    }
-    return null;
   } catch {
     return null;
   }
@@ -2368,93 +2113,26 @@ export async function revertActions(params: {
   return { reverted, partiallyReverted, residuals, skipped, conflicts, steps };
 }
 
-export type JournalStepPostState = {
-  kind: "satisfied" | "mismatched" | "not_re_readable";
-  /** How many objects the recorded post-image covers. */
-  comparedTargets: number;
-  reason?: string;
-};
+export type JournalStepPostState = RecordedPostImageState;
 
 /**
  * Re-reads the native state a journalled step recorded as its post-image.
  *
- * `currentStepPostcondition` is already the one place that knows how to read
- * current state back in the shape of any recorded post-image — a library
- * operation's captured state, a script's guarded items, a note, a file, a
- * preference. A receipt for a write with no other native verifier can
- * therefore prove its effect is still in the library by asking this, instead
- * of reporting that the tool said so.
+ * The reader is shared with the mutation coordinator, which asks the same
+ * question of a write it has just applied. This entry point exists for the
+ * callers that hold a durable step instead of those in-memory values —
+ * anything reading a step back after the call that wrote it has returned.
  */
 export async function verifyJournalStepPostcondition(params: {
   step: JournalStep;
   zoteroGateway: ZoteroGateway;
   context: AgentToolContext;
 }): Promise<JournalStepPostState> {
-  if (!params.step.expectedPostconditionJson) {
-    return {
-      kind: "not_re_readable",
-      comparedTargets: 0,
-      reason: "the step recorded no expected post-image to read back",
-    };
-  }
-  const expected = parseJson(params.step.expectedPostconditionJson);
-  const comparedTargets = countPostImageTargets(expected);
-  try {
-    const current = await currentStepPostcondition({
-      step: params.step,
-      service: new LibraryMutationService(params.zoteroGateway),
-      context: params.context,
-    });
-    if (current === undefined) {
-      return {
-        kind: "not_re_readable",
-        comparedTargets,
-        reason:
-          "the recorded post-image format cannot be read back by this version",
-      };
-    }
-    return stable(current) === stable(expected)
-      ? { kind: "satisfied", comparedTargets }
-      : {
-          kind: "mismatched",
-          comparedTargets,
-          reason:
-            "native state no longer matches the post-image recorded for this step",
-        };
-  } catch (error) {
-    return {
-      kind: "not_re_readable",
-      comparedTargets,
-      reason: `the post-image could not be read back: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    };
-  }
-}
-
-/**
- * How many objects a recorded post-image actually covers.
- *
- * A receipt that says "verified" should say what was compared: a script that
- * guarded four items proves more than one that guarded none, and the two must
- * not read identically in the audit trail.
- */
-function countPostImageTargets(expected: unknown): number {
-  if (!expected || typeof expected !== "object") return 0;
-  const record = expected as Record<string, unknown>;
-  if (record.kind === "script_effects" || record.kind === "script_items") {
-    return (
-      (Array.isArray(record.items) ? record.items.length : 0) +
-      (Array.isArray(record.declared) ? record.declared.length : 0)
-    );
-  }
-  // A captured library-operation state carries its objects in named sections;
-  // anything else — a note, a file, a preference, one created item — is one.
-  const sections = MUTATION_STATE_SECTIONS.map((section) =>
-    Array.isArray(record[section]) ? (record[section] as unknown[]).length : 0,
-  );
-  const rows = sections.reduce((total, count) => total + count, 0);
-  return rows || 1;
+  return verifyRecordedPostImage({
+    image: recordedPostImageOfStep(params.step),
+    service: new LibraryMutationService(params.zoteroGateway),
+    context: params.context,
+  });
 }
 
 export async function revertRun(params: {

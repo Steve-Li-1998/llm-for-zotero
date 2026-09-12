@@ -3,14 +3,9 @@ declare const Zotero: any;
 import type {
   CodexConversationSummary,
   CodexConversationKind,
-  GeneratedChatImage,
-  QuoteCitation,
 } from "../shared/types";
 import { normalizeGeneratedChatImages } from "../shared/generatedImages";
 import {
-  normalizeSelectedTextNoteContexts,
-  normalizeSelectedTextPaperContexts,
-  normalizeSelectedTextSource,
   synthesizeSelectedTextContexts,
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
@@ -22,10 +17,7 @@ import {
   copyConversationMessagesThroughAssistantAnchor,
   type ForkConversationMessagesResult,
 } from "../shared/conversationMessageForkCopy";
-import {
-  parseForcedSkillIdsJson,
-  serializeForcedSkillIds,
-} from "../shared/skillIds";
+import { serializeForcedSkillIds } from "../shared/skillIds";
 import {
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
   RUNTIME_CONVERSATION_KEY_END,
@@ -33,10 +25,7 @@ import {
   isConversationKeyForKind,
   getConversationKeyRange,
 } from "../shared/conversationKeySpace";
-import {
-  buildLatestStoredMessagesQuery,
-  storedMessageDisplayOrderSql,
-} from "../shared/conversationMessageSql";
+import { storedMessageDisplayOrderSql } from "../shared/conversationMessageSql";
 import { cleanupRememberedConversationKeyPrefs } from "../shared/conversationKeyPrefCleanup";
 import {
   CODEX_HISTORY_LIMIT,
@@ -130,6 +119,7 @@ import {
   type MessageConversationSelector,
 } from "../shared/conversationStore/messageConversationSelector";
 import { getMessagePaperContextRows } from "../shared/conversationStore/messagePaperContextRows";
+import { loadStoredConversationMessages } from "../services/providers/conversationStoreMessageMapping";
 import {
   deleteStoreConversationSearchIndex,
   refreshStoreConversationSearchIndex,
@@ -1867,362 +1857,13 @@ export async function loadCodexConversation(
   const selector =
     await resolveRepairingMessageConversationSelector(normalizedKey);
   const normalizedLimit = normalizeLimit(limit, CODEX_HISTORY_LIMIT);
-  const rows = (await Zotero.DB.queryAsync(
-    buildLatestStoredMessagesQuery({
-      tableName: CODEX_MESSAGES_TABLE,
-      selectColumnsSql: CODEX_MESSAGE_SELECT_COLUMNS_SQL,
-      whereSql: selector.whereSql,
-    }),
-    [...selector.params, normalizedLimit],
-  )) as Array<Record<string, unknown>> | undefined;
-
-  if (!rows?.length) return [];
-
-  const messages: StoredChatMessage[] = [];
-  for (const row of rows) {
-    const role =
-      row.role === "assistant"
-        ? "assistant"
-        : row.role === "user"
-          ? "user"
-          : null;
-    if (!role) continue;
-    const selectedTexts = (() => {
-      if (typeof row.selectedTextsJson !== "string" || !row.selectedTextsJson) {
-        return typeof row.selectedText === "string" && row.selectedText.trim()
-          ? [row.selectedText.trim()]
-          : [];
-      }
-      try {
-        const parsed = JSON.parse(row.selectedTextsJson) as unknown;
-        return Array.isArray(parsed)
-          ? parsed.filter(
-              (entry): entry is string =>
-                typeof entry === "string" && Boolean(entry.trim()),
-            )
-          : [];
-      } catch {
-        return [];
-      }
-    })();
-    const selectedTextSources = (() => {
-      if (
-        typeof row.selectedTextSourcesJson !== "string" ||
-        !row.selectedTextSourcesJson
-      ) {
-        return undefined;
-      }
-      try {
-        const parsed = JSON.parse(row.selectedTextSourcesJson) as unknown;
-        return Array.isArray(parsed)
-          ? parsed.map((entry) => normalizeSelectedTextSource(entry))
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedTextPaperContexts = (() => {
-      if (
-        typeof row.selectedTextPaperContextsJson !== "string" ||
-        !row.selectedTextPaperContextsJson
-      ) {
-        return undefined;
-      }
-      try {
-        const parsed = JSON.parse(row.selectedTextPaperContextsJson) as unknown;
-        const normalized = normalizeSelectedTextPaperContexts(
-          parsed,
-          selectedTexts.length,
-        );
-        return normalized.some((entry) => Boolean(entry))
-          ? normalized
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedTextNoteContexts = (() => {
-      if (
-        typeof row.selectedTextNoteContextsJson !== "string" ||
-        !row.selectedTextNoteContextsJson
-      ) {
-        return undefined;
-      }
-      try {
-        const parsed = JSON.parse(row.selectedTextNoteContextsJson) as unknown;
-        const normalized = normalizeSelectedTextNoteContexts(
-          parsed,
-          selectedTexts.length,
-        );
-        return normalized.some((entry) => Boolean(entry))
-          ? normalized
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedTextContexts = synthesizeSelectedTextContexts({
-      selectedTextContexts: (() => {
-        if (
-          typeof row.selectedTextContextsJson !== "string" ||
-          !row.selectedTextContextsJson
-        ) {
-          return undefined;
-        }
-        try {
-          return JSON.parse(row.selectedTextContextsJson) as unknown;
-        } catch {
-          return undefined;
-        }
-      })(),
-      selectedTexts,
-      legacySelectedText: row.selectedText,
-      selectedTextSources,
-      selectedTextPaperContexts,
-      selectedTextNoteContexts,
-    });
-    const paperContexts = (() => {
-      if (typeof row.paperContextsJson !== "string" || !row.paperContextsJson)
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.paperContextsJson) as unknown;
-        const normalized = normalizePaperContextRefs(parsed);
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const pdfPaperContexts = (() => {
-      if (
-        typeof row.pdfPaperContextsJson !== "string" ||
-        !row.pdfPaperContextsJson
-      )
-        return undefined;
-      try {
-        const normalized = normalizePaperContextRefs(
-          JSON.parse(row.pdfPaperContextsJson) as unknown,
-        ).map((context) => ({
-          ...context,
-          contentSourceMode: "pdf" as const,
-        }));
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const fullTextPaperContexts = (() => {
-      if (
-        typeof row.fullTextPaperContextsJson !== "string" ||
-        !row.fullTextPaperContextsJson
-      )
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.fullTextPaperContextsJson) as unknown;
-        const normalized = normalizePaperContextRefs(parsed);
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const citationPaperContexts = (() => {
-      if (
-        typeof row.citationPaperContextsJson !== "string" ||
-        !row.citationPaperContextsJson
-      )
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.citationPaperContextsJson) as unknown;
-        const normalized = normalizePaperContextRefs(parsed);
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const quoteCitations: QuoteCitation[] | undefined = (() => {
-      if (typeof row.quoteCitationsJson !== "string" || !row.quoteCitationsJson)
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.quoteCitationsJson) as unknown;
-        const normalized = normalizeQuoteCitations(parsed);
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedCollectionContexts = (() => {
-      if (
-        typeof row.collectionContextsJson !== "string" ||
-        !row.collectionContextsJson
-      )
-        return undefined;
-      try {
-        const normalized = normalizeCollectionContextRefs(
-          JSON.parse(row.collectionContextsJson) as unknown,
-        );
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedTagContexts = (() => {
-      if (typeof row.tagContextsJson !== "string" || !row.tagContextsJson)
-        return undefined;
-      try {
-        const normalized = normalizeTagContextRefs(
-          JSON.parse(row.tagContextsJson) as unknown,
-        );
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const screenshotImages = (() => {
-      if (typeof row.screenshotImages !== "string" || !row.screenshotImages)
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.screenshotImages) as unknown;
-        const normalized = Array.isArray(parsed)
-          ? parsed.filter(
-              (entry): entry is string =>
-                typeof entry === "string" && Boolean(entry.trim()),
-            )
-          : [];
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const attachments = (() => {
-      if (typeof row.attachmentsJson !== "string" || !row.attachmentsJson)
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.attachmentsJson) as unknown;
-        const normalized = Array.isArray(parsed)
-          ? parsed.filter(
-              (
-                entry,
-              ): entry is NonNullable<
-                StoredChatMessage["attachments"]
-              >[number] =>
-                Boolean(entry) &&
-                typeof entry === "object" &&
-                typeof (entry as { id?: unknown }).id === "string" &&
-                Boolean(String((entry as { id?: string }).id || "").trim()),
-            )
-          : [];
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const generatedImages: GeneratedChatImage[] | undefined = (() => {
-      if (
-        typeof row.generatedImagesJson !== "string" ||
-        !row.generatedImagesJson
-      )
-        return undefined;
-      try {
-        const normalized = normalizeGeneratedChatImages(
-          JSON.parse(row.generatedImagesJson) as unknown,
-        );
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const forcedSkillIds = parseForcedSkillIdsJson(row.forcedSkillIdsJson);
-
-    messages.push({
-      id:
-        Number.isFinite(Number(row.id)) && Number(row.id) > 0
-          ? Math.floor(Number(row.id))
-          : undefined,
-      role,
-      text: typeof row.text === "string" ? row.text : "",
-      timestamp: Number.isFinite(Number(row.timestamp))
-        ? Math.floor(Number(row.timestamp))
-        : Date.now(),
-      runMode:
-        row.runMode === "agent"
-          ? "agent"
-          : row.runMode === "chat"
-            ? "chat"
-            : undefined,
-      agentRunId:
-        typeof row.agentRunId === "string" ? row.agentRunId : undefined,
-      documentId:
-        typeof row.documentId === "string" ? row.documentId : undefined,
-      selectedText: selectedTextContexts[0]?.text,
-      selectedTextContexts: selectedTextContexts.length
-        ? selectedTextContexts
-        : undefined,
-      selectedTexts: selectedTextContexts.length
-        ? selectedTextContexts.map((context) => context.text)
-        : undefined,
-      selectedTextSources: selectedTextContexts.length
-        ? selectedTextContexts.map((context) => context.source)
-        : undefined,
-      selectedTextPaperContexts: selectedTextContexts.length
-        ? selectedTextContexts.map((context) => context.paperContext)
-        : undefined,
-      selectedTextNoteContexts: selectedTextContexts.length
-        ? selectedTextContexts.map((context) => context.noteContext)
-        : undefined,
-      forcedSkillIds:
-        role === "user" && forcedSkillIds.length ? forcedSkillIds : undefined,
-      paperContexts,
-      pdfPaperContexts,
-      fullTextPaperContexts,
-      citationPaperContexts,
-      quoteCitations,
-      selectedCollectionContexts,
-      selectedTagContexts,
-      screenshotImages,
-      attachments,
-      generatedImages,
-      modelName: typeof row.modelName === "string" ? row.modelName : undefined,
-      modelEntryId:
-        typeof row.modelEntryId === "string" ? row.modelEntryId : undefined,
-      modelProviderLabel:
-        typeof row.modelProviderLabel === "string"
-          ? row.modelProviderLabel
-          : undefined,
-      interrupted: Number(row.interrupted) === 1 ? true : undefined,
-      webchatRunState:
-        row.webchatRunState === "done" ||
-        row.webchatRunState === "incomplete" ||
-        row.webchatRunState === "error"
-          ? row.webchatRunState
-          : undefined,
-      webchatCompletionReason:
-        row.webchatCompletionReason === "settled" ||
-        row.webchatCompletionReason === "forced_cancel" ||
-        row.webchatCompletionReason === "timeout" ||
-        row.webchatCompletionReason === "error"
-          ? row.webchatCompletionReason
-          : null,
-      reasoningSummary:
-        typeof row.reasoningSummary === "string"
-          ? row.reasoningSummary
-          : undefined,
-      reasoningDetails:
-        typeof row.reasoningDetails === "string"
-          ? row.reasoningDetails
-          : undefined,
-      compactMarker: Boolean(row.compactMarker),
-      contextTokens:
-        Number.isFinite(Number(row.contextTokens)) &&
-        Number(row.contextTokens) > 0
-          ? Math.floor(Number(row.contextTokens))
-          : undefined,
-      contextWindow:
-        Number.isFinite(Number(row.contextWindow)) &&
-        Number(row.contextWindow) > 0
-          ? Math.floor(Number(row.contextWindow))
-          : undefined,
-    });
-  }
-  return messages;
+  return await loadStoredConversationMessages({
+    messagesTable: CODEX_MESSAGES_TABLE,
+    selectColumnsSql: CODEX_MESSAGE_SELECT_COLUMNS_SQL,
+    whereSql: selector.whereSql,
+    params: selector.params,
+    limit: normalizedLimit,
+  });
 }
 
 export async function clearCodexConversation(

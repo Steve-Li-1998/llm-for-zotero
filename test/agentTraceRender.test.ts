@@ -28,8 +28,8 @@ import { buildClaudeMcpToolActivityEvent } from "../src/agent/externalBackendBri
 import { buildCodexNativeEffectActivityEvent } from "../src/codexAppServer/nativeClient";
 import { externalRuntimeCommandEffect } from "../src/agent/contracts/externalRuntimeEffects";
 import { mergeToolActivityPayload } from "../src/modules/contextPanel/agentTrace/toolActivityDedupe";
+import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/codexNativeTrace/controller";
 import {
-  createCodexNativeActivityTraceControllerForTests,
   resolveAssistantResponseMenuContent,
   renderAssistantMarkdownHtmlForChat,
   renderAssistantGeneratedImagesInto,

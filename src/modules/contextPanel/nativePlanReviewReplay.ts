@@ -10,10 +10,8 @@ import { renderAgentTrace } from "./agentTrace/render";
 import { clearPlanModeState } from "./planModeState";
 import { resolveAgentRuntimeRequest } from "../../agent/context/resolvedAgentRequest";
 import type { AgentRunEventRecord, AgentToolContext } from "../../agent/types";
-import {
-  createCodexNativeActivityTraceControllerForTests,
-  resolveCodexNativeApprovalWithOptionalReviewCard,
-} from "./chat";
+import { resolveCodexNativeApprovalWithOptionalReviewCard } from "./chat";
+import { createCodexNativeActivityTraceControllerForTests } from "./codexNativeTrace/controller";
 import type { Message } from "./types";
 import { createAbortController } from "../../utils/apiHelpers";
 

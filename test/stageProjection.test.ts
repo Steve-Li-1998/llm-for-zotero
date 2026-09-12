@@ -7,7 +7,7 @@ import { stateChangeInvocationPlan } from "../src/agent/authorization/invocation
 import { projectStageEvents } from "../src/modules/contextPanel/agentTrace/stageProjection";
 import { buildAgentStageEvent } from "../src/agent/stageEvents";
 import { mapCodexNativeItemToEvents } from "../src/codexAppServer/nativeActivityStages";
-import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/chat";
+import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/codexNativeTrace/controller";
 import { classifiedFixture } from "./helpers/semanticIntent";
 import { createTestActionContractService } from "./helpers/actionContractService";
 import { installMockDb } from "./helpers/agentRuntimeMockDb";

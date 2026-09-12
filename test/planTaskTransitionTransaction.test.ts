@@ -78,10 +78,8 @@ import { createPreparePlanExecutionTool } from "../src/agent/tools/plan/prepareP
 import { finalizeNativePlanProposal } from "../src/agent/plans/nativePlanning";
 import { loadPlanArtifact } from "../src/agent/plans/store";
 import { initResearchStore } from "../src/agent/research/store";
-import {
-  announceFinalizedMaterialForRunForTests,
-  createCodexNativeActivityTraceControllerForTests,
-} from "../src/modules/contextPanel/chat";
+import { announceFinalizedMaterialForRunForTests } from "../src/modules/contextPanel/chat";
+import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/codexNativeTrace/controller";
 import {
   initAgentTraceStore,
   getAgentRunTrace,

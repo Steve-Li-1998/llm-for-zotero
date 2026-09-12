@@ -378,9 +378,6 @@ import {
   noteExplicitCodexNativeSkillInvocations,
   type CodexNativeActivityTraceController,
 } from "./codexNativeTrace/controller";
-// Test seam kept at its old address while the trace tests still import it
-// from this module; the follow-up commit points them at the owner instead.
-export { createCodexNativeActivityTraceControllerForTests } from "./codexNativeTrace/controller";
 import { applyStableAnimationPhase } from "./stableAnimationPhase";
 import type { AgentActionContract } from "../../agent/contracts/types";
 import { stripReceiptStatusForDisplay } from "../../agent/contracts/actionEvaluation";

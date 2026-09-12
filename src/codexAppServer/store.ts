@@ -70,14 +70,10 @@ import {
   registerConversationScope,
   repairRegisteredConversationScope,
   syncCatalogInstanceID,
-  type ConversationRegistryRow,
   type PaperContextJsonColumns,
 } from "../shared/conversationRegistry";
 import { stagePaperRestoreTargetForStartup } from "../shared/paperConversationRestore";
-import {
-  repairRecoverableCatalogMessageConversationIDs,
-  repairRecoverableMessageConversationIDs,
-} from "../shared/conversationMessageIdentityRepair";
+import { repairRecoverableCatalogMessageConversationIDs } from "../shared/conversationMessageIdentityRepair";
 import {
   deleteConversationSearchIndexRowInTransaction,
   initConversationSearchIndexStore,
@@ -128,6 +124,12 @@ import {
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
 import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
+import {
+  messageJoinCondition,
+  resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
+  type MessageConversationSelector,
+} from "../shared/conversationStore/messageConversationSelector";
+import { getMessagePaperContextRows } from "../shared/conversationStore/messagePaperContextRows";
 import {
   deleteStoreConversationSearchIndex,
   refreshStoreConversationSearchIndex,
@@ -349,75 +351,22 @@ async function resolveCodexAppendIdentity(
   };
 }
 
-type MessageConversationSelector = {
-  whereSql: string;
-  params: unknown[];
-  registered?: ConversationRegistryRow | null;
+const CODEX_MESSAGE_SELECTOR_CONFIG = {
+  messagesTable: CODEX_MESSAGES_TABLE,
+  storeLabel: "Codex",
+  getPaperContextRows: getCodexMessagePaperContextRows,
+  log: logConversationStoreWarning,
 };
-
-async function resolveMessageConversationSelector(
-  conversationKey: number,
-): Promise<MessageConversationSelector> {
-  const registered = await getRegisteredConversationScope(conversationKey);
-  const conversationID = registered?.conversationID || null;
-  return conversationID
-    ? {
-        whereSql:
-          "(conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?))",
-        params: [conversationID, conversationKey],
-        registered,
-      }
-    : {
-        whereSql: "1 = 0",
-        params: [],
-        registered,
-      };
-}
-
-function messageJoinCondition(
-  messageAlias: string,
-  conversationAlias: string,
-): string {
-  return (
-    `(${messageAlias}.conversation_id = ${conversationAlias}.conversation_id OR ((` +
-    `${messageAlias}.conversation_id IS NULL OR TRIM(${messageAlias}.conversation_id) = '') AND ` +
-    `${messageAlias}.conversation_key = ${conversationAlias}.conversation_key))`
-  );
-}
-
-function canonicalMessageConversationSelector(
-  registered: ConversationRegistryRow,
-): MessageConversationSelector {
-  return {
-    whereSql: "conversation_id = ?",
-    params: [registered.conversationID],
-    registered,
-  };
-}
 
 async function resolveRepairingMessageConversationSelector(
   conversationKey: number,
   options: { destructive?: boolean } = {},
 ): Promise<MessageConversationSelector> {
-  let selector = await resolveMessageConversationSelector(conversationKey);
-  if (!selector.registered?.conversationID) return selector;
-  const repair = await repairRecoverableMessageConversationIDs({
-    queryAsync: Zotero.DB.queryAsync.bind(Zotero.DB),
-    tableName: CODEX_MESSAGES_TABLE,
-    registered: selector.registered,
-    getPaperContextRows: getCodexMessagePaperContextRows,
-    storeLabel: "Codex",
-    log: logConversationStoreWarning,
-  });
-  if (repair.status === "refused") {
-    if (options.destructive) {
-      throw new Error(
-        `Refused destructive Codex conversation operation for ${conversationKey}: ${repair.reason || "ambiguous stale message ids found"}.`,
-      );
-    }
-    selector = canonicalMessageConversationSelector(selector.registered);
-  }
-  return selector;
+  return await resolveSharedRepairingMessageConversationSelector(
+    CODEX_MESSAGE_SELECTOR_CONFIG,
+    conversationKey,
+    options,
+  );
 }
 
 async function touchCodexConversationActivity(
@@ -1044,23 +993,10 @@ export async function repairMisroutedCodexConversationRows(): Promise<void> {
 async function getCodexMessagePaperContextRows(
   conversationKey: number,
 ): Promise<PaperContextJsonColumns[]> {
-  return ((await Zotero.DB.queryAsync(
-    `SELECT paper_contexts_json AS paperContextsJson,
-            pdf_paper_contexts_json AS pdfPaperContextsJson,
-            full_text_paper_contexts_json AS fullTextPaperContextsJson,
-            selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
-            citation_paper_contexts_json AS citationPaperContextsJson
-     FROM ${CODEX_MESSAGES_TABLE}
-     WHERE conversation_key = ?
-       AND (
-         paper_contexts_json IS NOT NULL OR
-         pdf_paper_contexts_json IS NOT NULL OR
-         full_text_paper_contexts_json IS NOT NULL OR
-         selected_text_paper_contexts_json IS NOT NULL OR
-         citation_paper_contexts_json IS NOT NULL
-       )`,
-    [conversationKey],
-  )) || []) as PaperContextJsonColumns[];
+  return await getMessagePaperContextRows(
+    CODEX_MESSAGES_TABLE,
+    conversationKey,
+  );
 }
 
 async function repairRecoverableCodexCatalogMessageConversationIDs(

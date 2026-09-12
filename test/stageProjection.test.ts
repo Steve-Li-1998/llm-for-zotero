@@ -14,7 +14,12 @@ import type {
   AgentModelStep,
   AgentRunEventRecord,
   AgentRuntimeRequest,
+  AgentToolContext,
 } from "../src/agent/types";
+import type {
+  PlanArtifact,
+  PlanArtifactStatus,
+} from "../src/agent/plans/types";
 import type {
   AgentModelAdapter,
   AgentStepParams,
@@ -74,6 +79,21 @@ const BATCH_ITEM_REF = {
   contentHash: "sha256:batch",
 };
 
+function planArtifact(status: PlanArtifactStatus): PlanArtifact {
+  return {
+    version: 1,
+    planId: "plan-1",
+    conversationKey: 991_201,
+    provider: "agent",
+    revision: status === "drafting" ? 1 : 2,
+    digest: `sha256:plan-${status}`,
+    status,
+    steps: [],
+    createdAt: 1,
+    updatedAt: 2,
+  };
+}
+
 /** The tools of the live run whose events the projection has to reproduce. */
 function registerJourneyTools(registry: AgentToolRegistry): void {
   registry.register({
@@ -100,6 +120,28 @@ function registerJourneyTools(registry: AgentToolRegistry): void {
     validate: (args) => ({ ok: true, value: args as never }),
     execute: async () => {
       throw new Error("the paper is unavailable");
+    },
+  } as never);
+  registry.register({
+    spec: {
+      name: "plan_draft",
+      description: "draft a plan",
+      inputSchema: { type: "object" },
+      executionClass: "read",
+      workCategory: "planning",
+    },
+    presentation: { label: "Draft plan" },
+    validate: (args) => ({ ok: true, value: args as never }),
+    execute: async (_input: unknown, context: AgentToolContext) => {
+      await context.publishPlanEvent?.({
+        type: "plan_updated",
+        artifact: planArtifact("drafting"),
+      });
+      await context.publishPlanEvent?.({
+        type: "plan_ready",
+        artifact: planArtifact("awaiting_approval"),
+      });
+      return { content: { status: "planned" } };
     },
   } as never);
   registry.register({
@@ -206,6 +248,7 @@ async function runLiveJourney(): Promise<AgentEvent[]> {
           [
             toolCallStep("read-1", "library_search"),
             toolCallStep("read-2", "paper_read"),
+            toolCallStep("plan-1", "plan_draft"),
             toolCallStep("doc-1", "submit_document"),
             toolCallStep("write-1", "note_write"),
             toolCallStep("batch-1", "note_write_batch"),
@@ -523,6 +566,56 @@ describe("agent trace stage projection", function () {
       "tool_error",
       "agent_stage:retrieval:failed",
     ]);
+  });
+
+  it("opens planning on a draft and closes it on a reviewable plan", function () {
+    const legacy: AgentRunEventRecord[] = [
+      {
+        runId: "run-plan",
+        seq: 1,
+        eventType: "plan_updated",
+        payload: { type: "plan_updated", artifact: planArtifact("drafting") },
+        createdAt: 1,
+      },
+      {
+        runId: "run-plan",
+        seq: 2,
+        eventType: "plan_execution_updated",
+        payload: {
+          type: "plan_execution_updated",
+          ledger: { executionId: "exec-1" },
+        } as never,
+        createdAt: 2,
+      },
+      {
+        runId: "run-plan",
+        seq: 3,
+        eventType: "plan_ready",
+        payload: {
+          type: "plan_ready",
+          artifact: planArtifact("awaiting_approval"),
+        },
+        createdAt: 3,
+      },
+    ];
+    const projected = projectStageEvents(legacy);
+    assert.deepEqual(
+      projected.map(shape),
+      [
+        "agent_stage:planning:started",
+        "plan_updated",
+        "plan_execution_updated",
+        "agent_stage:planning:completed",
+        "plan_ready",
+      ],
+      "an execution ledger reports work inside the stage, not a transition of it",
+    );
+    assert.deepEqual(stagePayloads(projected)[0], {
+      type: "agent_stage",
+      stage: "planning",
+      status: "started",
+      projected: true,
+    });
   });
 
   it("brackets connected-runtime activity with its declared stage", function () {

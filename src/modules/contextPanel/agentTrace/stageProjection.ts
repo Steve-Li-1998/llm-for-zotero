@@ -27,6 +27,23 @@ const CATEGORY_BEARING_EVENT_TYPES: ReadonlySet<AgentEvent["type"]> = new Set([
   "codex_tool_activity",
 ]);
 
+/**
+ * What a plan event says about the planning stage.
+ *
+ * The same table the runtime publishes plan events through
+ * (`PLANNING_STAGE_STATUS_BY_PLAN_EVENT` in `agent/runtime.ts`): a revision
+ * still being drafted opens the stage and a reviewable plan closes it.
+ * Every other plan event reports work inside a stage rather than a
+ * transition of one -- an execution ledger advancing would otherwise close a
+ * stage nothing had opened, once per task.
+ */
+const PLANNING_STAGE_STATUS_BY_PLAN_EVENT: Readonly<
+  Partial<Record<AgentEvent["type"], "started" | "completed">>
+> = {
+  plan_updated: "started",
+  plan_ready: "completed",
+};
+
 /** What a trace says about one tool call, gathered before the walk. */
 type ProjectedCall = {
   /**
@@ -191,6 +208,13 @@ function projectStageBeforeEvent(
   calls: Map<string, ProjectedCall>,
 ): AgentStagePayload | null {
   const payload = entry.payload;
+  const planningStatus = PLANNING_STAGE_STATUS_BY_PLAN_EVENT[payload.type];
+  if (planningStatus)
+    return buildStage({
+      stage: "planning",
+      status: planningStatus,
+      projected: true,
+    });
   switch (payload.type) {
     case "tool_call":
       return projectToolCall(payload, calls.get(payload.callId));
@@ -296,6 +320,13 @@ function trailingStageRecord(
  * one open stage covering everything it did rather than a category invented
  * per tool. `retrieval` is the stage vocabulary's neutral member and the
  * renderer labels an undifferentiated stage as agent activity instead.
+ *
+ * The fallback triggers on "the walk synthesized nothing", which means "no
+ * work category anywhere" only because every category-free source --
+ * `material_finalized`, `batch_item_outcome`, the plan events -- post-dates
+ * the category contract, so a trace old enough to need this fallback holds
+ * none of them. A future source that fires unconditionally would silently
+ * disable it.
  */
 function projectUndifferentiatedRun(
   events: AgentRunEventRecord[],
@@ -328,7 +359,8 @@ function projectUndifferentiatedRun(
  * A run that already reports its own stages is returned untouched; anything
  * older is reconstructed from what its events declare -- the work category
  * stamped on tool events and connected-runtime activity, and the fixed
- * category of material and batch announcements -- placed immediately before
+ * category of material, batch and plan announcements -- placed immediately
+ * before
  * the event each stage describes, exactly where the live run emits it. The
  * projection never guesses a category from a tool name: a run that declares
  * none reports one undifferentiated stage.

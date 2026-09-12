@@ -42,6 +42,17 @@ export const CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY: AgentWorkCategory =
   "external_system";
 
 /**
+ * Activating a skill.
+ *
+ * A skill is a way of working the run adopted before doing the work, so it
+ * belongs with the planning the run did rather than with the reading or
+ * writing that followed. No `ToolSpec` declares it -- a connected runtime
+ * activates a skill on its own -- so it is named here with the registered
+ * tools instead of being spelled at whichever bridge noticed it.
+ */
+export const SKILL_ACTIVATION_WORK_CATEGORY: AgentWorkCategory = "planning";
+
+/**
  * Activity kinds native Codex reports for work it runs itself. These never
  * reach a host `ToolSpec`, so the panel resolves their meaning here instead of
  * spelling a second taxonomy at each render site.

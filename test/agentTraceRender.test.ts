@@ -3105,6 +3105,98 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("reports a skill activation as planning work, not as a tool named Skill", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.noteSkillActivated("graphwalk");
+    controller.noteSkillActivated("evidence-based-qa", {
+      source: "codex-native-slash",
+    });
+
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      [
+        "agent_stage",
+        "codex_tool_activity",
+        "agent_stage",
+        "codex_tool_activity",
+      ],
+      "a skill activation is a stage and its row, never a synthetic tool call",
+    );
+    assert.deepEqual(events[0].payload, {
+      type: "agent_stage",
+      stage: "planning",
+      status: "completed",
+      toolLabel: "Skill",
+    });
+    const activity = events[1].payload;
+    assert.equal(activity.type, "codex_tool_activity");
+    if (activity.type !== "codex_tool_activity") return;
+    assert.equal(activity.toolLabel, "Skill");
+    assert.isUndefined(activity.toolName);
+    assert.deepEqual(activity.args, { skill: "graphwalk" });
+    assert.equal(activity.workCategory, "planning");
+
+    const explicit = events[3].payload;
+    assert.equal(explicit.type, "codex_tool_activity");
+    if (explicit.type !== "codex_tool_activity") return;
+    assert.deepEqual(explicit.args, {
+      skill: "evidence-based-qa",
+      source: "codex-native-slash",
+    });
+  });
+
+  it("names an activated skill from a relayed activity's own fields", function () {
+    const activity = (args: Record<string, unknown>): AgentRunEventRecord => ({
+      runId: "run-skill",
+      seq: 1,
+      eventType: "codex_tool_activity",
+      payload: {
+        type: "codex_tool_activity",
+        itemId: `skill:${String(args.skill)}`,
+        phase: "completed",
+        toolLabel: "Skill",
+        args,
+        workCategory: "planning",
+      },
+      createdAt: 1,
+    });
+
+    assert.include(
+      traceRowTexts(
+        buildAgentTraceDisplayItems([activity({ skill: "graphwalk" })], null)
+          .items,
+      ),
+      "Using Skill: graphwalk",
+    );
+    assert.include(
+      traceRowTexts(
+        buildAgentTraceDisplayItems(
+          [
+            activity({
+              skill: "evidence-based-qa",
+              source: "codex-native-slash",
+            }),
+          ],
+          null,
+        ).items,
+      ),
+      "Invoked Skill: evidence-based-qa",
+    );
+  });
+
   it("preserves known quote anchors before agent trace DOM decoration", function () {
     const quoteCitation = buildQuoteCitation({
       quoteText: "Interleaved trace quote anchors should not leak.",

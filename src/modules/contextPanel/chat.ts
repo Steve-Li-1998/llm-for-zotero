@@ -460,6 +460,7 @@ import {
   humanizeCodexNativeItemType,
   isCodexNativeItemType,
   mapCodexNativeItemToEvents,
+  mapCodexNativeSkillActivationToEvents,
   normalizeCodexNativeItemTypeKey,
   readCodexNativeRawField,
   resolveCodexNativeStageStatus,
@@ -6830,20 +6831,11 @@ function createCodexNativeActivityTraceController(
     if (!cleanSkillId || activatedSkillIds.has(cleanSkillId)) return;
     flushAllProgressCoalescers("event");
     activatedSkillIds.add(cleanSkillId);
-    events.push(
-      createEvent({
-        type: "tool_call",
-        callId: `skill:${cleanSkillId}`,
-        name: "Skill",
-        // The trace reads this label, never the call's name: a skill
-        // activation is not a registered tool and has no spec to look up.
-        toolLabel: "Skill",
-        args: {
-          skill: cleanSkillId,
-          ...(options.source ? { source: options.source } : {}),
-        },
-      }),
-    );
+    // Activating a skill is planning work the connected runtime did, not a
+    // call to a registered tool. The bridge says so; this appends it.
+    const mapped = mapCodexNativeSkillActivationToEvents(cleanSkillId, options);
+    if (!mapped?.activity) return;
+    upsertToolActivity(mapped.activity, { stage: mapped.stage });
     sync();
   };
 

@@ -6,7 +6,9 @@ import {
   resolveAgentToolCallWorkCategory,
   resolveAgentWorkCategory,
   resolveCodexNativeWorkCategory,
+  SKILL_ACTIVATION_WORK_CATEGORY,
 } from "../src/agent/workCategory";
+import { mapCodexNativeSkillActivationToEvents } from "../src/codexAppServer/nativeActivityStages";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import { createLibraryBatchTool } from "../src/agent/tools/write/libraryBatch";
 import { createSelfContainedTestTool } from "../src/agent/tools/test/createSelfContainedTestTool";
@@ -287,6 +289,19 @@ describe("agent work categories", function () {
         ["file_changes", "external_system"],
       ],
     );
+  });
+
+  it("names skill activation in the table, not at the bridge that saw it", function () {
+    // A skill is chosen before the work, so it belongs with planning; the
+    // constant keeps that decision beside the registered tools' categories.
+    assert.equal(SKILL_ACTIVATION_WORK_CATEGORY, "planning");
+    const events = mapCodexNativeSkillActivationToEvents("graphwalk");
+    assert.equal(events?.stage?.stage, SKILL_ACTIVATION_WORK_CATEGORY);
+    assert.equal(
+      events?.activity?.workCategory,
+      SKILL_ACTIVATION_WORK_CATEGORY,
+    );
+    assert.isNull(mapCodexNativeSkillActivationToEvents("  "));
   });
 
   it("leaves the panel and both bridges no second work-category taxonomy", function () {

@@ -3927,6 +3927,13 @@ function summarizeCodexToolActivity(input: {
       codeBlock: readAgentTraceText(input.codeBlock) || undefined,
     };
   }
+  // A skill activation reaches the trace as a relayed row the bridge
+  // labelled, with the skill in its arguments; the same reading as a
+  // host-run activation, from the same two event fields.
+  const skillText = skillActivationText(label, input.args);
+  if (skillText) {
+    return { kind: "tool", icon: "⌘", text: skillText };
+  }
   const verb = input.phase === "completed" ? "Used" : "Using";
   return {
     kind: "tool",

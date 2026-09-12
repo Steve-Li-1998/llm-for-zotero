@@ -1911,6 +1911,21 @@ export class AgentRuntime {
             callId: toolResult.callId,
           });
         }
+        // A batch announces its items one by one. They are deliberately not
+        // `material_finalized`: fifty note bodies are recovered from the
+        // batch's own durable rows, not from the turn's material ledger.
+        for (const item of toolResult.batchItems || []) {
+          await emit({
+            type: "batch_item_outcome",
+            batchId: item.batchId,
+            itemKey: item.itemKey,
+            materialRef: item.materialRef,
+            status: item.status,
+            noteId: item.noteId,
+            error: item.error,
+            callId: toolResult.callId,
+          });
+        }
         await actionContractSession.recordToolReceipts(
           toolResult.actionReceipts,
         );

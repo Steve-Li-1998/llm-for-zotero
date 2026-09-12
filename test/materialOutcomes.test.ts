@@ -228,6 +228,66 @@ describe("material outcome ledger", function () {
     assert.isEmpty(ledger.dropped);
   });
 
+  it("leaves a batch item's material out of the block it never entered", async function () {
+    const turnMaterial: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:guide",
+    };
+    const batchMaterial: MaterialRef = {
+      documentId: "run-1:document:2",
+      documentVersion: 1,
+      contentHash: "sha256:note",
+    };
+    await harness.addDocument(
+      directDocument({
+        documentId: turnMaterial.documentId,
+        contentHash: turnMaterial.contentHash,
+      }),
+    );
+    await harness.addDocument(
+      directDocument({
+        documentId: batchMaterial.documentId,
+        contentHash: batchMaterial.contentHash,
+      }),
+    );
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(turnMaterial));
+    // A batch announces its items on their own channel, so the ledger never
+    // sees them even though their documents are stored in this conversation.
+    harness.addEvent("run-1", {
+      type: "batch_item_outcome",
+      batchId: "batch-note_write_batch-1",
+      itemKey: "item:1",
+      materialRef: batchMaterial,
+      status: "saved",
+      noteId: 501,
+      callId: "note-batch-1",
+    });
+    harness.addEvent("run-1", {
+      type: "tool_result",
+      callId: "note-batch-1",
+      name: "note_write_batch",
+      ok: true,
+      actionReceipts: [],
+      content: { createdCount: 1, failedCount: 0 },
+    });
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.deepEqual(
+      ledger.entries.map((entry) => entry.materialRef.documentId),
+      [turnMaterial.documentId],
+      "only the turn's own material is a ledger entry",
+    );
+    const lines = formatMaterialOutcomeRecoveryLines(ledger.entries);
+    assert.equal(
+      lines[0],
+      "Finalized material available (not saved as a note):",
+    );
+    assert.notInclude(lines.join("\n"), batchMaterial.documentId);
+    assert.include(lines.join("\n"), turnMaterial.documentId);
+  });
+
   it("closes an entry when a later run's verified receipt names the same material", async function () {
     const materialRef: MaterialRef = {
       documentId: "run-1:document:1",

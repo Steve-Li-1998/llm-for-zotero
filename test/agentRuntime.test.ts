@@ -8249,6 +8249,152 @@ describe("finalized material announcement", function () {
     }
   });
 
+  it("announces each batch item and never as turn material", async function () {
+    const restoreDb = installMockDb();
+    const events: AgentEvent[] = [];
+    const batchItems = [1, 2, 3].map((position) => ({
+      batchId: "batch-note_write_batch-1",
+      itemKey: `item:${position}`,
+      materialRef: {
+        documentId: `run:document:${position}`,
+        documentVersion: 1,
+        contentHash: `sha256:note-${position}`,
+      },
+      status: position === 2 ? ("failed" as const) : ("saved" as const),
+      ...(position === 2
+        ? { error: "Zotero refused the note write" }
+        : { noteId: 500 + position }),
+    }));
+    let steps = 0;
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry();
+      registry.register({
+        spec: {
+          name: "note_write_batch",
+          description: "Write a note onto each of many items",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        planInvocation: async () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test note batch.",
+          }),
+        describeAction: () => [
+          {
+            id: "save_notes_batch:0",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "save_notes_batch",
+            source: "library_mutation",
+            requestedTargets: ["item:1", "item:2", "item:3"],
+            destinationCollectionIds: [],
+          },
+        ],
+        execute: async () => ({
+          content: { createdCount: 2, failedCount: 1 },
+          effect: "partial",
+          batchItems,
+        }),
+      } as never);
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            if (steps++ === 0) {
+              const call = {
+                id: "note-batch-1",
+                name: "note_write_batch",
+                arguments: { notes: [] },
+              };
+              return {
+                kind: "tool_calls",
+                calls: [call],
+                assistantMessage: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [call],
+                },
+              };
+            }
+            return {
+              kind: "final",
+              text: "Wrote the notes.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Wrote the notes.",
+              },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 774422,
+          mode: "agent",
+          userText: "Write a note on each of these papers",
+          libraryID: 1,
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+          metadata: { sourceMessageTimestamp: 100 },
+        },
+        onEvent: (event) => events.push(event),
+      });
+      assert.equal(outcome.kind, "completed");
+
+      const announced = events.filter(
+        (event) => event.type === "batch_item_outcome",
+      ) as Extract<AgentEvent, { type: "batch_item_outcome" }>[];
+      assert.lengthOf(announced, 3, "one announcement per batch item");
+      assert.deepEqual(
+        announced.map((event) => event.itemKey),
+        ["item:1", "item:2", "item:3"],
+      );
+      assert.deepEqual(
+        announced.map((event) => event.status),
+        ["saved", "failed", "saved"],
+      );
+      assert.deepEqual(announced[0].materialRef, batchItems[0].materialRef);
+      assert.equal(announced[0].noteId, 501);
+      assert.equal(announced[1].error, "Zotero refused the note write");
+      assert.deepEqual(
+        announced.map((event) => event.callId),
+        ["note-batch-1", "note-batch-1", "note-batch-1"],
+      );
+      // Fifty note bodies must never flood the turn's material ledger.
+      assert.isEmpty(
+        events.filter((event) => event.type === "material_finalized"),
+      );
+
+      const trace = await getAgentRunTrace(outcome.runId);
+      const persisted = trace.events.filter(
+        (entry) => entry.eventType === "batch_item_outcome",
+      );
+      assert.lengthOf(persisted, 3, "the announcements are persisted");
+      const toolResultIndex = trace.events.findIndex(
+        (entry) => entry.eventType === "tool_result",
+      );
+      assert.isAbove(
+        persisted[0].seq,
+        trace.events[toolResultIndex].seq,
+        "items are announced after the tool result that carried them",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
   /** Turn 1 finalizes a direct document through the real submit_document tool. */
   async function runFinalizingTurn(
     conversationKey: number,

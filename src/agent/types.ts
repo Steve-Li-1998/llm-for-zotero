@@ -544,6 +544,24 @@ export type AgentEvent =
       callId?: string;
     }
   | {
+      /**
+       * One item of a durable batch and the material it wrote.
+       *
+       * Batch material is announced here rather than through
+       * `material_finalized`, so fifty note bodies never flood the turn's
+       * material ledger; batches recover from their own durable rows.
+       */
+      type: "batch_item_outcome";
+      batchId: string;
+      itemKey: string;
+      materialRef: MaterialRef;
+      status: "pending" | "saved" | "failed";
+      noteId?: number;
+      error?: string;
+      /** The tool call that carried this batch. */
+      callId: string;
+    }
+  | {
       type: "final";
       text: string;
       /** Immutable host-finalized document rendered for this visible answer. */

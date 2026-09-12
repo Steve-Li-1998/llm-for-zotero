@@ -3019,6 +3019,92 @@ describe("agentTrace render", function () {
     });
   });
 
+  it("merges a native MCP call with its item row by the key the bridge paired", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    // The app server announces the call first, by the model's call id.
+    controller.appendItemStatus(
+      {
+        id: "call_A",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+      },
+      "started",
+    );
+    // The Zotero MCP server reports the same call under its own request id,
+    // with the item the client paired it to.
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:11",
+      correlationId: "call_A",
+      phase: "completed",
+      toolName: "query_library",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+      ok: true,
+    });
+
+    const events = message.pendingAgentTraceEvents || [];
+    const activities = events.filter(
+      (entry) => entry.eventType === "codex_tool_activity",
+    );
+    assert.lengthOf(activities, 1, "one call is one row");
+    const activity = activities[0].payload;
+    assert.equal(activity.type, "codex_tool_activity");
+    if (activity.type !== "codex_tool_activity") return;
+    assert.equal(activity.itemId, "call_A");
+    assert.equal(activity.phase, "completed");
+    assert.equal(activity.workCategory, "retrieval");
+  });
+
+  it("stops adopting a nameless row just because it went past recently", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    // A tool item the protocol named nothing in: the deleted heuristic let
+    // any named MCP activity within eight seconds claim it as the same work.
+    controller.appendItemStatus({ id: "item-1", type: "tool_call" }, "started");
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:11",
+      phase: "started",
+      toolName: "query_library",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+    });
+
+    const activities = (message.pendingAgentTraceEvents || []).filter(
+      (entry) => entry.eventType === "codex_tool_activity",
+    );
+    assert.lengthOf(
+      activities,
+      2,
+      "two rows nothing paired stay two, rather than merging on recency",
+    );
+  });
+
   it("preserves known quote anchors before agent trace DOM decoration", function () {
     const quoteCitation = buildQuoteCitation({
       quoteText: "Interleaved trace quote anchors should not leak.",

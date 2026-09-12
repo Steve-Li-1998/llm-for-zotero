@@ -2153,8 +2153,22 @@ export async function verifyJournalStepPostcondition(params: {
   zoteroGateway: ZoteroGateway;
   context: AgentToolContext;
 }): Promise<JournalStepPostState> {
+  let image: RecordedPostImage;
+  try {
+    image = recordedPostImageOfStep(params.step);
+  } catch (error) {
+    // A step whose stored JSON cannot be parsed proves nothing either way, and
+    // a receipt that could not check must never fail the write it describes.
+    return {
+      kind: "not_re_readable",
+      comparedTargets: 0,
+      reason: `the post-image could not be read back: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
   return verifyRecordedPostImage({
-    image: recordedPostImageOfStep(params.step),
+    image,
     reader: postImageReader(
       new LibraryMutationService(params.zoteroGateway),
       params.context,

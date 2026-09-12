@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { revertActions } from "../src/agent/services/changeReverter";
 import { executeExternalMutation } from "../src/agent/services/externalMutationCoordinator";
+import { verifyJournalStepPostcondition } from "../src/agent/services/changeReverter";
 import { LibraryMutationService } from "../src/agent/services/libraryMutationService";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { withActiveJournalAction } from "../src/agent/services/externalMutationCoordinator";
@@ -1886,6 +1887,36 @@ describe("durable change journal v2", function () {
         : undefined,
       effect: "applied",
     });
+  });
+
+  it("reads a step with unparseable stored JSON back as not re-readable", async function () {
+    // A corrupt row proves nothing either way. Answering "mismatched" would
+    // report that native state disagreed, and throwing would fail a write that
+    // already succeeded, so the only honest answer is that it could not check.
+    const state = await verifyJournalStepPostcondition({
+      step: {
+        stepId: "corrupt:1",
+        actionId: "corrupt",
+        sequence: 1,
+        operation: "update_preference",
+        forwardJson: "{not json",
+        expectedPostconditionJson: JSON.stringify({
+          kind: "preference",
+          key: "automaticTags",
+          existed: true,
+          value: true,
+        }),
+        reversibility: "full",
+        status: "applied",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      zoteroGateway: {} as never,
+      context,
+    });
+
+    assert.equal(state.kind, "not_re_readable");
+    assert.match(state.reason || "", /the post-image could not be read back/);
   });
 
   it("closes a pre-write journal failure without running the external write", async function () {

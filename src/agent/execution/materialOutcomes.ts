@@ -32,6 +32,24 @@ export const MATERIAL_OUTCOME_RUN_LIMIT = 20;
 
 const NOTE_WRITE_TOOL_NAME = "note_write";
 
+/** The only event kinds the ledger replays; the rest of the trace is not read. */
+const LEDGER_EVENT_TYPES = ["material_finalized", "tool_result"] as const;
+
+const MATERIAL_TITLE_MAX_LENGTH = 120;
+
+/**
+ * A material title is model-authored.  It is quoted inside a host-written
+ * block, so strip anything that could forge a second line or close the quote
+ * early, and cap the length.
+ */
+function quotedMaterialTitle(title: string | undefined): string {
+  return (title || "")
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ")
+    .trim()
+    .slice(0, MATERIAL_TITLE_MAX_LENGTH)
+    .replace(/"/gu, '\\"');
+}
+
 type OpenEntry = {
   entry: MaterialOutcomeEntry;
   /** Position of the announcement that opened this entry, for newest-first order. */
@@ -63,20 +81,17 @@ export async function loadMaterialOutcomesForConversation(
     1,
     Math.floor(options.limitRuns ?? MATERIAL_OUTCOME_RUN_LIMIT),
   );
-  const runs = (await listAgentRunsForConversation(conversationKey)).slice(
-    -limitRuns,
-  );
+  const runs = await listAgentRunsForConversation(conversationKey, {
+    limit: limitRuns,
+  });
   const open = new Map<string, OpenEntry>();
   let ordinal = 0;
   for (const run of runs) {
-    const callArguments = new Map<string, unknown>();
-    for (const record of await listAgentRunEvents(run.runId)) {
+    for (const record of await listAgentRunEvents(run.runId, {
+      eventTypes: LEDGER_EVENT_TYPES,
+    })) {
       ordinal += 1;
       const event: AgentEvent = record.payload;
-      if (event.type === "tool_call") {
-        callArguments.set(event.callId, event.args);
-        continue;
-      }
       if (event.type === "material_finalized") {
         const materialRef = parseMaterialRef(event.materialRef);
         if (!materialRef) continue;
@@ -114,13 +129,26 @@ export async function loadMaterialOutcomesForConversation(
         }
         continue;
       }
-      if (event.name !== NOTE_WRITE_TOOL_NAME) continue;
-      const documentId =
-        readDocumentId(event.content) ||
-        readDocumentId(callArguments.get(event.callId));
-      const failed = documentId ? open.get(documentId) : undefined;
-      if (failed)
+      // A failed write still produces receipts, and they carry the frozen
+      // MaterialRef, so the failure names its material without reading the
+      // call that made it.
+      const documentIds = new Set(
+        (event.actionReceipts || [])
+          .map((receipt) => parseMaterialRef(receipt.materialRef)?.documentId)
+          .filter((documentId): documentId is string => Boolean(documentId)),
+      );
+      const fromContent =
+        event.name === NOTE_WRITE_TOOL_NAME
+          ? readDocumentId(event.content)
+          : undefined;
+      if (fromContent) documentIds.add(fromContent);
+      for (const documentId of documentIds) {
+        const failed = open.get(documentId);
+        // A saved entry is terminal: a later failed write is a separate
+        // attempt and never puts written material back on the unsaved list.
+        if (!failed || failed.entry.status === "saved") continue;
         failed.entry = { ...failed.entry, status: "write_failed" as const };
+      }
     }
   }
 
@@ -163,11 +191,15 @@ export function formatMaterialOutcomeRecoveryLines(
   );
   if (!unsaved.length) return [];
   return [
-    "Finalized material not yet saved:",
+    "Finalized material available (not saved as a note):",
     ...unsaved.map(
       (entry) =>
-        `documentId=${entry.materialRef.documentId} version=${entry.materialRef.documentVersion} hash=${entry.materialRef.contentHash} title="${entry.materialTitle || ""}" status=${entry.status}`,
+        `documentId=${entry.materialRef.documentId} version=${entry.materialRef.documentVersion} hash=${entry.materialRef.contentHash} title="${quotedMaterialTitle(entry.materialTitle)}" status=${entry.status}${
+          entry.status === "write_failed"
+            ? " \u2014 a previous save of this material failed"
+            : ""
+        }`,
     ),
-    "To save it, call note_write with that documentId; do not regenerate it.",
+    "If the user asks to save it, call note_write with that documentId; do not regenerate it.",
   ];
 }

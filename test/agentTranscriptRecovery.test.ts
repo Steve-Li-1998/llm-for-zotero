@@ -71,14 +71,17 @@ describe("Agent transcript recovery", function () {
       materialOutcomes: [unsavedMaterial],
     });
     const content = String(message.content);
-    assert.include(content, "Finalized material not yet saved:");
+    assert.include(
+      content,
+      "Finalized material available (not saved as a note):",
+    );
     assert.include(
       content,
       'documentId=run-1:document:1 version=1 hash=sha256:guide title="Representational drift" status=finalized',
     );
     assert.include(
       content,
-      "To save it, call note_write with that documentId; do not regenerate it.",
+      "If the user asks to save it, call note_write with that documentId; do not regenerate it.",
     );
   });
 

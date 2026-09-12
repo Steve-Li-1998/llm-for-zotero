@@ -552,6 +552,32 @@ export function buildCodexNativeEffectActivityEvent(decision: {
   };
 }
 
+/**
+ * The trace row for a Zotero MCP call Codex made.
+ *
+ * The server name and the call's mutability travel with the row because the
+ * bridge is the only place that still knows them: a panel that had to
+ * recognise the server from a tool name would be back to inferring meaning
+ * from identity.
+ */
+export function buildCodexMcpToolActivityEvent(
+  event: ZoteroMcpToolActivityEvent,
+): import("../agent/types").AgentEvent {
+  return {
+    type: "codex_tool_activity",
+    itemId: event.requestId,
+    phase: event.phase,
+    toolName: event.toolName,
+    toolLabel: event.toolLabel,
+    serverName: event.serverName,
+    args: event.arguments,
+    ok: event.ok,
+    text: event.error,
+    actionReceipts: event.actionReceipts,
+    workCategory: event.workCategory,
+    mutability: event.mutability,
+  };
+}
 
 let codexNativeApprovalEffectSequence = 0;
 
@@ -3232,17 +3258,7 @@ export async function runCodexAppServerNativeTurn(input: {
               });
               params.onMcpToolActivity?.(redactedEvent);
               const pending = params.eventJournal
-                .append({
-                  type: "codex_tool_activity",
-                  itemId: event.requestId,
-                  phase: event.phase,
-                  toolName: event.toolName,
-                  args: redactedEvent.arguments,
-                  ok: event.ok,
-                  text: event.error,
-                  actionReceipts: redactedEvent.actionReceipts,
-                  workCategory: redactedEvent.workCategory,
-                })
+                .append(buildCodexMcpToolActivityEvent(redactedEvent))
                 .then(() => publishAuthority())
                 .then(() => recordMcpPlanEvidence(planContext, redactedEvent))
                 .then(async (ledger) => {

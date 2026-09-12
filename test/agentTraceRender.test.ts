@@ -4225,6 +4225,26 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("names the server and the mutability of a Claude-driven MCP call", function () {
+    // The trace must not re-derive which server ran a call from its tool name:
+    // the bridge is the only place that knows, so it stamps both facts.
+    const event = buildClaudeMcpToolActivityEvent({
+      requestId: "mcp-claude-2",
+      phase: "completed",
+      toolName: "note_write",
+      toolLabel: "Write note",
+      serverName: "llm_for_zotero",
+      mutability: "write",
+      ok: true,
+      timestamp: 1,
+    });
+    assert.equal(event.type, "codex_tool_activity");
+    if (event.type !== "codex_tool_activity") return;
+    assert.equal(event.serverName, "llm_for_zotero");
+    assert.equal(event.mutability, "write");
+    assert.equal(event.toolLabel, "Write note");
+  });
+
   it("keeps two connected-client effects apart instead of collapsing them into one row", function () {
     // Every effect row carries the same constant tool name and one of four
     // fixed sentences, so without a distinct identity per effect the visible

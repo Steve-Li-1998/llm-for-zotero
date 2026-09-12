@@ -1426,6 +1426,7 @@ export function buildClaudeMcpToolActivityEvent(
     artifacts: event.artifacts,
     actionReceipts: event.actionReceipts,
     workCategory: event.workCategory,
+    mutability: event.mutability,
   };
 }
 

@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert } from "chai";
+import { CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY } from "../src/agent/workCategory";
 import {
   buildCodexNativeApprovalPendingAction,
   buildCodexNativeApprovalResponseFromResolution,
@@ -26,6 +27,8 @@ import {
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
   resolveCodexNativeApprovalRequest,
   resolveSafeCodexNativeApprovalRequest,
+  buildCodexMcpToolActivityEvent,
+  buildCodexNativeEffectActivityEvent,
   resetCodexNativePathSafetyStateForTests,
   runCodexAppServerNativeTurn as runPreparedNativeTurn,
 } from "../src/codexAppServer/nativeClient";
@@ -3823,5 +3826,49 @@ describe("Codex native approval effect receipts", function () {
     assert.equal(receipt.status, "cancelled");
     assert.equal(receipt.verification, "not_applicable");
     assert.deepEqual(receipt.appliedTargets, []);
+  });
+});
+
+describe("Codex MCP tool activity bridge", function () {
+  it("stamps the server and mutability onto every MCP row it forwards", function () {
+    // Without these the trace has to guess which server ran a call from its
+    // tool name, which is exactly the shadow taxonomy the stage model removes.
+    const event = buildCodexMcpToolActivityEvent({
+      requestId: "jsonrpc:7",
+      phase: "completed",
+      toolName: "note_write",
+      toolLabel: "Write note",
+      serverName: "llm_for_zotero",
+      mutability: "write",
+      workCategory: "zotero_action",
+      arguments: { text: "hello" },
+      ok: true,
+      timestamp: 3,
+    });
+    assert.equal(event.type, "codex_tool_activity");
+    if (event.type !== "codex_tool_activity") return;
+    assert.equal(event.itemId, "jsonrpc:7");
+    assert.equal(event.serverName, "llm_for_zotero");
+    assert.equal(event.mutability, "write");
+    assert.equal(event.toolLabel, "Write note");
+    assert.equal(event.workCategory, "zotero_action");
+    assert.deepEqual(event.args, { text: "hello" });
+  });
+
+  it("labels a connected-runtime effect from the shared category table", function () {
+    const event = buildCodexNativeEffectActivityEvent({
+      effect: {
+        runtime: "codex_native",
+        kind: "command",
+        command: "npm test",
+        requestedTargets: [],
+      } as never,
+      outcome: "executed",
+      callId: "cmd-9",
+      receipt: { id: "receipt-cmd-9" } as never,
+    });
+    assert.equal(event.type, "codex_tool_activity");
+    if (event.type !== "codex_tool_activity") return;
+    assert.equal(event.workCategory, CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY);
   });
 });

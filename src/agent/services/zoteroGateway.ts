@@ -378,6 +378,7 @@ export class ZoteroGateway {
       totalCount: ids.length,
     };
   }
+
   /** See `ItemCapability.getPaperTargetsByItemIds`. */
   getPaperTargetsByItemIds(itemIds: number[]): LibraryPaperTarget[] {
     return this.itemCapability.getPaperTargetsByItemIds(itemIds);
@@ -424,6 +425,7 @@ export class ZoteroGateway {
       }
     );
   }
+
   /** See `ItemCapability.listBibliographicItemTargets`. */
   async listBibliographicItemTargets(params: {
     libraryID: number;
@@ -434,6 +436,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.listBibliographicItemTargets(params);
   }
+
   /** See `ItemCapability.getBibliographicItemTargetsByItemIds`. */
   getBibliographicItemTargetsByItemIds(itemIds: number[]): LibraryItemTarget[] {
     return this.itemCapability.getBibliographicItemTargetsByItemIds(itemIds);
@@ -444,6 +447,7 @@ export class ZoteroGateway {
   ): Zotero.Item | null {
     return resolveBibliographicItem(item);
   }
+
   /** See `ItemCapability.resolveMetadataItem`. */
   resolveMetadataItem(params: {
     request?: AgentRuntimeRequest;
@@ -518,12 +522,14 @@ export class ZoteroGateway {
   }): Promise<void> {
     return this.noteCapability.restoreNoteHtml(params);
   }
+
   /** See `ItemCapability.getEditableArticleMetadata`. */
   getEditableArticleMetadata(
     item: Zotero.Item | null | undefined,
   ): EditableArticleMetadataSnapshot | null {
     return this.itemCapability.getEditableArticleMetadata(item);
   }
+
   /** See `ItemCapability.isEditableArticleMetadataFieldSupported`. */
   isEditableArticleMetadataFieldSupported(
     item: Zotero.Item | null | undefined,
@@ -534,6 +540,7 @@ export class ZoteroGateway {
       fieldName,
     );
   }
+
   /** See `ItemCapability.supportsEditableArticleCreators`. */
   supportsEditableArticleCreators(
     item: Zotero.Item | null | undefined,
@@ -592,6 +599,7 @@ export class ZoteroGateway {
   }> {
     return this.tagCapability.listUntaggedPaperTargets(params);
   }
+
   /** See `ItemCapability.listLibraryItemTargets`. */
   async listLibraryItemTargets(params: {
     libraryID: number;
@@ -600,6 +608,7 @@ export class ZoteroGateway {
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     return this.itemCapability.listLibraryItemTargets(params);
   }
+
   /** See `ItemCapability.listCollectionItemTargets`. */
   async listCollectionItemTargets(params: {
     libraryID: number;
@@ -613,6 +622,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.listCollectionItemTargets(params);
   }
+
   /** See `ItemCapability.listUnfiledItemTargets`. */
   async listUnfiledItemTargets(params: {
     libraryID: number;
@@ -621,6 +631,7 @@ export class ZoteroGateway {
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     return this.itemCapability.listUnfiledItemTargets(params);
   }
+
   /** See `ItemCapability.listUntaggedItemTargets`. */
   async listUntaggedItemTargets(params: {
     libraryID: number;
@@ -736,6 +747,7 @@ export class ZoteroGateway {
       summedScopeCount,
     };
   }
+
   /** See `ItemCapability.searchItemsByConditions`. */
   async searchItemsByConditions(params: {
     libraryID: number;
@@ -754,6 +766,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.searchItemsByConditions(params);
   }
+
   /** See `ItemCapability.listItemTypes`. */
   listItemTypes(params?: { itemType?: string; includeFields?: boolean }): {
     itemTypes: Array<{
@@ -765,6 +778,7 @@ export class ZoteroGateway {
   } {
     return this.itemCapability.listItemTypes(params);
   }
+
   /** See `ItemCapability.createItems`. */
   async createItems(params: {
     libraryID: number;
@@ -787,6 +801,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.createItems(params);
   }
+
   /** See `ItemCapability.reparentItems`. */
   async reparentItems(params: {
     assignments: Array<{ itemId: number; parentItemId: number | null }>;
@@ -802,6 +817,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.reparentItems(params);
   }
+
   /** See `ItemCapability.relateItems`. */
   async relateItems(params: {
     itemId: number;
@@ -818,6 +834,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.relateItems(params);
   }
+
   /** See `ItemCapability.listItemsByFilters`. */
   async listItemsByFilters(params: {
     libraryID: number;
@@ -856,6 +873,7 @@ export class ZoteroGateway {
   } | null {
     return this.attachmentCapability.getAttachmentInfo(params);
   }
+
   /** See `ItemCapability.searchAllLibraryItems`. */
   async searchAllLibraryItems(params: {
     libraryID: number;
@@ -1090,6 +1108,7 @@ export class ZoteroGateway {
   }> {
     return this.collectionCapability.deleteSavedSearch(params);
   }
+
   /** See `SettingsCapability.listSettings`. */
   listSettings(): Array<{
     key: string;
@@ -1099,10 +1118,12 @@ export class ZoteroGateway {
   }> {
     return this.settingsCapability.listSettings();
   }
+
   /** See `SettingsCapability.getSettingNativeState`. */
   getSettingNativeState(key: string): { exists: boolean; value: unknown } {
     return this.settingsCapability.getSettingNativeState(key);
   }
+
   /** See `SettingsCapability.restoreSetting`. */
   restoreSetting(params: {
     key: string;
@@ -1111,6 +1132,7 @@ export class ZoteroGateway {
   }): void {
     return this.settingsCapability.restoreSetting(params);
   }
+
   /** See `SettingsCapability.updateSetting`. */
   async updateSetting(params: { key: string; value: unknown }): Promise<{
     key: string;
@@ -1121,6 +1143,7 @@ export class ZoteroGateway {
   }> {
     return this.settingsCapability.updateSetting(params);
   }
+
   /** See `SettingsCapability.getSyncStatus`. */
   getSyncStatus(): {
     configured: boolean;
@@ -1130,10 +1153,12 @@ export class ZoteroGateway {
   } {
     return this.settingsCapability.getSyncStatus();
   }
+
   /** See `SettingsCapability.listExportFormats`. */
   listExportFormats(): Array<{ id: string; label: string }> {
     return this.settingsCapability.listExportFormats();
   }
+
   /** See `SettingsCapability.exportItems`. */
   async exportItems(params: {
     itemIds: number[];
@@ -1141,10 +1166,12 @@ export class ZoteroGateway {
   }): Promise<{ output: string; itemCount: number }> {
     return this.settingsCapability.exportItems(params);
   }
+
   /** See `SettingsCapability.listCitationStyles`. */
   listCitationStyles(): Array<{ id: string; title: string }> {
     return this.settingsCapability.listCitationStyles();
   }
+
   /** See `SettingsCapability.formatBibliography`. */
   formatBibliography(params: {
     itemIds: number[];
@@ -1161,6 +1188,7 @@ export class ZoteroGateway {
   } {
     return this.settingsCapability.formatBibliography(params);
   }
+
   /** See `SettingsCapability.formatStructuredCitations`. */
   formatStructuredCitations(params: {
     clusters: Array<{
@@ -1219,6 +1247,7 @@ export class ZoteroGateway {
   }): Promise<{ removed: boolean; reason?: string }> {
     return this.collectionCapability.removeItemFromCollection(params);
   }
+
   /** See `ItemCapability.findRelatedPapersInLibrary`. */
   async findRelatedPapersInLibrary(params: {
     libraryID: number;
@@ -1230,6 +1259,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.findRelatedPapersInLibrary(params);
   }
+
   /** See `ItemCapability.detectDuplicatesInLibrary`. */
   async detectDuplicatesInLibrary(params: {
     libraryID: number;
@@ -1240,6 +1270,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.detectDuplicatesInLibrary(params);
   }
+
   /** See `ItemCapability.updateArticleMetadata`. */
   async updateArticleMetadata(params: {
     item: Zotero.Item | null;
@@ -1252,6 +1283,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.updateArticleMetadata(params);
   }
+
   /** See `ItemCapability.trashItems`. */
   async trashItems(params: { itemIds: number[] }): Promise<{
     trashedCount: number;
@@ -1264,6 +1296,7 @@ export class ZoteroGateway {
   }> {
     return this.itemCapability.trashItems(params);
   }
+
   /** See `ItemCapability.restoreItems`. */
   async restoreItems(params: {
     itemIds: number[];
@@ -1277,6 +1310,7 @@ export class ZoteroGateway {
   }): Promise<{ restoredCount: number; savedSearchIds: number[] }> {
     return this.collectionCapability.restoreSavedSearches(params);
   }
+
   /** See `ItemCapability.mergeItems`. */
   async mergeItems(params: {
     masterItemId: number;

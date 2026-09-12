@@ -17,7 +17,7 @@
  * reaches a `.md` import, or the chat renderer that pulls the skill markdown
  * in behind it.
  */
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { dirname, resolve, relative, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert } from "chai";
@@ -54,14 +54,29 @@ function isTypeOnlyClause(clause: string): boolean {
 }
 
 /**
+ * Members that only ever appear on the *result* of a real dynamic import, so
+ * `import("x").then(...)` is a lazy value edge the bundler follows, not a type.
+ */
+const DYNAMIC_IMPORT_MEMBERS = new Set(["then", "catch", "finally", "default"]);
+
+/**
  * The module specifiers a bundler would actually follow: `import type` and
  * all-`type` clauses erased, `import("x").T` type positions erased, and every
  * remaining static, re-exported, and dynamic import kept.
  */
 function valueImportsOf(source: string): string[] {
   let text = stripComments(source);
-  // `import("x").T` / `typeof import("x")` are type positions, not edges.
-  text = text.replace(/\bimport\(\s*["'][^"']+["']\s*\)\s*\./g, " ");
+  // `import("x").T` and `typeof import("x")` are type positions, not edges.
+  // A chained dynamic import looks the same up to the dot, so only erase the
+  // member access when it cannot be one: never before a call, and never on a
+  // member that belongs to the imported module's promise. The whole member
+  // name has to match (`(?![\w$])`), or the pattern would backtrack to a
+  // prefix of `then` and erase the chain it is meant to keep.
+  text = text.replace(
+    /\bimport\(\s*["'][^"']+["']\s*\)\s*\.\s*([A-Za-z_$][\w$]*)(?![\w$])(?!\s*\()/g,
+    (match, member: string) =>
+      DYNAMIC_IMPORT_MEMBERS.has(member) ? match : " ",
+  );
   text = text.replace(/\btypeof\s+import\(\s*["'][^"']+["']\s*\)/g, " ");
 
   const specifiers: string[] = [];
@@ -104,6 +119,37 @@ function resolveSpecifier(fromFile: string, specifier: string): string | null {
   return null;
 }
 
+/** One parse per file: every entry's walk reuses it. */
+const parsedImports = new Map<string, string[]>();
+
+function importsOf(file: string): string[] {
+  const cached = parsedImports.get(file);
+  if (cached) return cached;
+  const parsed = valueImportsOf(readFileSync(resolve(repoRoot, file), "utf8"));
+  parsedImports.set(file, parsed);
+  return parsed;
+}
+
+const resolvedSpecifiers = new Map<string, string | null>();
+
+function resolveOnce(fromFile: string, specifier: string): string | null {
+  const key = `${fromFile}\u0000${specifier}`;
+  if (resolvedSpecifiers.has(key)) {
+    return resolvedSpecifiers.get(key) as string | null;
+  }
+  const resolved = resolveSpecifier(fromFile, specifier);
+  resolvedSpecifiers.set(key, resolved);
+  return resolved;
+}
+
+/** Every file the scaffold turns into its own workflow bundle. */
+function workflowEntries(): string[] {
+  return readdirSync(resolve(repoRoot, "test-workflows"))
+    .filter((name) => name.endsWith(".test.ts"))
+    .sort()
+    .map((name) => `test-workflows/${name}`);
+}
+
 type Reached = { files: Set<string>; parents: Map<string, string> };
 
 /** Walks value imports from `entry`, recording how each file was reached. */
@@ -114,10 +160,9 @@ function walkValueImports(entry: string): Reached {
   while (queue.length > 0) {
     const current = queue.shift() as string;
     if (current.endsWith(".md")) continue;
-    const source = readFileSync(resolve(repoRoot, current), "utf8");
-    for (const specifier of valueImportsOf(source)) {
+    for (const specifier of importsOf(current)) {
       if (!specifier.startsWith(".")) continue;
-      const resolved = resolveSpecifier(current, specifier);
+      const resolved = resolveOnce(current, specifier);
       if (!resolved || files.has(resolved)) continue;
       files.add(resolved);
       parents.set(resolved, current);
@@ -151,6 +196,33 @@ describe("workflow test bundle imports", function () {
     );
   });
 
+  it("keeps a dynamic import that is chained, so a lazy route still counts as an edge", function () {
+    assert.deepEqual(
+      valueImportsOf('const p = import("./only").then((m) => m.x);'),
+      ["./only"],
+    );
+    assert.deepEqual(
+      valueImportsOf('const m = (await import("./dp")).default;'),
+      ["./dp"],
+    );
+    assert.deepEqual(
+      valueImportsOf('await import("./lazy").catch(() => null);'),
+      ["./lazy"],
+    );
+  });
+
+  it("still erases the type positions that no bundler follows", function () {
+    assert.deepEqual(valueImportsOf('let a: typeof import("./types");'), []);
+    assert.deepEqual(
+      valueImportsOf('let b: import("./types").Message | null;'),
+      [],
+    );
+    assert.deepEqual(
+      valueImportsOf('import type { Message } from "./types";'),
+      [],
+    );
+  });
+
   it("never reaches the chat renderer, which imports the skill markdown", function () {
     const reached = walkValueImports(bootstrap);
     assert.isFalse(
@@ -158,6 +230,21 @@ describe("workflow test bundle imports", function () {
       `The host-surface bootstrap must stay clear of ${chatRenderer}:\n  ${
         reached.files.has(chatRenderer) ? chainTo(reached, chatRenderer) : ""
       }`,
+    );
+  });
+
+  it("holds for every workflow entry, since one bad entry fails the whole bundling pass", function () {
+    const offenders: string[] = [];
+    for (const entry of workflowEntries()) {
+      const reached = walkValueImports(entry);
+      const markdown = [...reached.files].find((file) => file.endsWith(".md"));
+      if (markdown)
+        offenders.push(`${entry}:\n  ${chainTo(reached, markdown)}`);
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `These workflow entries reach a .md import:\n${offenders.join("\n")}`,
     );
   });
 });

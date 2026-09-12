@@ -53,8 +53,9 @@ import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
  * the per-tool tests, which mint receipts from real tool results:
  * `test/runCommandTool.test.ts`, `test/fileIOTool.test.ts`,
  * `test/undoLastAction.test.ts` (a real journal, a real inverse replay and its
- * per-step native re-read) and `test/revertChanges.test.ts`. Phase 3 tasks 3
- * to 5 extend that to the remaining tools and the external bridges.
+ * per-step native re-read), `test/revertChanges.test.ts` and
+ * `test/zoteroScriptConfirmation.test.ts`. Phase 3 tasks 4 and 5 extend that
+ * to the remaining bespoke branches and the external bridges.
  */
 
 type Verification = AgentActionReceipt["verification"];
@@ -225,7 +226,7 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
     operations: ["command_execute"],
     verification: "execution_only",
     verificationNote:
-      "A shell command has no re-readable state. Phase 3 task 3 keeps it execution_only by ruling and makes it visible instead.",
+      "Ruling: a shell command has no re-readable state, so it stays execution_only everywhere. The final gate lets it pass and the trace chip says 'Ran (no state proof)'.",
     fixture: { command: "rm -rf /tmp/audit-target" },
     impact: "state_change",
     readMode: {
@@ -238,9 +239,9 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
   },
   zotero_script: {
     operations: ["zotero_script_execute"],
-    verification: "execution_only",
+    verification: "verified",
     verificationNote:
-      "The journal step already stores an expectedPostcondition the receipt ignores (Phase 3 task 3).",
+      "A run that journals an expected post-image re-reads it before the receipt is minted; one that declares no expected effect — a privileged read — stays execution_only (test/zoteroScriptConfirmation.test.ts).",
     fixture: {
       access: "library",
       effect: "write",
@@ -589,7 +590,11 @@ describe("effect path audit", function () {
       {
         zotero_state: ["verified"],
         file_state: ["verified"],
-        execution: ["execution_only"],
+        // Two values, on purpose. `execution` is the domain of effects with
+        // no state to re-read, but zotero_script is not one of them: a run
+        // that journals an expected post-image reads it back, and only a run
+        // that declares no expected effect keeps `execution_only`.
+        execution: ["execution_only", "verified"],
       },
       "a domain that starts producing a second verification value is a decision, not an accident",
     );

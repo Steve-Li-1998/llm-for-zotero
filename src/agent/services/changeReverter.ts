@@ -2350,6 +2350,61 @@ export async function revertActions(params: {
   return { reverted, partiallyReverted, residuals, skipped, conflicts, steps };
 }
 
+/**
+ * Re-reads the native state a journalled step recorded as its post-image.
+ *
+ * `currentStepPostcondition` is already the one place that knows how to read
+ * current state back in the shape of any recorded post-image — a library
+ * operation's captured state, a script's guarded items, a note, a file, a
+ * preference. A receipt for a write with no other native verifier can
+ * therefore prove its effect is still in the library by asking this, instead
+ * of reporting that the tool said so.
+ */
+export async function verifyJournalStepPostcondition(params: {
+  step: JournalStep;
+  zoteroGateway: ZoteroGateway;
+  context: AgentToolContext;
+}): Promise<{
+  kind: "satisfied" | "mismatched" | "not_re_readable";
+  reason?: string;
+}> {
+  if (!params.step.expectedPostconditionJson) {
+    return {
+      kind: "not_re_readable",
+      reason: "the step recorded no expected post-image to read back",
+    };
+  }
+  try {
+    const current = await currentStepPostcondition({
+      step: params.step,
+      service: new LibraryMutationService(params.zoteroGateway),
+      context: params.context,
+    });
+    if (current === undefined) {
+      return {
+        kind: "not_re_readable",
+        reason:
+          "the recorded post-image format cannot be read back by this version",
+      };
+    }
+    return stable(current) ===
+      stable(parseJson(params.step.expectedPostconditionJson))
+      ? { kind: "satisfied" }
+      : {
+          kind: "mismatched",
+          reason:
+            "native state no longer matches the post-image recorded for this step",
+        };
+  } catch (error) {
+    return {
+      kind: "not_re_readable",
+      reason: `the post-image could not be read back: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+}
+
 export async function revertRun(params: {
   runId: string;
   zoteroGateway: ZoteroGateway;

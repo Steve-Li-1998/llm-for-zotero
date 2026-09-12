@@ -343,6 +343,27 @@ function revertedSteps(result: Record<string, unknown>): RevertedStep[] {
   });
 }
 
+/**
+ * A post-state re-read the tool performed for itself, for effects whose proof
+ * domain is `execution`. A shell command has no such state and attaches none,
+ * which is what keeps `run_command` at `execution_only`.
+ */
+function readExecutionPostState(content: unknown): {
+  verified: boolean;
+  facts: string[];
+  reason?: string;
+} | null {
+  const report = innermostToolResult(content).executionPostState;
+  if (!report || typeof report !== "object") return null;
+  const record = report as Record<string, unknown>;
+  if (typeof record.verified !== "boolean") return null;
+  return {
+    verified: record.verified,
+    facts: Array.isArray(record.facts) ? record.facts.map(String) : [],
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+  };
+}
+
 function fileEvidence(
   proposal: AgentActionProposal,
   content: unknown,
@@ -1280,12 +1301,34 @@ export class ActionContractService {
       };
     }
     if (proposal.proofDomain === "execution") {
+      const postState = readExecutionPostState(params.content);
+      // No re-readable state is the normal case here — a shell command leaves
+      // none. An execution that *did* declare an expected effect re-reads it
+      // and says so, and then the receipt reports that proof rather than
+      // hiding a library write behind "the command ran".
+      if (!postState) {
+        return {
+          ...base,
+          verification: "execution_only",
+          status: "observed",
+          appliedTargets: [],
+          alreadySatisfiedTargets: [],
+        };
+      }
       return {
         ...base,
-        verification: "execution_only",
-        status: "observed",
-        appliedTargets: [],
+        verification: postState.verified ? "verified" : "unverified",
+        status: postState.verified ? "applied" : "unverified",
+        appliedTargets: postState.verified ? proposal.requestedTargets : [],
         alreadySatisfiedTargets: [],
+        rejectedTargets: postState.verified ? [] : proposal.requestedTargets,
+        verifiedFacts: postState.verified
+          ? [...base.verifiedFacts, ...postState.facts]
+          : base.verifiedFacts,
+        reasons: [
+          ...base.reasons,
+          ...(postState.reason ? [postState.reason] : []),
+        ],
       };
     }
     if (proposal.proofDomain === "file_state") {

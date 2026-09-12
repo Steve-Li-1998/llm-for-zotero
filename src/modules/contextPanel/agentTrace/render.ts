@@ -1788,9 +1788,14 @@ function getPaperResultMinSelection(
   );
 }
 
+/**
+ * Whether this card is a question the run is waiting on, rather than an
+ * approval of prepared work. The action says so: the host stamps the
+ * interaction kind its tool declared.
+ */
 function isPlanningQuestionAction(action: AgentPendingAction): boolean {
   return (
-    action.toolName === "request_user_input" &&
+    action.interaction === "user_input" &&
     action.mode === "review" &&
     action.fields.length > 0 &&
     action.fields.every((field) => field.type === "choice")

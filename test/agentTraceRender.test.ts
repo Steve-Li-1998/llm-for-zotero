@@ -1488,9 +1488,67 @@ describe("agentTrace render", function () {
     assert.equal(formatAgentActivityDuration(3_661_000), "1h 1m 1s");
   });
 
+  it("reads the question card from the action's interaction, not its tool name", function () {
+    const base: AgentPendingAction = {
+      toolName: "request_user_input",
+      mode: "review",
+      title: "Plan needs your input",
+      confirmLabel: "Continue",
+      cancelLabel: "Cancel",
+      fields: [
+        {
+          type: "choice",
+          id: "scope",
+          label: "Which corpus?",
+          options: [
+            { id: "collection", label: "Collection" },
+            { id: "library", label: "Library" },
+          ],
+        },
+      ],
+    };
+    const render = (action: AgentPendingAction) =>
+      renderAgentTrace({
+        doc: fakeDocument,
+        message: {
+          role: "assistant",
+          text: "",
+          timestamp: 1,
+          runMode: "agent",
+          streaming: true,
+        },
+        events: [
+          {
+            runId: "run-interaction",
+            seq: 1,
+            eventType: "confirmation_required",
+            payload: {
+              type: "confirmation_required",
+              requestId: "interaction-card",
+              action,
+            },
+            createdAt: 1,
+          },
+        ],
+      }) as unknown as FakeElement;
+
+    assert.lengthOf(
+      render({ ...base, interaction: "user_input" }).findAllByClass(
+        "llm-planning-question-panel",
+      ),
+      1,
+    );
+    assert.lengthOf(
+      render(base).findAllByClass("llm-planning-question-panel"),
+      0,
+      "the name alone no longer makes a card a planning question",
+    );
+  });
+
   it("replaces planning activity with one question at a time", async function () {
     const action: AgentPendingAction = {
       toolName: "request_user_input",
+      interaction: "user_input",
       mode: "review",
       title: "Plan needs your input",
       confirmLabel: "Continue planning",
@@ -1620,6 +1678,7 @@ describe("agentTrace render", function () {
       requestId: "custom-question-card",
       action: {
         toolName: "request_user_input",
+        interaction: "user_input",
         mode: "review",
         title: "Plan needs your input",
         confirmLabel: "Continue planning",

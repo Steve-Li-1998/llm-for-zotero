@@ -128,17 +128,6 @@ const ALLOWED_SITES: AllowedSite[] = [
       "A DOM exception's own name, not a tool's: the platform reports a " +
       "cancelled request this way and there is no other field to read.",
   },
-  {
-    file: "src/modules/contextPanel/agentTrace/render.ts",
-    snippet: 'action.toolName === "request_user_input"',
-    reason:
-      "Known meaning site awaiting its owner. A pending action carries no " +
-      "field saying it is a question for the user, so the planning-question " +
-      "card still recognises the host's own interaction tool by name. The " +
-      "fix belongs where the action is built: the host stamps the " +
-      "interaction kind on AgentPendingAction, as the tool spec already " +
-      'declares it (`interaction: "user_input"`).',
-  },
 ];
 
 type Offence = { file: string; line: number; text: string; pattern: string };

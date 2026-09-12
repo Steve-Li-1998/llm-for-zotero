@@ -343,6 +343,15 @@ export type AgentPendingAction = {
    * complete `MaterialRef`.
    */
   material?: { operation: AgentActionOperation; ref: MaterialRef };
+  /**
+   * The card is a question the run is waiting on an answer to, not an
+   * approval of work it already prepared.
+   *
+   * The tool spec declares this (`interaction: "user_input"`) and the host
+   * copies it here, so a view can tell the two apart without holding a list
+   * of the names of the tools that ask questions.
+   */
+  interaction?: "user_input";
   toolName: string;
   title: string;
   mode?: "approval" | "review";

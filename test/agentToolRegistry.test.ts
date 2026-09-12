@@ -2314,6 +2314,94 @@ describe("AgentToolRegistry", function () {
       }
     });
 
+    it("stamps the interaction kind on the card an interaction tool raises", async function () {
+      // The trace renders a planning question differently from an approval.
+      // It must read that from the action, not recognise the host's own
+      // interaction tool by name.
+      globalThis.Zotero = {
+        DB: new ChangeJournalTestDb(),
+        Prefs: { get: () => "auto" },
+        debug: () => undefined,
+      } as never;
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry(
+        new ActionContractService({} as never),
+      );
+      registry.register({
+        spec: {
+          name: "ask_the_user",
+          description: "fixture",
+          inputSchema: { type: "object" },
+          executionClass: "control",
+          workCategory: "planning",
+          requiresConfirmation: true,
+          interaction: "user_input",
+        },
+        validate: (args) => ({ ok: true, value: args }),
+        planInvocation: () =>
+          readOnlyInvocationPlan({
+            domains: [],
+            reason: "The fixture only records an answer.",
+          }),
+        createPendingAction: () => ({
+          toolName: "ask_the_user",
+          title: "Agent needs your input",
+          mode: "review",
+          confirmLabel: "Continue",
+          cancelLabel: "Cancel",
+          fields: [],
+        }),
+        execute: async () => ({ answered: true }),
+      } as never);
+      const asked = await registry.prepareExecution(
+        { id: "ask-1", name: "ask_the_user", arguments: {} },
+        baseContext,
+      );
+      assert.equal(asked.kind, "confirmation");
+      if (asked.kind !== "confirmation") return;
+      assert.equal(asked.action.interaction, "user_input");
+
+      registry.register({
+        spec: {
+          name: "confirm_something",
+          description: "fixture",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          workCategory: "zotero_action",
+          requiresConfirmation: true,
+        },
+        effectOperations: ["settings_update"],
+        validate: (args) => ({ ok: true, value: args }),
+        describeAction: describeTestMutation,
+        planInvocation: () =>
+          stateChangeInvocationPlan({
+            domains: ["zotero_library"],
+            effects: ["modify"],
+            reason: "Apply exact requested setting",
+          }),
+        createPendingAction: () => ({
+          toolName: "confirm_something",
+          title: "Approve",
+          mode: "review",
+          confirmLabel: "Run",
+          cancelLabel: "Cancel",
+          fields: [],
+        }),
+        execute: async () => ({ content: { ok: true }, effect: "applied" }),
+      } as never);
+      const approval = await registry.prepareExecution(
+        { id: "confirm-1", name: "confirm_something", arguments: {} },
+        JSON.parse(JSON.stringify(baseContext)),
+        { forceConfirmation: true },
+      );
+      assert.equal(approval.kind, "confirmation");
+      if (approval.kind !== "confirmation") return;
+      assert.isUndefined(
+        approval.action.interaction,
+        "an approval is not a question the run is waiting on an answer to",
+      );
+    });
+
     it("leaves no spec literal in the source tree declaring one outside user input", function () {
       const offenders: string[] = [];
       let inspected = 0;

@@ -421,11 +421,18 @@ export class InvocationController {
   ): PreparedToolExecution {
     // The card a tool builds describes its own payload; only the host knows
     // which frozen material the proposal bound, so the host stamps it here
-    // rather than asking every tool to repeat it.
+    // rather than asking every tool to repeat it. The interaction kind is
+    // stamped for the same reason: the spec already declares that this tool
+    // asks the user something, and a view that had to recognise such a tool
+    // by name would be reading identity for meaning.
     const material = pendingActionMaterial(assessed.preparedAction?.proposals);
-    const action = material
-      ? { ...displayedAction, material }
-      : displayedAction;
+    const action = {
+      ...displayedAction,
+      ...(material ? { material } : {}),
+      ...(this.tool.spec.interaction === "user_input"
+        ? { interaction: "user_input" as const }
+        : {}),
+    };
     return {
       kind: "confirmation",
       requestId: createRequestId(),

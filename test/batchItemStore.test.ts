@@ -303,4 +303,98 @@ describe("batch item store", function () {
       ["batch-other"],
     );
   });
+
+  it("offers only the newest batch written over the same items", async function () {
+    await batch("batch-first");
+    await batch("batch-edited");
+    const sameItems = [
+      { itemKey: "item:1", position: 1 },
+      { itemKey: "item:2", position: 2 },
+    ];
+    await createBatchItems(
+      "batch-first",
+      sameItems.map((row) => ({
+        ...row,
+        materialRef: materialRef(`first-${row.position}`),
+      })),
+      1000,
+    );
+    await createBatchItems(
+      "batch-edited",
+      sameItems.map((row) => ({
+        ...row,
+        materialRef: materialRef(`edited-${row.position}`),
+      })),
+      2000,
+    );
+    await markBatchItemFailed("batch-first", "item:2", {
+      error: "Zotero refused the note write",
+      now: 1100,
+    });
+
+    // An edited retry derives a new content identity, so both batches keep
+    // rows for the same two papers. Offering both would invite the model to
+    // write each paper twice, once from each batch's frozen material.
+    assert.deepEqual(
+      (await listResumableBatches(42)).map((entry) => entry.batchId),
+      ["batch-edited"],
+    );
+  });
+
+  it("forgets an older batch whose items a newer one already wrote", async function () {
+    await batch("batch-first");
+    await batch("batch-edited");
+    await createBatchItems(
+      "batch-first",
+      [{ itemKey: "item:1", position: 1, materialRef: materialRef("first") }],
+      1000,
+    );
+    await createBatchItems(
+      "batch-edited",
+      [{ itemKey: "item:1", position: 1, materialRef: materialRef("edited") }],
+      2000,
+    );
+    await markBatchItemFailed("batch-first", "item:1", {
+      error: "Zotero refused the note write",
+      now: 1100,
+    });
+    await markBatchItemSaved("batch-edited", "item:1", {
+      actionId: "action-c",
+      stepSequence: 1,
+      noteId: 700,
+      now: 2100,
+    });
+
+    // The newest batch over these items finished. Offering the superseded one
+    // would write the paper a second time from the text the user replaced.
+    assert.isEmpty(await listResumableBatches(42));
+  });
+
+  it("keeps batches that do not cover the same items", async function () {
+    await batch("batch-a");
+    await batch("batch-b");
+    await createBatchItems(
+      "batch-a",
+      [
+        { itemKey: "item:1", position: 1, materialRef: materialRef("a1") },
+        { itemKey: "item:2", position: 2, materialRef: materialRef("a2") },
+      ],
+      1000,
+    );
+    await createBatchItems(
+      "batch-b",
+      [
+        { itemKey: "item:1", position: 1, materialRef: materialRef("b1") },
+        { itemKey: "item:3", position: 2, materialRef: materialRef("b3") },
+      ],
+      2000,
+    );
+
+    assert.deepEqual(
+      (await listResumableBatches(42))
+        .map((entry) => entry.batchId)
+        .sort((left, right) => left.localeCompare(right)),
+      ["batch-a", "batch-b"],
+    );
+  });
 });

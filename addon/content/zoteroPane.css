@@ -5174,6 +5174,23 @@
     color-mix(in srgb, var(--stroke-secondary) 72%, transparent);
 }
 
+.llm-agent-process-stage-label {
+  color: var(--fill-primary);
+  font-weight: 600;
+}
+
+.llm-agent-process-stage[data-stage-status="completed"]
+  .llm-at-row-stage
+  .llm-at-icon {
+  color: #4caf82;
+}
+
+.llm-agent-process-stage[data-stage-status="failed"]
+  .llm-at-row-stage
+  .llm-at-icon {
+  color: #f39c12;
+}
+
 .llm-agent-process-chips {
   display: flex;
   flex-wrap: wrap;

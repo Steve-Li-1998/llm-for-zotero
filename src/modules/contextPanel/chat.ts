@@ -159,10 +159,6 @@ import {
   updateStreamingTurnNavigator,
 } from "./conversationTurnNavigator";
 import { resizeTextareaToContent } from "./textareaSizing";
-import {
-  getActiveReaderForSelectedTab,
-  getAllOpenReaders,
-} from "../../services/pdf/zoteroReaderTabs";
 export {
   isScrollUpdateSuspended,
   withScrollGuard,
@@ -287,7 +283,6 @@ import {
   type ResponseActionKind,
   type ResponseActionTarget,
 } from "./state";
-import { pdfTextCache } from "../../services/paperContent/contextCache";
 import { agentRunTraceCache, agentRunTraceLoadingTasks } from "./agentState";
 import {
   formatTime,
@@ -335,17 +330,12 @@ import {
 import { resolveMultiContextPlan } from "./multiContextPlanner";
 import {
   formatPaperCitationLabel,
-  formatPaperSourceLabel,
   resolvePaperContextDisplayRef,
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,
   type PaperContextDisplayCache,
 } from "../../services/paperContent/paperAttribution";
-import {
-  buildPaperKey,
-  ensureNoteTextCached,
-  ensurePDFTextCached,
-} from "../../services/paperContent/pdfContext";
+import { buildPaperKey } from "../../services/paperContent/pdfContext";
 import { resolveProviderCapabilities } from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
@@ -405,33 +395,20 @@ import {
 } from "./assistantRichText";
 export { buildAssistantDisplayMarkdownForRender } from "./assistantRichText";
 import {
-  getCachedPageTextForAttachment,
-  hasCompleteSearchablePageTextForAttachment,
-  verifyCompleteQuoteInLivePdfJs,
-  warmPageTextCacheForAttachment,
-} from "./livePdfSelectionLocator";
-import {
   getMessageCitationPaperContexts,
   mergeCitationPaperContexts,
 } from "./citationContexts";
 import {
-  buildQuoteSourceIndex,
   buildSelectedTextQuoteCitations,
-  collectDisplayedQuoteVerificationRequests,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
-  finalizeAssistantQuoteCitationsCooperatively,
   mergeQuoteCitations,
-  withReusableQuoteTextIndexes,
-  type QuoteSecondaryEvidence,
-  type QuoteSourceText,
 } from "../../services/quotes/quoteCitations";
 import {
   buildQuoteExpandedMarkdown,
   getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "./quoteRenderPlan";
-import { isQuoteValidationPreempted } from "./quoteValidationActivity";
 import {
   getAgentApi,
   getCoreAgentRuntime,

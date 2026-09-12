@@ -37,6 +37,7 @@ import { getOriginalAgentPermissionMode } from "../originalAgentPermissionMode";
 import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPermissionMode";
 import { canonicalJsonEqual } from "../services/libraryMutation/canonicalJson";
 import { mutationPostconditionIsSatisfied } from "../services/libraryMutation/handlerOperations";
+import type { RevertedStep } from "../services/changeReverter";
 import { innermostToolResult, toolResultString } from "./toolResultEnvelope";
 import { readFlatMaterialRef } from "../documents/materialRef";
 
@@ -309,6 +310,37 @@ function matchingNativeEvidence(
       proposal.operationValue !== undefined &&
       canonicalJsonEqual(entry.operationValue, proposal.operationValue),
   );
+}
+
+/**
+ * The per-step native re-read `revertActions` performed, as the undo and
+ * revert tools report it. A result without it proves nothing about native
+ * state, so the receipt treats an empty list as "not re-read".
+ */
+function revertedSteps(result: Record<string, unknown>): RevertedStep[] {
+  const entries = Array.isArray(result.revertedSteps)
+    ? result.revertedSteps
+    : [];
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const step = entry as Record<string, unknown>;
+    const verification = String(step.verification || "");
+    if (
+      verification !== "matched" &&
+      verification !== "mismatched" &&
+      verification !== "not_re_readable"
+    ) {
+      return [];
+    }
+    return [
+      {
+        actionId: String(step.actionId || ""),
+        sequence: Number(step.sequence) || 0,
+        verification,
+        ...(typeof step.reason === "string" ? { reason: step.reason } : {}),
+      } as RevertedStep,
+    ];
+  });
 }
 
 function fileEvidence(
@@ -1393,18 +1425,37 @@ export class ActionContractService {
     }
     if (proposal.operation === "undo" || proposal.operation === "revert") {
       const result = innermostToolResult(params.content);
+      // The actions this call actually tried to put back. `revert_changes`
+      // also discloses newer irreversible actions it never attempted, and
+      // those must not count against it either way.
+      const attempted = Array.isArray(result.actionIds)
+        ? result.actionIds.length
+        : 0;
       const noWork =
         result.status === "nothing_reversible" ||
-        (Number(result.reverted) === 0 &&
+        (attempted === 0 &&
+          Number(result.reverted) === 0 &&
           Number(result.partiallyReverted) === 0 &&
           params.effect === "none");
+      const reverted = revertedSteps(result);
+      const reportedComplete =
+        proposal.operation === "undo"
+          ? result.status === "undone"
+          : attempted > 0 &&
+            Number(result.reverted) === attempted &&
+            Number(result.partiallyReverted) === 0;
+      // Replaying an inverse is not proof that the inverse landed. Every step
+      // this call replayed re-read its own target afterwards; the receipt is
+      // verified only when every attempted action came back and all of those
+      // re-reads found the recorded pre-image in place.
       const verified =
         noWork ||
-        (proposal.operation === "undo"
-          ? result.status === "undone"
-          : Number(result.reverted) > 0 &&
-            Number(result.partiallyReverted) === 0 &&
-            Array.isArray(result.actionIds));
+        (reportedComplete &&
+          reverted.length > 0 &&
+          reverted.every((step) => step.verification === "matched"));
+      const unmatched = reverted.filter(
+        (step) => step.verification !== "matched",
+      );
       return {
         ...base,
         verification: verified ? "verified" : "unverified",
@@ -1417,6 +1468,31 @@ export class ActionContractService {
         alreadySatisfiedTargets:
           verified && noWork ? proposal.requestedTargets : [],
         rejectedTargets: verified ? [] : proposal.requestedTargets,
+        // Named even on an unverified receipt: the reader needs to know how
+        // much of the undo was proven, not only that it was not all of it.
+        verifiedFacts: [
+          ...base.verifiedFacts,
+          ...reverted
+            .filter((step) => step.verification === "matched")
+            .map(
+              (step) =>
+                `reverted_step:${step.actionId}:${step.sequence}:matched`,
+            ),
+        ],
+        reasons: [
+          ...base.reasons,
+          ...unmatched.map(
+            (step) =>
+              `Reverted step ${step.sequence} of ${step.actionId} re-read as ${step.verification}${
+                step.reason ? `: ${step.reason}` : ""
+              }.`,
+          ),
+          ...(!verified && !unmatched.length && !reverted.length && !noWork
+            ? [
+                "No reverted step re-read its target, so nothing proves the inverse landed.",
+              ]
+            : []),
+        ],
         evidenceRef:
           proposal.operation === "undo" && typeof result.actionId === "string"
             ? result.actionId

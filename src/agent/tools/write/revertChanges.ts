@@ -294,6 +294,9 @@ export function createRevertChangesTool(
           partiallyReverted: outcome.partiallyReverted,
           actionIds: pending.map((action) => action.actionId),
           residuals: outcome.residuals,
+          // The receipt's proof: how each replayed step read back from native
+          // state, rather than the counters immediately above it.
+          revertedSteps: outcome.steps,
           // Named explicitly so the agent reports what it could NOT put back
           // rather than implying a clean rollback.
           skipped: [...skippedIrreversible, ...outcome.skipped],

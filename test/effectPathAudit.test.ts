@@ -50,10 +50,11 @@ import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
  * - "pins the audit table's expected verification per proof domain"
  *
  * No assertion in this file observes a receipt. The receipt evidence lives in
- * the per-tool characterizations (`test/runCommandTool.test.ts`,
- * `test/fileIOTool.test.ts`, `test/undoLastAction.test.ts`,
- * `test/revertChanges.test.ts`) until Phase 3 tasks 3 to 5 make the whole path
- * observable end to end.
+ * the per-tool tests, which mint receipts from real tool results:
+ * `test/runCommandTool.test.ts`, `test/fileIOTool.test.ts`,
+ * `test/undoLastAction.test.ts` (a real journal, a real inverse replay and its
+ * per-step native re-read) and `test/revertChanges.test.ts`. Phase 3 tasks 3
+ * to 5 extend that to the remaining tools and the external bridges.
  */
 
 type Verification = AgentActionReceipt["verification"];
@@ -68,10 +69,11 @@ type AuditRow = {
    */
   verification: Verification;
   /**
-   * Set when `verification` is not yet proven from native state. These are the
-   * rows Phase 3 tasks 3 to 5 move, and the note says what is missing.
+   * Why this row's verification is what it is, whenever that needs saying:
+   * a remaining gap for the rows Phase 3 tasks 4 and 5 still move, or the
+   * ruling behind a row that will never be `verified`.
    */
-  verificationGap?: string;
+  verificationNote?: string;
   /** A representative input that actually performs the effect. */
   fixture: Record<string, unknown>;
   /**
@@ -180,8 +182,8 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
   undo_last_action: {
     operations: ["undo"],
     verification: "verified",
-    verificationGap:
-      "Read from the tool's own result.status, not from the per-step native re-read changeReverter already performs (Phase 3 task 3).",
+    verificationNote:
+      "Every replayed step re-reads its own target; the receipt is verified only when all of them read back as restored (test/undoLastAction.test.ts).",
     fixture: { actionId: SEEDED_JOURNAL_ACTION },
     // With an empty journal there is nothing to undo: the plan is read_only
     // and the execution is a no-op.
@@ -190,8 +192,8 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
   revert_changes: {
     operations: ["revert"],
     verification: "verified",
-    verificationGap:
-      "Read from result.reverted counters, not from the per-step native re-read (Phase 3 task 3).",
+    verificationNote:
+      "Same per-step native re-read as undo_last_action, plus nothing skipped or left partial (test/revertChanges.test.ts).",
     fixture: { count: 1 },
     // A dry run, or an empty journal, plans read_only and applies no inverse.
     impact: "state_change",
@@ -222,7 +224,7 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
   run_command: {
     operations: ["command_execute"],
     verification: "execution_only",
-    verificationGap:
+    verificationNote:
       "A shell command has no re-readable state. Phase 3 task 3 keeps it execution_only by ruling and makes it visible instead.",
     fixture: { command: "rm -rf /tmp/audit-target" },
     impact: "state_change",
@@ -237,7 +239,7 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
   zotero_script: {
     operations: ["zotero_script_execute"],
     verification: "execution_only",
-    verificationGap:
+    verificationNote:
       "The journal step already stores an expectedPostcondition the receipt ignores (Phase 3 task 3).",
     fixture: {
       access: "library",

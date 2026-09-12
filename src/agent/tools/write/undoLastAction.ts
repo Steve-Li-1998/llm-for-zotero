@@ -275,6 +275,9 @@ export function createUndoLastActionTool(
           reverted: outcome.reverted,
           partiallyReverted: outcome.partiallyReverted,
           residuals: outcome.residuals,
+          // The receipt's proof: how each replayed step read back from native
+          // state, rather than the counters immediately above it.
+          revertedSteps: outcome.steps,
         },
         effect: outcome.partiallyReverted ? "partial" : "applied",
       };

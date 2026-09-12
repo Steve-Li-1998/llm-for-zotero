@@ -120,6 +120,27 @@ export type RevertConflict = {
   reason: string;
 };
 
+/**
+ * How native state read back after a step's inverse ran.
+ *
+ * `matched` is the only value that proves the step was put back: the target
+ * was re-read and holds the recorded pre-image. `mismatched` means the re-read
+ * succeeded and disagreed, `not_re_readable` that the target could not be read
+ * at all. The replay itself is unchanged by this classification — it is the
+ * evidence a receipt needs to stop reporting the tool's own counters as proof.
+ */
+export type RevertedStepVerification =
+  | "matched"
+  | "mismatched"
+  | "not_re_readable";
+
+export type RevertedStep = {
+  actionId: string;
+  sequence: number;
+  verification: RevertedStepVerification;
+  reason?: string;
+};
+
 export type RevertOutcome = {
   /** Actions whose complete durable inverse was replayed. */
   reverted: number;
@@ -132,6 +153,8 @@ export type RevertOutcome = {
   }>;
   skipped: Array<{ entryId: string; reason: string }>;
   conflicts: RevertConflict[];
+  /** Native re-read of every step whose inverse this call replayed. */
+  steps: RevertedStep[];
 };
 
 const stable = canonicalJson;
@@ -768,6 +791,12 @@ async function conflictForLibraryInverse(params: {
   return null;
 }
 
+/**
+ * Returns `matched` because every operation below is re-read before the loop
+ * moves on: an executed one must classify `completed` afterwards or this
+ * throws, and a skipped one classified `completed` before it. Reaching the end
+ * therefore *is* the native re-read result for this step.
+ */
 async function executeLibraryInverseWithProgress(params: {
   actionId: string;
   step: JournalStep;
@@ -775,7 +804,7 @@ async function executeLibraryInverseWithProgress(params: {
   service: LibraryMutationService;
   context: AgentToolContext;
   now: () => number;
-}): Promise<void> {
+}): Promise<RevertedStepVerification> {
   let remaining = atomizeLibraryOperations(params.inverse.operations);
   const checkpoint = async (): Promise<void> => {
     await updateJournalStep({
@@ -832,6 +861,7 @@ async function executeLibraryInverseWithProgress(params: {
     remaining = remaining.slice(1);
     await checkpoint();
   }
+  return "matched";
 }
 
 async function readFile(path: string): Promise<string | null> {
@@ -1489,6 +1519,38 @@ async function nonLibraryInverseIsSatisfied(params: {
     : Boolean(setting && stable(setting.value) === stable(materialized.value));
 }
 
+/**
+ * Re-reads a non-library target after its inverse ran.
+ *
+ * The library and script replays already re-read their own target and refuse
+ * to finish otherwise. A note, file or preference inverse had no such check:
+ * it wrote and returned. This adds the missing observation without changing
+ * what the replay does with it — a mismatch is reported, not thrown, so a step
+ * that committed still ends `reverted` in the journal and the disagreement
+ * reaches the user through the receipt instead of a failed undo.
+ */
+async function rereadNonLibraryInverse(params: {
+  materialized: MaterializedNonLibraryInverse;
+  service: LibraryMutationService;
+}): Promise<{ verification: RevertedStepVerification; reason?: string }> {
+  try {
+    return (await nonLibraryInverseIsSatisfied(params))
+      ? { verification: "matched" }
+      : {
+          verification: "mismatched",
+          reason:
+            "the target did not hold the recorded pre-image when it was read back",
+        };
+  } catch (error) {
+    return {
+      verification: "not_re_readable",
+      reason: `the target could not be read back: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+}
+
 type NonLibraryReplayClassification =
   | { kind: "pending" }
   | { kind: "completed" }
@@ -1797,6 +1859,7 @@ async function conflictForScriptSnapshots(params: {
   }
 }
 
+/** Returns `matched` for the same reason as the library replay above. */
 async function executeScriptSnapshotsWithProgress(params: {
   actionId: string;
   step: JournalStep;
@@ -1804,7 +1867,7 @@ async function executeScriptSnapshotsWithProgress(params: {
   service: LibraryMutationService;
   context: AgentToolContext;
   now: () => number;
-}): Promise<void> {
+}): Promise<RevertedStepVerification> {
   const plan = await buildScriptReplayPlan(params.inverse, params.step);
   let progress = validatedScriptReplayProgress(params.inverse, plan);
   const checkpoint = async (): Promise<void> => {
@@ -1867,6 +1930,7 @@ async function executeScriptSnapshotsWithProgress(params: {
     progress = advanceScriptReplayProgress(plan, progress);
     await checkpoint();
   }
+  return "matched";
 }
 
 async function executeMaterializedNonLibraryInverse(params: {
@@ -1997,6 +2061,7 @@ export async function revertActions(params: {
   const skipped: RevertOutcome["skipped"] = [];
   const residuals: RevertOutcome["residuals"] = [];
   const conflicts: RevertConflict[] = [];
+  const steps: RevertedStep[] = [];
   let reverted = 0;
   let partiallyReverted = 0;
   const ordered = [...params.actions].sort(
@@ -2162,25 +2227,39 @@ export async function revertActions(params: {
             }).catch(() => undefined);
             continue;
           }
+          let reread: {
+            verification: RevertedStepVerification;
+            reason?: string;
+          };
           if (inverse.kind === "library_operations") {
-            await executeLibraryInverseWithProgress({
-              actionId: action.actionId,
-              step,
-              inverse,
-              service,
-              context: params.context,
-              now,
-            });
+            reread = {
+              verification: await executeLibraryInverseWithProgress({
+                actionId: action.actionId,
+                step,
+                inverse,
+                service,
+                context: params.context,
+                now,
+              }),
+            };
           } else if (inverse.kind === "script_snapshots") {
-            await executeScriptSnapshotsWithProgress({
-              actionId: action.actionId,
-              step,
-              inverse,
-              service,
-              context: params.context,
-              now,
-            });
-          } else if (claimedNonLibraryState === "pending") {
+            reread = {
+              verification: await executeScriptSnapshotsWithProgress({
+                actionId: action.actionId,
+                step,
+                inverse,
+                service,
+                context: params.context,
+                now,
+              }),
+            };
+          } else if (claimedNonLibraryState === "completed") {
+            // The guard above already read this target and found the
+            // pre-image in place, which is the native re-read. Reading again
+            // would only widen the window for a concurrent edit to be
+            // misreported as this step's failure.
+            reread = { verification: "matched" };
+          } else {
             if (!claimedNonLibraryInverse) {
               throw new Error("The guarded recovery pre-image was lost");
             }
@@ -2188,7 +2267,17 @@ export async function revertActions(params: {
               materialized: claimedNonLibraryInverse,
               service,
             });
+            reread = await rereadNonLibraryInverse({
+              materialized: claimedNonLibraryInverse,
+              service,
+            });
           }
+          steps.push({
+            actionId: action.actionId,
+            sequence: step.sequence,
+            verification: reread.verification,
+            ...(reread.reason ? { reason: reread.reason } : {}),
+          });
           await updateJournalStep({
             stepId: step.stepId,
             status: "reverted",
@@ -2258,7 +2347,7 @@ export async function revertActions(params: {
       }
     }
   }
-  return { reverted, partiallyReverted, residuals, skipped, conflicts };
+  return { reverted, partiallyReverted, residuals, skipped, conflicts, steps };
 }
 
 export async function revertRun(params: {

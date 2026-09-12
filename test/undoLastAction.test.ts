@@ -1,13 +1,21 @@
 import { assert } from "chai";
 import { createUndoLastActionTool } from "../src/agent/tools/write/undoLastAction";
+import {
+  initAgentChangeJournal,
+  prepareJournalAction,
+  prepareJournalStep,
+  updateJournalAction,
+  updateJournalStep,
+} from "../src/agent/store/changeJournal";
+import type { AgentToolContext } from "../src/agent/types";
 import { createTestActionContractService } from "./helpers/actionContractService";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 
 /**
- * undo_last_action had no test file of its own. These pin the proposal it
- * freezes and, deliberately, the fact that its receipt's `verification` is read
- * from the tool's own result today rather than from the per-step native re-read
- * `changeReverter` already performs. Phase 3 task 3 moves that; until it does,
- * this is the characterization it has to change on purpose.
+ * undo_last_action had no test file of its own. The first block pins the
+ * proposal it freezes. The second is the evidence half: it runs the real
+ * journal, the real inverse replay and the real receipt minting, so what it
+ * asserts about `verification` is what a user's undo produces.
  */
 describe("undo_last_action effect path", function () {
   const tool = createUndoLastActionTool({} as never);
@@ -40,7 +48,7 @@ describe("undo_last_action effect path", function () {
     assert.deepEqual(proposals[0].requestedTargets, []);
   });
 
-  it("calls the receipt verified from the tool's own reported status", async function () {
+  it("refuses to verify an undo that reports only its own status", async function () {
     const prepared = await service.prepare(
       tool,
       validated({ actionId: "action-42" }),
@@ -51,10 +59,14 @@ describe("undo_last_action effect path", function () {
       content: { status: "undone", actionId: "action-42", reverted: 1 },
     });
     assert.lengthOf(receipts, 1);
-    assert.equal(receipts[0].verification, "verified");
-    assert.equal(receipts[0].status, "applied");
+    assert.equal(receipts[0].verification, "unverified");
+    assert.equal(receipts[0].status, "unverified");
     assert.equal(receipts[0].evidenceRef, "action-42");
-    assert.deepEqual(receipts[0].appliedTargets, ["journal-action:action-42"]);
+    assert.deepEqual(receipts[0].appliedTargets, []);
+    assert.match(
+      receipts[0].reasons.join(" "),
+      /No reverted step re-read its target/,
+    );
   });
 
   it("reports a partial undo as unverified and rejects its target", async function () {
@@ -86,5 +98,181 @@ describe("undo_last_action effect path", function () {
     });
     assert.equal(receipts[0].verification, "verified");
     assert.equal(receipts[0].status, "already_satisfied");
+  });
+});
+
+/**
+ * The native half of the undo receipt.
+ *
+ * The gateway below is the seam: it can be told to ignore one preference
+ * restore, which is how a step's post-revert re-read is made to disagree with
+ * the replay without faking the tool's own result.
+ */
+describe("undo_last_action native re-read", function () {
+  const originalZotero = globalThis.Zotero;
+  const service = createTestActionContractService();
+  let settings: Record<string, string>;
+  let refuseRestoreFor: string | null;
+
+  const context = {
+    request: { conversationKey: 77, libraryID: 1 },
+    item: null,
+    currentAnswerText: "",
+    modelName: "test-model",
+  } as AgentToolContext;
+
+  const gateway = {
+    listSettings: () =>
+      Object.entries(settings).map(([key, value]) => ({
+        key,
+        value,
+        type: "string",
+        description: key,
+      })),
+    restoreSetting: (input: {
+      key: string;
+      existed: boolean;
+      value?: unknown;
+    }) => {
+      if (input.key === refuseRestoreFor) return;
+      settings[input.key] = String(input.value);
+    },
+  } as never;
+
+  const tool = createUndoLastActionTool(gateway);
+
+  async function seedTwoStepAction(actionId: string): Promise<void> {
+    await prepareJournalAction({
+      actionId,
+      runId: "run-77",
+      conversationKey: 77,
+      toolName: "library_settings",
+      description: "Changed two preferences",
+      effect: "write",
+      reversibility: "full",
+      now: 100,
+    });
+    for (const [sequence, key] of [
+      [1, "pref.a"],
+      [2, "pref.b"],
+    ] as const) {
+      await prepareJournalStep({
+        stepId: `${actionId}:${sequence}`,
+        actionId,
+        sequence,
+        operation: "update_preference",
+        forward: { key },
+        inverse: {
+          version: 1,
+          kind: "preference",
+          key,
+          existed: true,
+          value: `before:${key}`,
+        },
+        reversibility: "full",
+        now: 100,
+      });
+      await updateJournalStep({
+        stepId: `${actionId}:${sequence}`,
+        status: "applied",
+        reversibility: "full",
+        expectedPostcondition: {
+          kind: "preference",
+          key,
+          existed: true,
+          value: `after:${key}`,
+        },
+        now: 100,
+      });
+    }
+    await updateJournalAction({
+      actionId,
+      status: "applied",
+      reversibility: "full",
+      affectedCount: 2,
+      now: 100,
+    });
+  }
+
+  async function undoReceipt(actionId: string) {
+    const input = tool.validate({ actionId });
+    if (!input.ok) throw new Error(input.error);
+    const prepared = await service.prepare(tool, input.value, context);
+    const result = await tool.execute(input.value, context);
+    const receipts = await service.finalize(undefined, prepared, {
+      ok: true,
+      effect: result.effect,
+      content: result.content,
+    });
+    return { content: result.content as Record<string, unknown>, receipts };
+  }
+
+  beforeEach(async function () {
+    settings = { "pref.a": "after:pref.a", "pref.b": "after:pref.b" };
+    refuseRestoreFor = null;
+    globalThis.Zotero = {
+      DB: new ChangeJournalTestDb(),
+      Items: { get: () => null },
+      debug: () => undefined,
+    } as never;
+    await initAgentChangeJournal();
+  });
+
+  afterEach(function () {
+    globalThis.Zotero = originalZotero;
+  });
+
+  it("verifies a clean undo from the per-step native re-read", async function () {
+    await seedTwoStepAction("undo-clean");
+
+    const { content, receipts } = await undoReceipt("undo-clean");
+
+    assert.deepEqual(settings, {
+      "pref.a": "before:pref.a",
+      "pref.b": "before:pref.b",
+    });
+    assert.deepEqual(content.revertedSteps, [
+      { actionId: "undo-clean", sequence: 2, verification: "matched" },
+      { actionId: "undo-clean", sequence: 1, verification: "matched" },
+    ]);
+    assert.equal(receipts[0].verification, "verified");
+    assert.equal(receipts[0].status, "applied");
+    assert.deepEqual(receipts[0].verifiedFacts, [
+      "reverted_step:undo-clean:2:matched",
+      "reverted_step:undo-clean:1:matched",
+    ]);
+  });
+
+  it("refuses to verify an undo whose step did not re-read as restored", async function () {
+    await seedTwoStepAction("undo-drifted");
+    refuseRestoreFor = "pref.b";
+
+    const { content, receipts } = await undoReceipt("undo-drifted");
+
+    assert.equal(
+      settings["pref.b"],
+      "after:pref.b",
+      "the inverse for pref.b did not land",
+    );
+    assert.deepEqual(
+      (content.revertedSteps as Array<Record<string, unknown>>).map(
+        (step) => step.verification,
+      ),
+      ["mismatched", "matched"],
+    );
+    assert.equal(receipts[0].verification, "unverified");
+    assert.equal(receipts[0].status, "unverified");
+    // The matched step is still named: the receipt says how much of the undo
+    // was proven, not only that it was not all of it.
+    assert.deepEqual(receipts[0].verifiedFacts, [
+      "reverted_step:undo-drifted:1:matched",
+    ]);
+    assert.deepEqual(receipts[0].rejectedTargets, [
+      "journal-action:undo-drifted",
+    ]);
+    assert.match(
+      receipts[0].reasons.join(" "),
+      /Reverted step 2 of undo-drifted re-read as mismatched/,
+    );
   });
 });

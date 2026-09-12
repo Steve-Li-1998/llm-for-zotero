@@ -3,25 +3,13 @@ import type {
   AgentRunEventRecord,
 } from "../../../agent/types";
 import type { AgentActionReceipt } from "../../../agent/contracts/types";
+import { receiptReportsEffect } from "../../../agent/contracts/actionEvaluation";
 import {
   AGENT_ACTION_VERIFICATION_LABELS,
   readAgentActionVerification,
 } from "../../../agent/contracts/actionVerificationLabels";
 import { operationLabel } from "../../../agent/contracts/operationCatalog";
 import { createDocumentCardLayout } from "../documentCard";
-
-/**
- * The statuses that mean the turn did something the reader was promised.
- *
- * They are the same statuses the runtime's action-status block reported to the
- * model, so the card and that block describe one set of effects: work that
- * landed, work that was already true, work that landed for some targets, and
- * an observation a full read journaled. A cancelled or failed action is
- * reported by the row that failed, and claiming it here as an effect would
- * say the opposite of what happened.
- */
-const SUMMARIZED_RECEIPT_STATUSES: ReadonlySet<AgentActionReceipt["status"]> =
-  new Set(["applied", "already_satisfied", "partial", "observed"]);
 
 /** The wording a connected client's authority carries wherever it is shown. */
 const EXTERNAL_AUTHORITY_LABEL = "Authorized by connected client";
@@ -79,6 +67,11 @@ function answerMaterialTitle(
  * than the name of the tool that ran it, the targets it covered, the material
  * it landed, and the shared verification wording the row chips already use.
  *
+ * Which receipts count is `receiptReportsEffect`, the same predicate the
+ * model-facing block selects with, so the card and the block can never come to
+ * disagree about what the turn did. A turn that only read and answered states
+ * nothing and shows no card.
+ *
  * `materialTitle` resolves a document id against the materials this run
  * finalized, so the card names a document the same way every other row in the
  * trace names it.
@@ -88,7 +81,7 @@ export function buildAgentActionSummaryCard(
   materialTitle: (documentId: string) => string | undefined,
 ): AgentActionSummaryResultCard | null {
   const entries = collectRunReceipts(events)
-    .filter((receipt) => SUMMARIZED_RECEIPT_STATUSES.has(receipt.status))
+    .filter(receiptReportsEffect)
     .map((receipt) => {
       const title = receipt.materialRef?.documentId
         ? materialTitle(receipt.materialRef.documentId)

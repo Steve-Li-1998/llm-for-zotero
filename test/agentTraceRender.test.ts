@@ -10802,20 +10802,59 @@ describe("agent trace action summary card", function () {
     );
   });
 
+  const readReceiptEvents: AgentRunEventRecord[] = [
+    event(1, {
+      type: "tool_result",
+      callId: "call-read",
+      name: "paper_read",
+      ok: true,
+      actionReceipts: [
+        receipt({
+          id: "read_full:fallback",
+          capability: "zotero.read",
+          operation: "read_full",
+          status: "observed",
+          requestedTargets: [],
+          appliedTargets: [],
+        }),
+      ],
+      content: {},
+    }),
+  ];
+
+  it("does not call reading the paper an action the turn took", function () {
+    assert.isUndefined(
+      summaryCard(buildAgentTraceDisplayItems(readReceiptEvents, null).items),
+      "a read-and-answer turn changed nothing and has nothing to summarize",
+    );
+  });
+
+  it("leaves the DOM of a read-only turn without a card", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Here is the answer.", timestamp: 1 },
+      events: readReceiptEvents,
+    }) as unknown as FakeElement;
+
+    assert.isNull(trace.findByClass("llm-agent-action-summary-card"));
+  });
+
   it("states an observed effect that changed nothing it could read back", function () {
     const card = summaryCard(
       buildAgentTraceDisplayItems(
         [
           event(1, {
             type: "tool_result",
-            callId: "call-read",
-            name: "paper_read",
+            callId: "call-command",
+            name: "run_command",
             ok: true,
             actionReceipts: [
               receipt({
-                id: "read_full:fallback",
-                capability: "zotero.read",
-                operation: "read_full",
+                id: "command_execute:fallback",
+                capability: "command.execute",
+                proofDomain: "execution",
+                operation: "command_execute",
+                verification: "execution_only",
                 status: "observed",
                 requestedTargets: [],
                 appliedTargets: [],
@@ -10830,9 +10869,10 @@ describe("agent trace action summary card", function () {
 
     assert.deepEqual(
       card?.entries.map((entry) => entry.text),
-      ["Read full text"],
-      "an observation states itself, and states no targets it did not change",
+      ["Ran command"],
+      "an executed effect states itself, and states no targets it re-read",
     );
+    assert.deepEqual(card?.entries[0].badges, ["Ran (no state proof)"]);
   });
 
   it("shows no card when the run changed nothing", function () {

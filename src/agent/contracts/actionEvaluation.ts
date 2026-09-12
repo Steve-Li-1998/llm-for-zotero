@@ -590,6 +590,35 @@ export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
     .join("\n");
 }
 
+/**
+ * The statuses under which a receipt claims the turn did something.
+ *
+ * Work that landed, work that was already true, work that landed for some of
+ * its targets, and an effect that ran with nothing to re-read afterwards. A
+ * cancelled or failed action is reported where it failed; counting it here
+ * would say the opposite of what happened.
+ */
+const REPORTED_EFFECT_STATUSES: ReadonlySet<AgentActionReceipt["status"]> =
+  new Set(["applied", "already_satisfied", "partial", "observed"]);
+
+/**
+ * Whether a receipt states an effect worth reporting as work the turn did.
+ *
+ * One predicate serves the model-facing status block and the reader-facing
+ * summary card, so the two can never come to disagree about what the turn
+ * did. Reads are excluded deliberately: a full read journals a receipt to
+ * prove the evidence was actually consulted, and answering a question after
+ * reading a paper is not an action taken on the library.
+ */
+export function receiptReportsEffect(
+  receipt: Pick<AgentActionReceipt, "capability" | "status">,
+): boolean {
+  return (
+    receipt.capability !== "zotero.read" &&
+    REPORTED_EFFECT_STATUSES.has(receipt.status)
+  );
+}
+
 /** One finished block line, exactly as `formatReceiptStatus` writes it. */
 const RECEIPT_STATUS_LINE = /^\[Action status:[^\n]*\]\s*$/;
 

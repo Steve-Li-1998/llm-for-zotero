@@ -53,14 +53,20 @@ import { actionContractFixture } from "./helpers/semanticIntent";
  * - "observes a zotero_state write verified from live Zotero state"
  * - "observes a file_state write verified from a readback of the file"
  * - "observes an execution effect that runs with no state to read back"
- * - "witnesses every proof domain the audit table uses" (which forces a new
- *   proof domain to bring an observed call with it)
  *
- * **Table-internal.** These read the table against `OPERATION_CATALOG` and
- * touch no tool and no receipt. They record a decision so that changing it is
- * a visible edit; they are not evidence that production behaves that way:
+ * Each of those three records the proof domain of the receipt it read, and an
+ * `after` hook requires that recorded set to be exactly the declared witness
+ * set — so a witness entry added without its call fails the run.
+ *
+ * **Table-internal.** These read the table against `OPERATION_CATALOG` or
+ * against the witness record and touch no tool and no receipt. They record a
+ * decision so that changing it is a visible edit; they are not evidence that
+ * production behaves that way:
  * - "pins the audit table's proof domain per tool against the catalog"
  * - "pins the audit table's expected verification per proof domain"
+ * - "declares a witness for every proof domain the audit table uses" (which
+ *   forces a new proof domain to declare one; the `after` hook is what forces
+ *   the declared witness to have been observed)
  *
  * One tool per domain is observed here. Every other row's verification is
  * evidenced by its own per-tool test, which mints receipts from real tool
@@ -245,9 +251,18 @@ const AUDIT: Readonly<Record<string, AuditRow>> = {
     impact: "state_change",
     readMode: {
       fixture: { command: "ls /tmp" },
-      reason: "A statically recognized read-only command.",
-      // By design the shell call still runs, and still mints an
-      // execution_only receipt, so it keeps describing its command.
+      // Known gap, not a design: `authorizeOriginalAction` returns
+      // `{kind: "execute", authority: "safe_read"}` for any read_only plan
+      // with a known assurance (src/agent/authorization/policy.ts:115-119),
+      // so a shell command this tool's own static classifier calls a read
+      // executes as a trusted read with no user authorization at all — the
+      // one place where property (3) is decided by a per-tool string matcher
+      // rather than by the central policy reading a proposal. The command is
+      // still described and still receipted, which is what this row pins;
+      // whether such a command may run unauthorized is a Phase 3 residual
+      // that needs a product decision.
+      reason:
+        "A command this tool's static classifier recognizes as read-only; it still runs, and still mints an execution_only receipt.",
       proposes: ["command_execute"],
     },
   },
@@ -581,6 +596,14 @@ describe("effect path audit", function () {
 
   after(function () {
     globalThis.Zotero = originalZotero;
+    // Every declared witness has to be a call that ran, not a table entry:
+    // each observing test below records the proof domain of the receipt
+    // production minted for it.
+    assert.deepEqual(
+      [...observedDomains].sort(),
+      Object.keys(PROOF_DOMAIN_WITNESS).sort(),
+      "a declared proof-domain witness with no observing call proves nothing",
+    );
   });
 
   const effects = registry
@@ -808,6 +831,12 @@ describe("effect path audit", function () {
    * The other rows' verification stays a table decision checked by their own
    * per-tool tests; these three are what make the table's per-domain values
    * an observation of production rather than a claim about it.
+   *
+   * Two things keep that true as the table grows. A table-internal assertion
+   * requires a witness entry for every proof domain the table uses, and an
+   * `after` hook requires that every witness was actually *observed* — each
+   * observing test records the domain of the receipt production minted, so
+   * adding a witness entry without writing its call fails the run.
    */
   const PROOF_DOMAIN_WITNESS: Record<
     AgentActionProofDomain,
@@ -818,7 +847,13 @@ describe("effect path audit", function () {
     execution: { tool: "run_command", verification: "execution_only" },
   };
 
-  it("witnesses every proof domain the audit table uses", function () {
+  /** Proof domains an observing test below actually drove and read back. */
+  const observedDomains = new Set<AgentActionProofDomain>();
+
+  // Table-internal: this reads AUDIT against the witness record and runs no
+  // call of its own. It is what forces a new proof domain to declare a
+  // witness; the `after` hook above is what forces that witness to exist.
+  it("declares a witness for every proof domain the audit table uses", function () {
     const domains = new Set(
       Object.values(AUDIT).flatMap((row) =>
         row.operations.map(
@@ -913,6 +948,7 @@ describe("effect path audit", function () {
       }),
     );
     assert.equal(receipt.proofDomain, "zotero_state");
+    observedDomains.add(receipt.proofDomain);
     assert.equal(receipt.operation, "settings_update");
     assert.equal(receipt.verification, witness.verification);
     assert.equal(receipt.status, "applied");
@@ -926,6 +962,7 @@ describe("effect path audit", function () {
     try {
       const receipt = await driveAuditedCall(witness.tool, auditGateway());
       assert.equal(receipt.proofDomain, "file_state");
+      observedDomains.add(receipt.proofDomain);
       assert.equal(receipt.operation, "file_write");
       assert.equal(receipt.verification, witness.verification);
       assert.equal(receipt.status, "applied");
@@ -946,6 +983,7 @@ describe("effect path audit", function () {
     try {
       const receipt = await driveAuditedCall(witness.tool, auditGateway());
       assert.equal(receipt.proofDomain, "execution");
+      observedDomains.add(receipt.proofDomain);
       assert.equal(receipt.operation, "command_execute");
       assert.equal(receipt.verification, witness.verification);
       // `observed`, not `applied`: the host saw the command run and can say

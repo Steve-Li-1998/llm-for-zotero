@@ -5,16 +5,126 @@ const path = require("path");
 const ts = require("typescript");
 
 /**
- * Exact Agent-to-panel dependencies present when the architecture program
- * started. Every entry is a migration obligation, not a directory exemption.
+ * The layer order of the source tree, lowest tier first.
+ *
+ * A module may import anything in its own tier or below it. A runtime import
+ * that points *up* the order (a lower layer reaching into a higher one) is a
+ * failure; a type-only import that points up is reported as a warning, because
+ * it disappears at build time and only signals a contract that lives in the
+ * wrong place.
+ *
+ * Every top-level directory under `src/` must appear in exactly one tier. A
+ * directory that is missing from the table fails the check rather than being
+ * silently exempt. Files directly under `src/` (`hooks.ts`, `index.ts`,
+ * `addon.ts`) are the composition root: they wire the whole plugin together and
+ * therefore sit above every tier below.
  */
-const ALLOWED_AGENT_PANEL_EDGES = [];
+const LAYERS = [
+  {
+    tier: 0,
+    name: "core",
+    roots: ["src/core/"],
+  },
+  {
+    tier: 1,
+    name: "foundation",
+    roots: [
+      // Shared value/type vocabulary and low-level helpers.
+      "src/shared/",
+      "src/utils/",
+      // Pure Codex catalog-selection logic.
+      "src/codex/",
+      // Codex credential and model-catalog storage.
+      "src/codexAuth/",
+      // Prompt-cache manager.
+      "src/contextCache/",
+      // Model registry and capability lookup.
+      "src/modelCapabilities/",
+      // Provider registry and tier tables.
+      "src/providers/",
+      // Web-search client, prefs, and attribution helpers.
+      "src/webAccess/",
+    ],
+  },
+  {
+    tier: 2,
+    name: "services",
+    roots: ["src/services/"],
+  },
+  {
+    tier: 3,
+    name: "agent",
+    roots: [
+      "src/agent/",
+      // Conversation backends the agent layer drives and imports back.
+      "src/claudeCode/",
+      "src/codexAppServer/",
+      "src/webchat/",
+    ],
+  },
+  {
+    tier: 4,
+    name: "modules",
+    roots: ["src/modules/"],
+  },
+];
 
-const CONTRACT_ROOTS = [
-  "src/core/",
-  "src/agent/authorization/",
-  "src/agent/contracts/",
-  "src/agent/execution/",
+/** Tier of files that live directly under `src/` (the composition root). */
+const COMPOSITION_ROOT_TIER = LAYERS.length;
+
+/**
+ * Exact upward runtime imports present when the layer rule was introduced.
+ * Every entry is a migration obligation, not a directory exemption: an entry
+ * that no longer matches a real edge is reported as stale so the list shrinks
+ * as the debt is paid off, and it can never grow without an explicit edit here.
+ */
+const MIGRATION_OBLIGATIONS = [
+  // Conversation backends reach into panel state instead of being called by it.
+  "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/conversationIdentity.ts",
+  "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/portalScope.ts",
+  "runtime:src/claudeCode/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
+  "runtime:src/codexAppServer/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
+  "runtime:src/webchat/pipeline.ts -> src/modules/contextPanel/setupHandlers/controllers/pdfAttachmentPolicy.ts",
+  // src/core/conversations is an orchestrator, not a contract: it reaches up
+  // into the shared vocabulary, the chat store, and all three backends.
+  "runtime:src/core/conversations/pendingDeletionStore.ts -> src/shared/conversationWriteFence.ts",
+  "runtime:src/core/conversations/repository.ts -> src/agent/documents/store.ts",
+  "runtime:src/core/conversations/repository.ts -> src/agent/mcp/server.ts",
+  "runtime:src/core/conversations/repository.ts -> src/claudeCode/store.ts",
+  "runtime:src/core/conversations/repository.ts -> src/codexAppServer/constants.ts",
+  "runtime:src/core/conversations/repository.ts -> src/codexAppServer/forkService.ts",
+  "runtime:src/core/conversations/repository.ts -> src/codexAppServer/store.ts",
+  "runtime:src/core/conversations/repository.ts -> src/shared/conversationForkLinks.ts",
+  "runtime:src/core/conversations/repository.ts -> src/shared/conversationKeyLedger.ts",
+  "runtime:src/core/conversations/repository.ts -> src/shared/conversationKeySpace.ts",
+  "runtime:src/core/conversations/repository.ts -> src/shared/conversationRegistry.ts",
+  "runtime:src/core/conversations/repository.ts -> src/shared/conversationWriteFence.ts",
+  "runtime:src/core/conversations/repository.ts -> src/utils/chatStore.ts",
+  // Note targeting resolves backend portal items directly.
+  "runtime:src/services/notes/noteTarget.ts -> src/claudeCode/portal.ts",
+  "runtime:src/services/notes/noteTarget.ts -> src/codexAppServer/portal.ts",
+  // The Zotero change dispatcher writes straight into the agent change journal.
+  "runtime:src/services/zoteroChangeDispatcher.ts -> src/agent/store/changeJournal.ts",
+  // Library-chat read strategy reads the agent research policy.
+  "runtime:src/shared/libraryChatReadStrategy.ts -> src/agent/research/policy.ts",
+  // src/utils holds application code (chat store, LLM client, provider probes)
+  // that belongs above the services layer.
+  "runtime:src/utils/attachmentRefStore.ts -> src/services/attachmentStorage.ts",
+  "runtime:src/utils/chatStore.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
+  "runtime:src/utils/chatStore.ts -> src/modules/contextPanel/constants.ts",
+  "runtime:src/utils/chatStore.ts -> src/services/context/normalizers.ts",
+  "runtime:src/utils/chatStore.ts -> src/services/quotes/quoteCitations.ts",
+  "runtime:src/utils/codexAppServerProcess.ts -> src/agent/privacy/localDocumentPathRedaction.ts",
+  "runtime:src/utils/llmClient.ts -> src/agent/model/shared.ts",
+  "runtime:src/utils/migrations.ts -> src/codexAppServer/permissionState.ts",
+  "runtime:src/utils/migrations.ts -> src/services/mineru/mineruCache.ts",
+  "runtime:src/utils/modelProviders.ts -> src/webchat/types.ts",
+  "runtime:src/utils/providerConnectionTest.ts -> src/agent/context/resolvedAgentRequest.ts",
+  "runtime:src/utils/providerConnectionTest.ts -> src/agent/model/factory.ts",
+  "runtime:src/utils/providerConnectionTest.ts -> src/codexAppServer/mcpSetup.ts",
+  "runtime:src/utils/providerConnectionTest.ts -> src/codexAppServer/permissionProfiles.ts",
+  "runtime:src/utils/providerConnectionTest.ts -> src/codexAppServer/runtimeCwd.ts",
+  "runtime:src/utils/providerProtocol.ts -> src/webchat/types.ts",
 ];
 
 function slash(value) {
@@ -33,6 +143,24 @@ function walkSourceFiles(dir, files = []) {
     }
   }
   return files;
+}
+
+/** `src/agent/tools/x.ts` -> `src/agent/`; `src/hooks.ts` -> `null`. */
+function topLevelRoot(relativePath) {
+  const rest = relativePath.slice("src/".length);
+  const marker = rest.indexOf("/");
+  return marker < 0 ? null : `src/${rest.slice(0, marker)}/`;
+}
+
+function layerOf(relativePath) {
+  const root = topLevelRoot(relativePath);
+  if (root === null) {
+    return { tier: COMPOSITION_ROOT_TIER, name: "composition root" };
+  }
+  for (const layer of LAYERS) {
+    if (layer.roots.includes(root)) return layer;
+  }
+  return null;
 }
 
 function isTypeOnlyImport(statement) {
@@ -203,36 +331,56 @@ function parseBoundary(value) {
   return { kind: match[1], from: match[2], to: match[3] };
 }
 
-function checkArchitectureBoundaries(root = process.cwd()) {
+function describeBoundary(boundary) {
+  const from = layerOf(boundary.from);
+  const to = layerOf(boundary.to);
+  const arrow = from && to ? ` (${from.name} -> ${to.name})` : "";
+  return `${formatBoundary(boundary)}${arrow}`;
+}
+
+/** Top-level directories under `src/` that no tier claims. */
+function findUnclassifiedDirectories(root) {
+  const sourceRoot = path.join(root, "src");
+  if (!fs.existsSync(sourceRoot)) return [];
+  const claimed = new Set(LAYERS.flatMap((layer) => layer.roots));
+  return fs
+    .readdirSync(sourceRoot)
+    .filter((name) => {
+      if (name === "node_modules" || name.startsWith(".")) return false;
+      return fs.statSync(path.join(sourceRoot, name)).isDirectory();
+    })
+    .map((name) => `src/${name}/`)
+    .filter((directory) => !claimed.has(directory))
+    .sort();
+}
+
+function checkArchitectureBoundaries(root = process.cwd(), options = {}) {
+  const obligationValues = options.obligations || MIGRATION_OBLIGATIONS;
   const edges = collectImportEdges(root);
-  const agentPanelEdges = edges.filter(
-    (edge) =>
-      edge.from.startsWith("src/agent/") &&
-      edge.to.startsWith("src/modules/contextPanel/"),
-  );
-  const current = new Map(
-    agentPanelEdges.map((edge) => [formatBoundary(edge), edge]),
-  );
-  const allowed = new Map(
-    ALLOWED_AGENT_PANEL_EDGES.map((value) => [value, parseBoundary(value)]),
-  );
-  const servicePanelEdges = edges.filter(
-    (edge) =>
-      edge.from.startsWith("src/services/") &&
-      edge.to.startsWith("src/modules/contextPanel/"),
+  const upward = [];
+  for (const edge of edges) {
+    const from = layerOf(edge.from);
+    const to = layerOf(edge.to);
+    if (!from || !to) continue;
+    if (to.tier > from.tier) upward.push(edge);
+  }
+  const upwardRuntimeEdges = upward.filter((edge) => edge.kind === "runtime");
+  const upwardTypeWarnings = upward.filter((edge) => edge.kind === "type");
+  const present = new Set(upwardRuntimeEdges.map(formatBoundary));
+  const obligations = new Map(
+    obligationValues.map((value) => [value, parseBoundary(value)]),
   );
   return {
-    agentPanelEdges,
-    unexpectedAgentPanelEdges: agentPanelEdges.filter(
-      (edge) => !allowed.has(formatBoundary(edge)),
+    layers: LAYERS,
+    unclassifiedDirectories: findUnclassifiedDirectories(root),
+    upwardRuntimeEdges,
+    upwardTypeWarnings,
+    unexpectedUpwardEdges: upwardRuntimeEdges.filter(
+      (edge) => !obligations.has(formatBoundary(edge)),
     ),
-    staleAgentPanelEdges: [...allowed.entries()]
-      .filter(([value]) => !current.has(value))
+    staleObligations: [...obligations.entries()]
+      .filter(([value]) => !present.has(value))
       .map(([, edge]) => edge),
-    contractPanelEdges: agentPanelEdges.filter((edge) =>
-      CONTRACT_ROOTS.some((rootPath) => edge.from.startsWith(rootPath)),
-    ),
-    servicePanelEdges,
   };
 }
 
@@ -240,36 +388,51 @@ function printList(title, boundaries) {
   if (!boundaries.length) return;
   console.error(title);
   for (const boundary of boundaries) {
-    console.error(`- ${formatBoundary(boundary)}`);
+    console.error(`- ${describeBoundary(boundary)}`);
   }
 }
 
 if (require.main === module) {
   const result = checkArchitectureBoundaries(process.cwd());
+  if (result.upwardTypeWarnings.length) {
+    console.warn(
+      `Warning: ${result.upwardTypeWarnings.length} type-only import(s) point up the layer order:`,
+    );
+    for (const boundary of result.upwardTypeWarnings) {
+      console.warn(`- ${describeBoundary(boundary)}`);
+    }
+  }
   const failed =
-    result.unexpectedAgentPanelEdges.length ||
-    result.staleAgentPanelEdges.length ||
-    result.contractPanelEdges.length ||
-    result.servicePanelEdges.length;
+    result.unclassifiedDirectories.length ||
+    result.unexpectedUpwardEdges.length ||
+    result.staleObligations.length;
   if (failed) {
+    if (result.unclassifiedDirectories.length) {
+      console.error(
+        "Top-level directories missing from the layer table (add each one to LAYERS):",
+      );
+      for (const directory of result.unclassifiedDirectories) {
+        console.error(`- ${directory}`);
+      }
+    }
     printList(
-      "Unexpected Agent-to-panel dependencies:",
-      result.unexpectedAgentPanelEdges,
+      "Runtime imports that point up the layer order:",
+      result.unexpectedUpwardEdges,
     );
-    printList("Stale migration obligations:", result.staleAgentPanelEdges);
-    printList(
-      "Shared-contract dependencies on panel code:",
-      result.contractPanelEdges,
-    );
-    printList("Service dependencies on panel code:", result.servicePanelEdges);
+    printList("Stale migration obligations:", result.staleObligations);
     process.exit(1);
   }
+  const order = LAYERS.map((layer) => layer.name).join(" < ");
   console.log(
-    `Architecture-boundary check passed (${result.agentPanelEdges.length} exact migration obligations remain).`,
+    `Architecture-boundary check passed (${order} < composition root; ` +
+      `${result.upwardRuntimeEdges.length} migration obligations remain, ` +
+      `${result.upwardTypeWarnings.length} type-only warnings).`,
   );
 }
 
 module.exports = {
+  LAYERS,
+  MIGRATION_OBLIGATIONS,
   checkArchitectureBoundaries,
   collectImportEdges,
   formatBoundary,

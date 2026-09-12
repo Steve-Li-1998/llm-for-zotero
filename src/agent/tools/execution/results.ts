@@ -1,8 +1,13 @@
 import type { ActionProposal } from "../../authorization/types";
-import type { MaterialRef } from "../../documents/materialRef";
+import {
+  readFlatMaterialRef,
+  type MaterialRef,
+} from "../../documents/materialRef";
 import type {
   AgentActionEvidence,
+  AgentActionProposal,
   AgentInvocationPlan,
+  AgentPendingAction,
   AgentToolArtifact,
   AgentToolCall,
   AgentToolContinuationCheckpoint,
@@ -119,6 +124,21 @@ export function createProposalConfirmationAction(
         : []),
     ],
   };
+}
+
+/**
+ * The exact material version a confirmation would consume, read from the
+ * frozen proposal the user is about to authorize. The host owns this stamp so
+ * every confirmation card carries it, whichever tool built the card.
+ */
+export function pendingActionMaterial(
+  proposals: readonly AgentActionProposal[] | undefined,
+): AgentPendingAction["material"] | undefined {
+  for (const proposal of proposals || []) {
+    const ref = readFlatMaterialRef(proposal.parameters);
+    if (ref) return { operation: proposal.operation, ref };
+  }
+  return undefined;
 }
 
 /** A material reference is identity, so every field must be present to use it. */

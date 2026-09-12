@@ -40,6 +40,7 @@ import type {
   AgentActionContract,
   AgentActionEvidence,
   AgentActionIntent,
+  AgentActionOperation,
   AgentActionProgressLedger,
   AgentActionReceipt,
   AgentToolActionDescriptor,
@@ -332,6 +333,13 @@ export type AgentPendingField =
 export type AgentPendingAction = {
   /** Stable identity for an expandable discovery card. */
   discovery?: { sessionId: string; revision: number };
+  /**
+   * The exact material version this action would consume, copied from the
+   * frozen proposal parameters the user is authorizing. The host stamps it;
+   * a tool never supplies it, and it is absent unless the proposal named a
+   * complete `MaterialRef`.
+   */
+  material?: { operation: AgentActionOperation; ref: MaterialRef };
   toolName: string;
   title: string;
   mode?: "approval" | "review";

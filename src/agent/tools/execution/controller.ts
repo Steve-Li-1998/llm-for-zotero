@@ -32,6 +32,7 @@ import {
   createRequestId,
   invocationExpands,
   normalizeExecutionOutput,
+  pendingActionMaterial,
 } from "./results";
 
 type ReceiptOutcome = {
@@ -376,9 +377,16 @@ export class InvocationController {
 
   private review(
     assessed: AssessedInvocation,
-    action: AgentPendingAction,
+    displayedAction: AgentPendingAction,
     applyToolResolution = true,
   ): PreparedToolExecution {
+    // The card a tool builds describes its own payload; only the host knows
+    // which frozen material the proposal bound, so the host stamps it here
+    // rather than asking every tool to repeat it.
+    const material = pendingActionMaterial(assessed.preparedAction?.proposals);
+    const action = material
+      ? { ...displayedAction, material }
+      : displayedAction;
     return {
       kind: "confirmation",
       requestId: createRequestId(),

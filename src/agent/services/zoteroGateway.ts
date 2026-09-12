@@ -603,29 +603,6 @@ function getCollectionIDs(item: Zotero.Item | null | undefined): number[] {
   }
 }
 
-function resolveLibraryDisplayName(libraryID: number): string {
-  try {
-    const libraries = (
-      Zotero as unknown as {
-        Libraries?: {
-          getName?: (targetLibraryID: number) => unknown;
-          get?: (
-            targetLibraryID: number,
-          ) => { name?: unknown } | null | undefined;
-        };
-      }
-    ).Libraries;
-    const directName = normalizeText(libraries?.getName?.(libraryID));
-    if (directName) return directName;
-    const library = libraries?.get?.(libraryID);
-    const objectName = normalizeText(library?.name);
-    if (objectName) return objectName;
-  } catch (_error) {
-    void _error;
-  }
-  return "My Library";
-}
-
 function getPdfChildAttachments(item: Zotero.Item): Zotero.Item[] {
   const out: Zotero.Item[] = [];
   if (!item?.isRegularItem?.()) return out;

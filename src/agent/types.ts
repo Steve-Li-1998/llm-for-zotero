@@ -554,7 +554,8 @@ export type AgentEvent =
       type: "batch_item_outcome";
       batchId: string;
       itemKey: string;
-      materialRef: MaterialRef;
+      /** Absent only for an item whose body could not be finalized. */
+      materialRef?: MaterialRef;
       status: "pending" | "saved" | "failed";
       noteId?: number;
       error?: string;
@@ -1045,7 +1046,9 @@ export type AgentBatchBinding = {
   items: ReadonlyArray<{
     itemKey: string;
     targetItemId: number;
-    material: MaterialRef;
+    material?: MaterialRef;
+    /** Why this item has no material; it is recorded failed and never written. */
+    failure?: string;
   }>;
 };
 
@@ -1053,7 +1056,8 @@ export type AgentBatchBinding = {
 export type AgentBatchItemOutcome = {
   batchId: string;
   itemKey: string;
-  materialRef: MaterialRef;
+  /** Absent only for an item whose body could not be finalized. */
+  materialRef?: MaterialRef;
   status: "pending" | "saved" | "failed";
   noteId?: number;
   error?: string;

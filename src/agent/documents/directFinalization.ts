@@ -25,7 +25,7 @@ import {
   resolveMaterialOutput,
 } from "./workflowMaterial";
 import { ToolInputRejection } from "../tools/execution/failure";
-import { collectHeadings } from "./draftValidation";
+import { normalizeNoteSourceText } from "../../services/notes/noteRendering";
 import type { MaterialOutputIntent } from "../contracts/workflowDependencies";
 
 /** The already stored document, with the outbox record that published it. */
@@ -256,7 +256,9 @@ export class DirectDocumentFinalizer {
       runId: params.runId,
       input: {
         title: params.title,
-        markdown: noteBodyMarkdown(params.title, params.markdown),
+        // Exactly what `note_write` would store for the same body, so the
+        // note carries the model's text and nothing the host invented.
+        markdown: normalizeNoteSourceText(params.markdown),
         citations: [],
         quotes: [],
         assets: [],
@@ -392,18 +394,4 @@ export class DirectDocumentFinalizer {
     await persistFinalizedDocument(finalized);
     return finalized;
   }
-}
-
-/**
- * The document body for one authored note.
- *
- * Every document carries a heading; a note body the model wrote without one
- * takes the title of the item it is written onto, which is also the title
- * Zotero shows for the note. A body that already has its own heading is kept
- * exactly as the model wrote it.
- */
-function noteBodyMarkdown(title: string, markdown: string): string {
-  const body = markdown.trim();
-  if (collectHeadings(body).size) return body;
-  return `# ${title.trim()}\n\n${body}`;
 }

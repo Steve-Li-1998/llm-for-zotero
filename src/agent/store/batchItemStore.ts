@@ -23,8 +23,12 @@ export type BatchItemRecord = {
   batchId: string;
   itemKey: string;
   position: number;
-  /** The finalized note body this item writes, frozen before the first write. */
-  materialRef: MaterialRef;
+  /**
+   * The finalized note body this item writes, frozen before the first write.
+   * Absent only when that body could not be finalized, which is exactly what
+   * makes the row `failed`.
+   */
+  materialRef?: MaterialRef;
   /** The journal action and step that wrote the note, once one did. */
   actionId?: string;
   stepSequence?: number;
@@ -38,7 +42,7 @@ export type BatchItemRecord = {
 export type NewBatchItem = {
   itemKey: string;
   position: number;
-  materialRef: MaterialRef;
+  materialRef?: MaterialRef;
 };
 
 /** A batch with at least one item still unwritten. */
@@ -56,9 +60,9 @@ type ItemRow = {
   batch_id: string;
   item_key: string;
   position: number;
-  material_document_id: string;
-  material_version: number;
-  material_content_hash: string;
+  material_document_id: string | null;
+  material_version: number | null;
+  material_content_hash: string | null;
   action_id: string | null;
   step_sequence: number | null;
   note_id: number | null;
@@ -91,11 +95,13 @@ function toRecord(row: ItemRow): BatchItemRecord {
     batchId: row.batch_id,
     itemKey: row.item_key,
     position: Number(row.position) || 0,
-    materialRef: {
-      documentId: row.material_document_id,
-      documentVersion: Number(row.material_version) || 1,
-      contentHash: row.material_content_hash,
-    },
+    materialRef: row.material_document_id
+      ? {
+          documentId: row.material_document_id,
+          documentVersion: Number(row.material_version) || 1,
+          contentHash: String(row.material_content_hash || ""),
+        }
+      : undefined,
     actionId: row.action_id ?? undefined,
     stepSequence: optionalNumber(row.step_sequence),
     noteId: optionalNumber(row.note_id),
@@ -114,9 +120,9 @@ export async function initAgentBatchItemStore(): Promise<void> {
         batch_id TEXT NOT NULL,
         item_key TEXT NOT NULL,
         position INTEGER NOT NULL,
-        material_document_id TEXT NOT NULL,
-        material_version INTEGER NOT NULL,
-        material_content_hash TEXT NOT NULL,
+        material_document_id TEXT,
+        material_version INTEGER,
+        material_content_hash TEXT,
         action_id TEXT,
         step_sequence INTEGER,
         note_id INTEGER,
@@ -163,9 +169,9 @@ export async function createBatchItems(
           batchId,
           row.itemKey,
           row.position,
-          row.materialRef.documentId,
-          row.materialRef.documentVersion,
-          row.materialRef.contentHash,
+          row.materialRef?.documentId ?? null,
+          row.materialRef?.documentVersion ?? null,
+          row.materialRef?.contentHash ?? null,
           now,
           now,
         ],

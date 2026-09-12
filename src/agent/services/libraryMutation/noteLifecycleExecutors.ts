@@ -3,7 +3,6 @@ import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
 import { buildSaveNoteInverse } from "./forwardExecutionSupport";
 import type { AgentBatchBinding } from "../../types";
-import type { MaterialRef } from "../../documents/materialRef";
 import { loadPlanDocument } from "../../documents/store";
 import { assertMaterialRefMatches } from "../../documents/workflowMaterial";
 import { advanceBatchJob } from "../../store/batchJobStore";
@@ -21,16 +20,21 @@ import {
  * outside a durable batch — the supplied body is rendered as before.
  */
 async function noteHtmlForBatchItem(params: {
-  material?: MaterialRef;
+  bound?: AgentBatchBinding["items"][number];
   content: string;
 }): Promise<string> {
-  if (!params.material) return renderRawNoteHtml(params.content);
-  const document = await loadPlanDocument(params.material.documentId);
+  if (!params.bound) return renderRawNoteHtml(params.content);
+  // A bound item whose body could not be finalized has nothing the user
+  // approved, so it is recorded as this item's failure instead of falling
+  // back to the unfinalized text.
+  if (!params.bound.material)
+    throw new Error(params.bound.failure || "The note body was not finalized");
+  const document = await loadPlanDocument(params.bound.material.documentId);
   if (!document)
     throw new Error(
-      `The finalized note material ${params.material.documentId} is no longer stored`,
+      `The finalized note material ${params.bound.material.documentId} is no longer stored`,
     );
-  assertMaterialRefMatches(document, params.material);
+  assertMaterialRefMatches(document, params.bound.material);
   return document.visibleHtml;
 }
 
@@ -142,7 +146,7 @@ export const noteLifecycleExecutors = {
           collections:
             operation.target === "standalone" ? entry.collections : undefined,
           html: await noteHtmlForBatchItem({
-            material: bound?.material,
+            bound,
             content: entry.content,
           }),
         });

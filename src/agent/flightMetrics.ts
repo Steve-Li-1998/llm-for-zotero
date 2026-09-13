@@ -121,9 +121,20 @@ export type RetrievalFlightSummary = {
   /**
    * Retrieval calls whose every named item had already been retrieved.
    *
+   * A repeat here means the same ITEM, not the same question. Only a call
+   * that repeats both the item and the query plan is served from the evidence
+   * cache, which is keyed `contextItemId::<normalized query plan>`, so a
+   * second call on the same paper asking something else is counted here and
+   * still builds candidates. Read this number against `cacheHitRate` rather
+   * than as a prediction of it.
+   *
    * Items come from the identity fields a call's own arguments carry, so a
    * renamed tool moves nothing. A call that names no item is counted in
-   * `toolCalls` but can never be shown to repeat one.
+   * `toolCalls` but can never be shown to repeat one -- which makes this a
+   * FLOOR, not a total: a tool that falls back to the conversation's papers
+   * instead of naming them in its arguments retrieves an item this cannot
+   * see, and a real flight therefore repeats at least this often and possibly
+   * more.
    */
   repeatedCallsForSameItem: number;
   /**
@@ -184,6 +195,22 @@ const ITEM_ID_ARG_FIELDS: ReadonlySet<string> = new Set([
   "targetItemId",
 ]);
 
+/**
+ * The item an identity field names, or nothing.
+ *
+ * Only a number or a non-blank string names an item. Everything else --
+ * `null`, `undefined`, `""`, an empty array -- names none, and models do emit
+ * those for optional identity fields. Coercing one would mint a synthetic
+ * item `0` that every such call shares, and the second would then be reported
+ * as a repeat of the first.
+ */
+function itemIdOfArgValue(value: unknown): string | undefined {
+  if (typeof value !== "number" && typeof value !== "string") return undefined;
+  if (typeof value === "string" && !value.trim()) return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? String(Math.floor(numeric)) : undefined;
+}
+
 /** Every item id a call's arguments name, however deeply they are nested. */
 function itemIdsNamedByArgs(
   args: unknown,
@@ -195,9 +222,14 @@ function itemIdsNamedByArgs(
   }
   if (!args || typeof args !== "object") return into;
   for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
-    if (ITEM_ID_ARG_FIELDS.has(key) && Number.isFinite(Number(value)))
-      into.add(String(Math.floor(Number(value))));
-    else itemIdsNamedByArgs(value, into);
+    if (ITEM_ID_ARG_FIELDS.has(key)) {
+      // An identity field is a leaf: whatever it holds, it is not a container
+      // of further targets, so a value that names no item ends the descent.
+      const itemId = itemIdOfArgValue(value);
+      if (itemId) into.add(itemId);
+      continue;
+    }
+    itemIdsNamedByArgs(value, into);
   }
   return into;
 }

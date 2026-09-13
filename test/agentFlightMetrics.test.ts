@@ -365,6 +365,47 @@ describe("agent flight metrics", function () {
     });
   });
 
+  it("treats an empty item id as naming no item, not as naming item zero", function () {
+    const summary = summarizeAgentFlight(
+      [
+        // Models do emit nulls for optional identity fields. Coercing one to a
+        // number would mint a synthetic item "0" that two such calls share,
+        // and the second would be reported as a repeat of the first.
+        stageEvent({
+          stage: "retrieval",
+          callId: "call-1",
+          toolName: "search_paper",
+        }),
+        toolCall({
+          callId: "call-1",
+          name: "search_paper",
+          args: { target: { itemId: null, contextItemId: "" } },
+        }),
+        stageEvent({
+          stage: "retrieval",
+          callId: "call-2",
+          toolName: "search_paper",
+        }),
+        toolCall({
+          callId: "call-2",
+          name: "search_paper",
+          args: { target: { itemId: [], contextItemId: undefined } },
+        }),
+      ],
+      {
+        modelCalls: [3],
+        nativeSaves: 0,
+        retrievalCounters: { candidateBuilds: 2, paperContextEnsures: 2 },
+      },
+    );
+    assert.equal(summary.retrieval.toolCalls, 2);
+    assert.equal(
+      summary.retrieval.repeatedCallsForSameItem,
+      0,
+      "an absent id names no item, so two calls that both omit one share nothing",
+    );
+  });
+
   it("counts a retrieval call that names no item without calling it a repeat", function () {
     const summary = summarizeAgentFlight(
       [

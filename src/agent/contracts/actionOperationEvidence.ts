@@ -5,6 +5,7 @@ import type {
   AgentToolDefinition,
 } from "../types";
 import type { LibraryMutationOperation } from "../services/libraryMutationService";
+import type { NativeNoteWriteEvidence } from "../services/libraryMutation/contracts";
 import {
   actionDetailsForLibraryMutation,
   capabilityForLibraryMutation,
@@ -355,6 +356,48 @@ export async function verifyNoteWriteTarget(
     };
   }
   return { targets: [itemTarget(noteId)], facts: [] };
+}
+
+/**
+ * The per-note facts a write that created several notes at once owes.
+ *
+ * A batch that wrote three notes is still three note writes, and the rule
+ * every native write answers to -- a receipt fact minted from a native
+ * re-read of what was written -- does not weaken because the notes shared one
+ * approval. Each entry is therefore put through exactly the verifier a single
+ * `note_write` is put through: the note is read back out of live Zotero state
+ * here, at receipt time, and checked against the read-back its creation
+ * forced. Nothing else is credited -- the evidence carries only the notes the
+ * call physically created, so an item it skipped as already written, or one it
+ * failed on, contributes no fact and is left to the receipt that did write it.
+ */
+export async function nativeNoteWriteFacts(
+  proposal: AgentActionProposal,
+  noteWrites: readonly NativeNoteWriteEvidence[] | undefined,
+  gateway: ActionContractGateway,
+): Promise<string[]> {
+  const facts: string[] = [];
+  for (const write of noteWrites || []) {
+    const verification = await verifyNoteWriteTarget(
+      {
+        ...proposal,
+        operation: "note_create",
+        parameters: {
+          noteMode: "create",
+          ...(write.parentItemId ? { targetItemId: write.parentItemId } : {}),
+        },
+        destinationCollectionIds: write.collections || [],
+      },
+      { noteId: write.noteId, noteVerification: write.verification },
+      gateway,
+    );
+    if (!verification.targets) continue;
+    facts.push(
+      ...verification.targets.map((target) => `created_note:${target}`),
+      ...verification.facts,
+    );
+  }
+  return facts;
 }
 
 export async function prepareActionExecution(

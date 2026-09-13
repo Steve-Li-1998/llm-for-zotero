@@ -1,6 +1,7 @@
 import { executeNoteCreation } from "../noteCreation";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
+import type { NativeNoteWriteEvidence } from "./contracts";
 import { buildSaveNoteInverse } from "./forwardExecutionSupport";
 import type { AgentBatchBinding } from "../../types";
 import { loadPlanDocument } from "../../documents/store";
@@ -81,6 +82,11 @@ export const noteLifecycleExecutors = {
       status: "created" | "already_saved" | "error";
       reason?: string;
     }> = [];
+    // The read-back each creation already forced, kept for the receipt owner.
+    // Only a note this call physically created contributes one: an item the
+    // batch skipped as already saved was written by an earlier call and is
+    // that call's receipt to prove, not this one's.
+    const noteWrites: NativeNoteWriteEvidence[] = [];
     const binding = batchBindingFor(context.batchBinding, operation.notes);
     const batchId = binding?.batchId;
     // What this batch has already written. A note is written once: inside a
@@ -189,6 +195,19 @@ export const noteLifecycleExecutors = {
           }),
         });
         const saved = execution.content;
+        // A standalone note has no parent to check the read-back against, so
+        // the verifier is told which collections it was filed into instead;
+        // a child note is checked against the paper it was written onto.
+        const standalone = operation.target === "standalone";
+        if (saved.noteVerification && saved.noteId)
+          noteWrites.push({
+            noteId: saved.noteId,
+            ...(standalone ? {} : { parentItemId: target.id }),
+            ...(standalone && entry.collections?.length
+              ? { collections: entry.collections }
+              : {}),
+            verification: saved.noteVerification,
+          });
         const childActionId = (
           execution.content as unknown as { actionId?: unknown }
         ).actionId;
@@ -246,6 +265,7 @@ export const noteLifecycleExecutors = {
       // `trash_items` inverse. A whole-batch inverse here would trash the
       // same notes a second time during an undo.
       inverse: null,
+      noteWrites,
     };
   },
   create_items: async (operation, context, zoteroGateway) => {

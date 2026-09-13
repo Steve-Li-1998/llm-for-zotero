@@ -3,6 +3,7 @@ import type { MaterialRef } from "../documents/materialRef";
 import type {
   LibraryMutationOperation,
   LibraryMutationState,
+  NativeNoteWriteEvidence,
 } from "../services/libraryMutation/contracts";
 
 export type AgentActionCapability =
@@ -329,6 +330,16 @@ export type AgentLibraryMutationEvidence = {
   postState: LibraryMutationState;
   journalStepId?: string;
   effect: "applied" | "partial" | "none";
+  /**
+   * Per-note read-backs, for an operation that created notes in bulk.
+   *
+   * The captured post-state proves the operation's postcondition, which is a
+   * claim about the whole set. It is not per-note content evidence, and a
+   * durable note batch owes the same read-back fact per note that a single
+   * note write owes. These are the read-backs its executor already forced,
+   * one per note the call physically created.
+   */
+  noteWrites?: readonly NativeNoteWriteEvidence[];
 };
 
 /**

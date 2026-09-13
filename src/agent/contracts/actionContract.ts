@@ -23,6 +23,7 @@ import {
   itemTarget,
   normalizePath,
   prepareActionExecution,
+  nativeNoteWriteFacts,
   verifyNoteWriteTarget,
   type ActionContractGateway,
   type PreparedActionExecution,
@@ -1587,8 +1588,21 @@ export class ActionContractService {
     );
     const alreadySatisfied =
       verified && (wasAlreadySatisfied || params.effect === "none");
+    // The captured post-state proves the operation's postcondition, which is a
+    // claim about the whole set. A write that created notes carries, beside
+    // it, the read-back each note's creation forced; those are re-checked here
+    // against live state so the receipt names the same per-note content
+    // evidence a single note write names. They are additive: each fact stands
+    // on its own re-read, so they are minted whether or not the whole-set
+    // postcondition held, and a note this call did not write has none.
+    const noteFacts = await nativeNoteWriteFacts(
+      proposal,
+      evidence?.noteWrites,
+      this.gateway,
+    );
     return {
       ...base,
+      verifiedFacts: [...base.verifiedFacts, ...noteFacts],
       evidenceRef: evidence?.journalStepId || base.evidenceRef,
       verification: verified ? "verified" : "unverified",
       status: verified

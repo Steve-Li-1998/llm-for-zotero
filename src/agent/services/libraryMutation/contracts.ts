@@ -2,6 +2,7 @@ import type {
   GeneratedChatImage,
   PaperContextRef,
 } from "../../../shared/types";
+import type { NativeNoteVerification } from "../../../services/notePersistence";
 import type {
   BatchTagAssignment,
   EditableArticleMetadataPatch,
@@ -337,11 +338,34 @@ export type LibraryMutationExecutionResult = {
   result: unknown;
 };
 
+/**
+ * One note a write physically created, with the read-back that proves it.
+ *
+ * An operation that creates several notes in one step -- the durable note
+ * batch is the only one today -- has already forced a native re-read of each
+ * note it wrote, and the receipt owner needs that re-read to mint the same
+ * per-note content fact a single note write mints. It travels here rather
+ * than inside the operation's model-facing result because the read-back
+ * carries the note's whole HTML twice: fifty notes would put a hundred note
+ * bodies into the model's context to prove something only the contract reads.
+ */
+export type NativeNoteWriteEvidence = {
+  noteId: number;
+  /** The parent the note was created on; absent for a standalone note. */
+  parentItemId?: number;
+  /** Collections a standalone note was filed into, when it names any. */
+  collections?: number[];
+  /** The forced native read-back the creation already performed. */
+  verification: NativeNoteVerification;
+};
+
 export type LibraryMutationExecution = {
   result: LibraryMutationExecutionResult;
   inverse?: LibraryMutationInverse | null;
   effect: LibraryMutationEffect;
   affectedCount: number;
+  /** Per-note read-backs, for an operation that creates notes in bulk. */
+  noteWrites?: readonly NativeNoteWriteEvidence[];
 };
 
 export type LibraryMutationPlan = {

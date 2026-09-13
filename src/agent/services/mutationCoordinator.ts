@@ -324,6 +324,9 @@ async function executeComposite(params: {
       expectedPostcondition,
       precondition: plan.precondition,
       journalStepId: undefined as string | undefined,
+      // The per-note read-backs the operation's own executor performed, so
+      // the receipt owner can prove each note this call wrote.
+      noteWrites: executed.noteWrites,
     };
   };
   return actionId ? withActiveJournalAction(actionId, run) : run();
@@ -485,6 +488,10 @@ export async function executeLibraryMutationAction(params: {
             prepareAction,
           });
       results.push(executed.result);
+      // Only the composite path writes several notes under one operation, so
+      // only it carries per-note read-backs.
+      const noteWrites =
+        "noteWrites" in executed ? executed.noteWrites : undefined;
       if (
         executed.precondition &&
         executed.expectedPostcondition &&
@@ -502,6 +509,7 @@ export async function executeLibraryMutationAction(params: {
             executed.expectedPostcondition as AgentLibraryMutationEvidence["postState"],
           journalStepId: executed.journalStepId,
           effect: executed.effect,
+          ...(noteWrites?.length ? { noteWrites } : {}),
         });
       }
       completedOutcomes.push({

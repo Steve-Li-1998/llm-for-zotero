@@ -12,7 +12,11 @@ function source(path: string): string {
 
 function extractCssRule(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return css.match(new RegExp(`${escapedSelector}\\s*\\{[^}]*\\}`))?.[0] || "";
+  return (
+    css.match(
+      new RegExp(`^[ \t]*${escapedSelector}\\s*\\{[^}]*\\}`, "m"),
+    )?.[0] || ""
+  );
 }
 
 describe("runtime system control layout", function () {

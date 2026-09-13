@@ -1,5 +1,6 @@
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
+import { createDockedPanelTitle } from "./dockedPanelTitle";
 import {
   PREFERENCES_PANE_ID,
   getSelectTextExpandedLabel,
@@ -246,6 +247,10 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   clearBtn.setAttribute("aria-label", t("Delete conversation"));
   headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
+  if (body.closest(".llm-dedicated-chat-pane")) {
+    header.appendChild(createDockedPanelTitle(body));
+    title.style.display = "none";
+  }
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {
     id: "llm-history-menu",

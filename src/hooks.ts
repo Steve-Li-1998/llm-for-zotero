@@ -14,6 +14,7 @@ import {
 } from "./modules/contextPanel";
 import { composeHostSurfaces } from "./modules/contextPanel/hostSurfaces";
 import { composePanelSurfaces } from "./modules/contextPanel/panelSurfaces";
+import { installDedicatedChatPane } from "./modules/contextPanel/dedicatedChatPane";
 import { resolveActiveLibraryID } from "./utils/zoteroLibraryScope";
 import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
 import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
@@ -388,6 +389,8 @@ async function onStartup() {
   scheduleDeferredStartupWork(conversationStoreReadiness);
 }
 
+const dedicatedChatPaneDisposers = new Map<Window, () => void>();
+
 async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   // Create ztoolkit for every window
   addon.data.ztoolkit = createZToolkit();
@@ -398,6 +401,11 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
   registerLLMStyles(win);
   registerReaderContextPanel();
+  dedicatedChatPaneDisposers.get(win)?.();
+  dedicatedChatPaneDisposers.set(
+    win,
+    installDedicatedChatPane(win.document, Zotero.Notifier),
+  );
   registerReaderSelectionTracking();
   registerNoteEditingSelectionTracking(win);
   registerZoteroItemContextMenu({
@@ -469,6 +477,8 @@ function registerPrefsPane() {
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
+  dedicatedChatPaneDisposers.get(win)?.();
+  dedicatedChatPaneDisposers.delete(win);
   unregisterNoteEditingSelectionTracking(win);
   ztoolkit.unregisterAll();
   closeAllAddonDialogs();
@@ -478,6 +488,8 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 }
 
 async function onShutdown(): Promise<void> {
+  for (const dispose of dedicatedChatPaneDisposers.values()) dispose();
+  dedicatedChatPaneDisposers.clear();
   zoteroChangeDispatcher.unregisterNativeObserver();
   await zoteroChangeDispatcher.flush();
   unregisterPaperConversationRestoreNotifications();

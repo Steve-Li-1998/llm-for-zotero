@@ -1720,13 +1720,13 @@ export function setupHandlers(
     if ((body as HTMLElement).dataset?.standalone === "true") {
       activeContextPanelRawItems.set(body, item || null);
     }
+    const noteSession = resolveCurrentNoteSession();
     panelRoot.dataset.itemId =
       Number.isFinite(conversationKey) && (conversationKey as number) > 0
         ? `${conversationKey}`
         : "";
     const libraryID = getCurrentLibraryID();
     panelRoot.dataset.libraryId = libraryID > 0 ? `${libraryID}` : "";
-    const noteSession = resolveCurrentNoteSession();
     const mode: "global" | "paper" | null = item
       ? resolveDisplayConversationKind(item)
       : null;
@@ -2505,6 +2505,11 @@ export function setupHandlers(
         (current.width !== previous.width ||
           current.height !== previous.height),
       );
+      if (!item && panelRoot.dataset.startPageActive === "true") {
+        chatBox.scrollTop = 0;
+        captureChatBoxViewportState();
+        return;
+      }
       if (viewportChanged && previous && previous.nearBottom) {
         const targetBottom = Math.max(
           0,

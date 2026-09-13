@@ -320,4 +320,65 @@ describe("batch material journey", function () {
       "one batch call wrote three notes and one continued them; no body was authored twice",
     );
   });
+
+  it("does not vouch for a batch note it could not read back", async function () {
+    const conversationKey = 881_102;
+    const journey = beginBatchMaterialJourney(library, conversationKey);
+    // Paper 3's note is trashed the instant Zotero stores it: the write landed
+    // inside the mutation window, so the set-level postcondition still holds,
+    // but the receipt's own re-read afterwards finds no live note.
+    library.trashNoteFor(3);
+
+    // Every note lands, so the whole-set postcondition holds and the verdict
+    // turns on the receipt's per-note re-read alone.
+    const first = await journey.writeThreeNotes({ refuseParentId: null });
+    assert.equal(first.outcome.kind, "completed");
+    assert.deepEqual(
+      eventsOfType(first.events, "batch_item_outcome").map(
+        (event) => event.status,
+      ),
+      ["saved", "saved", "saved"],
+      "the write itself landed on all three papers",
+    );
+
+    const result = toolResultFor(first.events, "note_write_batch");
+    const receipts = result?.actionReceipts || [];
+    assert.lengthOf(receipts, 1, "one approved batch, one receipt");
+    const receipt = receipts[0];
+    const vanishedNoteId = [...library.notes.keys()].find(
+      (id) => library.notes.get(id).parentID === 3,
+    )!;
+
+    assert.deepEqual(
+      receipt.reasons,
+      [`Zotero item ${vanishedNoteId} is not a live note after mutation.`],
+      "the receipt names the note it could not re-read",
+    );
+    assert.equal(
+      receipt.verification,
+      "unverified",
+      "a receipt that could not re-read a note it wrote must not say verified",
+    );
+    assert.notInclude(
+      (receipt.verifiedFacts || []).join(" "),
+      `native_note:${vanishedNoteId}:`,
+      "the note it could not read back carries no content fact",
+    );
+
+    // The write is not retracted: it landed inside the mutation window, so the
+    // targets stay applied. Only what the receipt vouches for changes.
+    assert.equal(receipt.status, "applied");
+    assert.isNotEmpty(
+      receipt.appliedTargets || [],
+      "the applied targets are what the mutation window proved",
+    );
+    const rows = await listBatchItems(
+      eventsOfType(first.events, "batch_item_outcome")[0].batchId,
+    );
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["saved", "saved", "saved"],
+      "the durable rows still record three written notes",
+    );
+  });
 });

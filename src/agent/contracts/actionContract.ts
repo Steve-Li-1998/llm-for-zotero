@@ -1602,11 +1602,18 @@ export class ActionContractService {
       evidence?.noteWrites,
       this.gateway,
     );
+    // The set-level postcondition decides what landed; the per-note re-reads
+    // decide what this receipt can vouch for. A note the receipt could not
+    // read back leaves the write in place -- the mutation window proved it --
+    // but the verdict drops to `unverified`, exactly as the single-note branch
+    // does for the same failed re-read. A receipt must never say "verified"
+    // beside a reason that names a note it could not confirm.
+    const readBackGap = noteReadBacks.reasons.length > 0;
     return {
       ...base,
       verifiedFacts: [...base.verifiedFacts, ...noteReadBacks.facts],
       evidenceRef: evidence?.journalStepId || base.evidenceRef,
-      verification: verified ? "verified" : "unverified",
+      verification: verified && !readBackGap ? "verified" : "unverified",
       status: verified
         ? alreadySatisfied
           ? "already_satisfied"

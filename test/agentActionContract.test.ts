@@ -2286,7 +2286,9 @@ describe("Action Contract V2", function () {
     // The whole-set postcondition is a claim about the set, so it can still
     // hold while one note the call physically wrote is gone by the time the
     // receipt re-reads it. Without a reason the only symptom is a missing
-    // fact, which reads as "this note was never written".
+    // fact, which reads as "this note was never written". The write stays
+    // applied -- the mutation window proved it -- but the receipt stops
+    // vouching for the set, the way a single note write does.
     const html = "<p>Grounded summary.</p>";
     const { service, items } = createHarness();
     items.set(41, { tags: [], collections: [], fields: { title: "First" } });
@@ -2361,8 +2363,18 @@ describe("Action Contract V2", function () {
     const receipt = receipts[0];
     assert.equal(
       receipt.verification,
-      "verified",
-      "the captured post-state still proves the set",
+      "unverified",
+      "a receipt cannot vouch for a note its own re-read could not confirm",
+    );
+    assert.equal(
+      receipt.status,
+      "applied",
+      "the captured post-state still proves the set landed",
+    );
+    assert.deepEqual(
+      receipt.appliedTargets,
+      receipt.requestedTargets,
+      "the write is not retracted by the failed re-read",
     );
     assert.include(receipt.verifiedFacts, "created_note:item:700");
     assert.lengthOf(

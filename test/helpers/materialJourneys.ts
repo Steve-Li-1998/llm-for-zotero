@@ -483,6 +483,16 @@ export type BatchJourneyLibrary = {
   notes: Map<number, any>;
   trashed: number[][];
   refuseNoteFor: (parentId: number | undefined) => void;
+  /**
+   * Trash this paper's note the instant Zotero stores it.
+   *
+   * The write still lands -- the mutation window captures a note that exists,
+   * so the whole-set postcondition holds -- but the receipt's own re-read,
+   * which happens after the call returns, finds a note that is no longer live.
+   * That is the only way to reproduce "the write landed, the receipt could not
+   * read it back" without reaching into the contract.
+   */
+  trashNoteFor: (parentId: number | undefined) => void;
   /** Physical native writes that reached the store, counted at `onSave`. */
   nativeSaves: () => number;
   restore: () => void;
@@ -491,12 +501,15 @@ export type BatchJourneyLibrary = {
 /** The library the batch journey writes into: three papers and the notes it adds. */
 export function installBatchJourneyLibrary(): BatchJourneyLibrary {
   let refusedParent: number | undefined;
+  let trashedParent: number | undefined;
   let nativeSaves = 0;
   const native = installNativeNoteStore({
     startId: 500,
-    onSave: (note: { parentID?: number }) => {
+    onSave: (note: { parentID?: number; deleted?: boolean }) => {
       if (note.parentID !== undefined && note.parentID === refusedParent)
         throw new Error("Zotero refused the note write");
+      if (note.parentID !== undefined && note.parentID === trashedParent)
+        note.deleted = true;
       nativeSaves += 1;
     },
   });
@@ -540,6 +553,9 @@ export function installBatchJourneyLibrary(): BatchJourneyLibrary {
     trashed: [],
     refuseNoteFor: (parentId: number | undefined) => {
       refusedParent = parentId;
+    },
+    trashNoteFor: (parentId: number | undefined) => {
+      trashedParent = parentId;
     },
     nativeSaves: () => nativeSaves,
     restore: native.restore,
@@ -598,8 +614,15 @@ function createBatchJourneyRegistry(
 }
 
 export type BatchMaterialJourney = {
-  /** Turn 1: one call carries all three bodies, and Zotero refuses paper 2. */
-  writeThreeNotes: () => Promise<JourneyTurn>;
+  /**
+   * Turn 1: one call carries all three bodies, and Zotero refuses paper 2.
+   *
+   * `refuseParentId: null` lets every note land instead, for a reader that
+   * needs a batch whose whole-set postcondition holds.
+   */
+  writeThreeNotes: (options?: {
+    refuseParentId?: number | null;
+  }) => Promise<JourneyTurn>;
   /** Turn 2: the model continues the batch by name; no body is authored twice. */
   finishTheRest: () => Promise<JourneyTurn>;
   /** Turn 3: one undo reverts the whole set. */
@@ -623,8 +646,12 @@ export function beginBatchMaterialJourney(
     });
   };
   return {
-    async writeThreeNotes() {
-      library.refuseNoteFor(REFUSED_PAPER_ID);
+    async writeThreeNotes(options?: { refuseParentId?: number | null }) {
+      const refused =
+        options?.refuseParentId === undefined
+          ? REFUSED_PAPER_ID
+          : options.refuseParentId;
+      library.refuseNoteFor(refused === null ? undefined : refused);
       try {
         const turn = await runTurn(
           "Write a summary note on each of these three papers",

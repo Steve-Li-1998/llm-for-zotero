@@ -199,15 +199,19 @@ export const noteLifecycleExecutors = {
         // the verifier is told which collections it was filed into instead;
         // a child note is checked against the paper it was written onto.
         const standalone = operation.target === "standalone";
-        if (saved.noteVerification && saved.noteId)
-          noteWrites.push({
-            noteId: saved.noteId,
-            ...(standalone ? {} : { parentItemId: target.id }),
-            ...(standalone && entry.collections?.length
-              ? { collections: entry.collections }
-              : {}),
-            verification: saved.noteVerification,
-          });
+        // Unconditional on purpose: `executeNoteCreation` throws unless the
+        // note it created read back as the finalized content, so a success
+        // always carries both the id and that read-back. Guarding here would
+        // turn a future divergence into a silently missing receipt fact; this
+        // way the verifier sees the write and rejects it out loud.
+        noteWrites.push({
+          noteId: saved.noteId,
+          ...(standalone ? {} : { parentItemId: target.id }),
+          ...(standalone && entry.collections?.length
+            ? { collections: entry.collections }
+            : {}),
+          verification: saved.noteVerification,
+        });
         const childActionId = (
           execution.content as unknown as { actionId?: unknown }
         ).actionId;

@@ -1,23 +1,21 @@
 import type { AgentActionOperation } from "../../../agent/contracts/types";
+import type { ActionCardVerb } from "../../../agent/types";
 import { operationCatalogEntry } from "../../../agent/contracts/operationCatalog";
 
 /**
- * How the action card draws an operation: an optional glyph, and whether that
- * glyph is drawn in the destructive colour.
+ * How the action card draws an operation, declared beside the card type in
+ * `agent/types` so the runtime layer never has to reach into the panel.
  *
- * The reader-facing word is not here. `operationLabel()` in the operation
- * catalog is the single vocabulary for naming an operation to a person, and
- * the renderer takes the card's tooltip from it; a second table of words
- * beside the renderer would only drift from the catalog's.
+ * The reader-facing word is not part of it. `operationLabel()` in the
+ * operation catalog is the single vocabulary for naming an operation to a
+ * person, and the renderer takes the card's tooltip from it; a second table of
+ * words beside the renderer would only drift from the catalog's.
  *
  * A glyph is used only where it says something the object chip cannot: moving
  * (→), adding (+), removing (−), restoring (↺), running (›). Note, file and
  * metadata effects show their chip alone.
  */
-export type ActionCardVerb = {
-  glyph?: "→" | "+" | "−" | "↺" | "›";
-  destructive?: true;
-};
+export type { ActionCardVerb };
 
 export const OPERATION_VERBS = {
   update_metadata: {},

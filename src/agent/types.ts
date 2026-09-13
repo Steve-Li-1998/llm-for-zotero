@@ -45,6 +45,7 @@ import type {
   AgentActionReceipt,
   AgentToolActionDescriptor,
 } from "./contracts/types";
+import type { AgentActionVerification } from "./contracts/actionVerificationLabels";
 import type {
   PlanEvent,
   PlanEffectSpecification,
@@ -1411,12 +1412,90 @@ export type AgentNoteChangeResultCard = {
 };
 
 /**
+ * How the action card draws an operation: an optional glyph, and whether that
+ * glyph is drawn in the destructive colour.
+ *
+ * The reader-facing word is not here; `operationLabel()` in the operation
+ * catalog is the single vocabulary for naming an operation to a person. Which
+ * operation carries which glyph is the panel's table
+ * (`agentTrace/actionCardVocabulary`); only the shape lives here, so the card
+ * type can be stated without the runtime layer reaching into the panel.
+ */
+export type ActionCardVerb = {
+  glyph?: "→" | "+" | "−" | "↺" | "›";
+  destructive?: true;
+};
+
+/** A native object an effect covered, named the way the reader already sees it. */
+export type ActionCardTarget =
+  | {
+      kind: "item";
+      itemId: number;
+      label: string;
+      libraryID?: number;
+      itemKey?: string;
+    }
+  | {
+      kind: "collection";
+      collectionId: number;
+      label: string;
+      libraryID?: number;
+    }
+  | { kind: "library"; libraryID: number; label: string };
+
+/** What an effect acted on, beyond the targets it covered. */
+export type ActionCardObject =
+  | {
+      kind: "collection";
+      label: string;
+      collectionId?: number;
+      libraryID?: number;
+    }
+  | { kind: "tag"; label: string; removed?: true }
+  | {
+      kind: "note";
+      label: string;
+      noteId?: number;
+      libraryID?: number;
+      itemKey?: string;
+    }
+  | { kind: "file"; label: string; path: string }
+  | { kind: "command"; label: string }
+  | { kind: "trash"; libraryID?: number }
+  | { kind: "field"; label: string };
+
+/** One receipt's effect: how it is drawn, what it is called, what it touched. */
+export type ActionCardEffect = {
+  receiptId: string;
+  operation: string;
+  verb: ActionCardVerb;
+  label: string;
+  objects: ActionCardObject[];
+};
+
+/** One row of the card: the objects a set of effects covered, and its verdict. */
+export type ActionCardEntry = {
+  targets: ActionCardTarget[];
+  effects: ActionCardEffect[];
+  verification: AgentActionVerification | null;
+  badges: string[];
+  authority?: "external_runtime";
+  rejected: ActionCardTarget[];
+  rejectedReason?: string;
+  /** Set by render.ts when a note card matches a note effect in this row. */
+  detail?:
+    | { kind: "saved_note"; card: AgentSavedNoteResultCard }
+    | { kind: "note_change"; card: AgentNoteChangeResultCard };
+};
+
+/**
  * What one turn did, as the reader is told at the end of its trace.
  *
  * Every row comes from receipts: the objects they covered, the operations they
  * state, the objects those acted on, and what their verification proved.
  * Nothing here is read from a tool name, and nothing is added that no receipt
- * claims. The row shape lives beside the projection that builds it.
+ * claims. The projection that builds the rows is the panel's
+ * (`agentTrace/actionCardModel`), which re-exports these shapes.
  */
 export type AgentActionSummaryResultCard = {
   kind: "action_summary";
@@ -1424,7 +1503,7 @@ export type AgentActionSummaryResultCard = {
   answerMaterial?: string;
   /** Receipt count, for the pill. */
   actionCount: number;
-  entries: readonly import("../modules/contextPanel/agentTrace/actionCardModel").ActionCardEntry[];
+  entries: readonly ActionCardEntry[];
 };
 
 export type AgentToolResultCard =

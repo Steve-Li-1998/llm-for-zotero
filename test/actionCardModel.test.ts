@@ -278,6 +278,10 @@ describe("action card model", function () {
     assert.deepEqual(byOp.command_execute.f.objects, [
       { kind: "command", label: "pandoc a.md -o a.docx" },
     ]);
+    // Two receipts that named no item share no object, so they never share a
+    // verdict: the file write stays verified beside the command that was not.
+    assert.notStrictEqual(byOp.file_write.e, byOp.command_execute.e);
+    assert.deepEqual(byOp.file_write.e.badges, ["Verified"]);
     assert.deepEqual(byOp.command_execute.e.badges, ["Ran (no state proof)"]);
     assert.deepEqual(byOp.update_metadata.f.objects, [
       { kind: "field", label: "DOI" },
@@ -317,6 +321,153 @@ describe("action card model", function () {
         resolvers,
       )?.actionCount,
       1,
+    );
+  });
+
+  it("gives a merged row the weakest proof its receipts carry", function () {
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "t",
+            operation: "apply_tags",
+            capability: "zotero.tags",
+            normalizedParameters: { tags: ["to-read"] },
+          }),
+        ]),
+        toolResult(2, [
+          receipt({
+            id: "d",
+            operation: "update_metadata",
+            capability: "zotero.metadata",
+            verification: "unverified",
+            normalizedParameters: { metadataFields: ["DOI"] },
+          }),
+        ]),
+      ],
+      resolvers,
+    );
+    assert.lengthOf(card!.entries, 1);
+    assert.equal(card!.entries[0].verification, "unverified");
+    assert.deepEqual(card!.entries[0].badges, ["Unverified"]);
+  });
+
+  it("keeps a receipt that rejected a target out of a clean row on the same targets", function () {
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "m",
+            operation: "move_to_collection",
+            status: "partial",
+            requestedTargets: ["item:11", "item:12"],
+            appliedTargets: ["item:11"],
+            rejectedTargets: ["item:12"],
+            reasons: ["already in Reviews"],
+            normalizedParameters: { collectionName: "Reviews" },
+          }),
+        ]),
+        toolResult(2, [
+          receipt({
+            id: "t",
+            operation: "apply_tags",
+            capability: "zotero.tags",
+            normalizedParameters: { tags: ["to-read"] },
+          }),
+        ]),
+      ],
+      resolvers,
+    );
+    assert.lengthOf(card!.entries, 2);
+    assert.deepEqual(
+      card!.entries[0].effects.map((e) => e.operation),
+      ["move_to_collection"],
+    );
+    assert.deepEqual(
+      card!.entries[0].rejected.map((t) => t.label),
+      ["Lee, 2020"],
+    );
+    assert.deepEqual(
+      card!.entries[1].effects.map((e) => e.operation),
+      ["apply_tags"],
+    );
+    assert.deepEqual(card!.entries[1].rejected, []);
+    assert.isUndefined(card!.entries[1].rejectedReason);
+  });
+
+  it("merges the same targets however the receipts ordered them", function () {
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "t",
+            operation: "apply_tags",
+            capability: "zotero.tags",
+            requestedTargets: ["item:11", "item:12"],
+            appliedTargets: ["item:11", "item:12"],
+            normalizedParameters: { tags: ["to-read"] },
+          }),
+        ]),
+        toolResult(2, [
+          receipt({
+            id: "u",
+            operation: "remove_tags",
+            capability: "zotero.tags",
+            requestedTargets: ["item:12", "item:11"],
+            appliedTargets: ["item:12", "item:11"],
+            normalizedParameters: { tags: ["triage"] },
+          }),
+        ]),
+      ],
+      resolvers,
+    );
+    assert.lengthOf(card!.entries, 1);
+    assert.deepEqual(
+      card!.entries[0].effects.map((e) => e.operation),
+      ["apply_tags", "remove_tags"],
+    );
+    assert.deepEqual(
+      card!.entries[0].targets.map((t) => t.itemId),
+      [11, 12],
+    );
+  });
+
+  it("never merges two items that happen to read the same", function () {
+    const sameLabel: ActionCardResolvers = {
+      ...resolvers,
+      itemLabel: () => ({ label: "Item X" }),
+    };
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "t",
+            operation: "apply_tags",
+            capability: "zotero.tags",
+            normalizedParameters: { tags: ["to-read"] },
+          }),
+        ]),
+        toolResult(2, [
+          receipt({
+            id: "u",
+            operation: "apply_tags",
+            capability: "zotero.tags",
+            requestedTargets: ["item:12"],
+            appliedTargets: ["item:12"],
+            normalizedParameters: { tags: ["to-read"] },
+          }),
+        ]),
+      ],
+      sameLabel,
+    );
+    assert.lengthOf(card!.entries, 2);
+    assert.deepEqual(
+      card!.entries.map((e) => e.targets.map((t) => t.itemId)),
+      [[11], [12]],
+    );
+    assert.deepEqual(
+      card!.entries.map((e) => e.targets.map((t) => t.label)),
+      [["Item X"], ["Item X"]],
     );
   });
 

@@ -1,8 +1,10 @@
 import type {
+  ActionCardEffect,
+  ActionCardEntry,
+  ActionCardObject,
+  ActionCardTarget,
   AgentActionSummaryResultCard,
-  AgentNoteChangeResultCard,
   AgentRunEventRecord,
-  AgentSavedNoteResultCard,
 } from "../../../agent/types";
 import type { AgentActionReceipt } from "../../../agent/contracts/types";
 import { receiptReportsEffect } from "../../../agent/contracts/actionEvaluation";
@@ -12,69 +14,17 @@ import {
   type AgentActionVerification,
 } from "../../../agent/contracts/actionVerificationLabels";
 import { operationLabel } from "../../../agent/contracts/operationCatalog";
-import { operationVerb, type ActionCardVerb } from "./actionCardVocabulary";
+import { operationVerb } from "./actionCardVocabulary";
 
-/** A native object an effect covered, named the way the reader already sees it. */
-export type ActionCardTarget =
-  | {
-      kind: "item";
-      itemId: number;
-      label: string;
-      libraryID?: number;
-      itemKey?: string;
-    }
-  | {
-      kind: "collection";
-      collectionId: number;
-      label: string;
-      libraryID?: number;
-    }
-  | { kind: "library"; libraryID: number; label: string };
-
-/** What an effect acted on, beyond the targets it covered. */
-export type ActionCardObject =
-  | {
-      kind: "collection";
-      label: string;
-      collectionId?: number;
-      libraryID?: number;
-    }
-  | { kind: "tag"; label: string; removed?: true }
-  | {
-      kind: "note";
-      label: string;
-      noteId?: number;
-      libraryID?: number;
-      itemKey?: string;
-    }
-  | { kind: "file"; label: string; path: string }
-  | { kind: "command"; label: string }
-  | { kind: "trash"; libraryID?: number }
-  | { kind: "field"; label: string };
-
-/** One receipt's effect: how it is drawn, what it is called, what it touched. */
-export type ActionCardEffect = {
-  receiptId: string;
-  operation: string;
-  verb: ActionCardVerb;
-  label: string;
-  objects: ActionCardObject[];
-};
-
-/** One row of the card: the objects a set of effects covered, and its verdict. */
-export type ActionCardEntry = {
-  targets: ActionCardTarget[];
-  effects: ActionCardEffect[];
-  verification: AgentActionVerification | null;
-  badges: string[];
-  authority?: "external_runtime";
-  rejected: ActionCardTarget[];
-  rejectedReason?: string;
-  /** Set by render.ts when a note card matches a note effect in this row. */
-  detail?:
-    | { kind: "saved_note"; card: AgentSavedNoteResultCard }
-    | { kind: "note_change"; card: AgentNoteChangeResultCard };
-};
+// The card's row shapes are declared beside the card type in `agent/types`, so
+// the runtime layer can state what a turn did without depending on the panel.
+// They are re-exported here because this module is where they are built.
+export type {
+  ActionCardTarget,
+  ActionCardObject,
+  ActionCardEffect,
+  ActionCardEntry,
+} from "../../../agent/types";
 
 /**
  * How the card names native objects.
@@ -349,8 +299,9 @@ function rowBadges(
  *
  * Receipts that covered the same set of items share a row, keyed by those item
  * ids rather than by their labels, so two items that happen to read the same
- * never collapse into one. A receipt that rejected a target keeps its own row:
- * its rejection belongs to it alone, and merging it would attach the reason to
+ * never collapse into one. A receipt that named no item, and a receipt that
+ * rejected a target, each keep a row of their own: the first shares no object
+ * with anything, and the second owns a rejection that must not be attached to
  * effects that never hit it.
  *
  * The resolvers name native objects; a resolver that returns nothing leaves the
@@ -376,7 +327,12 @@ export function buildAgentActionSummaryCard(
     const targetKey = [...new Set(targets.map((target) => target.itemId))]
       .sort((left, right) => left - right)
       .join(",");
-    const key = rejected.length ? `${targetKey} ${receipt.id}` : targetKey;
+    // A row states one verdict for the objects it lists, so only receipts that
+    // named the same objects may share it. A receipt that named none has
+    // nothing to share — a verified file write must not inherit a command's
+    // "no state proof" — and a receipt that rejected a target owns its reason.
+    // Both keep a row of their own.
+    const key = targetKey && !rejected.length ? targetKey : `#${receipt.id}`;
     const existing = rows.get(key);
     if (existing) {
       existing.effects.push(effect);

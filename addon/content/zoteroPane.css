@@ -345,6 +345,12 @@
   --llm-codeblock-string: #86efac;
   --llm-codeblock-number: #fde68a;
   --llm-codeblock-meta: #fda4af;
+  --llm-diff-add-bg: rgba(63, 185, 110, 0.13);
+  --llm-diff-add-strong: rgba(63, 185, 110, 0.36);
+  --llm-diff-add-fg: #5fcf8a;
+  --llm-diff-remove-bg: rgba(226, 88, 88, 0.13);
+  --llm-diff-remove-strong: rgba(226, 88, 88, 0.34);
+  --llm-diff-remove-fg: #ea7c7c;
   --llm-mermaid-canvas-bg: #151515;
   --llm-mermaid-canvas-border: rgba(255, 255, 255, 0.12);
   --llm-mermaid-button-bg: transparent;
@@ -6712,8 +6718,6 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-hitl-diff {
-  --llm-agent-hitl-diff-add-text: var(--llm-diff-add-fg);
-  --llm-agent-hitl-diff-remove-text: var(--llm-diff-remove-fg);
   border: 1px solid var(--stroke-secondary);
   border-radius: 10px;
   overflow: hidden;
@@ -7502,17 +7506,6 @@ label.llm-search-results-item:hover {
 @media (prefers-color-scheme: dark) {
   .llm-rose-loader-inline {
     color: rgb(255, 255, 255) !important;
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  .llm-panel {
-    --llm-diff-add-bg: rgba(63, 185, 110, 0.13);
-    --llm-diff-add-strong: rgba(63, 185, 110, 0.36);
-    --llm-diff-add-fg: #5fcf8a;
-    --llm-diff-remove-bg: rgba(226, 88, 88, 0.13);
-    --llm-diff-remove-strong: rgba(226, 88, 88, 0.34);
-    --llm-diff-remove-fg: #ea7c7c;
   }
 }
 

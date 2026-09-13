@@ -13,7 +13,10 @@ import {
   initAgentPlanStore,
   listTaskEvidence,
   loadPlanExecutionLedger,
+  savePlanExecutionLedger,
 } from "../src/agent/plans/store";
+import { buildApprovedPlanExecutionInstructions } from "../src/agent/plans/executionInstructions";
+import { ToolInputRejection } from "../src/agent/tools/execution/failure";
 import { initResearchStore } from "../src/agent/research/store";
 import type { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import type { AgentRuntimeRequest } from "../src/agent/types";
@@ -61,10 +64,69 @@ describe("document finalization persistence", function () {
     db.close();
   });
 
-  for (const origin of ["planned", "direct"] as const) {
+  it("does not direct final publication through the intermediate material route", async function () {
+    const plan = await createDocumentPlan();
+    plan.tasks[0].materialOutputId = "final-document";
+    assert.notInclude(
+      buildApprovedPlanExecutionInstructions(plan),
+      "Generate materialOutputId=final-document",
+    );
+    plan.tasks[0].completionRequirements = [];
+    assert.include(
+      buildApprovedPlanExecutionInstructions(plan),
+      "Generate materialOutputId=final-document",
+    );
+  });
+
+  it("returns recoverable guidance without publishing during prerequisite work", async function () {
+    const plan = await createDocumentPlan();
+    plan.tasks[0].content = "Verify the paper evidence";
+    plan.tasks[0].completionRequirements = [];
+    await savePlanExecutionLedger(plan);
+    let failure: unknown;
+    try {
+      await new PlanDocumentFinalizer({} as ZoteroGateway).finalize({
+        executionId: plan.executionId,
+        activeTaskId: plan.activeTaskId!,
+        input: {
+          title: "Guide",
+          markdown: "# Guide\n\nA premature draft.",
+          citations: [],
+          quotes: [],
+          assets: [],
+          groundingReviewed: "passed",
+          groundingIssues: [],
+        },
+        now: 4,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.instanceOf(failure, ToolInputRejection);
+    assert.include(String(failure), "Verify the paper evidence");
+    assert.include(String(failure), "research_update next_work");
+    assert.equal(
+      db
+        .prepare("SELECT COUNT(*) AS count FROM llm_for_zotero_plan_documents")
+        .get()?.count,
+      0,
+    );
+  });
+
+  for (const origin of ["planned", "planned-material", "direct"] as const) {
     it(`preserves ${origin} document identity, hash, retry and publication`, async function () {
-      const plan =
-        origin === "planned" ? await createDocumentPlan() : undefined;
+      const plan = origin !== "direct" ? await createDocumentPlan() : undefined;
+      if (plan && origin === "planned-material") {
+        const task = plan.tasks[0];
+        task.materialOutputId = "review";
+        task.completionRequirements!.push({
+          requirementId: "review-material",
+          kind: "material_integrity",
+          criterionIds: ["review-content"],
+          contractDigest: task.completionRequirements![0].contractDigest,
+        });
+        await savePlanExecutionLedger(plan);
+      }
       const input = {
         title: "Guide",
         markdown: "# Guide\n\nAn exact saved guide.",
@@ -158,7 +220,7 @@ describe("document finalization persistence", function () {
       if (plan)
         assert.lengthOf(
           await listTaskEvidence(plan.executionId, plan.activeTaskId!),
-          1,
+          origin === "planned-material" ? 2 : 1,
         );
       await deliverPendingPlanDocumentMessage({
         conversationKey: 41,
@@ -175,6 +237,48 @@ describe("document finalization persistence", function () {
           (await loadPlanExecutionLedger(plan.executionId))?.status,
           "completed",
         );
+      if (plan && origin === "planned-material") {
+        // The reported native run saved and delivered its document, but its
+        // missing material evidence left publication interrupted on recovery.
+        db.exec(
+          "DELETE FROM llm_for_zotero_plan_task_evidence WHERE kind = 'material_integrity'",
+        );
+        const interrupted = (await loadPlanExecutionLedger(plan.executionId))!;
+        interrupted.status = "interrupted";
+        interrupted.activeTaskId = undefined;
+        interrupted.tasks[0].status = "interrupted";
+        interrupted.tasks[0].evidenceIds =
+          interrupted.tasks[0].evidenceIds.filter(
+            (id) => !id.endsWith(":material"),
+          );
+        await savePlanExecutionLedger(interrupted);
+        await deliverPendingPlanDocumentMessage({
+          conversationKey: 41,
+          documentId: first.document.documentId,
+          visibleMarkdown: input.markdown,
+          messageTimestamp: 5,
+        });
+        assert.equal(
+          (await loadPlanExecutionLedger(plan.executionId))?.status,
+          "completed",
+        );
+      }
+      if (plan) {
+        const historical = (await loadPlanExecutionLedger(plan.executionId))!;
+        historical.status = "superseded";
+        await savePlanExecutionLedger(historical);
+        const reopened = await deliverPendingPlanDocumentMessage({
+          conversationKey: 41,
+          documentId: first.document.documentId,
+          visibleMarkdown: input.markdown,
+          messageTimestamp: 5,
+        });
+        assert.equal(reopened?.contentHash, first.document.contentHash);
+        assert.deepEqual(
+          await loadPlanExecutionLedger(plan.executionId),
+          historical,
+        );
+      }
     });
   }
 });

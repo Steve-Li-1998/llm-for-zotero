@@ -13,6 +13,7 @@ import {
   loadPlanDocumentOutbox,
 } from "../../../agent/documents/store";
 import type { PlanDocument } from "../../../agent/documents/types";
+import { subscribeDocumentPublication } from "../../../agent/documents/publicationEvents";
 import { planExecutionCoordinator } from "../../../agent/plans/coordinator";
 import {
   loadPlanArtifact,
@@ -3527,6 +3528,8 @@ function summarizeAgentTraceConfirmationResolved(
   const selectedActionLabel =
     action.actions?.find((entry) => entry.id === actionId)?.label ||
     (approved ? action.confirmLabel : action.cancelLabel);
+  const planningQuestionCount =
+    action.toolName === "request_user_input" ? action.fields.length : 0;
   const text =
     resolveToolPresentationSummary(
       approved
@@ -3534,18 +3537,61 @@ function summarizeAgentTraceConfirmationResolved(
         : getToolDefinition(toolName)?.presentation?.summaries?.onDenied,
       { label, request },
     ) ||
-    (approved
-      ? action.mode === "review"
-        ? `Review received - selected "${selectedActionLabel}" for ${label}`
-        : `Approval received - continuing with ${label}`
-      : action.mode === "review"
-        ? `Stopped ${label} after review`
-        : `Cancelled ${label}`);
+    (approved && planningQuestionCount
+      ? `Answered ${planningQuestionCount} planning question${planningQuestionCount === 1 ? "" : "s"}`
+      : approved
+        ? action.mode === "review"
+          ? `Review received - selected "${selectedActionLabel}" for ${label}`
+          : `Approval received - continuing with ${label}`
+        : action.mode === "review"
+          ? `Stopped ${label} after review`
+          : `Cancelled ${label}`);
   return {
     kind: approved ? "ok" : "skip",
     icon: approved ? "✓" : "-",
     text,
   };
+}
+
+function buildPlanningQuestionTraceDetails(
+  action: AgentPendingAction,
+  data: unknown,
+): AgentTraceDetail[] {
+  if (
+    action.toolName !== "request_user_input" ||
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data)
+  ) {
+    return [];
+  }
+  const answers = data as Record<string, unknown>;
+  return action.fields.flatMap((field) => {
+    const raw = answers[field.id];
+    let answer = "";
+    if (typeof raw === "string") {
+      answer = sanitizeText(raw).trim();
+    } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const choice = raw as Record<string, unknown>;
+      if (choice.kind === "custom" && typeof choice.text === "string") {
+        answer = sanitizeText(choice.text).trim();
+      } else if (
+        choice.kind === "option" &&
+        typeof choice.optionId === "string" &&
+        field.type === "choice"
+      ) {
+        answer =
+          field.options.find((option) => option.id === choice.optionId)
+            ?.label || "";
+      }
+    }
+    const question = sanitizeText(field.label || "").trim();
+    return question && answer
+      ? [normalizeAgentTraceDetail(question, answer, "text")].filter(
+          (detail): detail is AgentTraceDetail => Boolean(detail),
+        )
+      : [];
+  });
 }
 
 function toolContentLooksEmpty(content: unknown): boolean {
@@ -4360,9 +4406,13 @@ function appendSharedAgentTraceEvent(
           entry.payload.action,
           ctx.requestSummary,
         ),
+        ...(entry.payload.action.toolName === "request_user_input"
+          ? { detailKey: `confirmation:${entry.payload.requestId}` }
+          : {}),
       });
       return true;
     case "confirmation_resolved": {
+      const requestId = entry.payload.requestId;
       const action = ctx.pendingActions.get(entry.payload.requestId) || {
         toolName: "action",
         title: "Action",
@@ -4371,7 +4421,7 @@ function appendSharedAgentTraceEvent(
         fields: [],
       };
       ctx.pendingActions.delete(entry.payload.requestId);
-      ctx.items.push({
+      const resolvedItem: Extract<AgentTraceDisplayItem, { type: "action" }> = {
         type: "action",
         row: summarizeAgentTraceConfirmationResolved(
           action,
@@ -4379,7 +4429,27 @@ function appendSharedAgentTraceEvent(
           entry.payload.actionId,
           ctx.requestSummary,
         ),
-      });
+        ...(action.toolName === "request_user_input"
+          ? {
+              detailKey: `confirmation:${requestId}`,
+              details: buildPlanningQuestionTraceDetails(
+                action,
+                entry.payload.data,
+              ),
+            }
+          : {}),
+      };
+      if (action.toolName === "request_user_input") {
+        const existingIndex = ctx.items.findIndex(
+          (item) =>
+            item.type === "action" &&
+            item.detailKey === `confirmation:${requestId}`,
+        );
+        if (existingIndex >= 0) ctx.items[existingIndex] = resolvedItem;
+        else ctx.items.push(resolvedItem);
+      } else {
+        ctx.items.push(resolvedItem);
+      }
       return true;
     }
     case "final": {
@@ -4803,12 +4873,21 @@ function renderAgentTraceDetailsBody(
     label.textContent = detail.label;
 
     if (detail.kind === "code" || detail.kind === "json") {
-      const pre = doc.createElement("pre") as HTMLPreElement;
-      pre.className = `llm-agent-process-detail-value llm-agent-process-detail-value-${detail.kind}`;
-      const code = doc.createElement("code") as HTMLElement;
-      code.textContent = detail.value;
-      pre.appendChild(code);
-      item.append(label, pre);
+      const value = doc.createElement("div") as HTMLDivElement;
+      value.className = "llm-agent-trace-code";
+      // A fence longer than any run in the payload keeps embedded Markdown
+      // and HTML inside the code block, using the shared safe renderer.
+      const longestFence = (detail.value.match(/`+/g) || []).reduce(
+        (longest, run) => Math.max(longest, run.length),
+        2,
+      );
+      const fence = "`".repeat(longestFence + 1);
+      renderRenderedMarkdownInto(
+        value,
+        `${fence}${detail.kind === "json" ? "json" : "text"}\n${detail.value}\n${fence}`,
+        doc,
+      );
+      item.append(label, value);
     } else {
       const value = doc.createElement("div") as HTMLDivElement;
       value.className = `llm-agent-process-detail-value${
@@ -5399,8 +5478,11 @@ function renderPlanDocumentCard(params: {
   root.dataset.llmPlanDocumentId = params.documentId;
   root.textContent = "Loading document…";
   let disposed = false;
+  let loadVersion = 0;
+  let unsubscribe = () => {};
   cardDisposers.set(root, () => {
     disposed = true;
+    unsubscribe();
   });
 
   const paint = (document: PlanDocument) => {
@@ -5503,31 +5585,37 @@ function renderPlanDocumentCard(params: {
     const figures = renderPlanDocumentFigures(params.doc, document);
     if (figures) root.appendChild(figures);
     if (coverage) root.appendChild(coverage);
+    unsubscribe();
     params.onReady?.();
   };
 
-  void Promise.all([
-    loadPlanDocument(params.documentId),
-    loadPlanDocumentOutbox(params.documentId),
-  ])
-    .then(([document, outbox]) => {
-      if (disposed || !root.isConnected) return;
-      if (!document) {
-        root.textContent = "Document is unavailable";
-      } else if (outbox?.status !== "delivered") {
-        // submit_document persists before the assistant message. Do not expose
-        // that durable draft as a finished outcome until message publication
-        // and (for Plans) the terminal ledger transition commit together.
-        root.textContent = "Publishing document…";
-      } else {
-        paint(document);
-      }
-    })
-    .catch((error) => {
-      if (!disposed && root.isConnected)
-        root.textContent =
-          error instanceof Error ? error.message : String(error);
-    });
+  const reload = () => {
+    const version = ++loadVersion;
+    void Promise.all([
+      loadPlanDocument(params.documentId),
+      loadPlanDocumentOutbox(params.documentId),
+    ])
+      .then(([document, outbox]) => {
+        if (disposed || !root.isConnected || version !== loadVersion) return;
+        if (!document) {
+          root.textContent = "Document is unavailable";
+        } else if (outbox?.status !== "delivered") {
+          // submit_document persists before the assistant message. Do not expose
+          // that durable draft as a finished outcome until message publication
+          // and (for Plans) the terminal ledger transition commit together.
+          root.textContent = "Publishing document…";
+        } else {
+          paint(document);
+        }
+      })
+      .catch((error) => {
+        if (!disposed && root.isConnected && version === loadVersion)
+          root.textContent =
+            error instanceof Error ? error.message : String(error);
+      });
+  };
+  unsubscribe = subscribeDocumentPublication(params.documentId, reload);
+  reload();
   return root;
 }
 

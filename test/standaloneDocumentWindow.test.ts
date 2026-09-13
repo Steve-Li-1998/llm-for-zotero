@@ -144,6 +144,7 @@ describe("standalone document window", function () {
 
     assert.isTrue(openStandaloneDocumentWindow(options));
     assert.equal(renderCount, 1);
+    assert.equal(windows[0].focusCount, 1);
     assert.lengthOf(openCalls, 1);
     assert.include(String(openCalls[0][0]), "standaloneResponseDocument.xhtml");
     assert.equal(firstDoc.title, "Response from Codex");
@@ -160,7 +161,7 @@ describe("standalone document window", function () {
 
     assert.isTrue(openStandaloneDocumentWindow(options));
     assert.lengthOf(openCalls, 1);
-    assert.equal(windows[0].focusCount, 1);
+    assert.equal(windows[0].focusCount, 2);
     assert.equal(renderCount, 1);
 
     assert.isTrue(

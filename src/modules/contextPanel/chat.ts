@@ -258,6 +258,7 @@ import {
   getCancelledRequestId,
   getPendingRequestId,
   getLivePlanExecution,
+  recordLivePlanExecution,
   getAbortController,
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
@@ -2947,7 +2948,7 @@ function syncFloatingPlanProgress(
   const progress = renderPlanProgress(
     chatBox.ownerDocument,
     binding.ledger,
-    getCachedAgentRunEvents(binding.runId),
+    message.pendingAgentTraceEvents || getCachedAgentRunEvents(binding.runId),
     current,
   );
   if (progress.dataset.llmPlanRequestId !== `${binding.requestId}`)
@@ -3117,6 +3118,41 @@ type CodexNativeApprovalTrace = {
     resolution: AgentConfirmationResolution,
   ) => void;
 };
+
+export async function resolveCodexNativeHostInteractionWithTrace(params: {
+  body: Element;
+  action: AgentPendingAction;
+  trace?: CodexNativeApprovalTrace | null;
+  showActionCard?: typeof showNativeMcpActionCard;
+  nextRequestId?: () => string;
+  isCurrent?: () => boolean;
+}): Promise<AgentConfirmationResolution> {
+  if (params.isCurrent && !params.isCurrent()) return { approved: false };
+  const requestId =
+    params.nextRequestId?.() ||
+    `host-review-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
+  params.trace?.noteMcpConfirmationRequired?.(requestId, params.action);
+  let resolution: AgentConfirmationResolution;
+  try {
+    resolution = await (params.showActionCard || showNativeMcpActionCard)(
+      params.body,
+      requestId,
+      params.action,
+      undefined,
+      Boolean(params.trace?.noteMcpConfirmationRequired),
+    );
+  } catch (error) {
+    params.trace?.noteMcpConfirmationResolved?.(requestId, {
+      approved: false,
+    });
+    throw error;
+  }
+  if (params.isCurrent && !params.isCurrent()) {
+    resolution = { approved: false };
+  }
+  params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
+  return resolution;
+}
 
 export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
   body: Element;
@@ -3819,6 +3855,7 @@ function buildCodexNativeTurnCallbacks(ctx: {
     handleReasoning,
     handleUsage,
   } = ctx;
+  const executionRequestId = getPendingRequestId(ctx.conversationKey);
   const isLive = () =>
     !areConversationWritesFrozen(ctx.conversationKey) &&
     isConversationWriteGenerationCurrent(
@@ -3900,6 +3937,13 @@ function buildCodexNativeTurnCallbacks(ctx: {
     },
     onPlanExecutionUpdated: (ledger) => {
       if (!isLive()) return;
+      if (assistantMessage.agentRunId)
+        recordLivePlanExecution(
+          ctx.conversationKey,
+          executionRequestId,
+          assistantMessage.agentRunId,
+          ledger,
+        );
       flushResponseStream("event");
       codexActivityTrace?.appendPlanEvent({
         type: "plan_execution_updated",
@@ -3986,12 +4030,12 @@ function buildCodexNativeTurnCallbacks(ctx: {
       );
     },
     onHostInteraction: async (action) => {
-      if (!isLive()) return { approved: false };
-      const requestId = `host-review-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
-      codexActivityTrace?.noteMcpConfirmationRequired?.(requestId, action);
-      const resolution = await showNativeMcpActionCard(body, requestId, action);
-      codexActivityTrace?.noteMcpConfirmationResolved?.(requestId, resolution);
-      return isLive() ? resolution : { approved: false };
+      return resolveCodexNativeHostInteractionWithTrace({
+        body,
+        action,
+        trace: codexActivityTrace,
+        isCurrent: isLive,
+      });
     },
     onApprovalRequest: async (request) => {
       if (!isLive())
@@ -4008,6 +4052,9 @@ function buildCodexNativeTurnCallbacks(ctx: {
     },
   };
 }
+
+export const buildCodexNativeTurnCallbacksForTests =
+  buildCodexNativeTurnCallbacks;
 
 async function finalizeCodexPlanExecution(params: {
   planContext?: import("../../agent/plans/types").PlanRuntimeContext;
@@ -6064,7 +6111,12 @@ const queuedPanelRefreshes = new WeakMap<
   Element,
   Set<ReturnType<typeof createCoalescedFrameScheduler>>
 >();
-function createQueuedRefresh(refresh: () => void, body?: Element): () => void {
+type QueuedRefresh = (() => void) & { flush: () => void };
+
+function createQueuedRefresh(
+  refresh: () => void,
+  body?: Element,
+): QueuedRefresh {
   const scheduler = createCoalescedFrameScheduler({
     getWindow: () =>
       body?.ownerDocument?.defaultView || Zotero.getMainWindow?.(),
@@ -6073,7 +6125,7 @@ function createQueuedRefresh(refresh: () => void, body?: Element): () => void {
       if (!body || body.isConnected) refresh();
     },
   });
-  return () => {
+  const schedule = () => {
     if (body) {
       let pending = queuedPanelRefreshes.get(body);
       if (!pending) {
@@ -6084,6 +6136,8 @@ function createQueuedRefresh(refresh: () => void, body?: Element): () => void {
     }
     scheduler.schedule();
   };
+  schedule.flush = () => scheduler.flush();
+  return schedule;
 }
 
 export function disposeChatRendering(body: Element): void {
@@ -6639,11 +6693,12 @@ function getCodexNativeGeneratedImage(
 
 function createCodexNativeActivityTraceController(
   assistantMessage: Message,
-  queueRefresh: () => void,
+  queueRefresh: (() => void) & { flush?: () => void },
 ) {
   const runId =
     assistantMessage.agentRunId?.trim() ||
     `codex-native-${Math.floor(assistantMessage.timestamp || Date.now())}`;
+  assistantMessage.agentRunId = runId;
   const events: AgentRunEventRecord[] = [];
   const progressEventIndexes = new Map<string, number>();
   const toolEventIndexes = new Map<string, number>();
@@ -6666,11 +6721,12 @@ function createCodexNativeActivityTraceController(
       seq: index + 1,
       payload: { ...entry.payload } as AgentEvent,
     }));
-  const sync = () => {
+  const sync = (flush = false) => {
     assistantMessage.pendingAgentTraceEvents = events.length
       ? snapshotEvents()
       : undefined;
     queueRefresh();
+    if (flush) queueRefresh.flush?.();
   };
 
   const upsertProgressText = (
@@ -7233,7 +7289,10 @@ function createCodexNativeActivityTraceController(
         data: resolution.data,
       }),
     );
-    sync();
+    // Confirmation settlement is a user-visible state transition. Flush it
+    // synchronously so a background origin window cannot hold the resolved
+    // card until Zotero focuses that window and releases its throttled timers.
+    sync(true);
   };
 
   const noteAgentMessageCompleted = (
@@ -7348,6 +7407,9 @@ function createCodexNativeActivityTraceController(
         );
         assistantMessage.agentRunId = runId;
         agentRunTraceCache.set(runId, snapshot);
+        // Native completion temporarily points at the host journal. Repaint
+        // after restoring the full presentation trace, including user answers.
+        sync(true);
       });
     },
     appendAgentMessageDelta,

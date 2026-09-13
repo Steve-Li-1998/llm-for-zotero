@@ -125,7 +125,8 @@ describe("workflow: direct document quote publication", function () {
       const validated = tool.validate(input);
       assert.isTrue(validated.ok, JSON.stringify(validated));
       const result = await tool.execute(validated.value, context);
-      const document = await loadPlanDocument(result.documentId);
+      assert.isString(result.content.documentId);
+      const document = await loadPlanDocument(result.content.documentId);
       assert.isOk(document, "the tool publishes a durable document");
       if (!document) return;
       assert.equal(document.validation.quoteVerified, "verified");

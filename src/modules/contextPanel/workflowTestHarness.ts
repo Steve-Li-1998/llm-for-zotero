@@ -4,10 +4,15 @@ import {
   exerciseNativeQuestionReview,
 } from "./nativePlanReviewReplay";
 import { exercisePlanHistoryReplay } from "./planHistoryReplay";
+import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import { exerciseStreamingReplay } from "./streamingReplay";
 import { buildUI } from "./buildUI";
 import { getAgentRuntime } from "../../agent";
-import { renderPendingActionCard, renderAgentTrace } from "./agentTrace/render";
+import {
+  renderPendingActionCard,
+  renderAgentTrace,
+  disposeAgentTrace,
+} from "./agentTrace/render";
 import { disposeSetupHandlers, setupHandlers } from "./setupHandlers";
 import { PLAN_APPROVED_EVENT } from "./planModeState";
 import {
@@ -1010,7 +1015,7 @@ async function exerciseBackgroundAgentPublication(input: {
     timestamp,
   });
   const tool = getAgentRuntime().getToolDefinition("submit_document")!;
-  const prepared = (await tool.execute(
+  const result = (await tool.execute(
     {
       title: "Background publication fixture",
       markdown:
@@ -1039,7 +1044,8 @@ async function exerciseBackgroundAgentPublication(input: {
       modelName: "workflow",
       currentAnswerText: "",
     } as never,
-  )) as { documentId: string; visibleMarkdown: string };
+  )) as { content: { documentId: string; visibleMarkdown: string } };
+  const prepared = result.content;
   const paperB = Zotero.Items.get(input.paperBItemId);
   disposeSetupHandlers(panel.body);
   bindTestPanelHost(panel.body, paperB);
@@ -5217,6 +5223,43 @@ export function installWorkflowTestHarness(targetAddon: {
 }): void {
   if (__env__ !== "test" && __env__ !== "development") return;
   targetAddon.api.workflowTest = {
+    mountPublicationTrace: (documentId, text) => {
+      const doc = Zotero.getMainWindow().document;
+      const root = renderAgentTrace({
+        doc,
+        message: {
+          role: "assistant",
+          timestamp: 1,
+          text,
+          documentId,
+          streaming: false,
+        },
+        events: [
+          {
+            runId: "publication-card",
+            seq: 1,
+            createdAt: 1,
+            eventType: "final",
+            payload: { type: "final", text },
+          },
+        ],
+      })!;
+      doc.documentElement.appendChild(root);
+      return {
+        root,
+        deliver: (conversationKey) =>
+          deliverPendingPlanDocumentMessage({
+            conversationKey,
+            documentId,
+            visibleMarkdown: text,
+            messageTimestamp: 1,
+          }).then(() => {}),
+        dispose: () => {
+          disposeAgentTrace(root);
+          root.remove();
+        },
+      };
+    },
     reset,
     enableLiveAgentSending: () => {
       assertWorkflowTestEnabled();

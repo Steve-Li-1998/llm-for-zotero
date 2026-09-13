@@ -8,6 +8,8 @@ import {
 } from "./store";
 import type { PlanDocument } from "./types";
 import { getPlannedDocumentOrigin } from "./types";
+import { buildPlanMaterialEvidence } from "../plans/materialEvidence";
+import { notifyDocumentPublication } from "./publicationEvents";
 export async function attachPublishedDocumentEvidence(params: {
   document: PlanDocument;
   deliveredAt?: number;
@@ -95,28 +97,7 @@ export async function deliverPendingPlanDocumentMessage(params: {
     );
   }
   const origin = getPlannedDocumentOrigin(document);
-  if (outbox.status === "delivered") {
-    // Recover histories produced before delivery and the terminal task
-    // transition became one transaction. A crash in that old gap left the
-    // document visible while its progress ledger remained non-terminal.
-    if (origin) {
-      const ledger = await loadPlanExecutionLedger(origin.executionId);
-      const task = ledger?.tasks.find(
-        (entry) => entry.taskId === origin.parentTaskId,
-      );
-      if (task?.status === "in_progress") {
-        await planExecutionCoordinator.requestTransition({
-          executionId: origin.executionId,
-          taskId: origin.parentTaskId,
-          toStatus: "completed",
-          evidenceIds: task.evidenceIds,
-          requestedBy: "host",
-        });
-      }
-    }
-    return document;
-  }
-  if (outbox.status !== "pending") return null;
+  if (outbox.status !== "pending" && outbox.status !== "delivered") return null;
   await Zotero.DB.executeTransaction(async () => {
     await markPlanDocumentDelivered({
       documentId: document.documentId,
@@ -124,6 +105,19 @@ export async function deliverPendingPlanDocumentMessage(params: {
       messageTimestamp: params.messageTimestamp,
     });
     if (origin) {
+      const before = await loadPlanExecutionLedger(origin.executionId);
+      const priorTask = before?.tasks.find(
+        (entry) => entry.taskId === origin.parentTaskId,
+      );
+      // A delivered historical document stays readable without mutating a
+      // completed or superseded execution. Only recover unfinished publication.
+      if (
+        outbox.status === "delivered" &&
+        (before?.status === "superseded" ||
+          !priorTask ||
+          !["in_progress", "interrupted"].includes(priorTask.status))
+      )
+        return;
       await attachPublishedDocumentEvidence({
         document,
         messageTimestamp: params.messageTimestamp,
@@ -133,13 +127,28 @@ export async function deliverPendingPlanDocumentMessage(params: {
       const task = ledger?.tasks.find(
         (entry) => entry.taskId === origin.parentTaskId,
       );
-      if (task?.status === "in_progress") {
+      if (task && ["in_progress", "interrupted"].includes(task.status)) {
+        // Replay the same verified immutable material, not a newly generated
+        // document, when older native runs omitted this evidence at submission.
+        const material = buildPlanMaterialEvidence(task, document);
+        if (material) {
+          if (material.contractDigest !== origin.contractDigest)
+            throw new Error(
+              "Document material does not match the approved contract",
+            );
+          await planExecutionCoordinator.attachEvidence(material, {
+            alreadyInTransaction: true,
+          });
+        }
+        const current = await loadPlanExecutionLedger(origin.executionId);
         await planExecutionCoordinator.requestTransition(
           {
             executionId: origin.executionId,
             taskId: origin.parentTaskId,
             toStatus: "completed",
-            evidenceIds: task.evidenceIds,
+            evidenceIds: current!.tasks.find(
+              (entry) => entry.taskId === task.taskId,
+            )!.evidenceIds,
             requestedBy: "host",
           },
           Date.now(),
@@ -148,5 +157,6 @@ export async function deliverPendingPlanDocumentMessage(params: {
       }
     }
   });
+  notifyDocumentPublication(document.documentId);
   return document;
 }

@@ -72,7 +72,12 @@ import type {
   TaskEvidence,
 } from "../src/agent/plans/types";
 import { takePendingPlanExecution } from "../src/modules/contextPanel/planModeState";
-import { PlanExecutionRunSession } from "../src/agent/plans/runSession";
+import {
+  PlanExecutionRunSession,
+  recordMcpPlanEvidence,
+} from "../src/agent/plans/runSession";
+import { listTaskEvidence } from "../src/agent/plans/store";
+import { verificationObservations } from "../src/agent/research/graphLoop";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 import { createPreparePlanExecutionTool } from "../src/agent/tools/plan/preparePlanExecution";
 import { finalizeNativePlanProposal } from "../src/agent/plans/nativePlanning";
@@ -810,6 +815,157 @@ describe("transactional Plan task transitions", function () {
     );
   });
 
+  it("accepts the concise research contract shape produced by native Codex Plan", function () {
+    const tool = createPreparePlanExecutionTool();
+    const validated = tool.validate({
+      libraryID: 1,
+      contract: {
+        deliverable: {
+          kind: "document",
+          spec: {
+            title: "A thematic review",
+            format: "markdown",
+            destination: "chat",
+            wordCount: 3500,
+            sections: ["Thematic synthesis", "References"],
+          },
+        },
+        investigation: {
+          question: "How do the papers connect?",
+          subquestions: ["Which assumptions differ?", "What evidence agrees?"],
+          criteria: {
+            inclusion: "Every paper in the selected collection",
+            evidence: "Use body evidence for consequential claims",
+          },
+          reviewMode: "narrative",
+          readingStrategy: "adaptive",
+          scopeAmendmentPolicy: "fixed",
+          scope: {
+            libraryID: 1,
+            kind: "collection",
+            collectionIds: [2],
+            items: [
+              { itemId: 29, itemKey: "TKRTP7V2" },
+              { itemId: 30, itemKey: "CLVE4LUY" },
+            ],
+          },
+          requiredEvidenceDepth: "body",
+          estimatedDeepReadPapers: 12,
+          approvedLargeCorpus: false,
+        },
+      },
+      steps: [
+        {
+          content: "Verify every paper",
+          activeForm: "Verifying paper understanding",
+          expectedEffect: "read",
+          acceptanceCriteria: ["Every paper has verified body evidence"],
+        },
+        {
+          content: "Build the synthesis",
+          activeForm: "Building the synthesis",
+          expectedEffect: "reasoning",
+          acceptanceCriteria: ["Comparisons remain evidence bounded"],
+        },
+        {
+          content: "Publish the review",
+          activeForm: "Publishing the review",
+          expectedEffect: "artifact",
+          acceptanceCriteria: ["The complete review is visible in chat"],
+        },
+      ],
+    });
+
+    assert.isTrue(validated.ok, validated.ok ? "" : validated.error);
+    if (!validated.ok) return;
+    const investigation = validated.value.contract?.investigation as any;
+    const spec = (validated.value.contract?.deliverable as any).spec;
+    assert.equal(
+      (validated.value.steps[2].acceptanceCriteria[0] as { verifier: string })
+        .verifier,
+      "document_integrity",
+      "final publication is not an intermediate material producer",
+    );
+    assert.deepEqual(investigation.scope, {
+      libraryID: 1,
+      kind: "collections",
+      collectionIds: [2],
+    });
+    assert.deepEqual(investigation.subquestions, [
+      { id: "question-1", question: "Which assumptions differ?" },
+      { id: "question-2", question: "What evidence agrees?" },
+    ]);
+    assert.deepEqual(investigation.criteria, []);
+    assert.equal(investigation.estimatedDeepReadPapers, 0);
+    assert.deepEqual(spec, {
+      kind: "literature_review",
+      title: "A thematic review",
+      requiredSections: ["Thematic synthesis", "References"],
+      requiresReferences: true,
+      requiresCoverageSection: true,
+      allowFigures: false,
+    });
+
+    const ambiguous = tool.validate({
+      ...validated.value,
+      contract: {
+        ...validated.value.contract,
+        deliverable: {
+          kind: "document",
+          spec: {
+            title: "Review",
+            include: [
+              "author-year citations",
+              "comparison table covering all 12 papers",
+            ],
+          },
+        },
+      },
+    });
+    assert.isFalse(
+      ambiguous.ok,
+      "content features must not become mandatory literal headings",
+    );
+    if (!ambiguous.ok) assert.include(ambiguous.error, "requiredSections");
+
+    const savedZotero = globalScope.Zotero;
+    globalScope.Zotero = {
+      ...((savedZotero || {}) as Record<string, unknown>),
+      Items: {
+        get: (id: number) =>
+          id === 29 ? { key: "TKRTP7V2", libraryID: 1 } : undefined,
+      },
+    };
+    try {
+      const inferred = tool.validate({
+        ...validated.value,
+        contract: {
+          ...((validated.value.contract || {}) as Record<string, unknown>),
+          investigation: {
+            ...investigation,
+            scope: { libraryID: 1, items: [{ itemId: 29 }] },
+            estimatedDeepReadPapers: 1,
+          },
+        },
+      });
+      assert.isTrue(inferred.ok, inferred.ok ? "" : inferred.error);
+      if (inferred.ok) {
+        assert.deepEqual((inferred.value.contract as any).investigation.scope, {
+          libraryID: 1,
+          kind: "items",
+          itemKeys: ["TKRTP7V2"],
+        });
+        assert.equal(
+          (inferred.value.contract as any).investigation
+            .estimatedDeepReadPapers,
+          0,
+        );
+      }
+    } finally {
+      globalScope.Zotero = savedZotero;
+    }
+  });
+
   beforeEach(async function () {
     failTransitionInsert = false;
     db = new DatabaseSync(":memory:");
@@ -1099,6 +1255,7 @@ describe("transactional Plan task transitions", function () {
       "library_read",
       "paper_read",
       "task_update",
+      "research_update",
     ])
       registry.register({
         spec: {
@@ -1156,7 +1313,12 @@ describe("transactional Plan task transitions", function () {
             }
             if (turnNumber <= 2) {
               assert.include(cachedToolNames!, "prepare_plan_execution");
-              assert.notInclude(cachedToolNames!, "task_update");
+              assert.include(
+                cachedToolNames!,
+                "task_update",
+                "native Plan threads must preload guarded execution tools for their resumed execution turn",
+              );
+              assert.include(cachedToolNames!, "research_update");
             } else {
               assert.notInclude(
                 cachedToolNames!,
@@ -1176,6 +1338,44 @@ describe("transactional Plan task transitions", function () {
               assert.notInclude(
                 tools.tools.map((tool: any) => tool.name),
                 "update_plan",
+              );
+              const prepareDefinition = tools.tools.find(
+                (tool: any) => tool.name === "prepare_plan_execution",
+              );
+              assert.include(
+                prepareDefinition?.description || "",
+                "Stage",
+                "native Plan must present requirement preparation as staging",
+              );
+              assert.notMatch(
+                prepareDefinition?.description || "",
+                /\bapprove\b|start execution/i,
+                "requirement staging must not sound like approval or execution",
+              );
+              const acceptanceCriterionAlternatives =
+                prepareDefinition?.inputSchema?.properties?.steps?.items
+                  ?.properties?.acceptanceCriteria?.items?.oneOf || [];
+              assert.isTrue(
+                acceptanceCriterionAlternatives.some(
+                  (schema: any) => schema?.type === "string",
+                ),
+                "native Plan must advertise concise acceptance checks in its MCP schema",
+              );
+              const nativeInvestigation =
+                prepareDefinition?.inputSchema?.properties?.contract?.properties
+                  ?.investigation;
+              assert.include(
+                nativeInvestigation?.properties?.scope?.properties?.kind
+                  ?.enum || [],
+                "collection",
+                "the MCP contract must advertise the native singular collection scope",
+              );
+              assert.isTrue(
+                (
+                  nativeInvestigation?.properties?.subquestions?.items?.oneOf ||
+                  []
+                ).some((schema: any) => schema?.type === "string"),
+                "the MCP contract must advertise concise native subquestions",
               );
               emit({
                 method: "turn/plan/updated",
@@ -1208,13 +1408,7 @@ describe("transactional Plan task transitions", function () {
                       content: "Explain the concept",
                       activeForm: "Explaining the concept",
                       expectedEffect: "reasoning",
-                      acceptanceCriteria: [
-                        {
-                          criterionId: "answer",
-                          description: "A bounded explanation",
-                          verifier: "bounded_reasoning",
-                        },
-                      ],
+                      acceptanceCriteria: ["A bounded explanation"],
                     },
                     {
                       content: "Check the requested caveat",
@@ -1297,6 +1491,11 @@ describe("transactional Plan task transitions", function () {
       });
       assert.equal(first.text, "# Proposal 1\n\nExplain the agreed concept.");
       const firstArtifact = await loadPlanArtifact("native-lifecycle", 1);
+      assert.deepInclude(firstArtifact?.steps[0].acceptanceCriteria[0], {
+        criterionId: "step-1-criterion-1",
+        description: "A bounded explanation",
+        verifier: "bounded_reasoning",
+      });
       assert.isTrue(
         stagedContexts[0].signal?.aborted,
         "finished native scopes invalidate pending contract preparation",
@@ -1359,6 +1558,19 @@ describe("transactional Plan task transitions", function () {
       assert.isAtLeast(
         requests.filter((r) => r.method === "thread/resume").length,
         3,
+      );
+      const firstResumeIndex = requests.findIndex(
+        (request) => request.method === "thread/resume",
+      );
+      assert.isAtLeast(firstResumeIndex, 0);
+      assert.isAtLeast(
+        requests.findLastIndex(
+          (request, index) =>
+            index < firstResumeIndex &&
+            request.method === "config/mcpServer/reload",
+        ),
+        0,
+        "the phase-specific MCP catalog must reload before a stored thread resumes",
       );
       assert.equal(
         (await loadPlanExecutionLedger(ledger.executionId))?.planDigest,
@@ -2317,6 +2529,64 @@ describe("transactional Plan task transitions", function () {
     assert.equal(
       (await loadPlanExecutionLedger("execution-1"))?.tasks[0].status,
       "completed",
+    );
+  });
+
+  it("retains targeted native reads during a reasoning task for subsequent edge verification", async function () {
+    const ledger = execution();
+    await savePlanExecutionLedger(ledger);
+    await recordMcpPlanEvidence(
+      {
+        phase: "executing",
+        executionId: ledger.executionId,
+        planId: ledger.planId,
+        revision: ledger.revision,
+      },
+      {
+        requestId: "targeted-pair",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "zotero",
+        ok: true,
+        mutability: "read",
+        timestamp: 10,
+        readObservations: [
+          {
+            version: 1,
+            observationId: "pair-read",
+            issuer: "zotero_host",
+            toolName: "paper_read",
+            callDigest: "call",
+            inputDigest: "input",
+            resultDigest: "result",
+            libraryID: 1,
+            itemKey: "PAPER1",
+            capabilities: ["body"],
+            readMode: "targeted",
+            certificateDigest: "certificate",
+          },
+        ],
+      },
+    );
+    const evidence = await listTaskEvidence(
+      ledger.executionId,
+      ledger.activeTaskId!,
+    );
+    assert.deepEqual(
+      verificationObservations({
+        edge: {
+          source: "1:PAPER1",
+          target: "1:PAPER2",
+          createdAt: 5,
+        } as Parameters<typeof verificationObservations>[0]["edge"],
+        taskEvidence: evidence,
+      }),
+      ["pair-read"],
+    );
+    assert.equal(
+      (await loadPlanExecutionLedger(ledger.executionId))?.tasks[0].status,
+      "in_progress",
+      "a targeted read does not substitute for the reasoning task's completion",
     );
   });
 

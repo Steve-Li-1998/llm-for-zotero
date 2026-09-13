@@ -40,7 +40,7 @@ export async function exercisePlanHistoryReplay(
     text: "Write a hypothetical tutorial document.",
     timestamp: stamp,
   });
-  const prepared = (await getAgentRuntime()
+  const result = (await getAgentRuntime()
     .getToolDefinition("submit_document")!
     .execute(
       {
@@ -70,7 +70,8 @@ export async function exercisePlanHistoryReplay(
         modelName: "workflow",
         currentAnswerText: "",
       } as never,
-    )) as { documentId: string; visibleMarkdown: string };
+    )) as { content: { documentId: string; visibleMarkdown: string } };
+  const prepared = result.content;
   await deps.persistConversationMessage(key, {
     role: "assistant",
     text: prepared.visibleMarkdown,

@@ -600,6 +600,40 @@ const obsidianStyleMermaidFixture = [
 ].join("\n");
 
 describe("native host authority trace", function () {
+  it("flushes a resolved native question without waiting for the origin window", function () {
+    const message: any = { role: "assistant", text: "", timestamp: 1 };
+    const refreshes: string[] = [];
+    const queueRefresh = Object.assign(() => refreshes.push("scheduled"), {
+      flush: () => refreshes.push("flushed"),
+    });
+    const trace = createCodexNativeActivityTraceControllerForTests(
+      message,
+      queueRefresh,
+    );
+    const action: AgentPendingAction = {
+      toolName: "request_user_input",
+      title: "Plan needs your input",
+      mode: "review",
+      confirmLabel: "Continue planning",
+      cancelLabel: "Cancel plan",
+      fields: [],
+    };
+
+    trace.noteMcpConfirmationRequired("question-1", action);
+    refreshes.length = 0;
+    trace.noteMcpConfirmationResolved("question-1", {
+      approved: true,
+      actionId: "continue",
+      data: {},
+    });
+
+    assert.deepEqual(
+      refreshes,
+      ["scheduled", "flushed"],
+      "settlement must synchronously flush the trace instead of relying on a throttled background frame or timer",
+    );
+  });
+
   it("loads durable history while retaining temporary native activity during the handoff", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -1495,6 +1529,107 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("keeps planning-question actions on one readable line", function () {
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const actionRule =
+      css.match(
+        /\.llm-planning-question-actions\s+\.llm-agent-hitl-btn\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+
+    assert.include(actionRule, "white-space: nowrap");
+    assert.include(actionRule, "flex: 0 0 auto");
+  });
+
+  it("keeps resolved planning questions and answers in one expandable trace row", function () {
+    const action: AgentPendingAction = {
+      toolName: "request_user_input",
+      mode: "review",
+      title: "Plan needs your input",
+      confirmLabel: "Continue planning",
+      cancelLabel: "Cancel plan",
+      fields: [
+        {
+          type: "choice",
+          id: "scope",
+          label: "Which corpus should the review use?",
+          allowCustom: true,
+          options: [
+            { id: "collection", label: "Selected collection" },
+            { id: "library", label: "Whole library" },
+          ],
+        },
+        {
+          type: "choice",
+          id: "focus",
+          label: "Which scientific focus matters most?",
+          allowCustom: true,
+          options: [],
+        },
+      ],
+      actions: [
+        { id: "continue", label: "Continue planning", approved: true },
+        { id: "cancel", label: "Cancel plan", approved: false },
+      ],
+      defaultActionId: "continue",
+      cancelActionId: "cancel",
+    };
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+        streaming: true,
+      },
+      events: [
+        {
+          runId: "run-question-history",
+          seq: 1,
+          eventType: "confirmation_required",
+          payload: {
+            type: "confirmation_required",
+            requestId: "question-history",
+            action,
+          },
+          createdAt: 1,
+        },
+        {
+          runId: "run-question-history",
+          seq: 2,
+          eventType: "confirmation_resolved",
+          payload: {
+            type: "confirmation_resolved",
+            requestId: "question-history",
+            approved: true,
+            actionId: "continue",
+            data: {
+              scope: { kind: "option", optionId: "collection" },
+              focus: { kind: "custom", text: "Representational drift" },
+            },
+          },
+          createdAt: 2,
+        },
+      ],
+    }) as unknown as FakeElement;
+
+    assert.isNull(trace.findByClass("llm-planning-question-card"));
+    const questionRows = trace
+      .findAllByClass("llm-agent-process-action")
+      .filter((entry) =>
+        collectFakeText(entry).includes("Answered 2 planning questions"),
+      );
+    assert.lengthOf(questionRows, 1);
+    const resolved = questionRows[0];
+    assert.isNotNull(resolved);
+    const text = collectFakeText(resolved);
+    assert.include(text, "Answered 2 planning questions");
+    assert.include(text, "Which corpus should the review use?");
+    assert.include(text, "Selected collection");
+    assert.include(text, "Which scientific focus matters most?");
+    assert.include(text, "Representational drift");
+  });
+
   it("accepts a custom planning-question answer in the card", function () {
     const card = renderPendingActionCard(fakeDocument, {
       requestId: "custom-question-card",
@@ -1547,6 +1682,28 @@ describe("agentTrace render", function () {
       ),
       "First.\n\nSecond.",
     );
+  });
+
+  it("renders trace JSON in a highlighted code card and contains embedded fences", function () {
+    const body = renderAgentTraceDetailsBodyForTests(fakeDocument, [
+      {
+        label: "Arguments",
+        kind: "json",
+        value: JSON.stringify({ operation: "next_work", ok: true }, null, 2),
+      },
+      {
+        label: "Output",
+        kind: "code",
+        value: "```\n<img src=x onerror=alert(1)>\n```",
+      },
+    ]) as unknown as FakeElement;
+    const cards = body.findAllByClass("llm-agent-trace-code");
+    assert.lengthOf(cards, 2);
+    assert.include(cards[0].innerHTML, "llm-codeblock-shell");
+    assert.include(cards[0].innerHTML, "hljs-attr");
+    assert.include(cards[0].innerHTML, "next_work");
+    assert.notInclude(cards[1].innerHTML, "<img");
+    assert.include(cards[1].innerHTML, "&lt;img");
   });
 
   it("renders connected trace rows and launches their safe URLs", function () {
@@ -4937,7 +5094,11 @@ describe("agentTrace render", function () {
     assert.include(values, longUrl);
     assert.include(values, "connectivity pharmacology");
     assert.include(values, longPath);
-    assert.include(values, command);
+    assert.isTrue(
+      trace
+        .findAllByClass("llm-agent-trace-code")
+        .some((entry) => entry.innerHTML.includes("python scripts/fetch.py")),
+    );
     assert.isEmpty(trace.findAllByClass("llm-at-expand"));
 
     const chipLabels = trace

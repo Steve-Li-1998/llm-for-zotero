@@ -20,6 +20,7 @@ import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
+import { createResearchUpdateTool } from "../src/agent/tools/plan/researchUpdate";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import {
   readOnlyInvocationPlan,
@@ -860,6 +861,90 @@ describe("Zotero MCP server", function () {
     } finally {
       ordinary.clear();
       required.clear();
+    }
+  });
+
+  it("preserves workflow continuation instructions and host progress across MCP", async function () {
+    const registry = new AgentToolRegistry();
+    const tool = createReadTool("library_read");
+    const checkpoint = {
+      reason: "research_batch_durable" as const,
+      instruction: "Record the remaining manifest, then verify coverage.",
+    };
+    const event = {
+      type: "plan_execution_updated",
+      ledger: { executionId: "progress" },
+    } as any;
+    const published: unknown[] = [];
+    tool.execute = async (_input, context) => {
+      await context.publishPlanEvent?.(event);
+      return {
+        content: { durablePapers: 1 },
+        continuationCheckpoint: checkpoint,
+      };
+    };
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    registry.register(tool);
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 7003,
+      libraryID: 1,
+      kind: "global",
+      publishHostEvent: async (value) => {
+        published.push(value);
+      },
+    });
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scope.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "library_read", arguments: {} },
+        },
+      });
+      const payload = JSON.parse(
+        JSON.parse(response[2]).result.content[0].text,
+      );
+      assert.deepEqual(payload.continuationCheckpoint, checkpoint);
+      assert.deepEqual(published, [event]);
+    } finally {
+      scope.clear();
+    }
+  });
+
+  it("gives native Plan the same research procedure as the local agent", async function () {
+    const registry = new AgentToolRegistry();
+    const research = createResearchUpdateTool({} as never);
+    registry.register(research);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 7004,
+      libraryID: 1,
+      kind: "global",
+      planContext: {
+        phase: "planning",
+        planId: "procedure",
+        revision: 1,
+        nativePlanning: { attemptId: "attempt" },
+      } as any,
+    });
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scope.token },
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      });
+      const tool = JSON.parse(response[2]).result.tools.find(
+        (entry: any) => entry.name === "research_update",
+      );
+      assert.include(tool.description, research.guidance!.instruction);
+      // Codex code-mode declarations can collapse deep nested objects to
+      // `unknown`. The discoverable description must retain their contract.
+      assert.include(tool.description, JSON.stringify(tool.inputSchema));
+    } finally {
+      scope.clear();
     }
   });
 

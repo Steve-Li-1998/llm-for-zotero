@@ -124,6 +124,12 @@ export async function recordMcpPlanEvidence(
       "verified_read",
       `mcp:${event.requestId}`,
       `Verified ${event.toolName} result`,
+      {
+        type: "verified_read",
+        reference: `mcp:${event.requestId}`,
+        sources: event.verifiedReadSources,
+        observations: event.readObservations,
+      },
     );
   }
   if (event.artifacts?.length) {

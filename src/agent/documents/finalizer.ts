@@ -251,17 +251,21 @@ export async function finalizeDocument(params: {
 /** Persist the document, pending outbox, and any Plan integrity evidence together. */
 export async function persistFinalizedDocument(
   finalized: FinalizedDocument,
-  evidence?: TaskEvidence,
+  evidence?: TaskEvidence | TaskEvidence[],
 ): Promise<void> {
   await Zotero.DB.executeTransaction(async () => {
     await savePlanDocumentInTransaction(finalized);
-    if (evidence)
+    for (const entry of evidence
+      ? Array.isArray(evidence)
+        ? evidence
+        : [evidence]
+      : [])
       await updatePlanTask({
         kind: "evidence",
-        executionId: evidence.executionId,
-        taskId: evidence.taskId,
-        evidence: [evidence],
-        now: evidence.createdAt,
+        executionId: entry.executionId,
+        taskId: entry.taskId,
+        evidence: [entry],
+        now: entry.createdAt,
         alreadyInTransaction: true,
       });
   });

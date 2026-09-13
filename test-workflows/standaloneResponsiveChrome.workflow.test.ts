@@ -96,7 +96,12 @@ describe("workflow: standalone responsive chrome", function () {
             "Tab label must remain fully visible",
           );
         }
-        assert.equal(actionWidth(), rect(".llm-standalone-icon-clear").width);
+        assert.closeTo(
+          actionWidth(),
+          rect(".llm-standalone-icon-clear").width,
+          0.01,
+          "Action widths must match within subpixel DOMRect rounding",
+        );
       }
     }
     await api.hoverStandaloneSidebarToggle();

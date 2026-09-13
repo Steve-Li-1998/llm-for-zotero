@@ -2984,12 +2984,6 @@ export async function runCodexAppServerNativeTurn(input: {
             if (scopedMcp)
               updateScopedZoteroMcpScope(scopedMcp.token, { planContext });
           }
-          // Loaded native threads retain their discovered MCP catalog. The
-          // same conversation token now carries this turn's scope and phase.
-          if (args.thread.resumed && scopedMcp) {
-            await proc.sendRequest("config/mcpServer/reload", null);
-            assertTurnStillLive();
-          }
           let completedProposal: CodexNativePlanProposal | undefined;
           await publishAuthority();
           unregisterGuardianReviews = registerNativeGuardianReviewHandlers({
@@ -3485,8 +3479,16 @@ export async function runCodexAppServerNativeTurn(input: {
             throw new Error(mcpWarning);
           }
         }
-        const resolvePersistentThread = (forceReplacement = false) =>
-          resolveNativeThread({
+        const resolvePersistentThread = async (forceReplacement = false) => {
+          // Loaded native threads retain their discovered MCP catalog. Reload
+          // before thread/resume so the thread binds this turn's current Plan
+          // phase; reloading after resume leaves the previous phase's catalog
+          // attached for the entire turn.
+          if (storedThreadId && !forceReplacement && scopedMcp) {
+            await proc.sendRequest("config/mcpServer/reload");
+            assertTurnStillLive();
+          }
+          return resolveNativeThread({
             proc,
             scope: scopeWithProfile,
             model: params.model,
@@ -3499,6 +3501,7 @@ export async function runCodexAppServerNativeTurn(input: {
             permissionExecution,
             forceReplacement,
           });
+        };
         let thread: NativeThreadResolution = rawPdfMode
           ? await (async () => {
               // Do not start an ephemeral provider thread after Clear has

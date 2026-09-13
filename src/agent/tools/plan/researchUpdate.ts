@@ -188,7 +188,7 @@ export function createResearchUpdateTool(
             type: "array",
             minItems: 1,
             description:
-              "Durable paper understandings for any capacity-sized reading group. For adaptive narrative reviews provide the paper identities and rich findings; the host derives descriptive status, criterion fields, and trusted evidence references. Systematic reviews also provide screeningStatus and criterionResults.",
+              "Durable paper understandings for any capacity-sized reading group. For adaptive narrative reviews provide the paper identities and rich findings; the host derives descriptive status and trusted evidence references. If the approved investigation has criteria, provide criterionResults for every approved criterion ID, including in adaptive reviews. Systematic reviews also require explicit screeningStatus.",
             items: {
               type: "object",
               additionalProperties: false,
@@ -224,7 +224,7 @@ export function createResearchUpdateTool(
                   type: "object",
                   additionalProperties: false,
                   description:
-                    "The paper's tailored understanding. Adaptive reviews record a claim-based node: frameSlots (every slot of the host frame for a core paper, identity slots for others), claims[] bound to evidence no deeper than the verified read, hooks, and either candidateLinks[] to other corpus papers or noLinkSeen with a reason. Legacy fields (researchQuestion, method, findings, limitations, mechanisms) are derived from the frame and claims when omitted.",
+                    "The paper's tailored understanding. Adaptive reviews record a claim-based node: frameSlots (every slot of the host frame for a core paper, identity slots for others), claims[] bound to evidence no deeper than the verified read (at least three claims for a host-proposed core paper, even when tier is omitted), hooks, and either candidateLinks[] to other corpus papers or noLinkSeen with a reason. Legacy fields (researchQuestion, method, findings, limitations, mechanisms) are derived from the frame and claims when omitted.",
                   required: ["mainMessage", "relevance", "confidence"],
                   properties: {
                     tier: {

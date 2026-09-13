@@ -117,7 +117,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Persist validated Markdown and evidence as a versioned material reference.",
   update_plan: "Create or revise a read-only explicit Plan artifact.",
   prepare_plan_execution:
-    "Approve and start execution of the exact reviewed Plan revision.",
+    "Stage the exact execution contract and required steps for native Plan review. Acceptance checks may be typed objects or concise strings; the host converts strings into typed evidence requirements. The user remains the sole authority for the later run.",
   task_update:
     "Update tracked work; completion requires host-verifiable evidence.",
   research_update:

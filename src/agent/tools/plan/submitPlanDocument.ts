@@ -298,7 +298,7 @@ export function createSubmitDocumentTool(
           materialOutputId: {
             type: "string",
             description:
-              "The frozen material output ID when generating content for later workflow actions.",
+              "Only for an intermediate authored output listed in the frozen workflow's materialOutputs and used by later actions. Omit this field when publishing the approved final document in chat, even if its Plan step has a materialOutputId label.",
           },
           documentKind: {
             type: "string",

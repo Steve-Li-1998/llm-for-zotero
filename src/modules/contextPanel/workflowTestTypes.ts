@@ -423,6 +423,14 @@ export type WorkflowTestCrossPaperHistoryIsolationResult = {
 };
 
 export type WorkflowTestApi = {
+  mountPublicationTrace(
+    documentId: string,
+    text: string,
+  ): {
+    root: HTMLElement;
+    deliver(conversationKey: number): Promise<void>;
+    dispose(): void;
+  };
   reset: () => Promise<void>;
   enableLiveAgentSending: () => void;
   createPaperWithPdfFixture: (input: {

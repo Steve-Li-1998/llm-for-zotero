@@ -59,7 +59,10 @@ export function buildApprovedPlanExecutionInstructions(
         `${index + 1}. [${task.status}] taskId=${task.taskId}\n` +
         `   ${task.content}\n` +
         `   While active: ${task.activeForm}\n` +
-        (task.materialOutputId
+        (task.materialOutputId &&
+        !task.completionRequirements?.some(
+          (requirement) => requirement.kind === "document_published",
+        )
           ? `   Generate materialOutputId=${task.materialOutputId} with submit_document.\n`
           : "") +
         (task.actionIndexes

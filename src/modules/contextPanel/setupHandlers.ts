@@ -1668,6 +1668,7 @@ export function setupHandlers(
 
   // Compute conversation key early so all closures can reference it.
   let conversationKey = item ? getConversationKey(item) : null;
+  let syncPlanModeChip = () => {};
   const handleQuoteProvenanceRevalidationRequest = () => {
     const activeConversationKey = item ? getConversationKey(item) : null;
     if (activeConversationKey) {
@@ -1708,6 +1709,7 @@ export function setupHandlers(
       Number.isFinite(conversationKey) && (conversationKey as number) > 0
         ? `${conversationKey}`
         : "";
+    syncPlanModeChip();
     const libraryID = getCurrentLibraryID();
     panelRoot.dataset.libraryId = libraryID > 0 ? `${libraryID}` : "";
     const noteSession = resolveCurrentNoteSession();
@@ -2260,7 +2262,7 @@ export function setupHandlers(
   const isPlanAvailable = () =>
     !isWebChatModeActive() &&
     (isRuntimeConversationSystem() || getCurrentRuntimeMode() === "agent");
-  const syncPlanModeChip = () => {
+  syncPlanModeChip = () => {
     if (!planModeChip || !item) return;
     const state = getComposePlanState(getConversationKey(item));
     planModeChip.style.display =

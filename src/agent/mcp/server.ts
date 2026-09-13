@@ -1375,6 +1375,13 @@ function isMcpToolVisibleInScope(
       return (
         phase === "planning" && Boolean(scope?.planContext?.nativePlanning)
       );
+    // Codex app-server binds an MCP catalog to the native thread. A thread
+    // created in Plan mode is resumed for approved execution, and a server
+    // reload does not reliably add newly visible tools to that bound catalog.
+    // Advertise the guarded execution tools up front for native planning;
+    // their validators still reject every call until approval changes the
+    // host-owned phase to `executing`.
+    if (phase === "planning" && scope?.planContext?.nativePlanning) return true;
     if (phase !== "executing") return false;
   }
   if (!hasRawPdfScope(scope)) return true;
@@ -1391,11 +1398,29 @@ function handleToolsList(
     .map(({ name, description, inputSchema, executionClass }) => {
       const mutability =
         executionClass === "external_effect" ? "write" : "read";
+      const schema = decorateMcpToolSchema(inputSchema);
       return {
         name,
         title: formatToolTitle(name),
-        description: decorateMcpToolDescription(name, description, mutability),
-        inputSchema: decorateMcpToolSchema(inputSchema),
+        description: decorateMcpToolDescription(
+          name,
+          [
+            description,
+            CURATED_PLAN_TOOL_NAMES.has(name)
+              ? toolRegistry.getTool(name)?.guidance?.instruction
+              : undefined,
+            // Codex code-mode discovery renders deeply nested input types as
+            // `unknown`. Keep the complete contract discoverable there too;
+            // otherwise native Plan has to guess evidence and scope shapes.
+            CURATED_PLAN_TOOL_NAMES.has(name)
+              ? `Complete input JSON Schema (including nested fields): ${JSON.stringify(schema)}`
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+          mutability,
+        ),
+        inputSchema: schema,
         annotations: getMcpToolAnnotations(name, executionClass),
       };
     });
@@ -1923,6 +1948,9 @@ function formatToolResult(
           {
             ok: result.ok,
             result: result.content,
+            ...(result.continuationCheckpoint
+              ? { continuationCheckpoint: result.continuationCheckpoint }
+              : {}),
             effect: result.effect,
             ...(result.actionReceipts.length
               ? { actionReceipts: result.actionReceipts }
@@ -2241,6 +2269,7 @@ async function handleToolsCall(
       callScope,
       deps.zoteroGateway,
     );
+    toolContext.publishPlanEvent = scope?.publishHostEvent;
     toolContext.checkpointActionProgress = async () => {
       const request = toolContext.request;
       if (!scope?.publishHostEvent)

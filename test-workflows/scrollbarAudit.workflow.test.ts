@@ -280,6 +280,13 @@ describe("workflow: conversation view has a single scrollbar", function () {
       [],
       `turn-level containers must not be scroll containers\n${report}`,
     );
+    assert.equal(
+      win.getComputedStyle(
+        win.document.querySelector("#llm-chat-box") as HTMLElement,
+      ).overscrollBehaviorY,
+      "contain",
+      "wheel input at the conversation boundary must not scroll an outer host",
+    );
   });
 
   it("sidepanel turn containers are not scroll containers", async function () {
@@ -320,6 +327,13 @@ describe("workflow: conversation view has a single scrollbar", function () {
       collectTurnLevelScrollContainers(mainWin, host as HTMLElement),
       [],
       "sidepanel turn-level containers must not be scroll containers",
+    );
+    assert.equal(
+      mainWin.getComputedStyle(
+        host?.querySelector("#llm-chat-box") as HTMLElement,
+      ).overscrollBehaviorY,
+      "contain",
+      "wheel input at the sidepanel conversation boundary must stay in chat",
     );
   });
 

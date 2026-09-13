@@ -91,6 +91,20 @@ describe("workflow: native Codex proposal review", function () {
         "Native revision instructions must not obscure the user's action request",
       );
       assert.equal(api.getLastSend()?.planContext?.revision, 2);
+
+      const codexConversationKey = (await api.getDiagnostics(panel.panelId))
+        .conversationKey;
+      const upstream = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      assert.notEqual(
+        upstream.conversationKey,
+        codexConversationKey,
+        "switching runtimes should mount a fresh provider conversation",
+      );
+      assert.equal(
+        chip.style.display,
+        "none",
+        "a fresh provider conversation must not retain the prior Plan chip",
+      );
     } finally {
       await api.reset();
       await api.cleanupFixture(fixture);
@@ -116,7 +130,18 @@ describe("workflow: native Codex proposal review", function () {
       assert.deepEqual(bridge.answer, {
         answers: { audience: { answers: ["Students"] } },
       });
+      assert.equal(
+        bridge.cardsAfterResolution,
+        0,
+        "the resolved question must leave the active card immediately",
+      );
       assert.equal(bridge.activeControlsAfter, 0);
+      assert.include(
+        bridge.questionHistoryText,
+        "Answered 1 planning question",
+      );
+      assert.include(bridge.questionHistoryText, "Which audience?");
+      assert.include(bridge.questionHistoryText, "Students");
       const questions = [
         {
           id: "format",
@@ -181,6 +206,11 @@ describe("workflow: native Codex proposal review", function () {
     );
     assert.isTrue(result.digestMatches);
     assert.equal(result.continuationId, "workflow-thread");
+    assert.equal(result.frozenScopeCount, 1);
+    assert.equal(result.taskCount, 3);
+    assert.deepEqual(result.taskStatuses, ["pending", "pending", "pending"]);
+    assert.equal(result.executionPhase, "executing");
+    assert.isTrue(result.executionIdMatches);
     assert.equal(result.nativeTitle, "Native planning workflow fixture");
   });
 });

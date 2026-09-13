@@ -2828,6 +2828,7 @@
   contain: inline-size;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior-y: contain;
   overflow-anchor: none;
   border: none;
   border-radius: 0;
@@ -5612,6 +5613,26 @@ label.llm-search-results-item:hover {
   color: var(--fill-secondary);
 }
 
+.llm-agent-trace-code {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.llm-agent-trace-code.llm-rendered-markdown .llm-codeblock-shell {
+  margin: 6px 0;
+  border-radius: 14px;
+  background: color-mix(
+    in srgb,
+    var(--material-sidepane, var(--material-background, #fff)) 92%,
+    var(--fill-primary, #111827) 8%
+  );
+  border: 1px solid var(--llm-codeblock-border);
+}
+
+.llm-agent-trace-code.llm-rendered-markdown .llm-codeblock-body {
+  padding: 12px 16px;
+}
+
 .llm-at-tool-text {
   color: var(--fill-secondary);
 }
@@ -6035,6 +6056,11 @@ label.llm-search-results-item:hover {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.llm-planning-question-actions .llm-agent-hitl-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .llm-planning-question-nav-btn {

@@ -524,7 +524,7 @@ describe("panel ownership fence", function () {
     clearPanelHostBinding(panel.body);
   });
 
-  it("delivers the application accelerators the panel does not own", function () {
+  it("delivers application accelerators but never the keys the composer binds", function () {
     const { panel, staleItem } = buildRefusingPanel();
     const composer = buildComposer();
 
@@ -555,9 +555,10 @@ describe("panel ownership fence", function () {
       ),
       "Ctrl+W must leave the panel",
     );
-    // Today every accelerator is exempt, Cmd+Enter included. The next commit
-    // narrows this; the case is here so that change is visible as a change.
-    assert.isFalse(
+
+    // Cmd+Enter is a send: the composer's Enter branch has no modifier
+    // exclusion, so an exemption here would let a refusing panel write.
+    assert.isTrue(
       shouldOwnershipFenceSwallowEvent(
         panel.body,
         staleItem,
@@ -568,6 +569,34 @@ describe("panel ownership fence", function () {
           metaKey: true,
         }),
       ),
+      "Cmd+Enter on the composer must stay fenced",
+    );
+    assert.isTrue(
+      shouldOwnershipFenceSwallowEvent(
+        panel.body,
+        staleItem,
+        fenceEvent({
+          type: "keydown",
+          target: buildComposer().parentElement,
+          key: "Enter",
+          metaKey: true,
+        }),
+      ),
+      "Enter is never exempt, wherever it is aimed",
+    );
+    // Cmd+ArrowUp recalls the previous message into the composer.
+    assert.isTrue(
+      shouldOwnershipFenceSwallowEvent(
+        panel.body,
+        staleItem,
+        fenceEvent({
+          type: "keydown",
+          target: composer,
+          key: "ArrowUp",
+          metaKey: true,
+        }),
+      ),
+      "Cmd+ArrowUp on the composer must stay fenced",
     );
     clearPanelHostBinding(panel.body);
   });

@@ -461,6 +461,25 @@ export function renderPanelOwnershipBlocked(
 const OWNERSHIP_FENCE_EXEMPT_SELECTOR =
   "#llm-runtime-mode-toggle, .llm-runtime-system-toggle";
 
+/**
+ * Keys the panel's own composer binds: Enter sends, ArrowUp recalls, Escape and
+ * Backspace edit the command row, Tab and the arrows drive the pickers. None of
+ * them may be exempted by an accelerator, or the fence would hand a panel that
+ * refuses its own input a way to send, recall and persist into the conversation
+ * it no longer owns (Cmd+Enter is a send: the composer's Enter branch has no
+ * modifier exclusion).
+ */
+const PANEL_BOUND_KEYS = new Set([
+  "Enter",
+  "Tab",
+  "Escape",
+  "Backspace",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+]);
+
 function matchesWithin(target: unknown, selector: string): boolean {
   const element = target as {
     closest?: (selector: string) => unknown;
@@ -476,12 +495,15 @@ function matchesWithin(target: unknown, selector: string): boolean {
 /**
  * Key combinations the application owns rather than the panel: Cmd+Q, Ctrl+W
  * and the other menu accelerators. A panel must never be able to stop Zotero
- * from being quit or a window from being closed, wherever focus happens to sit.
+ * from being quit or a window from being closed, wherever focus happens to sit
+ * — which is why this holds inside the composer too, and why the keys the panel
+ * itself binds are excluded rather than the composer as a whole.
  */
 function isApplicationCommandKeyEvent(event: Event): boolean {
   if (event?.type !== "keydown") return false;
   const keyEvent = event as Partial<KeyboardEvent>;
-  return keyEvent.metaKey === true || keyEvent.ctrlKey === true;
+  if (keyEvent.metaKey !== true && keyEvent.ctrlKey !== true) return false;
+  return !PANEL_BOUND_KEYS.has(`${keyEvent.key || ""}`);
 }
 
 /**

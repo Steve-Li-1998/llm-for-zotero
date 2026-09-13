@@ -343,9 +343,9 @@ describe("agent work categories", function () {
     }));
     for (const file of scanned) {
       assert.isAbove(
-        file.source.length,
-        0,
-        `${file.path} must be readable for the scan to mean anything`,
+        file.source.split("\n").length,
+        100,
+        `${file.path} was read but looks empty; the scan would pass vacuously`,
       );
       assert.deepEqual(
         file.source.match(/workCategory:\s*"/g) || [],

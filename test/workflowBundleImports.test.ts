@@ -225,6 +225,14 @@ describe("workflow test bundle imports", function () {
 
   it("never reaches the chat renderer, which imports the skill markdown", function () {
     const reached = walkValueImports(bootstrap);
+    // A walk that collapsed -- a renamed bootstrap, a resolver that stopped
+    // resolving -- reaches nothing, and "does not reach chat.ts" is then true
+    // of an empty graph.
+    assert.isAtLeast(
+      reached.files.size,
+      50,
+      `the walk from ${bootstrap} reached almost nothing; the scan would pass vacuously`,
+    );
     assert.isFalse(
       reached.files.has(chatRenderer),
       `The host-surface bootstrap must stay clear of ${chatRenderer}:\n  ${

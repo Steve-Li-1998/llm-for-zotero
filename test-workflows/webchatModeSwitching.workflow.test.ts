@@ -178,6 +178,86 @@ describe("workflow: webchat mode switching", function () {
     });
   });
 
+  it("keeps the API conversation and leaves WebChat when the session row cannot be anchored", async function () {
+    await withPrefs(SWITCHING_PREFS, async () => {
+      fixture = await api.createPaperWithPdfFixture({
+        title: "WebChat Anchor Failure Parent",
+        pdfTitle: "WebChat Anchor Failure PDF",
+      });
+      const panel = await api.renderPanelForItem(fixture.parentItemId);
+      const seeded = await api.seedPanelStoredUserMessage(
+        panel.panelId,
+        "API question that must survive a failed webchat entry",
+      );
+      const apiConversationKey = seeded.conversationKey;
+      assert.isOk(apiConversationKey);
+
+      await api.forceWebChatSessionAnchorFailures(1);
+      let result = await api.selectPanelModelEntry(
+        panel.panelId,
+        WEBCHAT_MODEL_ENTRY_ID,
+        { expectWebChat: false },
+      );
+      // The transcript re-render is asynchronous, like the leave path above.
+      const renderDeadline = Date.now() + 15000;
+      while (
+        !(result.messageText || "").includes(
+          "API question that must survive a failed webchat entry",
+        ) &&
+        Date.now() < renderDeadline
+      ) {
+        await Zotero.Promise.delay(25);
+        result = await api.getDiagnostics(panel.panelId);
+      }
+
+      assert.isFalse(
+        result.webChatMode,
+        "a failed session anchor must not leave the panel inside webchat",
+      );
+      assert.equal(
+        result.conversationKey,
+        apiConversationKey,
+        "webchat must never bind to the paper's real API conversation",
+      );
+      assert.equal(
+        selectedModelEntryId(),
+        API_MODEL_ENTRY_ID,
+        "the remembered API entry must be restored",
+      );
+      assert.include(
+        result.messageText || "",
+        "API question that must survive a failed webchat entry",
+        "the API transcript must still be shown",
+      );
+      assert.include(
+        result.statusText || "",
+        "Failed to create paper chat",
+        "the failure must be reported to the user",
+      );
+      const rows = await api.listPanelHistory(panel.panelId);
+      assert.isTrue(
+        rows.some((row) => row.conversationKey === apiConversationKey),
+        "the API conversation must remain in local history",
+      );
+
+      // The forced failure is consumed: a second attempt must enter webchat
+      // normally on its own hidden session row.
+      const entered = await api.selectPanelModelEntry(
+        panel.panelId,
+        WEBCHAT_MODEL_ENTRY_ID,
+      );
+      assert.isTrue(
+        entered.webChatMode,
+        "entering webchat must still work after a failed attempt",
+      );
+      assert.notEqual(
+        entered.conversationKey,
+        apiConversationKey,
+        "webchat must anchor on its own hidden session row",
+      );
+    });
+  });
+
   it("switches to Codex from webchat without leaving a webchat entry selected", async function () {
     await withPrefs(SWITCHING_PREFS, async () => {
       fixture = await api.createPaperWithPdfFixture({

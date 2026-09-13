@@ -555,6 +555,7 @@ export type WorkflowTestApi = {
   selectPanelModelEntry: (
     panelId: string,
     entryId: string,
+    options?: { expectWebChat?: boolean },
   ) => Promise<WorkflowTestDiagnostics>;
   exerciseWebChatPdfToggleWorkflow: (
     panelId: string,
@@ -786,6 +787,7 @@ export type WorkflowTestApi = {
     query: string,
   ) => Promise<WorkflowTestHistorySearchResult>;
   failNextPendingTurnFinalizes: (count: number) => Promise<void>;
+  forceWebChatSessionAnchorFailures: (count: number) => Promise<void>;
   askCapturingFinalRequest: (
     panelId: string,
     text: string,

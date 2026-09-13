@@ -5536,8 +5536,18 @@ export function setupHandlers(
             void (async () => {
               // Anchor on the paper's dedicated webchat session row (hidden
               // from history, swept at startup) — never a normal draft.
-              await ensureWebChatSessionPaperConversation();
+              const anchored = await ensureWebChatSessionPaperConversation();
               if (!isWebChatMode()) return;
+              if (!anchored) {
+                // Fail closed: webchat must never bind to the paper's real
+                // conversation. Leave webchat (restores the remembered
+                // non-webchat entry) and keep the conversation on screen.
+                await leaveWebChatMode({ restoreConversation: false });
+                if (status) {
+                  setStatus(status, t("Failed to create paper chat"), "error");
+                }
+                return;
+              }
               resetCurrentWebChatConversation();
               refreshChatPreservingScroll();
 

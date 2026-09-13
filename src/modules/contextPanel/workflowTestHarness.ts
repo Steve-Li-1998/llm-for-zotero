@@ -85,6 +85,7 @@ import {
 } from "../../codexAppServer/permissionProfiles";
 import { readCodexPermissionStatePref } from "../../codexAppServer/prefs";
 import { forcePendingTurnFinalizeFailuresForTests } from "./pendingDeletionWiring";
+import { forceWebChatSessionAnchorFailuresForTests } from "./webchatSessionConversation";
 import {
   pendingDeletionStore,
   PENDING_DELETIONS_TABLE,
@@ -1907,6 +1908,7 @@ async function exercisePanelDraftStateRefresh(
 async function selectPanelModelEntry(
   panelId: string,
   entryId: string,
+  options?: { expectWebChat?: boolean },
 ): Promise<WorkflowTestDiagnostics> {
   assertWorkflowTestEnabled();
   const panel = getPanel(panelId);
@@ -1924,7 +1926,13 @@ async function selectPanelModelEntry(
   if (!option) {
     throw new Error(`Panel ${panelId} model menu has no entry ${entryId}`);
   }
-  const expectWebChat = getModelEntryById(entryId)?.authMode === "webchat";
+  // A WebChat entry normally settles inside WebChat, but a test can say it
+  // expects the fail-closed outcome (entry rejected, panel back on the API
+  // conversation) instead of that inference.
+  const expectWebChat =
+    typeof options?.expectWebChat === "boolean"
+      ? options.expectWebChat
+      : getModelEntryById(entryId)?.authMode === "webchat";
   option.click();
   const deadline = Date.now() + 15000;
   let diagnostics = await getDiagnostics(panelId);
@@ -4699,6 +4707,7 @@ async function reset(): Promise<void> {
     lastFinalRequest = snapshot;
   });
   forcePendingTurnFinalizeFailuresForTests(0);
+  forceWebChatSessionAnchorFailuresForTests(0);
 }
 
 function disposeWorkflowPanels(): void {
@@ -5106,6 +5115,11 @@ async function searchPanelHistory(
 async function failNextPendingTurnFinalizes(count: number): Promise<void> {
   assertWorkflowTestEnabled();
   forcePendingTurnFinalizeFailuresForTests(count);
+}
+
+async function forceWebChatSessionAnchorFailures(count: number): Promise<void> {
+  assertWorkflowTestEnabled();
+  forceWebChatSessionAnchorFailuresForTests(count);
 }
 
 // Drive a real send through the full request pipeline with intercepting
@@ -5576,6 +5590,7 @@ export function installWorkflowTestHarness(targetAddon: {
     sweepPendingDeletionsAsRestart,
     searchPanelHistory,
     failNextPendingTurnFinalizes,
+    forceWebChatSessionAnchorFailures,
     askCapturingFinalRequest,
     simulateProviderContextUsage,
     setWorkflowModelInputCap,

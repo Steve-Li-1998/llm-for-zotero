@@ -156,3 +156,70 @@ export function summarizeAgentFlight(
     materialFinalized,
   };
 }
+
+/**
+ * One streamed turn as it was driven: a fixed transcript pushed at one delta
+ * size, and what the panel was asked to do about it.
+ *
+ * `blocksReleased` is what the coalescer let through; `refreshesScheduled` is
+ * how many repaints those blocks asked for. They are separate counts on
+ * purpose: the contract that makes streaming affordable is that they stay
+ * equal -- one repaint per readable block -- however small the provider's
+ * deltas get.
+ */
+export type RenderFlightRun = {
+  /** The name this run is pinned under. */
+  id: string;
+  /** Characters the provider handed over at a time. */
+  deltaChars: number;
+  deltas: number;
+  charsPushed: number;
+  blocksReleased: number;
+  refreshesScheduled: number;
+  /** Whether the stalled-stream timer fired between every delta. */
+  stallTimerFires: boolean;
+};
+
+export type RenderFlightSample = Omit<RenderFlightRun, "id"> & {
+  /**
+   * Repaints per thousand characters of answer, rounded to two decimals.
+   *
+   * This is the number that has to stay flat across delta sizes: it is the
+   * cost of an answer, not the cost of a provider's chunking.
+   */
+  refreshesPerKChar: number;
+};
+
+/** The pinned render journey: one sample per run, keyed by run id. */
+export type RenderFlightSummary = Record<string, RenderFlightSample>;
+
+function roundHundredths(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Turns the driven runs into the pinned render journey.
+ *
+ * Pure over the counts: it neither drives a stream nor knows what released a
+ * block, so the rig that produces the counts can change without changing what
+ * the numbers mean.
+ */
+export function summarizeRenderFlight(
+  runs: readonly RenderFlightRun[],
+): RenderFlightSummary {
+  const summary: RenderFlightSummary = {};
+  for (const run of runs) {
+    summary[run.id] = {
+      deltaChars: run.deltaChars,
+      deltas: run.deltas,
+      charsPushed: run.charsPushed,
+      blocksReleased: run.blocksReleased,
+      refreshesScheduled: run.refreshesScheduled,
+      refreshesPerKChar: run.charsPushed
+        ? roundHundredths((run.refreshesScheduled * 1000) / run.charsPushed)
+        : 0,
+      stallTimerFires: run.stallTimerFires,
+    };
+  }
+  return summary;
+}

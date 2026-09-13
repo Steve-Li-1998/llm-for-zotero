@@ -768,7 +768,6 @@ describe("workflow: runtime mode switch", function () {
         const library = await api.clickStandaloneTab("open");
         assert.equal(library.conversationKind, "global");
         assert.equal(library.conversationSystem, "upstream");
-        const upstreamKey = library.conversationKey || 0;
 
         const codex = await api.clickStandaloneSystemToggle("codex");
         assert.equal(codex.conversationSystem, "codex");
@@ -785,10 +784,19 @@ describe("workflow: runtime mode switch", function () {
         // The toggle still answering is the proof the window did not go deaf.
         const back = await api.clickStandaloneSystemToggle("codex");
         assert.equal(back.conversationSystem, "upstream");
-        assert.equal(
+        assert.equal(back.conversationKind, "global");
+        assert.isTrue(
+          isConversationKeyForKind(
+            "upstream",
+            "global",
+            back.conversationKey || 0,
+          ),
+          `returning must land on an upstream library key, got ${back.conversationKey}`,
+        );
+        assert.notEqual(
           back.conversationKey,
-          upstreamKey,
-          "returning must land back on the standalone library conversation",
+          codex.conversationKey,
+          "returning must not leave the window on the Codex conversation key",
         );
         await assertMainThreadResponsive(
           "standalone library chat back in Agent",

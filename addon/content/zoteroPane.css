@@ -174,6 +174,15 @@
   --llm-context-icon-note-color: #eab308;
   --llm-context-icon-file-color: #64748b;
   --llm-context-icon-model-color: #a855f7;
+  /* Diff preview tints: a light wash for the line, a stronger wash for the
+     changed segment, and a readable foreground for markers and strikethrough.
+     Overridden for dark mode below. */
+  --llm-diff-add-bg: #edf8f0;
+  --llm-diff-add-strong: #bfe9cb;
+  --llm-diff-add-fg: #1f8a49;
+  --llm-diff-remove-bg: #fbeeee;
+  --llm-diff-remove-strong: #f3c9c9;
+  --llm-diff-remove-fg: #b94141;
   --llm-pin-border-color: color-mix(
     in srgb,
     var(--color-accent) 55%,
@@ -6703,19 +6712,12 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-hitl-diff {
-  --llm-agent-hitl-diff-add-text: inherit;
-  --llm-agent-hitl-diff-remove-text: inherit;
+  --llm-agent-hitl-diff-add-text: var(--llm-diff-add-fg);
+  --llm-agent-hitl-diff-remove-text: var(--llm-diff-remove-fg);
   border: 1px solid var(--stroke-secondary);
   border-radius: 10px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--fill-quaternary) 86%, black 14%);
-}
-
-.window-is-dark .llm-agent-hitl-diff,
-:root[lwtheme-brighttext] .llm-agent-hitl-diff,
-:root[sizemode][lwtheme-brighttext] .llm-agent-hitl-diff {
-  --llm-agent-hitl-diff-add-text: #7ce4a1;
-  --llm-agent-hitl-diff-remove-text: #ff9f9f;
+  background: var(--material-background);
 }
 
 .llm-agent-hitl-diff-body {
@@ -6725,47 +6727,40 @@ label.llm-search-results-item:hover {
 
 .llm-agent-hitl-diff-line {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
+  grid-template-columns: 44px minmax(0, 1fr);
   align-items: stretch;
   min-width: 0;
-  border-top: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
-}
-
-.llm-agent-hitl-diff-line:first-child {
-  border-top: 0;
 }
 
 .llm-agent-hitl-diff-line-context {
-  background: color-mix(in srgb, var(--fill-quaternary) 92%, transparent);
+  background: transparent;
+  color: var(--fill-secondary);
 }
 
 .llm-agent-hitl-diff-line-add {
-  background: rgba(34, 197, 94, 0.14);
+  background: var(--llm-diff-add-bg);
 }
 
 .llm-agent-hitl-diff-line-remove {
-  background: rgba(239, 68, 68, 0.14);
+  background: var(--llm-diff-remove-bg);
 }
 
 .llm-agent-hitl-diff-gutter {
   display: grid;
-  grid-template-columns: 1fr 14px;
-  gap: 2px;
-  align-items: center;
-  padding: 3px 4px 3px 6px;
-  border-right: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
+  grid-template-columns: 1fr 12px;
+  gap: 3px;
+  align-items: start;
+  padding: 3px 5px 3px 6px;
   color: var(--fill-tertiary);
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--llm-fs-10);
-  line-height: 1.35;
+  line-height: 1.45;
+  user-select: none;
 }
 
 .llm-agent-hitl-diff-line-number {
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .llm-agent-hitl-diff-marker {
@@ -6773,43 +6768,46 @@ label.llm-search-results-item:hover {
   font-weight: 700;
 }
 
-.llm-agent-hitl-diff-line-add .llm-agent-hitl-diff-marker,
-.llm-agent-hitl-diff-line-add .llm-agent-hitl-diff-segment-add {
-  color: var(--llm-agent-hitl-diff-add-text);
+.llm-agent-hitl-diff-line-add .llm-agent-hitl-diff-marker {
+  color: var(--llm-diff-add-fg);
 }
 
-.llm-agent-hitl-diff-line-remove .llm-agent-hitl-diff-marker,
-.llm-agent-hitl-diff-line-remove .llm-agent-hitl-diff-segment-remove {
-  color: var(--llm-agent-hitl-diff-remove-text);
+.llm-agent-hitl-diff-line-remove .llm-agent-hitl-diff-marker {
+  color: var(--llm-diff-remove-fg);
 }
 
 .llm-agent-hitl-diff-content {
   margin: 0;
-  padding: 3px 10px;
+  padding: 3px 10px 3px 6px;
   min-width: 0;
-  min-height: 1.35em;
+  min-height: 1.45em;
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--llm-fs-10);
-  line-height: 1.35;
+  line-height: 1.45;
   color: var(--fill-primary);
 }
 
+.llm-agent-hitl-diff-line-context .llm-agent-hitl-diff-content,
+.llm-agent-hitl-diff-line-remove .llm-agent-hitl-diff-content {
+  color: var(--fill-secondary);
+}
+
 .llm-agent-hitl-diff-segment-add {
-  background: rgba(34, 197, 94, 0.18);
-  border-radius: 4px;
+  background: var(--llm-diff-add-strong);
+  border-radius: 3px;
+  color: var(--fill-primary);
 }
 
 .llm-agent-hitl-diff-segment-remove {
-  background: rgba(239, 68, 68, 0.18);
-  border-radius: 4px;
+  background: var(--llm-diff-remove-strong);
+  border-radius: 3px;
+  text-decoration: line-through;
+  text-decoration-color: var(--llm-diff-remove-fg);
 }
 
-.llm-agent-hitl-diff-gap,
 .llm-agent-hitl-diff-empty {
   padding: 4px 10px;
   font-size: var(--llm-fs-10);
@@ -6818,11 +6816,15 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-hitl-diff-gap {
+  padding: 3px 10px;
+  font-size: var(--llm-fs-10);
+  color: var(--fill-tertiary);
+  background: var(--fill-quinary);
   text-align: center;
   border-top: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
+    color-mix(in srgb, var(--stroke-secondary) 60%, transparent);
   border-bottom: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
+    color-mix(in srgb, var(--stroke-secondary) 60%, transparent);
 }
 
 .llm-agent-hitl-checklist {
@@ -7500,6 +7502,17 @@ label.llm-search-results-item:hover {
 @media (prefers-color-scheme: dark) {
   .llm-rose-loader-inline {
     color: rgb(255, 255, 255) !important;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .llm-panel {
+    --llm-diff-add-bg: rgba(63, 185, 110, 0.13);
+    --llm-diff-add-strong: rgba(63, 185, 110, 0.36);
+    --llm-diff-add-fg: #5fcf8a;
+    --llm-diff-remove-bg: rgba(226, 88, 88, 0.13);
+    --llm-diff-remove-strong: rgba(226, 88, 88, 0.34);
+    --llm-diff-remove-fg: #ea7c7c;
   }
 }
 
@@ -9547,7 +9560,8 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
 }
 
 .llm-plan-status[data-status="failed"],
-.llm-plan-status[data-status="blocked"] {
+.llm-plan-status[data-status="blocked"],
+.llm-plan-status[data-status="error"] {
   background: color-mix(in srgb, #c84b4b 14%, transparent);
   color: #c84b4b;
 }

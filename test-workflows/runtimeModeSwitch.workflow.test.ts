@@ -1,29 +1,35 @@
+/**
+ * Runtime mode switching must leave the chat panel usable.
+ *
+ * The author's report: after putting the chat panel into Codex mode
+ * "everything is stuck and unusable" and Zotero could not even be quit.
+ *
+ * The mechanism is not a busy main thread. The panel installs a capture-phase
+ * ownership fence over pointerdown/mousedown/click/command/keydown/input/
+ * change/paste/drop (`enforcePanelOwnershipForEvent` in setupHandlers.ts). When
+ * the fence decides the panel no longer owns its own conversation it calls
+ * `preventDefault()` + `stopImmediatePropagation()`, so every click and
+ * keystroke aimed at the panel is destroyed before any handler -- including the
+ * runtime toggle's own -- ever sees it.
+ *
+ * So the assertions below are about input still reaching the panel, and about
+ * the conversation key moving into the key space of the runtime being entered,
+ * which is what keeps the panel's scope and its item agreeing.
+ */
 import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import type {
   WorkflowTestApi,
   WorkflowTestFixture,
 } from "../src/modules/contextPanel/workflowTestTypes";
+import { isConversationKeyForKind } from "../src/shared/conversationKeySpace";
 
 const PREF_PREFIX = "extensions.zotero.llmforzotero";
 
-/**
- * The author's report: after switching the chat panel from Codex mode back to
- * the original Agent mode, "everything is stuck and unusable" and Zotero cannot
- * even be quit.
- *
- * The mechanism these tests pin is not a busy main thread. The panel installs a
- * capture-phase ownership fence over pointerdown/mousedown/click/command/
- * keydown/input/change/paste/drop (`enforcePanelOwnershipForEvent` in
- * setupHandlers.ts). When the fence decides the panel no longer owns its own
- * conversation it calls `preventDefault()` + `stopImmediatePropagation()`, so
- * every click and keystroke aimed at the panel is destroyed before any handler
- * -- including the Codex toggle's own -- ever sees it. With focus inside the
- * panel that also eats Cmd+Q, which is why quitting appears impossible.
- *
- * So the assertions below are about input still reaching the panel, not about
- * what it renders.
- */
+/** The control the reader presses to enter and leave Codex. */
+const CODEX_TOGGLE_SELECTOR =
+  ".llm-panel-runtime-system-toggle[data-conversation-system='codex']";
+
 const AGENT_AND_CODEX_PREFS = {
   enableAgentMode: true,
   enableClaudeCodeMode: false,
@@ -263,7 +269,11 @@ function getPanelRoot(panelId: string): HTMLElement {
  * own listener separates "the button's handler decided to do nothing" from
  * "the event was destroyed before the button saw it".
  */
-function clickReachesPanelTarget(panelId: string, selector: string): boolean {
+function mouseEventReachesPanelTarget(
+  panelId: string,
+  selector: string,
+  eventType: "click" | "mousedown",
+): boolean {
   const root = getPanelRoot(panelId);
   const target = root.querySelector<HTMLElement>(selector);
   assert.isOk(target, `panel should render ${selector}`);
@@ -271,16 +281,30 @@ function clickReachesPanelTarget(panelId: string, selector: string): boolean {
   const probe = () => {
     reached += 1;
   };
-  target!.addEventListener("click", probe);
+  target!.addEventListener(eventType, probe);
   try {
     const eventCtor = (root.ownerDocument.defaultView as any)?.MouseEvent;
     target!.dispatchEvent(
-      new eventCtor("click", { bubbles: true, cancelable: true }),
+      new eventCtor(eventType, { bubbles: true, cancelable: true }),
     );
   } finally {
-    target!.removeEventListener("click", probe);
+    target!.removeEventListener(eventType, probe);
   }
   return reached > 0;
+}
+
+/** The click the reader makes; it also performs the switch. */
+function clickReachesPanelTarget(panelId: string, selector: string): boolean {
+  return mouseEventReachesPanelTarget(panelId, selector, "click");
+}
+
+/**
+ * The same reachability question without performing the switch: the toggle's
+ * own handler listens for `click`, so a fenced-but-inert `mousedown` shows
+ * whether pointer input aimed at the control still arrives.
+ */
+function pointerReachesPanelTarget(panelId: string, selector: string): boolean {
+  return mouseEventReachesPanelTarget(panelId, selector, "mousedown");
 }
 
 async function assertComposerAcceptsInput(panelId: string): Promise<void> {
@@ -305,7 +329,13 @@ async function assertComposerAcceptsInput(panelId: string): Promise<void> {
   );
 }
 
-/** A keystroke aimed at the composer must not be destroyed at capture. */
+/**
+ * A keystroke aimed at the composer must not be destroyed at capture.
+ *
+ * Deliberately an unmodified key: the fence exempts application accelerators
+ * (Cmd+Q and friends) by design, so probing with one would pass even on a panel
+ * that swallows everything the reader actually types.
+ */
 function keydownReachesComposer(panelId: string): boolean {
   const root = getPanelRoot(panelId);
   const input = root.querySelector<HTMLTextAreaElement>("#llm-input");
@@ -318,8 +348,7 @@ function keydownReachesComposer(panelId: string): boolean {
   try {
     input!.dispatchEvent(
       new (root.ownerDocument.defaultView as any).KeyboardEvent("keydown", {
-        key: "q",
-        metaKey: true,
+        key: "a",
         bubbles: true,
         cancelable: true,
       }),
@@ -328,6 +357,19 @@ function keydownReachesComposer(panelId: string): boolean {
     input!.removeEventListener("keydown", probe);
   }
   return reached > 0;
+}
+
+/** Cmd+Q typed with focus in the panel must still reach Zotero. */
+function quitShortcutSurvivesPanel(panelId: string): boolean {
+  const root = getPanelRoot(panelId);
+  const input = root.querySelector<HTMLTextAreaElement>("#llm-input");
+  assert.isOk(input, "composer should be rendered");
+  const event = new (root.ownerDocument.defaultView as any).KeyboardEvent(
+    "keydown",
+    { key: "q", metaKey: true, bubbles: true, cancelable: true },
+  );
+  input!.dispatchEvent(event);
+  return !event.defaultPrevented;
 }
 
 describe("workflow: runtime mode switch", function () {
@@ -357,6 +399,49 @@ describe("workflow: runtime mode switch", function () {
     });
     fixtures.push(fixture);
     return fixture;
+  }
+
+  /**
+   * What the reader must always be able to do after a runtime switch: type into
+   * the composer, press the toggle again, and quit Zotero.
+   */
+  async function assertPanelStillUsable(
+    panelId: string,
+    label: string,
+  ): Promise<void> {
+    await assertMainThreadResponsive(label);
+    assert.isTrue(
+      keydownReachesComposer(panelId),
+      `${label}: a keystroke aimed at the composer must reach it`,
+    );
+    await assertComposerAcceptsInput(panelId);
+    assert.isTrue(
+      pointerReachesPanelTarget(panelId, CODEX_TOGGLE_SELECTOR),
+      `${label}: pointer input aimed at the runtime toggle must reach it`,
+    );
+    assert.isTrue(
+      quitShortcutSurvivesPanel(panelId),
+      `${label}: Cmd+Q typed in the panel must still reach Zotero`,
+    );
+  }
+
+  /** Wait for the panel to settle on a runtime, then report its diagnostics. */
+  async function waitForConversationSystem(
+    panelId: string,
+    system: string,
+  ): Promise<Awaited<ReturnType<WorkflowTestApi["getDiagnostics"]>>> {
+    const deadline = Date.now() + 8000;
+    let diagnostics = await api.getDiagnostics(panelId);
+    while (diagnostics.conversationSystem !== system && Date.now() < deadline) {
+      await Zotero.Promise.delay(50);
+      diagnostics = await api.getDiagnostics(panelId);
+    }
+    assert.equal(
+      diagnostics.conversationSystem,
+      system,
+      `the panel must settle on the ${system} runtime`,
+    );
+    return diagnostics;
   }
 
   it("stays responsive returning to Agent mode from an empty Codex conversation", async function () {
@@ -511,11 +596,12 @@ describe("workflow: runtime mode switch", function () {
     });
   });
 
-  // The reproduction of the reported failure. A library conversation switched
-  // into Codex keeps the upstream global conversation key, so the panel's DOM
-  // scope says "codex" while its own item still resolves to "upstream"; the
-  // ownership fence then reads `stale-candidate` and destroys every click and
-  // keystroke aimed at the panel, including the one that would switch back.
+  // The reproduction of the reported failure. Switching a library conversation
+  // into Codex used to declare the new runtime on the panel before the
+  // conversation key moved into that runtime's key space, so the panel's own
+  // ownership check refused the rest of the switch, the mismatch became
+  // permanent, and the fence destroyed every click and keystroke aimed at the
+  // panel -- including the one that would switch back.
   it("keeps accepting input after a library conversation enters Codex", async function () {
     await withPrefs(AGENT_AND_CODEX_PREFS, async () => {
       const paper = await createPaper("Mode Switch Library");
@@ -523,8 +609,6 @@ describe("workflow: runtime mode switch", function () {
       const global = await api.togglePanelConversationMode(panel.panelId);
       assert.equal(global.conversationKind, "global");
 
-      const codexToggle =
-        ".llm-panel-runtime-system-toggle[data-conversation-system='codex']";
       assert.isTrue(
         keydownReachesComposer(panel.panelId),
         "the panel delivers keystrokes before the switch",
@@ -534,7 +618,7 @@ describe("workflow: runtime mode switch", function () {
       assert.equal(codex.conversationSystem, "codex");
       await assertMainThreadResponsive("library conversation in Codex");
       // The panel settles into the state the reader sees before the fence is
-      // probed: the divergence appears once the switch has finished applying.
+      // probed: the divergence appeared once the switch had finished applying.
       await Zotero.Promise.delay(1500);
 
       assert.isTrue(
@@ -547,20 +631,171 @@ describe("workflow: runtime mode switch", function () {
       // mode, with a probe on the same element so a swallowed event is told
       // apart from a handler that ran and did nothing.
       assert.isTrue(
-        clickReachesPanelTarget(panel.panelId, codexToggle),
+        clickReachesPanelTarget(panel.panelId, CODEX_TOGGLE_SELECTOR),
         "the click that returns to Agent mode must reach the Codex toggle",
       );
-      const deadline = Date.now() + 8000;
-      let system = (await api.getDiagnostics(panel.panelId)).conversationSystem;
-      while (system !== "upstream" && Date.now() < deadline) {
-        await Zotero.Promise.delay(50);
-        system = (await api.getDiagnostics(panel.panelId)).conversationSystem;
-      }
+      const back = await waitForConversationSystem(panel.panelId, "upstream");
       assert.equal(
-        system,
-        "upstream",
-        "clicking the Codex toggle again must return to the original Agent mode",
+        back.conversationKind,
+        "global",
+        "the reader must come back to the library conversation they left",
       );
+    });
+  });
+
+  it("round trips an empty library conversation between Codex and Agent", async function () {
+    await withPrefs(AGENT_AND_CODEX_PREFS, async () => {
+      const paper = await createPaper("Mode Switch Library Empty");
+      const panel = await api.renderPanelForItem(paper.parentItemId);
+      const global = await api.togglePanelConversationMode(panel.panelId);
+      assert.equal(global.conversationKind, "global");
+      const upstreamKey = global.conversationKey || 0;
+      await assertPanelStillUsable(panel.panelId, "library chat before Codex");
+
+      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      assert.equal(codex.conversationSystem, "codex");
+      assert.notEqual(
+        codex.conversationKey,
+        upstreamKey,
+        "entering Codex must move the panel off the upstream library conversation",
+      );
+      assert.isTrue(
+        isConversationKeyForKind("codex", "global", codex.conversationKey || 0),
+        `a Codex library chat must use a Codex key, got ${codex.conversationKey}`,
+      );
+      await assertPanelStillUsable(
+        panel.panelId,
+        "empty library chat in Codex",
+      );
+
+      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      assert.equal(back.conversationSystem, "upstream");
+      assert.equal(
+        back.conversationKey,
+        upstreamKey,
+        "returning must land back on the library conversation the reader left",
+      );
+      await assertPanelStillUsable(
+        panel.panelId,
+        "empty library chat back in Agent",
+      );
+
+      const again = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      assert.equal(again.conversationSystem, "codex");
+      assert.equal(
+        again.conversationKey,
+        codex.conversationKey,
+        "re-entering Codex must reuse the Codex library chat, not start a third one",
+      );
+      await assertPanelStillUsable(panel.panelId, "second entry into Codex");
+    });
+  });
+
+  it("round trips a library conversation that already carries a turn", async function () {
+    await withPrefs(AGENT_AND_CODEX_PREFS, async () => {
+      const paper = await createPaper("Mode Switch Library Turn");
+      const panel = await api.renderPanelForItem(paper.parentItemId);
+      const global = await api.togglePanelConversationMode(panel.panelId);
+      assert.equal(global.conversationKind, "global");
+
+      const upstreamRunId = `library-upstream-${Date.now()}`;
+      await api.seedPanelStoredTurn(
+        panel.panelId,
+        "Tag everything I read this week",
+        "Tagged one item.",
+        {
+          runMode: "agent",
+          agentRunId: upstreamRunId,
+          pendingAgentTraceEvents: buildLegacyAgentTraceEvents(upstreamRunId),
+        },
+      );
+      await Zotero.Promise.delay(200);
+
+      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      assert.equal(codex.conversationSystem, "codex");
+      assert.isTrue(
+        isConversationKeyForKind("codex", "global", codex.conversationKey || 0),
+        `a Codex library chat must use a Codex key, got ${codex.conversationKey}`,
+      );
+      await assertPanelStillUsable(
+        panel.panelId,
+        "library chat with a turn in Codex",
+      );
+
+      const codexRunId = `library-codex-${Date.now()}`;
+      await api.seedPanelStoredTurn(
+        panel.panelId,
+        "Now do the same natively",
+        "Tagged one item.",
+        {
+          runMode: "agent",
+          agentRunId: codexRunId,
+          pendingAgentTraceEvents: buildCodexNativeTraceEvents(codexRunId),
+        },
+      );
+      await Zotero.Promise.delay(200);
+
+      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      assert.equal(back.conversationSystem, "upstream");
+      assert.equal(back.conversationKind, "global");
+      // Returning from a runtime opens a fresh draft rather than resuming a
+      // conversation that already has turns, so only the key space is pinned.
+      assert.isTrue(
+        isConversationKeyForKind(
+          "upstream",
+          "global",
+          back.conversationKey || 0,
+        ),
+        `returning must land on an upstream library key, got ${back.conversationKey}`,
+      );
+      assert.notEqual(
+        back.conversationKey,
+        codex.conversationKey,
+        "returning must not leave the panel on the Codex conversation key",
+      );
+      await assertPanelStillUsable(
+        panel.panelId,
+        "library chat with a turn back in Agent",
+      );
+    });
+  });
+
+  it("round trips the standalone Library Chat between Codex and Agent", async function () {
+    await withPrefs(AGENT_AND_CODEX_PREFS, async () => {
+      const paper = await createPaper("Mode Switch Standalone Library");
+      await api.openStandaloneForItem(paper.parentItemId);
+      try {
+        const library = await api.clickStandaloneTab("open");
+        assert.equal(library.conversationKind, "global");
+        assert.equal(library.conversationSystem, "upstream");
+        const upstreamKey = library.conversationKey || 0;
+
+        const codex = await api.clickStandaloneSystemToggle("codex");
+        assert.equal(codex.conversationSystem, "codex");
+        assert.isTrue(
+          isConversationKeyForKind(
+            "codex",
+            "global",
+            codex.conversationKey || 0,
+          ),
+          `a standalone Codex library chat must use a Codex key, got ${codex.conversationKey}`,
+        );
+        await assertMainThreadResponsive("standalone library chat in Codex");
+
+        // The toggle still answering is the proof the window did not go deaf.
+        const back = await api.clickStandaloneSystemToggle("codex");
+        assert.equal(back.conversationSystem, "upstream");
+        assert.equal(
+          back.conversationKey,
+          upstreamKey,
+          "returning must land back on the standalone library conversation",
+        );
+        await assertMainThreadResponsive(
+          "standalone library chat back in Agent",
+        );
+      } finally {
+        await api.closeStandalone();
+      }
     });
   });
 });

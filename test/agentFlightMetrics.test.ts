@@ -40,12 +40,13 @@ function toolCall(params: {
   callId: string;
   name: string;
   workCategory?: AgentStage;
+  args?: Record<string, unknown>;
 }): AgentEvent {
   return {
     type: "tool_call",
     callId: params.callId,
     name: params.name,
-    args: {},
+    args: params.args ?? {},
     workCategory: params.workCategory,
   };
 }
@@ -285,5 +286,113 @@ describe("agent flight metrics", function () {
     );
     assert.equal(summary.nativeWrites, 1);
     assert.equal(summary.duplicateNativeWrites, 0);
+  });
+
+  it("counts a retrieval repeat from the item ids the calls named, not their names", function () {
+    const summary = summarizeAgentFlight(
+      [
+        // Three differently named tools, all declaring the retrieval stage:
+        // the summary must read the stage and the ids, never the name.
+        stageEvent({
+          stage: "retrieval",
+          callId: "call-1",
+          toolName: "search_paper",
+        }),
+        toolCall({
+          callId: "call-1",
+          name: "search_paper",
+          args: { target: { itemId: 40, contextItemId: 41 } },
+        }),
+        stageEvent({
+          stage: "retrieval",
+          callId: "call-2",
+          toolName: "paper_read",
+        }),
+        toolCall({
+          callId: "call-2",
+          name: "paper_read",
+          args: { target: { itemId: 40, contextItemId: 41 } },
+        }),
+        stageEvent({
+          stage: "retrieval",
+          callId: "call-3",
+          toolName: "read_paper",
+        }),
+        toolCall({
+          callId: "call-3",
+          name: "read_paper",
+          args: { target: { itemId: 50, contextItemId: 51 } },
+        }),
+      ],
+      {
+        modelCalls: [4],
+        nativeSaves: 0,
+        retrievalCounters: { candidateBuilds: 2, paperContextEnsures: 6 },
+      },
+    );
+    assert.deepEqual(summary.retrieval, {
+      toolCalls: 3,
+      candidateBuilds: 2,
+      paperContextEnsures: 6,
+      repeatedCallsForSameItem: 1,
+      cacheHitRate: 0.33,
+    });
+    assert.equal(
+      summary.retrieval.toolCalls,
+      summary.toolCallsByStage.retrieval,
+      "the retrieval block and the stage histogram must count the same calls",
+    );
+  });
+
+  it("reports no retrieval cache hit rate for a flight that retrieved nothing", function () {
+    const summary = summarizeAgentFlight(
+      [
+        stageEvent({
+          stage: "zotero_action",
+          callId: "call-1",
+          toolName: "note_write",
+        }),
+        toolCall({ callId: "call-1", name: "note_write" }),
+      ],
+      { modelCalls: [2], nativeSaves: 1 },
+    );
+    assert.deepEqual(summary.retrieval, {
+      toolCalls: 0,
+      candidateBuilds: 0,
+      paperContextEnsures: 0,
+      repeatedCallsForSameItem: 0,
+      cacheHitRate: null,
+    });
+  });
+
+  it("counts a retrieval call that names no item without calling it a repeat", function () {
+    const summary = summarizeAgentFlight(
+      [
+        stageEvent({
+          stage: "retrieval",
+          callId: "call-1",
+          toolName: "search_paper",
+        }),
+        toolCall({ callId: "call-1", name: "search_paper", args: {} }),
+        stageEvent({
+          stage: "retrieval",
+          callId: "call-2",
+          toolName: "search_paper",
+        }),
+        toolCall({ callId: "call-2", name: "search_paper", args: {} }),
+      ],
+      {
+        modelCalls: [3],
+        nativeSaves: 0,
+        retrievalCounters: { candidateBuilds: 2, paperContextEnsures: 2 },
+      },
+    );
+    assert.equal(summary.retrieval.toolCalls, 2);
+    assert.equal(
+      summary.retrieval.repeatedCallsForSameItem,
+      0,
+      "a call whose arguments name no item cannot be shown to repeat one",
+    );
+    assert.equal(summary.retrieval.cacheHitRate, 0);
   });
 });

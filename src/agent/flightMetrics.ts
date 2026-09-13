@@ -87,6 +87,50 @@ export type AgentFlightSummary = {
   };
   /** Material finalizations: the host-announced `material_finalized` events. */
   materialFinalized: number;
+  /** What the flight spent on retrieval, and how much of it repeated. */
+  retrieval: RetrievalFlightSummary;
+};
+
+/**
+ * What a flight spent on retrieval, and how much of it was a repeat.
+ *
+ * The three counts answer different questions on purpose. `toolCalls` is what
+ * the model asked for; `candidateBuilds` is what actually reached the ranking
+ * pass, so the gap between them is the evidence cache doing its job;
+ * `paperContextEnsures` is how often a paper's indexed text was asked for,
+ * which is a separate cost and can move on its own.
+ */
+export type RetrievalFlightSummary = {
+  /**
+   * Tool calls that declared the retrieval stage.
+   *
+   * Read off the `agent_stage` the call announced (falling back to the
+   * category the call itself declared), never off the tool's name -- this is
+   * always equal to `toolCallsByStage.retrieval`.
+   */
+  toolCalls: number;
+  /** Candidate-ranking passes the retrieval service actually ran (extra). */
+  candidateBuilds: number;
+  /** Times a paper's indexed context was ensured (extra). */
+  paperContextEnsures: number;
+  /**
+   * Retrieval calls whose every named item had already been retrieved.
+   *
+   * Items come from the identity fields a call's own arguments carry, so a
+   * renamed tool moves nothing. A call that names no item is counted in
+   * `toolCalls` but can never be shown to repeat one.
+   */
+  repeatedCallsForSameItem: number;
+  /**
+   * The share of retrieval calls that built no candidates:
+   * `1 - candidateBuilds / toolCalls`, rounded to two decimals, `null` when
+   * the flight made no retrieval call.
+   *
+   * One call may retrieve several papers and build candidates for each, so
+   * this can go below zero. That is a reading, not an error: it says the
+   * flight built more rankings than it made calls.
+   */
+  cacheHitRate: number | null;
 };
 
 export type AgentFlightExtras = {
@@ -102,10 +146,88 @@ export type AgentFlightExtras = {
    * it and the whole flight is read as one turn.
    */
   turnEvents?: readonly (readonly AgentEvent[])[];
+  /**
+   * Retrieval work counted where it happens, inside the retrieval service.
+   *
+   * Neither a candidate build nor a paper-context ensure emits an event, so a
+   * caller that wants them has to count them at the seams it injected
+   * (`RetrievalService`'s `candidateBuilder` and the `PdfService` it was
+   * built with). Omit them and both read zero, which makes every retrieval
+   * call look like a cache miss.
+   */
+  retrievalCounters?: { candidateBuilds: number; paperContextEnsures: number };
 };
 
 /** The bucket a tool call with no declared work category is counted in. */
 export const UNATTRIBUTED_STAGE = "unattributed";
+
+/** The stage a call announces when it goes looking for evidence. */
+const RETRIEVAL_STAGE = "retrieval";
+
+/**
+ * The argument fields a tool call names a Zotero item with.
+ *
+ * These are contract field names, published by the shared paper-target schema
+ * and reused by every tool that takes a paper -- not tool names, which the
+ * product renames freely. A call is attributed to an item only through them,
+ * so a tool that invents its own spelling is counted as naming no item rather
+ * than being guessed at.
+ */
+const ITEM_ID_ARG_FIELDS: ReadonlySet<string> = new Set([
+  "itemId",
+  "contextItemId",
+  "targetItemId",
+]);
+
+/** Every item id a call's arguments name, however deeply they are nested. */
+function itemIdsNamedByArgs(
+  args: unknown,
+  into = new Set<string>(),
+): Set<string> {
+  if (Array.isArray(args)) {
+    for (const entry of args) itemIdsNamedByArgs(entry, into);
+    return into;
+  }
+  if (!args || typeof args !== "object") return into;
+  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+    if (ITEM_ID_ARG_FIELDS.has(key) && Number.isFinite(Number(value)))
+      into.add(String(Math.floor(Number(value))));
+    else itemIdsNamedByArgs(value, into);
+  }
+  return into;
+}
+
+/**
+ * What the flight's retrieval calls asked for, and how often they repeated.
+ *
+ * `calls` arrive in the order the flight made them, each with the item ids its
+ * own arguments named. A call is a repeat when every item it names had already
+ * been retrieved earlier in the flight -- the case the evidence cache exists
+ * to make cheap.
+ */
+function summarizeRetrieval(
+  calls: readonly (readonly string[])[],
+  counters: AgentFlightExtras["retrievalCounters"],
+): RetrievalFlightSummary {
+  const seen = new Set<string>();
+  let repeatedCallsForSameItem = 0;
+  for (const itemIds of calls) {
+    if (!itemIds.length) continue;
+    if (itemIds.every((itemId) => seen.has(itemId)))
+      repeatedCallsForSameItem += 1;
+    else for (const itemId of itemIds) seen.add(itemId);
+  }
+  const candidateBuilds = counters?.candidateBuilds ?? 0;
+  return {
+    toolCalls: calls.length,
+    candidateBuilds,
+    paperContextEnsures: counters?.paperContextEnsures ?? 0,
+    repeatedCallsForSameItem,
+    cacheHitRate: calls.length
+      ? roundHundredths(1 - candidateBuilds / calls.length)
+      : null,
+  };
+}
 
 const CREATED_NOTE_FACT = /^created_note:item:(\d+)$/;
 const NATIVE_NOTE_FACT = /^native_note:(\d+):/;
@@ -158,6 +280,7 @@ export function summarizeAgentFlight(
   const writtenNoteIds = new Set<string>();
   const batchItemKeys = new Set<string>();
   const batchItems = { written: 0, announcedNotWritten: 0, failed: 0 };
+  const retrievalCallItemIds: string[][] = [];
   let materialFinalized = 0;
 
   for (const event of events) {
@@ -167,6 +290,8 @@ export function summarizeAgentFlight(
         event.workCategory ||
         UNATTRIBUTED_STAGE;
       toolCallsByStage[stage] = (toolCallsByStage[stage] || 0) + 1;
+      if (stage === RETRIEVAL_STAGE)
+        retrievalCallItemIds.push([...itemIdsNamedByArgs(event.args)]);
     }
     if (event.type === "tool_result") {
       for (const receipt of event.actionReceipts || [])
@@ -205,6 +330,10 @@ export function summarizeAgentFlight(
     duplicateNativeWrites: Math.max(0, extras.nativeSaves - nativeWrites),
     batchItems,
     materialFinalized,
+    retrieval: summarizeRetrieval(
+      retrievalCallItemIds,
+      extras.retrievalCounters,
+    ),
   };
 }
 

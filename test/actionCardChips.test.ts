@@ -34,6 +34,7 @@ describe("action card chips", function () {
     assert.equal(chip.getAttribute("tabindex"), "0");
     const header = chip.findByClass("llm-paper-context-chip-header")!;
     assert.include(header.className, "llm-selected-context-header");
+    assert.include(header.className, "llm-image-preview-header");
     assert.exists(header.findByClass("llm-paper-context-chip-label"));
     assert.exists(chip.findByClass("llm-context-icon-paper"));
     assert.equal(
@@ -63,7 +64,7 @@ describe("action card chips", function () {
     assert.lengthOf(list.findAllByClass("llm-paper-context-chip"), 2);
     const badge = list.findByClass("llm-paper-picker-badge")!;
     assert.equal(badge.textContent, "+2");
-    assert.equal(badge.title, "C, 2003\nD, 2004");
+    assert.equal(badge.getAttribute("title"), "C, 2003\nD, 2004");
   });
 
   it("renders each object kind with its own chip and icon", function () {
@@ -133,6 +134,60 @@ describe("action card chips", function () {
     );
   });
 
+  it("links the objects the reader can open, and only those", function () {
+    const note = el(
+      renderObjectChip(fakeDocument, {
+        kind: "note",
+        label: "Summary",
+        noteId: 99,
+        libraryID: 1,
+        itemKey: "N99",
+      }),
+    );
+    assert.include(note.className, "llm-agent-action-link");
+    assert.equal(note.getAttribute("role"), "link");
+    assert.equal(note.getAttribute("tabindex"), "0");
+    assert.exists(note.findByClass("llm-citation-icon"));
+    assert.deepEqual(navigationTargetOf(note as unknown as HTMLElement), {
+      kind: "note",
+      label: "Summary",
+      noteId: 99,
+      libraryID: 1,
+      itemKey: "N99",
+    });
+    const file = el(
+      renderObjectChip(fakeDocument, {
+        kind: "file",
+        label: "a.md",
+        path: "/x/a.md",
+      }),
+    );
+    assert.include(file.className, "llm-agent-action-link");
+    assert.deepEqual(navigationTargetOf(file as unknown as HTMLElement), {
+      kind: "file",
+      label: "a.md",
+      path: "/x/a.md",
+    });
+    const trash = el(renderObjectChip(fakeDocument, { kind: "trash" }));
+    assert.include(trash.className, "llm-agent-action-link");
+    assert.deepEqual(navigationTargetOf(trash as unknown as HTMLElement), {
+      kind: "trash",
+    });
+    const unresolved = el(
+      renderObjectChip(fakeDocument, { kind: "collection", label: "Reviews" }),
+    );
+    assert.notInclude(
+      unresolved.className,
+      "llm-agent-action-link",
+      "a collection no receipt identified cannot be opened",
+    );
+    assert.isNull(navigationTargetOf(unresolved as unknown as HTMLElement));
+    const unresolvedNote = el(
+      renderObjectChip(fakeDocument, { kind: "note", label: "Note" }),
+    );
+    assert.notInclude(unresolvedNote.className, "llm-agent-action-link");
+  });
+
   it("renders a verb glyph with the operation's word as tooltip, red when destructive", function () {
     const move = el(
       renderVerb(fakeDocument, { glyph: "→" }, "Moved to collection"),
@@ -186,6 +241,20 @@ describe("action card chips", function () {
     assert.include(
       collectFakeText(skip),
       "Skipped Okafor, 2019 · already in Reviews",
+    );
+    const twoSkipped = el(
+      renderSkipRow(
+        fakeDocument,
+        [
+          { kind: "item", itemId: 3, label: "Okafor, 2019" },
+          { kind: "item", itemId: 4, label: "Lee, 2020" },
+        ],
+        "already in Reviews",
+      ),
+    );
+    assert.include(
+      collectFakeText(twoSkipped),
+      "Skipped Okafor, 2019, Lee, 2020 · already in Reviews",
     );
   });
 });

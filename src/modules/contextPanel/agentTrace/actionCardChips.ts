@@ -1,4 +1,4 @@
-import { createContextIcon, type ContextIconName } from "../contextIcons";
+import { createContextIcon } from "../contextIcons";
 import type { ActionCardObject, ActionCardTarget } from "./actionCardModel";
 import type { ActionCardVerb } from "./actionCardVocabulary";
 
@@ -41,7 +41,11 @@ function chip(
   const root = doc.createElement("div");
   root.className = `llm-selected-context ${shellClass}`;
   const header = doc.createElement("div");
-  header.className = `llm-selected-context-header ${headerClass}`;
+  // Both classes are the composer's: `llm-image-preview-header` is what lays
+  // the header out as an inline-flex box that shrinks to its content, and it
+  // wins over `.llm-selected-context-header`'s `display: flex` later in the
+  // sheet. A chip missing it stretches to the row's width.
+  header.className = `llm-image-preview-header llm-selected-context-header ${headerClass}`;
   const label = doc.createElement("span");
   label.className = labelClass;
   const title = doc.createElement("span");
@@ -70,11 +74,9 @@ function chip(
  */
 function maskIcon(
   doc: Document,
-  name: ContextIconName | "command" | "trash",
+  name: "command" | "trash",
   className: string,
 ): HTMLElement {
-  if (name !== "command" && name !== "trash")
-    return createContextIcon(doc, name, className);
   const icon = doc.createElement("span");
   icon.className = `llm-context-svg-icon llm-context-icon-${name} ${className}`;
   icon.setAttribute("aria-hidden", "true");
@@ -113,7 +115,7 @@ export function renderTargetChip(
     "llm-other-ref-chip",
     "llm-other-ref-chip-header",
     "llm-other-ref-chip-label",
-    maskIcon(doc, "file", "llm-other-ref-chip-icon"),
+    createContextIcon(doc, "file", "llm-other-ref-chip-icon"),
     "llm-other-ref-chip-title",
     target.label,
     null,
@@ -137,10 +139,13 @@ export function renderTargetList(
     const badge = doc.createElement("span");
     badge.className = "llm-paper-picker-badge";
     badge.textContent = `+${targets.length - max}`;
-    badge.title = targets
-      .slice(max)
-      .map((target) => target.label)
-      .join("\n");
+    badge.setAttribute(
+      "title",
+      targets
+        .slice(max)
+        .map((target) => target.label)
+        .join("\n"),
+    );
     list.appendChild(badge);
   }
   return list;

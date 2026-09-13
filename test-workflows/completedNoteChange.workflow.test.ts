@@ -111,9 +111,25 @@ describe("workflow: completed native note change", function () {
       await edit(notes[1], "A later unrelated action.");
       const panel = await workflow.renderPanelForItem(notes[0].id);
       root = workflow.renderToolResultForPanel(panel.panelId, result);
-      const node = root!.querySelector<HTMLElement>(".llm-note-change-card")!;
-      assert.exists(node);
-      assert.equal(node.dataset.actionId, card.actionId);
+      const node = root!.querySelector<HTMLElement>(
+        ".llm-agent-action-summary-card",
+      )!;
+      assert.exists(node, "the change the turn made is the turn's own card");
+      assert.equal(
+        node.dataset.mode,
+        "note",
+        "a turn whose only action was the edit is that edit",
+      );
+      assert.include(node.className, "llm-note-change-card");
+      assert.equal(
+        node.querySelector(".llm-plan-title")?.textContent,
+        `Changed ‘${card.title}’`,
+      );
+      assert.lengthOf(
+        root!.querySelectorAll(".llm-note-review-card"),
+        0,
+        "the standalone note-change card is not rendered beside it",
+      );
       const interrupted = JSON.parse(JSON.stringify(result));
       interrupted.ok = false;
       interrupted.content.noteChange.state = "unverified";
@@ -128,7 +144,9 @@ describe("workflow: completed native note change", function () {
         1,
       );
       assert.equal(
-        consolidated!.querySelector(".llm-plan-status")?.textContent,
+        consolidated!.querySelector(
+          ".llm-agent-action-summary-card .llm-plan-header .llm-plan-status",
+        )?.textContent,
         "Applied",
       );
       consolidated?.remove();
@@ -141,6 +159,13 @@ describe("workflow: completed native note change", function () {
       assert.include(node.textContent, "Original paragraph.");
       assert.include(node.textContent, "Verified replacement.");
       assert.notInclude(node.textContent, "A later unrelated action.");
+      const diff = node.querySelector(".llm-agent-hitl-diff")!;
+      assert.exists(diff, "the open row shows the verified diff");
+      assert.isAtLeast(
+        diff.querySelectorAll(".llm-agent-hitl-diff-line-add").length,
+        1,
+        "the replacement is drawn as an added line",
+      );
       const undo = [...node.querySelectorAll("button")].find(
         (button) => button.textContent === "Undo",
       )!;

@@ -125,44 +125,79 @@ describe("workflow: create then show saved note", function () {
         );
         assert.lengthOf(
           root!.querySelectorAll(".llm-plan-container"),
-          2,
-          "a restored note-only turn shows the note and what the turn did",
+          1,
+          "the note and what the turn did are one card, not two",
         );
-        const card = root!.querySelector<HTMLElement>(".llm-saved-note-card")!;
-        assert.exists(
-          card,
-          "the successful tool result must expose a saved-note card",
+        const cards = root!.querySelectorAll<HTMLElement>(
+          ".llm-agent-action-summary-card",
         );
-        assert.equal(card.dataset.noteId, String(note.id));
+        assert.lengthOf(cards, 1, "one turn states its outcome once");
+        const card = cards[0];
+        assert.equal(
+          card.dataset.mode,
+          "note",
+          "a turn whose only action was the note is that note",
+        );
+        assert.include(card.className, "llm-saved-note-card");
+        assert.lengthOf(
+          root!.querySelectorAll(".llm-saved-note-destination"),
+          0,
+          "the standalone saved-note card is not rendered beside it",
+        );
         assert.isNull(
           card.closest(".llm-agent-activity-details"),
           "the deliverable must not disappear inside collapsed activity",
         );
-        assert.isNull(
-          card.querySelector("textarea, button"),
-          "no approval, cancellation or draft editor after creation",
+        assert.equal(
+          card.querySelector(".llm-plan-title")?.textContent,
+          note.getNoteTitle(),
+          "the card is titled with the note Zotero actually stored",
         );
         assert.equal(
-          card.querySelector(".llm-plan-status")?.textContent,
+          card.querySelector(".llm-plan-header .llm-plan-status")?.textContent,
           "Saved",
         );
-        assert.equal(card.querySelector("strong")?.textContent, "formatted");
+        assert.include(
+          [...card.querySelectorAll(".llm-paper-context-chip-text")].map(
+            (chip) => chip.textContent,
+          ),
+          `Saved note destination ${mode}`,
+          "the row names the paper the note landed on",
+        );
+        const row = card.querySelector<HTMLDetailsElement>(
+          "details.llm-agent-action-row",
+        )!;
+        assert.exists(row, "the note is the body of the turn's one row");
+        assert.isTrue(row.open, "the note the reader came for is already open");
+        const preview = card.querySelector<HTMLElement>(".llm-note-preview")!;
+        assert.exists(preview, "the open row shows the note it wrote");
+        assert.isNull(
+          card.querySelector("textarea"),
+          "no approval, cancellation or draft editor after creation",
+        );
+        assert.deepEqual(
+          [...card.querySelectorAll("button")].map(
+            (button) => button.textContent,
+          ),
+          ["Open note"],
+          "a saved note offers the way in, and no approval controls",
+        );
+        assert.equal(preview.querySelector("strong")?.textContent, "formatted");
         assert.notMatch(
-          card.textContent || "",
+          preview.textContent || "",
           /<\/?div\b|&(?:quot|#0?39|amp);/,
         );
-        assert.notInclude(card.textContent, "Model response:");
-        assert.lengthOf(card.querySelectorAll("li"), 2);
+        assert.notInclude(preview.textContent, "Model response:");
+        assert.lengthOf(preview.querySelectorAll("li"), 2);
         assert.include(
-          card.querySelector("blockquote")!.textContent,
+          preview.querySelector("blockquote")!.textContent,
           "A saved quotation.",
         );
-        const link = card.querySelector<HTMLAnchorElement>(
-          ".llm-saved-note-destination",
-        )!;
-        assert.include(link.textContent, `Saved note destination ${mode}`);
-        assert.include(link.href, `/items/${note.key}`);
-        link.click();
+        const open = [
+          ...card.querySelectorAll<HTMLButtonElement>("button.llm-plan-action"),
+        ].find((button) => button.textContent === "Open note")!;
+        assert.exists(open, "the row opens the exact note it wrote");
+        open.click();
         const deadline = Date.now() + 5000;
         while (
           !Zotero.getActiveZoteroPane()

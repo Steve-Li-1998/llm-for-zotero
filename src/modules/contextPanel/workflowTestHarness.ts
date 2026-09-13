@@ -5501,12 +5501,22 @@ export function installWorkflowTestHarness(targetAddon: {
             Zotero.getActiveZoteroPane()
               .getSelectedItems()
               .some((item) => item.id === options.linkTargetItemId);
-          const started = button.isConnected;
           button.click();
+          // The click handler runs synchronously and marks the link busy; the
+          // selection becomes observable before navigation reveals the window.
+          const started = button.dataset.loading === "true";
           const deadline = Date.now() + 5000;
-          while (!selected() && Date.now() < deadline)
+          while (
+            !(selected() && button.dataset.loading !== "true") &&
+            Date.now() < deadline
+          )
             await Zotero.Promise.delay(25);
-          return { started, finished: selected(), focusRequests, diagnostics };
+          return {
+            started,
+            finished: selected() && button.dataset.loading === "false",
+            focusRequests,
+            diagnostics,
+          };
         }
         const win = button.ownerDocument.defaultView!;
         button.dispatchEvent(

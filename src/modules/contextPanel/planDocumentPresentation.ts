@@ -300,9 +300,13 @@ function attachSourceNavigation(
   link.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    void navigatePlanDocumentCitationSource(source).finally(() =>
-      afterNavigate?.(),
-    );
+    // Mirror the quote citation button's completion marker so observers can
+    // tell a started navigation from a finished one.
+    link.dataset.loading = "true";
+    void navigatePlanDocumentCitationSource(source).finally(() => {
+      link.dataset.loading = "false";
+      afterNavigate?.();
+    });
   });
 }
 

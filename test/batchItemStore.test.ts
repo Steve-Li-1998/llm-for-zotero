@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   createBatchItems,
   initAgentBatchItemStore,
+  itemSetSignature,
   listBatchItems,
   listResumableBatches,
   markBatchItemFailed,
@@ -368,6 +369,51 @@ describe("batch item store", function () {
     // The newest batch over these items finished. Offering the superseded one
     // would write the paper a second time from the text the user replaced.
     assert.isEmpty(await listResumableBatches(42));
+  });
+
+  it("joins the item keys of a signature with a NUL, byte for byte", function () {
+    // The separator used to sit in the source as a literal NUL byte, which
+    // renders as a space and made tooling read this module as binary. Spelling
+    // it as an escape must not change the string: a resumed batch is matched
+    // by this signature, so a different separator would silently regroup
+    // batches that a running install had already grouped.
+    assert.strictEqual(itemSetSignature("item:2,item:1"), "item:1\u0000item:2");
+    assert.strictEqual(itemSetSignature("item:1"), "item:1");
+    assert.strictEqual(itemSetSignature(""), "");
+  });
+
+  it("keeps two batches apart when only the separator position differs", async function () {
+    await batch("batch-pair");
+    await batch("batch-single");
+    await createBatchItems(
+      "batch-pair",
+      [
+        { itemKey: "item:1", position: 1, materialRef: materialRef("p1") },
+        { itemKey: "item:2", position: 2, materialRef: materialRef("p2") },
+      ],
+      1000,
+    );
+    await createBatchItems(
+      "batch-single",
+      [
+        {
+          itemKey: "item:1 item:2",
+          position: 1,
+          materialRef: materialRef("s1"),
+        },
+      ],
+      2000,
+    );
+
+    // A space separator would join both item sets to "item:1 item:2" and drop
+    // the older batch as superseded. No item key can carry a NUL, so the two
+    // sets stay distinct and both remain resumable.
+    assert.deepEqual(
+      (await listResumableBatches(42))
+        .map((entry) => entry.batchId)
+        .sort((left, right) => left.localeCompare(right)),
+      ["batch-pair", "batch-single"],
+    );
   });
 
   it("keeps batches that do not cover the same items", async function () {

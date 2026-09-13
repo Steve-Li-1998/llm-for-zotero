@@ -278,9 +278,16 @@ export async function listBatchItems(
   return Array.isArray(rows) ? rows.map(toRecord) : [];
 }
 
-/** The set of items a batch covers, order-independent. */
-function itemSetSignature(itemKeys: string): string {
-  return itemKeys.split(",").sort().join(" ");
+/**
+ * The set of items a batch covers, order-independent.
+ *
+ * The separator is NUL because no Zotero item key can contain it, so two
+ * different item sets can never join to the same string. It is spelled as an
+ * escape: a literal NUL byte in the source renders as a space in editors and
+ * makes tooling treat this module as a binary file.
+ */
+export function itemSetSignature(itemKeys: string): string {
+  return itemKeys.split(",").sort().join("\u0000");
 }
 
 /**

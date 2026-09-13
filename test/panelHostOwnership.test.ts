@@ -1,7 +1,11 @@
 import { assert } from "chai";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "mocha";
 
 import { beginPanelRequest } from "../src/modules/contextPanel/chat";
+import { COMPOSER_BOUND_KEYS } from "../src/modules/contextPanel/composerKeyBindings";
 import {
   bindEmbeddedPanelHost,
   bindStandalonePanelHost,
@@ -613,5 +617,97 @@ describe("panel ownership fence", function () {
       ),
     );
     clearPanelHostBinding(panel.body);
+  });
+});
+
+/**
+ * The composer's keydown handler in `setupHandlers.ts` is the owner of the keys
+ * the panel binds, and `COMPOSER_BOUND_KEYS` is that handler's declaration of
+ * them. The ownership fence reads the same declaration to decide which
+ * accelerators it may exempt, so the two can only stay in step if the
+ * declaration matches the handler. These cases read the handler's source and
+ * hold it to that: a key bound in the handler but missing from the declaration
+ * would be exempted by a modifier and reopen the write path the fence closes.
+ */
+describe("composer key bindings", function () {
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const handlerPath = resolve(
+    testDir,
+    "..",
+    "src/modules/contextPanel/setupHandlers.ts",
+  );
+
+  /**
+   * The body of the composer's keydown handler, so a key comparison made by
+   * some other listener in the same file is not mistaken for a composer
+   * binding.
+   */
+  function composerKeydownHandlerSource(): string {
+    const source = readFileSync(handlerPath, "utf8");
+    const start = source.indexOf('inputBox.addEventListener("keydown"');
+    assert.isAtLeast(
+      start,
+      0,
+      "the composer keydown handler must still be registered on inputBox",
+    );
+    const end = source.indexOf("\n  });", start);
+    assert.isAbove(
+      end,
+      start,
+      "the composer keydown handler must end at its own indentation",
+    );
+    return source.slice(start, end);
+  }
+
+  function keysComparedInHandler(): string[] {
+    const handler = composerKeydownHandlerSource();
+    const keys = new Set<string>();
+    for (const match of handler.matchAll(/\bke\.key === "([^"]+)"/g)) {
+      keys.add(match[1]);
+    }
+    assert.isAtLeast(
+      keys.size,
+      1,
+      "the handler must still compare keys by literal",
+    );
+    return [...keys].sort();
+  }
+
+  it("declares every key its keydown handler binds", function () {
+    for (const key of keysComparedInHandler()) {
+      assert.isTrue(
+        COMPOSER_BOUND_KEYS.has(key),
+        `the composer binds "${key}", so COMPOSER_BOUND_KEYS must list it or ` +
+          `the ownership fence will exempt it under Cmd/Ctrl`,
+      );
+    }
+  });
+
+  it("declares nothing its keydown handler does not bind", function () {
+    const bound = new Set(keysComparedInHandler());
+    for (const key of COMPOSER_BOUND_KEYS) {
+      assert.isTrue(
+        bound.has(key),
+        `COMPOSER_BOUND_KEYS lists "${key}", but the composer's keydown ` +
+          `handler no longer binds it`,
+      );
+    }
+  });
+
+  it("is what the ownership fence keeps behind the fence", function () {
+    const fenceSource = readFileSync(
+      resolve(testDir, "..", "src/modules/contextPanel/panelHostOwnership.ts"),
+      "utf8",
+    );
+    assert.notMatch(
+      fenceSource,
+      /PANEL_BOUND_KEYS/,
+      "the fence must read the composer's declaration, not a second list",
+    );
+    assert.match(
+      fenceSource,
+      /COMPOSER_BOUND_KEYS/,
+      "the fence must read the composer's declaration",
+    );
   });
 });

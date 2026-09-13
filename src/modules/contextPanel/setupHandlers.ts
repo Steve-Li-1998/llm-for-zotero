@@ -7799,7 +7799,10 @@ export function setupHandlers(
     });
   }
 
-  // Enter key (Shift+Enter for newline)
+  // Enter key (Shift+Enter for newline).
+  // Every key this handler binds is declared in `composerKeyBindings.ts`; the
+  // panel ownership fence reads that declaration to keep these keys behind the
+  // fence, so a binding added here must be added there too.
   inputBox.addEventListener("keydown", (e: Event) => {
     const ke = e as KeyboardEvent;
     if (isFloatingMenuOpen(slashMenu)) {

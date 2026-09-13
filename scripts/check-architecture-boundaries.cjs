@@ -99,6 +99,67 @@ validateLayers(LAYERS);
 const COMPOSITION_ROOT_TIER = LAYERS.length;
 
 /**
+ * Modules whose inside is private, and where that inside lives.
+ *
+ * This is orthogonal to `LAYERS`: tiers say which direction an import may
+ * point, a facade says who is allowed to reach a particular set of files at
+ * all. A module too big to read is split into an owner per responsibility, and
+ * those owners only stay owners if the rest of the tree keeps talking to the
+ * facade — otherwise the split hands every caller a second, narrower thing to
+ * depend on and the module is harder to move than before it was split.
+ *
+ * `allow` names extra files permitted to import the internals, for a
+ * transition that cannot be done in one change. It is empty today and should
+ * stay that way.
+ */
+const FACADES = [
+  {
+    name: "zotero-gateway",
+    facade: "src/agent/services/zoteroGateway.ts",
+    internals: "src/agent/services/zotero/",
+    allow: [],
+  },
+];
+
+/**
+ * Reject a facade entry that cannot describe a real boundary: internals that
+ * do not sit beside the facade, a facade parked inside the directory it is
+ * meant to guard (which would exempt it from its own rule by the
+ * internals-to-internals clause), or two entries claiming one directory.
+ * Returns the table so it can wrap a declaration.
+ */
+function validateFacades(facades) {
+  const claimed = new Set();
+  for (const entry of facades) {
+    if (!entry.internals.endsWith("/")) {
+      throw new Error(
+        `Facade "${entry.name}" declares internals ${entry.internals} without a trailing slash.`,
+      );
+    }
+    const directory = entry.facade.slice(0, entry.facade.lastIndexOf("/") + 1);
+    if (!entry.internals.startsWith(directory)) {
+      throw new Error(
+        `Facade "${entry.name}" declares internals ${entry.internals} outside its own directory ${directory}.`,
+      );
+    }
+    if (entry.facade.startsWith(entry.internals)) {
+      throw new Error(
+        `Facade "${entry.name}" places its facade inside its own internals.`,
+      );
+    }
+    if (claimed.has(entry.internals)) {
+      throw new Error(
+        `Directory ${entry.internals} is claimed by more than one facade.`,
+      );
+    }
+    claimed.add(entry.internals);
+  }
+  return facades;
+}
+
+validateFacades(FACADES);
+
+/**
  * Exact upward runtime imports present when the layer rule was introduced.
  * Every entry is a migration obligation, not a directory exemption: an entry
  * that no longer matches a real edge is reported as stale so the list shrinks
@@ -380,8 +441,30 @@ function findUnclassifiedDirectories(root) {
     .sort();
 }
 
+/**
+ * Every edge that reaches into a facade's internals from somewhere that is
+ * neither the facade, another file under those internals, nor listed in
+ * `allow`. Type-only edges count: the facade re-exports the types its callers
+ * need, so importing one straight from the internals is the same dependency
+ * wearing a hat that disappears at build time.
+ */
+function findFacadeViolations(edges, facades) {
+  const violations = [];
+  for (const edge of edges) {
+    for (const entry of facades) {
+      if (!edge.to.startsWith(entry.internals)) continue;
+      if (edge.from === entry.facade) continue;
+      if (edge.from.startsWith(entry.internals)) continue;
+      if ((entry.allow || []).includes(edge.from)) continue;
+      violations.push({ ...edge, facade: entry.name });
+    }
+  }
+  return violations;
+}
+
 function checkArchitectureBoundaries(root = process.cwd(), options = {}) {
   const obligationValues = options.obligations || MIGRATION_OBLIGATIONS;
+  const facades = validateFacades(options.facades || FACADES);
   const edges = collectImportEdges(root);
   const upward = [];
   for (const edge of edges) {
@@ -398,7 +481,9 @@ function checkArchitectureBoundaries(root = process.cwd(), options = {}) {
   );
   return {
     layers: LAYERS,
+    facades,
     unclassifiedDirectories: findUnclassifiedDirectories(root),
+    facadeViolations: findFacadeViolations(edges, facades),
     upwardRuntimeEdges,
     upwardTypeWarnings,
     unexpectedUpwardEdges: upwardRuntimeEdges.filter(
@@ -431,7 +516,8 @@ if (require.main === module) {
   const failed =
     result.unclassifiedDirectories.length ||
     result.unexpectedUpwardEdges.length ||
-    result.staleObligations.length;
+    result.staleObligations.length ||
+    result.facadeViolations.length;
   if (failed) {
     if (result.unclassifiedDirectories.length) {
       console.error(
@@ -446,21 +532,32 @@ if (require.main === module) {
       result.unexpectedUpwardEdges,
     );
     printList("Stale migration obligations:", result.staleObligations);
+    if (result.facadeViolations.length) {
+      console.error(
+        "Imports that reach past a facade into its internals (import the facade instead):",
+      );
+      for (const violation of result.facadeViolations) {
+        console.error(`- ${describeBoundary(violation)} [${violation.facade}]`);
+      }
+    }
     process.exit(1);
   }
   const order = LAYERS.map((layer) => layer.name).join(" < ");
   console.log(
     `Architecture-boundary check passed (${order} < composition root; ` +
       `${result.upwardRuntimeEdges.length} migration obligations remain, ` +
-      `${result.upwardTypeWarnings.length} type-only warnings).`,
+      `${result.upwardTypeWarnings.length} type-only warnings, ` +
+      `${FACADES.length} facade(s) sealed).`,
   );
 }
 
 module.exports = {
+  FACADES,
   LAYERS,
   MIGRATION_OBLIGATIONS,
   checkArchitectureBoundaries,
   collectImportEdges,
   formatBoundary,
+  validateFacades,
   validateLayers,
 };

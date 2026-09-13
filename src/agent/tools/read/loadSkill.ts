@@ -52,7 +52,6 @@ export function createLoadSkillTool(
       },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
     },
     validate(args) {
       if (

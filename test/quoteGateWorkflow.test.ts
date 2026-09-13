@@ -1,19 +1,26 @@
 import { assert } from "chai";
+import { buildAssistantDisplayMarkdownForRender } from "../src/modules/contextPanel/chat";
 import {
-  buildAssistantDisplayMarkdownForRender,
-  finalizeAssistantMessageQuoteCitationsForTests,
   getQuoteValidationDecisionCacheStatsForTests,
   resetQuoteValidationDecisionCacheForTests,
+} from "../src/modules/contextPanel/quoteValidation/caches";
+import {
+  finalizeAssistantMessageQuoteCitationsForTests,
   scheduleConversationQuoteRevalidation,
   waitForAssistantQuoteValidationForTests,
-} from "../src/modules/contextPanel/chat";
+} from "../src/modules/contextPanel/quoteValidation/scheduling";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
 import {
   beginQuoteNavigationActivity,
   resetQuoteValidationActivityForTests,
 } from "../src/modules/contextPanel/quoteValidationActivity";
-import { chatHistory } from "../src/modules/contextPanel/state";
+import {
+  activeContextPanels,
+  chatHistory,
+} from "../src/modules/contextPanel/state";
+import { bindProvisionedConversationKey } from "../src/modules/contextPanel/conversationIdentity";
+import { configureQuoteValidationChatRefresher } from "../src/modules/contextPanel/quoteValidation/chatRefreshBridge";
 import {
   pdfTextCache,
   pdfTextLoadingTasks,
@@ -186,6 +193,75 @@ describe("minimal source-match quote gate workflow", function () {
     assert.equal(
       assistantMessage.quoteDisplayOverride?.quoteCitations?.[0]?.citationLabel,
       "(Eppler et al., 2026)",
+    );
+  });
+
+  it("repaints the changed message through the composed chat refresher", async function () {
+    const quote =
+      "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
+    const source = installPdfSource(
+      contextItemId,
+      `Results. ${quote} The next result follows.`,
+    );
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain the result.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: `> ${quote}`,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+    // One mounted panel showing this conversation, and the renderer the panel
+    // composition root (`composePanelSurfaces`) would have installed -- stubbed
+    // here so the test can see which messages it is asked to repaint.
+    // The scheduler waits for the panel's own window to go idle, so the stub
+    // panel has to carry one or validation never leaves the idle loop.
+    const panelWindow = {
+      setTimeout: (callback: () => void, delayMs: number) =>
+        setTimeout(callback, delayMs),
+      document: { visibilityState: "visible" },
+    };
+    const body = {
+      isConnected: true,
+      ownerDocument: { defaultView: panelWindow },
+    } as unknown as Element;
+    const item = { id: 4242 } as unknown as Zotero.Item;
+    bindProvisionedConversationKey(item, conversationKey);
+    activeContextPanels.set(body, () => item);
+    const refreshed: Array<ReadonlySet<Message>> = [];
+    const restoreRefresher = configureQuoteValidationChatRefresher(
+      (refreshedBody, refreshedItem, options) => {
+        assert.strictEqual(refreshedBody, body);
+        assert.strictEqual(refreshedItem, item);
+        refreshed.push(options.rerenderAssistantMessages);
+      },
+    );
+
+    try {
+      finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+        pairedUserMessage: userMessage,
+        conversationKey,
+      });
+      await waitForAssistantQuoteValidationForTests(conversationKey);
+    } finally {
+      restoreRefresher();
+      activeContextPanels.delete(body);
+    }
+
+    assert.isAbove(
+      refreshed.length,
+      0,
+      "validating a message asks the composed renderer to repaint it",
+    );
+    assert.isTrue(
+      refreshed.some((changed) => changed.has(assistantMessage)),
+      "and names the message whose display it changed",
     );
   });
 

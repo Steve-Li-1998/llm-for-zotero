@@ -31,6 +31,38 @@ export function resolveAgentToolCallWorkCategory(
 }
 
 /**
+ * Work a connected runtime performed inside its own process.
+ *
+ * A connected client's file write or shell command never reaches a host
+ * `ToolSpec`, so it has no category to declare. It is named here with the
+ * registered tools rather than spelled at the bridge, so the vocabulary stays
+ * in one table.
+ */
+export const CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY: AgentWorkCategory =
+  "external_system";
+
+/**
+ * Activating a skill.
+ *
+ * A skill is a way of working the run adopted before doing the work, so it
+ * belongs with the planning the run did rather than with the reading or
+ * writing that followed. No `ToolSpec` declares it -- a connected runtime
+ * activates a skill on its own -- so it is named here with the registered
+ * tools instead of being spelled at whichever bridge noticed it.
+ */
+export const SKILL_ACTIVATION_WORK_CATEGORY: AgentWorkCategory = "planning";
+
+/**
+ * The label a skill activation carries into the trace.
+ *
+ * The bridge stamps it on the events it emits and the trace reads it back to
+ * recognise the row; both sides therefore read it from here, because a label
+ * written twice is a label that can disagree with itself. Nothing looks a
+ * tool up by this word -- a skill is not a registered tool and has no spec.
+ */
+export const SKILL_ACTIVATION_TRACE_LABEL = "Skill";
+
+/**
  * Activity kinds native Codex reports for work it runs itself. These never
  * reach a host `ToolSpec`, so the panel resolves their meaning here instead of
  * spelling a second taxonomy at each render site.

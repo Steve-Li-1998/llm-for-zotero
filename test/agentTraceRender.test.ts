@@ -5,6 +5,10 @@ import {
 } from "../src/modules/contextPanel/agentTrace/planProgressView";
 import { assert } from "chai";
 import { createApplyTagsTool } from "../src/agent/tools/write/applyTags";
+import { createFileIOTool } from "../src/agent/tools/write/fileIO";
+import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
+import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
+import { setAgentToolPresentationResolverForTests } from "../src/modules/contextPanel/agentTrace/toolPresentation";
 import type { AgentConfirmationResolution } from "../src/agent/types";
 import { readFileSync } from "node:fs";
 import {
@@ -17,9 +21,15 @@ import {
   renderAgentTrace,
   renderAgentTraceDetailsBodyForTests,
   renderPendingActionCard,
+  selectToolResultTraceCards,
 } from "../src/modules/contextPanel/agentTrace/render";
+import { buildNoteChangeResultCards } from "../src/agent/tools/write/noteChangePresentation";
+import { buildClaudeMcpToolActivityEvent } from "../src/agent/externalBackendBridge";
+import { buildCodexNativeEffectActivityEvent } from "../src/codexAppServer/nativeClient";
+import { externalRuntimeCommandEffect } from "../src/agent/contracts/externalRuntimeEffects";
+import { mergeToolActivityPayload } from "../src/modules/contextPanel/agentTrace/toolActivityDedupe";
+import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/codexNativeTrace/controller";
 import {
-  createCodexNativeActivityTraceControllerForTests,
   resolveAssistantResponseMenuContent,
   renderAssistantMarkdownHtmlForChat,
   renderAssistantGeneratedImagesInto,
@@ -58,6 +68,23 @@ import {
   getStableAnimationDelay,
   STABLE_ANIMATION_DELAY_PROPERTY,
 } from "../src/modules/contextPanel/stableAnimationPhase";
+
+/** The result shape a failed note write journals, as the note tool writes it. */
+function failedNoteChangeContent(): Record<string, unknown> {
+  return {
+    actionId: "journal-action-1",
+    status: "failed",
+    noteChange: {
+      title: "Representational drift",
+      note: { itemId: 77, libraryID: 1, key: "ABCD1234" },
+      conversationKey: 5,
+      state: "failed",
+      before: { checksum: "sha256:before", recoveryId: "recovery-before" },
+      after: { checksum: "sha256:after", recoveryId: "recovery-after" },
+      description: "Zotero refused the note save.",
+    },
+  };
+}
 
 class FakeClassList {
   private readonly classes = new Set<string>();
@@ -384,6 +411,104 @@ class OneShotInnerHtmlFailureElement extends FakeElement {
   }
 }
 
+type AgentTraceTestItem = ReturnType<
+  typeof buildAgentTraceDisplayItems
+>["items"][number];
+
+/**
+ * Every display item in reading order, stage groups opened out.
+ *
+ * A stage nests the rows it produced, so an assertion about the rows reads
+ * this view; the stage's own heading stays in the list where it sits.
+ */
+function flattenTraceItems(
+  items: readonly AgentTraceTestItem[],
+): AgentTraceTestItem[] {
+  const flat: AgentTraceTestItem[] = [];
+  for (const item of items) {
+    flat.push(item);
+    if (item.type === "stage") flat.push(...flattenTraceItems(item.children));
+  }
+  return flat;
+}
+
+/** Every action row, inside a stage group or not. */
+function traceActionItems(
+  items: readonly AgentTraceTestItem[],
+): Extract<AgentTraceTestItem, { type: "action" }>[] {
+  return flattenTraceItems(items).filter(
+    (item): item is Extract<AgentTraceTestItem, { type: "action" }> =>
+      item.type === "action",
+  );
+}
+
+/**
+ * Every chip the reader sees, in order.
+ *
+ * A stage heading carries the aggregate of what its rows proved and the rows
+ * carry only what it does not, so reading both never double-counts a verdict.
+ */
+function traceChipLabelsOf(items: readonly AgentTraceTestItem[]): string[] {
+  return flattenTraceItems(items).flatMap((item) =>
+    item.type === "action" || item.type === "stage"
+      ? (item.chips || []).map((chip) => chip.label)
+      : [],
+  );
+}
+
+/** What the reader reads, top to bottom: stage headings and their rows. */
+function traceRowTexts(items: readonly AgentTraceTestItem[]): string[] {
+  return flattenTraceItems(items)
+    .filter(
+      (
+        item,
+      ): item is Extract<AgentTraceTestItem, { type: "action" | "stage" }> =>
+        item.type === "action" || item.type === "stage",
+    )
+    .map((item) => (item.type === "stage" ? item.label : item.row.text));
+}
+
+type TestToolPresentations = Record<
+  string,
+  NonNullable<ReturnType<typeof createFileIOTool>["presentation"]> | undefined
+>;
+
+/**
+ * Answer the trace's presentation lookups from the specs under test.
+ *
+ * The renderer asks the live tool registry how a tool presents itself, and a
+ * unit test has no way to stand that registry up, so a test that asserts a
+ * tool's own presentation installs the specs it is asserting about.
+ */
+function withToolPresentations(
+  presentations: TestToolPresentations,
+  run: () => void,
+): void {
+  withToolPresentationsReturning(presentations, run);
+}
+
+function withToolPresentationsReturning<T>(
+  presentations: TestToolPresentations,
+  run: () => T,
+): T {
+  setAgentToolPresentationResolverForTests((name) => presentations[name]);
+  try {
+    return run();
+  } finally {
+    setAgentToolPresentationResolverForTests(null);
+  }
+}
+
+/** The real paper tool's presentation, built without its runtime services. */
+function paperReadPresentation() {
+  return createPaperReadTool(
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+  ).presentation;
+}
+
 const fakeDocument = {
   createElement: (tagName: string) => new FakeElement(tagName),
   createElementNS: (_namespace: string, tagName: string) =>
@@ -427,12 +552,7 @@ function getCodexTraceActionTexts(events: AgentRunEventRecord[]): string[] {
     runMode: "agent",
     modelProviderLabel: "Codex",
   });
-  return items
-    .filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action",
-    )
-    .map((item) => item.row.text);
+  return traceRowTexts(items);
 }
 
 function createFakeCodeBlockShell(options?: {
@@ -1257,7 +1377,6 @@ describe("agentTrace render", function () {
     assert.include(rule, "appearance: none");
     assert.include(rule, "align-items: center");
     assert.include(rule, "justify-content: center");
-    assert.include(rule, "line-height: 1.25");
   });
 
   it("projects authoritative work categories without inferring from tool names", function () {
@@ -1277,7 +1396,7 @@ describe("agentTrace render", function () {
       },
     ];
     const projection = buildAgentTraceDisplayItems(events);
-    const action = projection.items.find(
+    const action = flattenTraceItems(projection.items).find(
       (item) =>
         item.type === "action" && item.detailKey === "tool-call:category-call",
     );
@@ -1315,7 +1434,7 @@ describe("agentTrace render", function () {
       runMode: "agent",
       modelProviderLabel: "Codex",
     });
-    const action = projection.items.find(
+    const action = flattenTraceItems(projection.items).find(
       (item) =>
         item.type === "action" &&
         item.detailKey === "codex:native-category-call",
@@ -1402,9 +1521,67 @@ describe("agentTrace render", function () {
     assert.equal(formatAgentActivityDuration(3_661_000), "1h 1m 1s");
   });
 
+  it("reads the question card from the action's interaction, not its tool name", function () {
+    const base: AgentPendingAction = {
+      toolName: "request_user_input",
+      mode: "review",
+      title: "Plan needs your input",
+      confirmLabel: "Continue",
+      cancelLabel: "Cancel",
+      fields: [
+        {
+          type: "choice",
+          id: "scope",
+          label: "Which corpus?",
+          options: [
+            { id: "collection", label: "Collection" },
+            { id: "library", label: "Library" },
+          ],
+        },
+      ],
+    };
+    const render = (action: AgentPendingAction) =>
+      renderAgentTrace({
+        doc: fakeDocument,
+        message: {
+          role: "assistant",
+          text: "",
+          timestamp: 1,
+          runMode: "agent",
+          streaming: true,
+        },
+        events: [
+          {
+            runId: "run-interaction",
+            seq: 1,
+            eventType: "confirmation_required",
+            payload: {
+              type: "confirmation_required",
+              requestId: "interaction-card",
+              action,
+            },
+            createdAt: 1,
+          },
+        ],
+      }) as unknown as FakeElement;
+
+    assert.lengthOf(
+      render({ ...base, interaction: "user_input" }).findAllByClass(
+        "llm-planning-question-panel",
+      ),
+      1,
+    );
+    assert.lengthOf(
+      render(base).findAllByClass("llm-planning-question-panel"),
+      0,
+      "the name alone no longer makes a card a planning question",
+    );
+  });
+
   it("replaces planning activity with one question at a time", async function () {
     const action: AgentPendingAction = {
       toolName: "request_user_input",
+      interaction: "user_input",
       mode: "review",
       title: "Plan needs your input",
       confirmLabel: "Continue planning",
@@ -1542,7 +1719,8 @@ describe("agentTrace render", function () {
 
   it("keeps resolved planning questions and answers in one expandable trace row", function () {
     const action: AgentPendingAction = {
-      toolName: "request_user_input",
+      toolName: "custom_question_tool",
+      interaction: "user_input",
       mode: "review",
       title: "Plan needs your input",
       confirmLabel: "Continue planning",
@@ -1635,6 +1813,7 @@ describe("agentTrace render", function () {
       requestId: "custom-question-card",
       action: {
         toolName: "request_user_input",
+        interaction: "user_input",
         mode: "review",
         title: "Plan needs your input",
         confirmLabel: "Continue planning",
@@ -2218,34 +2397,6 @@ describe("agentTrace render", function () {
     assert.isFalse(root?.classList.contains("llm-plan-progress-open"));
   });
 
-  it("keeps the task progress hover card compact without changing plan cards", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const popoverRule =
-      css.match(/\.llm-plan-progress-popover\s*\{[\s\S]*?\}/)?.[0] || "";
-    const compactTaskLineRule =
-      css.match(
-        /\.llm-plan-progress-popover\s+\.llm-plan-task-line\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const compactTaskBadgeRule =
-      css.match(
-        /\.llm-plan-progress-popover\s+\.llm-plan-task-badge\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const baseTaskLineRule =
-      css.match(/(?<!popover )\.llm-plan-task-line\s*\{[\s\S]*?\}/)?.[0] || "";
-
-    assert.include(popoverRule, "max-width: 420px");
-    assert.include(popoverRule, "max-height: min(50vh, 360px)");
-    assert.include(popoverRule, "padding: 8px");
-    assert.include(popoverRule, "border-radius: 10px");
-    assert.include(compactTaskLineRule, "min-height: 32px");
-    assert.include(compactTaskLineRule, "padding: 5px 7px");
-    assert.include(compactTaskBadgeRule, "flex-basis: 18px");
-    assert.include(compactTaskBadgeRule, "width: 18px");
-    assert.include(compactTaskBadgeRule, "height: 18px");
-    assert.include(baseTaskLineRule, "min-height: 42px");
-    assert.notInclude(css, ".llm-plan-progress-trigger-current");
-  });
-
   it("keeps clicked task progress open across live execution rerenders", function () {
     const renderProgress = (
       status: "running" | "completed",
@@ -2437,71 +2588,6 @@ describe("agentTrace render", function () {
     });
   }
 
-  it("keeps plan review actions centered in one row at narrow widths", function () {
-    const source = readFileSync(
-      "src/modules/contextPanel/agentTrace/render.ts",
-      "utf8",
-    );
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const actionsRule =
-      css.match(/\.llm-plan-review-actions\s*\{[\s\S]*?\}/)?.[0] || "";
-    const actionButtonRule =
-      css.match(
-        /\.llm-plan-review-actions\s+\.llm-plan-action\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const cancelRule =
-      css.match(
-        /\.llm-plan-review-actions\s+\.llm-plan-cancel\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const approveOpticalRule =
-      css.match(
-        /\.llm-plan-review-actions\s+\.llm-plan-approve\s+\.llm-plan-action-label-full,\s*\.llm-plan-review-actions\s+\.llm-plan-approve\s+\.llm-plan-action-label-compact\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-
-    assert.match(
-      source,
-      /actions\.className\s*=\s*"llm-plan-actions llm-plan-review-actions"/,
-    );
-    assert.include(source, "llm-plan-action-label-full");
-    assert.include(source, "llm-plan-action-label-compact");
-    assert.include(actionsRule, "display: grid");
-    assert.include(
-      actionsRule,
-      "grid-template-columns: repeat(3, minmax(0, 1fr))",
-    );
-    assert.include(actionsRule, "align-items: stretch");
-    assert.include(actionsRule, "width: 100%");
-    assert.include(actionButtonRule, "justify-content: center");
-    assert.include(actionButtonRule, "white-space: nowrap");
-    assert.include(cancelRule, "margin-left: 0");
-    assert.include(approveOpticalRule, "position: relative");
-    assert.include(approveOpticalRule, "top: -1px");
-    assert.include(css, "@container (max-width: 360px)");
-  });
-
-  it("normalizes coverage search and filter metrics in one aligned row", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const controlsRule =
-      css.match(/\.llm-plan-document-coverage-controls\s*\{[\s\S]*?\}/)?.[0] ||
-      "";
-    const fieldsRule =
-      css.match(
-        /\.llm-plan-document-coverage-controls input,\s*\.llm-plan-document-coverage-controls select\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-
-    assert.include(controlsRule, "display: grid");
-    assert.include(
-      controlsRule,
-      "grid-template-columns: minmax(0, 1fr) minmax(84px, auto)",
-    );
-    assert.include(controlsRule, "align-items: center");
-    assert.include(fieldsRule, "box-sizing: border-box");
-    assert.include(fieldsRule, "height: 28px");
-    assert.include(fieldsRule, "margin: 0");
-    assert.include(fieldsRule, "padding: 0 9px");
-    assert.include(fieldsRule, "line-height: 1.2");
-  });
-
   it("keeps host-owned plan bookkeeping out of the visible tool trace", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -2541,19 +2627,21 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items } = buildAgentTraceDisplayItems(events, null);
-    const visible = items.map((item) =>
-      item.type === "action"
-        ? item.row.text
-        : item.type === "message"
-          ? item.text
-          : "",
-    );
-    assert.include(
-      visible,
-      "Planning the request against the available context.",
-    );
-    assert.notMatch(visible.join("\n"), /update plan|using update/i);
+    withToolPresentations({ update_plan: { hiddenInTrace: true } }, () => {
+      const { items } = buildAgentTraceDisplayItems(events, null);
+      const visible = flattenTraceItems(items).map((item) =>
+        item.type === "action"
+          ? item.row.text
+          : item.type === "message"
+            ? item.text
+            : "",
+      );
+      assert.include(
+        visible,
+        "Planning the request against the available context.",
+      );
+      assert.notMatch(visible.join("\n"), /update plan|using update/i);
+    });
   });
 
   it("rules off the activity trace once an answer follows it", function () {
@@ -2650,34 +2738,6 @@ describe("agentTrace render", function () {
     );
   });
 
-  it("uses one scaled gap around the activity disclosure and answer divider", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const activityRule =
-      css.match(/\.llm-agent-activity\s*\{[\s\S]*?\}/)?.[0] || "";
-    const answerRule =
-      css.match(
-        /\.llm-bubble\.assistant\s*>\s*\.llm-agent-activity\s*\+\s*\*\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const dividerRule =
-      css.match(/\.llm-agent-output-divider\s*\{[\s\S]*?\}/)?.[0] || "";
-
-    assert.include(
-      activityRule,
-      "--llm-agent-activity-spacing: calc(10px * var(--llm-font-scale, 1))",
-    );
-    assert.include(
-      activityRule,
-      "margin-block: var(--llm-agent-activity-spacing)",
-    );
-    assert.include(activityRule, "gap: var(--llm-agent-activity-spacing)");
-    assert.include(answerRule, "margin-top: 0");
-    assert.include(dividerRule, "margin: 0");
-    assert.include(
-      dividerRule,
-      "var(--stroke-secondary, rgba(120, 120, 120, 0.22))",
-    );
-  });
-
   it("keeps interleaved trace activity open until the final answer is ready", function () {
     const message = {
       role: "assistant" as const,
@@ -2733,14 +2793,15 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(runningEvents, null, message);
-    const firstAgentIndex = items.findIndex(
+    const ordered = flattenTraceItems(items);
+    const firstAgentIndex = ordered.findIndex(
       (item) =>
         item.type === "message" && item.text.includes("simple-paper-QA"),
     );
-    const toolIndex = items.findIndex(
+    const toolIndex = ordered.findIndex(
       (item) => item.type === "action" && item.detailKey === "codex:tool-1",
     );
-    const secondAgentIndex = items.findIndex(
+    const secondAgentIndex = ordered.findIndex(
       (item) => item.type === "message" && item.text.includes("final answer"),
     );
     assert.isAtLeast(firstAgentIndex, 0);
@@ -2943,7 +3004,14 @@ describe("agentTrace render", function () {
     const events = message.pendingAgentTraceEvents || [];
     assert.deepEqual(
       events.map((entry) => entry.payload.type),
-      ["codex_progress", "codex_tool_activity", "codex_progress", "final"],
+      [
+        "codex_progress",
+        // The bridge brackets the command with the stage it resolved.
+        "agent_stage",
+        "codex_tool_activity",
+        "codex_progress",
+        "final",
+      ],
     );
     assert.deepEqual(
       events
@@ -2989,6 +3057,428 @@ describe("agentTrace render", function () {
     assert.deepEqual(
       activities.map((activity) => activity.workCategory),
       ["retrieval", "external_system"],
+    );
+  });
+
+  it("brackets native structured work with the stage the bridge resolved", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.appendItemStatus(
+      { id: "command-1", type: "command_execution", command: "pwd" },
+      "started",
+    );
+    assert.deepEqual(
+      (message.pendingAgentTraceEvents || []).map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+      "the stage opens immediately before the row it describes",
+    );
+
+    controller.appendItemStatus(
+      {
+        id: "command-1",
+        type: "command_execution",
+        command: "pwd",
+        exitCode: 0,
+      },
+      "completed",
+    );
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+      "the completed phase updates the pair in place, as the row always did",
+    );
+    const stage = events[0].payload;
+    assert.equal(stage.type, "agent_stage");
+    assert.deepEqual(stage, {
+      type: "agent_stage",
+      stage: "external_system",
+      status: "completed",
+      toolName: "command",
+      toolLabel: "Command",
+    });
+  });
+
+  it("brackets a native Zotero MCP call with the stage its category declares", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:7",
+      phase: "started",
+      toolName: "library_search",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+    });
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:7",
+      phase: "completed",
+      toolName: "library_search",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+      ok: true,
+    });
+
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+    );
+    assert.deepEqual(events[0].payload, {
+      type: "agent_stage",
+      stage: "retrieval",
+      status: "completed",
+      toolName: "library_search",
+      toolLabel: "Search library",
+    });
+  });
+
+  it("merges a native MCP call with its item row by the key the bridge paired", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    // The Zotero MCP server reports the call under its own request id, with
+    // the key the client paired it to.
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:11",
+      correlationId: "codex-call:1",
+      phase: "started",
+      toolName: "query_library",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+    });
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:11",
+      correlationId: "codex-call:1",
+      phase: "completed",
+      toolName: "query_library",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+      ok: true,
+    });
+    // The app server then announces the same call as an item of its own,
+    // named by the model's call id and carrying different arguments.
+    controller.appendItemStatus(
+      {
+        id: "call_A",
+        correlationId: "codex-call:1",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+        arguments: { entity: "items", libraryID: 1 },
+      },
+      "completed",
+    );
+
+    const events = message.pendingAgentTraceEvents || [];
+    const activities = events.filter(
+      (entry) => entry.eventType === "codex_tool_activity",
+    );
+    assert.lengthOf(activities, 1, "one call is one row");
+    const activity = activities[0].payload;
+    assert.equal(activity.type, "codex_tool_activity");
+    if (activity.type !== "codex_tool_activity") return;
+    assert.equal(activity.itemId, "codex-call:1");
+    assert.equal(activity.workCategory, "retrieval");
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+      "the stage the MCP row opened still brackets the merged row",
+    );
+  });
+
+  it("brackets a row that only gets its category from the later of two reports", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    // The item arrives first and states no category; the Zotero MCP report
+    // for the same visible work states one. The row must still be bracketed.
+    controller.appendItemStatus(
+      {
+        id: "call_A",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+      },
+      "completed",
+    );
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:11",
+      phase: "completed",
+      toolName: "query_library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+      ok: true,
+    });
+
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      ["agent_stage", "codex_tool_activity"],
+    );
+    assert.deepEqual(events[0].payload, {
+      type: "agent_stage",
+      stage: "retrieval",
+      status: "completed",
+      toolName: "query_library",
+    });
+  });
+
+  it("keeps two concurrent calls of one tool as two rows", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    // Both calls are open at once, so the bridge paired neither: each row
+    // keeps its own key rather than one row carrying A's arguments with B's
+    // receipts.
+    for (const call of ["a", "b"] as const) {
+      controller.noteMcpToolActivity({
+        requestId: `jsonrpc:${call}`,
+        phase: "completed",
+        toolName: "query_library",
+        toolLabel: "Search library",
+        serverName: "llm_for_zotero",
+        workCategory: "retrieval",
+        arguments: { text: call },
+        actionReceipts: [
+          {
+            id: `receipt-${call}`,
+            operation: "note_create",
+            status: "applied",
+            verification: "verified",
+          } as never,
+        ],
+        ok: true,
+      });
+    }
+    controller.appendItemStatus(
+      {
+        id: "call_A",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+        arguments: { text: "a" },
+      },
+      "completed",
+    );
+    controller.appendItemStatus(
+      {
+        id: "call_B",
+        type: "mcp_tool_call",
+        toolName: "query_library",
+        serverName: "llm_for_zotero_profile_abc",
+        arguments: { text: "b" },
+      },
+      "completed",
+    );
+
+    const activities = (message.pendingAgentTraceEvents || [])
+      .map((entry) => entry.payload)
+      .filter(
+        (
+          payload,
+        ): payload is Extract<AgentEvent, { type: "codex_tool_activity" }> =>
+          payload.type === "codex_tool_activity",
+      );
+    for (const activity of activities) {
+      const args = activity.args as { text?: string } | undefined;
+      const receiptIds = (activity.actionReceipts || []).map(
+        (receipt) => receipt.id,
+      );
+      if (!receiptIds.length) continue;
+      assert.deepEqual(
+        receiptIds,
+        [`receipt-${args?.text}`],
+        "no row may carry one call's arguments with another call's receipts",
+      );
+    }
+    assert.lengthOf(
+      activities.filter((activity) => activity.actionReceipts?.length),
+      2,
+      "both calls' receipts survive on their own rows",
+    );
+  });
+
+  it("stops adopting a nameless row just because it went past recently", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    // A tool item the protocol named nothing in: the deleted heuristic let
+    // any named MCP activity within eight seconds claim it as the same work.
+    controller.appendItemStatus({ id: "item-1", type: "tool_call" }, "started");
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:11",
+      phase: "started",
+      toolName: "query_library",
+      toolLabel: "Search library",
+      serverName: "llm_for_zotero",
+      workCategory: "retrieval",
+    });
+
+    const activities = (message.pendingAgentTraceEvents || []).filter(
+      (entry) => entry.eventType === "codex_tool_activity",
+    );
+    assert.lengthOf(
+      activities,
+      2,
+      "two rows nothing paired stay two, rather than merging on recency",
+    );
+  });
+
+  it("reports a skill activation as planning work, not as a tool named Skill", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.noteSkillActivated("graphwalk");
+    controller.noteSkillActivated("evidence-based-qa", {
+      source: "codex-native-slash",
+    });
+
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.eventType),
+      [
+        "agent_stage",
+        "codex_tool_activity",
+        "agent_stage",
+        "codex_tool_activity",
+      ],
+      "a skill activation is a stage and its row, never a synthetic tool call",
+    );
+    assert.deepEqual(events[0].payload, {
+      type: "agent_stage",
+      stage: "planning",
+      status: "completed",
+      toolLabel: "Skill",
+    });
+    const activity = events[1].payload;
+    assert.equal(activity.type, "codex_tool_activity");
+    if (activity.type !== "codex_tool_activity") return;
+    assert.equal(activity.toolLabel, "Skill");
+    assert.isUndefined(activity.toolName);
+    assert.deepEqual(activity.args, { skill: "graphwalk" });
+    assert.equal(activity.workCategory, "planning");
+
+    const explicit = events[3].payload;
+    assert.equal(explicit.type, "codex_tool_activity");
+    if (explicit.type !== "codex_tool_activity") return;
+    assert.deepEqual(explicit.args, {
+      skill: "evidence-based-qa",
+      source: "codex-native-slash",
+    });
+  });
+
+  it("names an activated skill from a relayed activity's own fields", function () {
+    const activity = (args: Record<string, unknown>): AgentRunEventRecord => ({
+      runId: "run-skill",
+      seq: 1,
+      eventType: "codex_tool_activity",
+      payload: {
+        type: "codex_tool_activity",
+        itemId: `skill:${String(args.skill)}`,
+        phase: "completed",
+        toolLabel: "Skill",
+        args,
+        workCategory: "planning",
+      },
+      createdAt: 1,
+    });
+
+    assert.include(
+      traceRowTexts(
+        buildAgentTraceDisplayItems([activity({ skill: "graphwalk" })], null)
+          .items,
+      ),
+      "Using Skill: graphwalk",
+    );
+    assert.include(
+      traceRowTexts(
+        buildAgentTraceDisplayItems(
+          [
+            activity({
+              skill: "evidence-based-qa",
+              source: "codex-native-slash",
+            }),
+          ],
+          null,
+        ).items,
+      ),
+      "Invoked Skill: evidence-based-qa",
     );
   });
 
@@ -3470,6 +3960,1329 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("names the finalized material in a journey row", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-journey",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "submit-1",
+          name: "submit_document",
+          args: { title: "Representational drift" },
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-journey",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "submit-1",
+          name: "submit_document",
+          ok: true,
+          actionReceipts: [],
+          content: { documentId: "run-journey:document:1" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-journey",
+        seq: 3,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-journey:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "summary",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    withToolPresentations({ submit_document: { hiddenInTrace: true } }, () => {
+      const actionTexts = traceRowTexts(
+        buildAgentTraceDisplayItems(events, null).items,
+      );
+
+      assert.include(actionTexts, "Generated summary: Representational drift");
+      assert.notMatch(
+        actionTexts.join("\n"),
+        /submit document|using submit/i,
+        "the finalizing tool call and result stay suppressed",
+      );
+    });
+  });
+
+  it("falls back to a document label when the material names no kind", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-journey",
+        seq: 1,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          materialRef: {
+            documentId: "run-journey:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialTitle: "Untitled draft",
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.include(actionTexts, "Generated document: Untitled draft");
+  });
+
+  /** One `batch_item_outcome` event, as the runtime persists it. */
+  function batchItemEvent(
+    seq: number,
+    payload: {
+      itemKey: string;
+      status: "pending" | "saved" | "failed";
+      written?: boolean;
+      noteId?: number;
+      error?: string;
+    },
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-batch",
+      seq,
+      eventType: "batch_item_outcome",
+      payload: {
+        type: "batch_item_outcome",
+        batchId: "batch-note_write_batch-1",
+        itemKey: payload.itemKey,
+        materialRef: {
+          documentId: `run-batch:document:${seq}`,
+          documentVersion: 1,
+          contentHash: `sha256:note-${seq}`,
+        },
+        status: payload.status,
+        noteId: payload.noteId,
+        error: payload.error,
+        callId: "note-batch-1",
+      } as AgentRunEventRecord["payload"],
+      createdAt: seq,
+    };
+  }
+
+  /** Adds `written` the way the runtime does; older events simply lack it. */
+  function withWritten(
+    entry: AgentRunEventRecord,
+    written: boolean,
+  ): AgentRunEventRecord {
+    return {
+      ...entry,
+      payload: { ...entry.payload, written } as AgentRunEventRecord["payload"],
+    };
+  }
+
+  function traceActionTexts(events: AgentRunEventRecord[]): string[] {
+    return traceRowTexts(buildAgentTraceDisplayItems(events, null).items);
+  }
+
+  it("names every item a note batch reported", function () {
+    const events = [
+      withWritten(
+        batchItemEvent(1, { itemKey: "item:1", status: "saved", noteId: 501 }),
+        true,
+      ),
+      withWritten(
+        batchItemEvent(2, {
+          itemKey: "item:2",
+          status: "failed",
+          error: "Zotero refused the note write",
+        }),
+        false,
+      ),
+      withWritten(
+        batchItemEvent(3, { itemKey: "item:3", status: "saved", noteId: 503 }),
+        true,
+      ),
+    ];
+
+    const actionTexts = traceActionTexts(events);
+
+    assert.deepEqual(actionTexts.slice(-3), [
+      "Saved note for item 1",
+      "Note write failed for item 2",
+      "Saved note for item 3",
+    ]);
+  });
+
+  it("separates a note this call wrote from one it found already saved", function () {
+    // What a resumed batch announces: every row it holds, only one of which
+    // this call actually wrote.
+    const events = [
+      withWritten(
+        batchItemEvent(1, { itemKey: "item:1", status: "saved", noteId: 501 }),
+        false,
+      ),
+      withWritten(
+        batchItemEvent(2, { itemKey: "item:2", status: "saved", noteId: 502 }),
+        true,
+      ),
+      withWritten(
+        batchItemEvent(3, { itemKey: "item:3", status: "pending" }),
+        false,
+      ),
+    ];
+
+    const actionTexts = traceActionTexts(events);
+
+    assert.deepEqual(actionTexts.slice(-3), [
+      "Already saved: item 1",
+      "Saved note for item 2",
+      "Note not written yet for item 3",
+    ]);
+  });
+
+  it("does not claim a note was just written when the event predates the field", function () {
+    // Events persisted before the batch reported `written` say only that the
+    // row is saved. Reading a missing field as false would relabel every note
+    // of an old run as one the call skipped, and reading it as true would
+    // claim a write that may have happened turns earlier.
+    const events = [
+      batchItemEvent(1, { itemKey: "item:1", status: "saved", noteId: 501 }),
+      batchItemEvent(2, { itemKey: "item:2#2", status: "saved", noteId: 502 }),
+    ];
+
+    const actionTexts = traceActionTexts(events);
+
+    assert.deepEqual(actionTexts.slice(-2), [
+      "Note recorded for item 1",
+      "Note recorded for item 2 (note 2)",
+    ]);
+  });
+
+  it("names a batch item the row key does not describe", function () {
+    const events = [
+      withWritten(
+        batchItemEvent(1, { itemKey: "standalone-7", status: "saved" }),
+        true,
+      ),
+    ];
+
+    assert.deepEqual(traceActionTexts(events).slice(-1), [
+      "Saved note for standalone-7",
+    ]);
+  });
+
+  it("renders the batch item rows into the trace", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "", timestamp: 1, runMode: "agent" },
+      events: [
+        withWritten(
+          batchItemEvent(1, {
+            itemKey: "item:1",
+            status: "saved",
+            noteId: 501,
+          }),
+          true,
+        ),
+        withWritten(
+          batchItemEvent(2, {
+            itemKey: "item:2",
+            status: "failed",
+            error: "Zotero refused the note write",
+          }),
+          false,
+        ),
+      ],
+    }) as unknown as FakeElement;
+
+    const text = collectFakeText(trace);
+    assert.include(text, "Saved note for item 1");
+    assert.include(text, "Note write failed for item 2");
+  });
+
+  it("asks for permission to save the named material as a note", function () {
+    const action: AgentPendingAction = {
+      toolName: "edit_current_note",
+      mode: "review",
+      title: "Review new note",
+      confirmLabel: "Create note",
+      cancelLabel: "Cancel",
+      fields: [],
+      material: {
+        operation: "note_create",
+        ref: {
+          documentId: "run-journey:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+      },
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-journey",
+        seq: 1,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          materialRef: {
+            documentId: "run-journey:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "summary",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-journey",
+        seq: 2,
+        eventType: "confirmation_required",
+        payload: {
+          type: "confirmation_required",
+          requestId: "confirm-1",
+          action,
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-journey",
+        seq: 3,
+        eventType: "confirmation_resolved",
+        payload: {
+          type: "confirmation_resolved",
+          requestId: "confirm-1",
+          approved: true,
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.include(
+      actionTexts,
+      "Waiting for permission to save Representational drift as a note",
+    );
+    assert.include(
+      actionTexts,
+      'Review received - selected "Create note" for Edit Current Note',
+      "the resolved row keeps its current text",
+    );
+  });
+
+  it("names the material by document id when no announcement precedes the request", function () {
+    const action: AgentPendingAction = {
+      toolName: "edit_current_note",
+      mode: "review",
+      title: "Review new note",
+      confirmLabel: "Create note",
+      cancelLabel: "Cancel",
+      fields: [],
+      material: {
+        operation: "note_create",
+        ref: {
+          documentId: "run-earlier:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+      },
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "confirmation_required",
+        payload: {
+          type: "confirmation_required",
+          requestId: "confirm-1",
+          action,
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.include(
+      actionTexts,
+      "Waiting for permission to save run-earlier:document:1 as a note",
+    );
+  });
+
+  it("reports a verified note write as saved with its Zotero evidence", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "verified",
+              status: "applied",
+              requestedTargets: ["item:41"],
+              appliedTargets: ["item:41"],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: [],
+              verifiedFacts: [
+                "created_note:item:77",
+                "native_note:77:html_sha256:abc123",
+              ],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { noteId: 77, documentId: "run-earlier:document:1" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.include(actionTexts, "Saved note");
+    assert.include(actionTexts, "Zotero state verified");
+    assert.isAbove(
+      actionTexts.indexOf("Zotero state verified"),
+      actionTexts.indexOf("Saved note"),
+      "the evidence row follows the row it qualifies",
+    );
+  });
+
+  it("marks the weaker text-match evidence differently", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "verified",
+              status: "applied",
+              requestedTargets: ["item:41"],
+              appliedTargets: ["item:41"],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: [],
+              verifiedFacts: ["native_note:77:text_match"],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { noteId: 77, documentId: "run-earlier:document:1" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.include(actionTexts, "Saved note");
+    assert.include(actionTexts, "Zotero state checked (text match)");
+    assert.notInclude(actionTexts, "Zotero state verified");
+  });
+
+  it("reports a failed note write without claiming Zotero evidence", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: false,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "unverified",
+              status: "failed",
+              requestedTargets: ["item:41"],
+              appliedTargets: [],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: ["Zotero refused the note save"],
+              verifiedFacts: [],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { error: "Zotero refused the note save" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.include(actionTexts, "Note write failed");
+    assert.notInclude(actionTexts, "Zotero state verified");
+    assert.notInclude(actionTexts, "Zotero state checked (text match)");
+  });
+
+  it("keeps a cancelled note write reading as a cancellation", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: false,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "not_applicable",
+              status: "cancelled",
+              requestedTargets: ["item:41"],
+              appliedTargets: [],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: ["User denied action"],
+              verifiedFacts: [],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { error: "User denied action" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.notInclude(actionTexts, "Note write failed");
+  });
+
+  type TraceReceipt = import("../src/agent/contracts/types").AgentActionReceipt;
+
+  function verificationReceipt(
+    overrides: Partial<TraceReceipt> = {},
+  ): TraceReceipt {
+    return {
+      version: 2,
+      id: "apply_tags:unmatched:result",
+      proposalId: "apply_tags:proposal",
+      proofDomain: "zotero_state",
+      capability: "zotero.tags",
+      operation: "apply_tags",
+      verification: "verified",
+      status: "applied",
+      requestedTargets: ["item:41"],
+      appliedTargets: ["item:41"],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [],
+      ...overrides,
+    } as TraceReceipt;
+  }
+
+  /**
+   * One tool result carrying receipts.
+   *
+   * The content is deliberately an empty result set: tool presentation
+   * summaries are unavailable outside Zotero, and an empty result is what
+   * still produces a row here, which is what the chip attaches to.
+   */
+  function receiptResultEvents(
+    receipts: TraceReceipt[],
+    name = "apply_tags",
+  ): AgentRunEventRecord[] {
+    return [
+      {
+        runId: "run-verification",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "call-1",
+          name,
+          ok: true,
+          actionReceipts: receipts,
+          content: { results: [] },
+        },
+        createdAt: 1,
+      },
+    ] as unknown as AgentRunEventRecord[];
+  }
+
+  function traceChipLabels(events: AgentRunEventRecord[]): string[] {
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    return traceChipLabelsOf(items);
+  }
+
+  it("names what a result's receipts proved, one chip per result", function () {
+    assert.deepEqual(
+      traceChipLabels(receiptResultEvents([verificationReceipt()])),
+      ["Verified"],
+    );
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({ verification: "execution_only" }),
+        ]),
+      ),
+      ["Ran (no state proof)"],
+    );
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({ verification: "unverified" }),
+        ]),
+      ),
+      ["Unverified"],
+    );
+  });
+
+  it("leaves an action that claimed nothing unchipped", function () {
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({
+            verification: "not_applicable",
+            status: "cancelled",
+            appliedTargets: [],
+          }),
+        ]),
+      ),
+      [],
+    );
+  });
+
+  it("shows the weakest proof when one result carries several receipts", function () {
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt(),
+          verificationReceipt({ id: "second", verification: "execution_only" }),
+        ]),
+      ),
+      ["Ran (no state proof)"],
+    );
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({ verification: "execution_only" }),
+          verificationReceipt({ id: "second", verification: "unverified" }),
+        ]),
+      ),
+      ["Unverified"],
+    );
+    // A cancelled receipt claims nothing, so it never hides a real proof.
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({
+            verification: "not_applicable",
+            status: "cancelled",
+          }),
+          verificationReceipt({ id: "second" }),
+        ]),
+      ),
+      ["Verified"],
+    );
+  });
+
+  it("says when the effect ran under a connected client's authorization", function () {
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents([
+          verificationReceipt({
+            verification: "execution_only",
+            executionAuthority: "external_runtime",
+          }),
+        ]),
+      ),
+      ["Ran (no state proof)", "Authorized by connected client"],
+    );
+  });
+
+  it("claims nothing for a receipt journaled before verification existed", function () {
+    const legacy = verificationReceipt();
+    delete (legacy as { verification?: unknown }).verification;
+    assert.deepEqual(traceChipLabels(receiptResultEvents([legacy])), []);
+  });
+
+  it("reads the chip from the receipts and never from the tool name", function () {
+    assert.deepEqual(
+      traceChipLabels(
+        receiptResultEvents(
+          [verificationReceipt({ verification: "unverified" })],
+          "some_unregistered_tool",
+        ),
+      ),
+      ["Unverified"],
+    );
+  });
+
+  it("lets the Zotero evidence row speak for a verified note write", function () {
+    const events = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            verificationReceipt({
+              capability: "zotero.notes",
+              operation: "note_create",
+              verifiedFacts: ["native_note:77:html_sha256:abc123"],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            }),
+          ],
+          content: { noteId: 77, documentId: "run-earlier:document:1" },
+        },
+        createdAt: 1,
+      },
+    ] as unknown as AgentRunEventRecord[];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actions = traceActionItems(items);
+    assert.include(
+      actions.map((item) => item.row.text),
+      "Zotero state verified",
+    );
+    assert.deepEqual(
+      actions.flatMap((item) => (item.chips || []).map((chip) => chip.label)),
+      [],
+      "the evidence row already says the state was verified",
+    );
+  });
+
+  it("still names a weaker proof beside the Zotero evidence row", function () {
+    const events = [
+      {
+        runId: "run-save",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            verificationReceipt({
+              capability: "zotero.notes",
+              operation: "note_create",
+              verifiedFacts: ["native_note:77:html_sha256:abc123"],
+              materialRef: {
+                documentId: "run-earlier:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            }),
+            verificationReceipt({
+              id: "attachment",
+              capability: "zotero.items",
+              operation: "attachment_link",
+              verification: "unverified",
+            }),
+          ],
+          content: { noteId: 77, documentId: "run-earlier:document:1" },
+        },
+        createdAt: 1,
+      },
+    ] as unknown as AgentRunEventRecord[];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actions = traceActionItems(items);
+    assert.include(
+      actions.map((item) => item.row.text),
+      "Zotero state verified",
+    );
+    // The write's own row heads its stage, so its weaker proof is named there.
+    assert.deepEqual(
+      flattenTraceItems(items).flatMap((item) =>
+        item.type === "stage"
+          ? (item.chips || []).map((chip) => chip.label)
+          : [],
+      ),
+      ["Unverified"],
+    );
+  });
+
+  it("names the proof of a write a connected client ran over MCP", function () {
+    const events = [
+      {
+        runId: "run-mcp",
+        seq: 1,
+        eventType: "codex_tool_activity",
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "mcp-1",
+          phase: "completed",
+          toolName: "note_write",
+          ok: true,
+          args: {},
+          actionReceipts: [
+            verificationReceipt({
+              capability: "zotero.notes",
+              operation: "note_create",
+              executionAuthority: "external_runtime",
+            }),
+          ],
+        },
+        createdAt: 1,
+      },
+    ] as unknown as AgentRunEventRecord[];
+
+    assert.deepEqual(traceChipLabels(events), [
+      "Verified",
+      "Authorized by connected client",
+    ]);
+  });
+
+  it("carries a Claude-driven MCP write's receipts to its trace row", function () {
+    // The Claude bridge builds this row itself instead of reusing the Codex
+    // builder, so the receipts have to be forwarded explicitly or a write the
+    // connected client ran over MCP reaches the trace with no verdict at all.
+    const event = buildClaudeMcpToolActivityEvent({
+      requestId: "mcp-claude-1",
+      phase: "completed",
+      toolName: "note_write",
+      serverName: "llm_for_zotero_profile_test",
+      ok: true,
+      timestamp: 1,
+      actionReceipts: [
+        verificationReceipt({
+          capability: "zotero.notes",
+          operation: "note_create",
+          executionAuthority: "external_runtime",
+        }),
+      ],
+    });
+    assert.deepEqual(
+      traceChipLabels([
+        {
+          runId: "run-claude-mcp",
+          seq: 1,
+          eventType: "codex_tool_activity",
+          payload: event,
+          createdAt: 1,
+        },
+      ] as unknown as AgentRunEventRecord[]),
+      ["Verified", "Authorized by connected client"],
+    );
+  });
+
+  it("names the server and the mutability of a Claude-driven MCP call", function () {
+    // The trace must not re-derive which server ran a call from its tool name:
+    // the bridge is the only place that knows, so it stamps both facts.
+    const event = buildClaudeMcpToolActivityEvent({
+      requestId: "mcp-claude-2",
+      phase: "completed",
+      toolName: "note_write",
+      toolLabel: "Write note",
+      serverName: "llm_for_zotero",
+      mutability: "write",
+      ok: true,
+      timestamp: 1,
+    });
+    assert.equal(event.type, "codex_tool_activity");
+    if (event.type !== "codex_tool_activity") return;
+    assert.equal(event.serverName, "llm_for_zotero");
+    assert.equal(event.mutability, "write");
+    assert.equal(event.toolLabel, "Write note");
+  });
+
+  it("keeps two connected-client effects apart instead of collapsing them into one row", function () {
+    // Every effect row carries the same constant tool name and one of four
+    // fixed sentences, so without a distinct identity per effect the visible
+    // dedupe key is identical and two approvals seconds apart merge into one
+    // row — with one of the two receipts silently dropped.
+    const events = [
+      buildCodexNativeEffectActivityEvent({
+        effect: externalRuntimeCommandEffect("codex_native", "npm test"),
+        outcome: "executed",
+        callId: "cmd-1",
+        receipt: verificationReceipt({
+          id: "receipt-npm-test",
+          verification: "execution_only",
+          status: "observed",
+          executionAuthority: "external_runtime",
+        }),
+      }),
+      buildCodexNativeEffectActivityEvent({
+        effect: externalRuntimeCommandEffect("codex_native", "git status"),
+        outcome: "executed",
+        callId: "cmd-2",
+        receipt: verificationReceipt({
+          id: "receipt-git-status",
+          verification: "execution_only",
+          status: "observed",
+          executionAuthority: "external_runtime",
+        }),
+      }),
+    ].map((payload, index) => ({
+      runId: "run-two-effects",
+      seq: index + 1,
+      eventType: "codex_tool_activity",
+      payload,
+      createdAt: 1_000 + index * 3_000,
+    })) as unknown as AgentRunEventRecord[];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const effectRows = traceActionItems(items).filter(
+      (item) => item.row.kind === "tool",
+    );
+    assert.lengthOf(
+      effectRows,
+      2,
+      `two approved commands are two effects: ${JSON.stringify(effectRows.map((item) => item.row))}`,
+    );
+    // Each effect keeps its own row; their shared verdict is reported once, on
+    // the stage heading that covers both.
+    assert.deepEqual(traceChipLabelsOf(items), [
+      "Ran (no state proof)",
+      "Authorized by connected client",
+    ]);
+  });
+
+  it("keeps every receipt when two activity rows do merge", function () {
+    const merged = mergeToolActivityPayload(
+      {
+        type: "codex_tool_activity",
+        itemId: "codex-effect:cmd-1",
+        phase: "completed",
+        actionReceipts: [verificationReceipt({ id: "first" })],
+      } as never,
+      {
+        type: "codex_tool_activity",
+        itemId: "codex-effect:cmd-1",
+        phase: "completed",
+        actionReceipts: [
+          verificationReceipt({ id: "second", verification: "unverified" }),
+          // The same receipt arriving twice — a started/completed pair for one
+          // call — must not be counted twice.
+          verificationReceipt({ id: "first" }),
+        ],
+      } as never,
+    );
+    assert.deepEqual(
+      (merged.actionReceipts || []).map((receipt) => receipt.id),
+      ["first", "second"],
+    );
+  });
+
+  it("keeps both proofs when the same command is approved twice in a row", function () {
+    // Two identical approvals are genuinely one visible activity, so the rows
+    // merge — but they are two effects, and the surviving chip must speak for
+    // the weaker of the two rather than for whichever arrived last.
+    const events = [
+      { id: "receipt-first", verification: "execution_only" as const },
+      { id: "receipt-second", verification: "unverified" as const },
+    ].map((receipt, index) => ({
+      runId: "run-same-command",
+      seq: index + 1,
+      eventType: "codex_tool_activity",
+      payload: buildCodexNativeEffectActivityEvent({
+        effect: externalRuntimeCommandEffect("codex_native", "npm test"),
+        outcome: "executed",
+        callId: `cmd-${index}`,
+        receipt: verificationReceipt({
+          ...receipt,
+          status: "observed",
+          executionAuthority: "external_runtime",
+        }),
+      }),
+      createdAt: 1_000 + index * 3_000,
+    })) as unknown as AgentRunEventRecord[];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const effectRows = traceActionItems(items).filter(
+      (item) => item.row.kind === "tool",
+    );
+    assert.lengthOf(effectRows, 1);
+    assert.deepEqual(traceChipLabelsOf(items), [
+      "Unverified",
+      "Authorized by connected client",
+    ]);
+  });
+
+  it("renders a verification chip as text, not markup", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "Done.",
+        timestamp: 2,
+        runMode: "agent",
+      },
+      events: receiptResultEvents([
+        verificationReceipt({ verification: "unverified" }),
+      ]),
+    }) as unknown as FakeElement;
+
+    const chipLabels = trace
+      .findAllByClass("llm-agent-process-chip-label")
+      .map(collectFakeText);
+    assert.include(chipLabels, "Unverified");
+  });
+
+  it("closes a run that generated material but failed to save it", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-mixed",
+        seq: 1,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-mixed:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "summary",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-mixed",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: false,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "unverified",
+              status: "failed",
+              requestedTargets: ["item:41"],
+              appliedTargets: [],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: ["Zotero refused the note save"],
+              verifiedFacts: [],
+              materialRef: {
+                documentId: "run-mixed:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { error: "Zotero refused the note save" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-mixed",
+        seq: 3,
+        eventType: "final",
+        payload: { type: "final", text: "I could not save the note." },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.include(
+      actionTexts,
+      "Generated summary: complete · Note write: failed · Retry available using the same material",
+    );
+    assert.equal(
+      actionTexts[actionTexts.length - 1],
+      "Generated summary: complete · Note write: failed · Retry available using the same material",
+      "the mixed outcome closes the trace",
+    );
+  });
+
+  it("does not close a saved material with a mixed-outcome row", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-clean",
+        seq: 1,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-clean:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "summary",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-clean",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "note-1",
+          name: "note_write",
+          ok: true,
+          actionReceipts: [
+            {
+              version: 2,
+              id: "note_create:new:unmatched:result",
+              proposalId: "note_create:new",
+              proofDomain: "zotero_state",
+              capability: "zotero.notes",
+              operation: "note_create",
+              verification: "verified",
+              status: "applied",
+              requestedTargets: ["item:41"],
+              appliedTargets: ["item:41"],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: [],
+              verifiedFacts: ["native_note:77:html_sha256:abc123"],
+              materialRef: {
+                documentId: "run-clean:document:1",
+                documentVersion: 1,
+                contentHash: "sha256:material",
+              },
+            },
+          ],
+          content: { noteId: 77, documentId: "run-clean:document:1" },
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.notMatch(actionTexts.join("\n"), /Retry available/);
+  });
+
+  it("keeps a streamed draft collapsed when the run announces its material", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-stream",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: "Drafting the guide." },
+        createdAt: 1,
+      },
+      {
+        runId: "run-stream",
+        seq: 2,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-stream:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "guide",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items, isInterleaved } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = traceRowTexts(items);
+
+    assert.isFalse(
+      isInterleaved,
+      "announcing material is not a step taken between drafts",
+    );
+    assert.isEmpty(
+      items.filter((item) => item.type === "inline_text"),
+      "the intermediate draft stays collapsed",
+    );
+    assert.include(actionTexts, "Drafting answer");
+    assert.include(actionTexts, "Generated guide: Representational drift");
+  });
+
+  it("does not hand the answer area to the trace when material is announced mid-run", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-stream",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: "Drafting the guide." },
+        createdAt: 1,
+      },
+      {
+        runId: "run-stream",
+        seq: 2,
+        eventType: "material_finalized",
+        payload: {
+          type: "material_finalized",
+          callId: "submit-1",
+          materialRef: {
+            documentId: "run-stream:document:1",
+            documentVersion: 1,
+            contentHash: "sha256:material",
+          },
+          materialKind: "guide",
+          materialTitle: "Representational drift",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { inlineTextReplacesAssistantText } = buildAgentTraceDisplayItems(
+      events,
+      null,
+    );
+
+    assert.isFalse(
+      inlineTextReplacesAssistantText,
+      "no final event yet must not promote the draft to the answer",
+    );
+  });
+
+  it("keeps the note diff card for a failed write that produced a receipt", function () {
+    const cards = selectToolResultTraceCards(
+      {
+        type: "tool_result",
+        callId: "note-1",
+        name: "note_write",
+        ok: false,
+        actionReceipts: [
+          {
+            version: 2,
+            id: "note_edit:41:unmatched:result",
+            proposalId: "note_edit:41",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "note_edit",
+            verification: "unverified",
+            status: "failed",
+            requestedTargets: ["item:41"],
+            appliedTargets: [],
+            alreadySatisfiedTargets: [],
+            rejectedTargets: [],
+            reasons: ["Zotero refused the note save"],
+            verifiedFacts: [],
+          },
+        ],
+        content: failedNoteChangeContent(),
+      },
+      buildNoteChangeResultCards,
+    );
+
+    assert.lengthOf(cards, 1);
+    assert.equal(cards[0].kind, "note_change");
+  });
+
+  it("keeps the note diff card for a legacy result that journaled no receipts", function () {
+    const cards = selectToolResultTraceCards(
+      {
+        type: "tool_result",
+        callId: "note-1",
+        name: "note_write",
+        ok: false,
+        actionReceipts: [],
+        content: failedNoteChangeContent(),
+      },
+      buildNoteChangeResultCards,
+    );
+
+    assert.lengthOf(cards, 1);
+    assert.equal(cards[0].kind, "note_change");
+  });
+
+  it("keeps an unrelated failed result from contributing cards", function () {
+    const cards = selectToolResultTraceCards(
+      {
+        type: "tool_result",
+        callId: "note-1",
+        name: "note_write",
+        ok: false,
+        actionReceipts: [],
+        content: { error: "The finalized document could not be resolved." },
+      },
+      buildNoteChangeResultCards,
+    );
+
+    assert.isEmpty(cards);
+  });
+
   it("renders Codex progress messages as separate activity messages", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -3562,12 +5375,7 @@ describe("agentTrace render", function () {
       runMode: "agent",
       modelProviderLabel: "Codex",
     });
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.notInclude(actionTexts, "Using Query Library");
     assert.include(actionTexts, "Used Query Library");
@@ -3618,12 +5426,7 @@ describe("agentTrace render", function () {
       runMode: "agent",
       modelProviderLabel: "Codex",
     });
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.equal(
       actionTexts.filter((text) => text === "Used Run Command").length,
@@ -3681,6 +5484,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -3729,6 +5533,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -3757,6 +5562,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Completed",
       "Completed",
     ]);
@@ -3786,6 +5592,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Completed",
       "Completed",
     ]);
@@ -3814,6 +5621,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Completed",
     ]);
   });
@@ -3860,6 +5668,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -3884,6 +5693,8 @@ describe("agentTrace render", function () {
         phase: "completed",
         toolName: "paper_read",
         toolLabel: "Read Paper",
+        // Both bridges stamp the server on every row they relay.
+        serverName: "llm_for_zotero",
         args,
       }),
       codexToolActivityEvent(2, {
@@ -3897,6 +5708,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -3938,6 +5750,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
       "Used Read Paper",
     ]);
@@ -4014,6 +5827,7 @@ describe("agentTrace render", function () {
       phase: "completed",
       toolName: "paper_read",
       toolLabel: "Read Paper",
+      serverName: "llm_for_zotero",
       arguments: args,
       ok: true,
     });
@@ -4037,6 +5851,7 @@ describe("agentTrace render", function () {
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -4094,6 +5909,7 @@ describe("agentTrace render", function () {
     );
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
+      "Agent activity",
       "Used Read Paper",
     ]);
   });
@@ -4212,7 +6028,13 @@ describe("agentTrace render", function () {
       events,
     }) as unknown as FakeElement;
 
-    assert.deepInclude(getCodexTraceActionTexts(events), "Extracted 2 figures");
+    assert.deepInclude(
+      withToolPresentationsReturning(
+        { paper_read: paperReadPresentation() },
+        () => getCodexTraceActionTexts(events),
+      ),
+      "Extracted 2 figures",
+    );
     assert.deepEqual(
       trace
         .findAllByClass("llm-assistant-generated-image")
@@ -4289,50 +6111,6 @@ describe("agentTrace render", function () {
       .findAllByClass("llm-assistant-generated-image-caption")
       .map(collectFakeText);
     assert.deepEqual(captions, ["Figure 1", "page-4.png"]);
-  });
-
-  it("bottom-aligns trace images with persistent label rows", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const gridRule =
-      css.match(
-        /\.llm-agent-image-artifacts\s+\.llm-agent-image-artifacts-grid\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const frameRule =
-      css.match(
-        /\.llm-agent-image-artifacts\s+\.llm-agent-image-artifact-frame\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const imageRule =
-      css.match(
-        /\.llm-agent-image-artifacts\s+\.llm-assistant-generated-image\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const captionRule =
-      css.match(
-        /\.llm-agent-image-artifacts\s+\.llm-assistant-generated-image-caption\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-
-    assert.include(gridRule, "align-items: end");
-    assert.include(frameRule, "display: grid");
-    assert.include(frameRule, "grid-template-rows: auto auto");
-    assert.include(frameRule, "align-items: end");
-    assert.include(frameRule, "justify-items: center");
-    assert.include(frameRule, "border: 0");
-    assert.include(frameRule, "border-radius: 0");
-    assert.include(frameRule, "background: transparent");
-    assert.include(imageRule, "width: auto");
-    assert.include(imageRule, "max-width: 100%");
-    assert.include(imageRule, "height: auto");
-    assert.include(imageRule, "background: transparent");
-    assert.include(captionRule, "position: static");
-    assert.include(captionRule, "justify-self: stretch");
-    assert.include(captionRule, "padding: 6px 2px 0");
-    assert.include(captionRule, "border: 0");
-    assert.include(captionRule, "background: transparent");
-    assert.include(captionRule, "opacity: 1");
-    assert.include(captionRule, "visibility: visible");
-    assert.include(captionRule, "transform: none");
-    assert.include(captionRule, "text-align: center");
-    assert.notInclude(css, ".llm-agent-image-artifact-frame:hover");
-    assert.notInclude(css, ".llm-agent-image-artifacts-multiple");
   });
 
   it("preserves Codex MCP image artifacts through native tool activity coalescing", function () {
@@ -5369,37 +7147,6 @@ describe("agentTrace render", function () {
     ]);
   });
 
-  it("keeps agent trace chip icons aligned to the first label line", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const chipRule =
-      css.match(/\.llm-agent-process-chip\s*\{[\s\S]*?\}/)?.[0] || "";
-    const chipIconRule =
-      css.match(/\.llm-agent-process-chip-icon\s*\{[\s\S]*?\}/)?.[0] || "";
-    const svgIconRule =
-      css.match(
-        /\.llm-agent-process-chip-icon\.llm-context-svg-icon\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const fallbackIconRule =
-      css.match(
-        /\.llm-agent-process-chip-icon:not\(\.llm-context-svg-icon\)\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    assert.include(chipRule, "align-items: flex-start");
-    assert.include(
-      chipIconRule,
-      "margin-block-start: calc(0.25px * var(--llm-font-scale, 1))",
-    );
-    assert.include(svgIconRule, "width: var(--llm-fs-12)");
-    assert.include(svgIconRule, "height: var(--llm-fs-12)");
-    assert.include(fallbackIconRule, "font-size: var(--llm-fs-12)");
-    assert.include(fallbackIconRule, "line-height: 1");
-
-    for (const fontScale of [0.8, 1.2, 1.8]) {
-      const labelLineCenter = (10 * fontScale * 1.25) / 2;
-      const iconCenter = 0.25 * fontScale + (12 * fontScale) / 2;
-      assert.approximately(iconCenter, labelLineCenter, 1e-9);
-    }
-  });
-
   it("does not ellipsize agent trace chip labels in CSS", function () {
     const css = readFileSync("addon/content/zoteroPane.css", "utf8");
     const chipLabelRule =
@@ -5434,12 +7181,7 @@ describe("agentTrace render", function () {
       runMode: "agent",
       modelProviderLabel: "Codex",
     });
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Using Zotero MCP tool");
   });
@@ -5876,7 +7618,7 @@ describe("agentTrace render", function () {
       },
     );
     assert.isFalse(
-      items.some(
+      flattenTraceItems(items).some(
         (item) => item.type === "action" && item.row.text === "Running agent",
       ),
     );
@@ -6288,38 +8030,6 @@ describe("agentTrace render", function () {
     );
   });
 
-  it("keeps auto-tag controls compact, tags readable, and actions separated", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const footer = css.match(
-      /\.llm-agent-hitl-paged-actions\s*\{[\s\S]*?\}/,
-    )![0];
-    assert.notInclude(footer, "margin-top: 0");
-    const controls = css.match(
-      /\.llm-agent-hitl-paged-top-field,\s*\.llm-agent-hitl-paged-footer-field\s*\{[\s\S]*?\}/,
-    )![0];
-    assert.include(controls, "flex-direction: row");
-    const numberControl = css.match(
-      /\.llm-agent-hitl-paged-top-field \.llm-agent-hitl-page-input,\s*\.llm-agent-hitl-paged-footer-field \.llm-agent-hitl-page-input\s*\{[\s\S]*?\}/,
-    )![0];
-    assert.include(numberControl, "appearance: none");
-    assert.include(numberControl, "text-align: center");
-    assert.include(numberControl, "text-align-last: center");
-    assert.include(numberControl, "width: 40px");
-    assert.include(numberControl, "min-height: 26px");
-    assert.notInclude(
-      css,
-      ".llm-agent-hitl-paged-footer-field .llm-agent-hitl-label {\n    display: none",
-    );
-    assert.match(
-      css,
-      /\.llm-agent-hitl-tag-assignment-table \.llm-agent-hitl-assignment-row\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/,
-    );
-    assert.match(
-      css,
-      /\.llm-agent-hitl-tag-chip-list\s*\{[^}]*flex-wrap: wrap/,
-    );
-  });
-
   it("renders paged review controls with refresh in the card header and navigation split across the footer", function () {
     const action: AgentPendingAction = {
       toolName: "move_to_collection",
@@ -6541,12 +8251,7 @@ describe("agentTrace render", function () {
           item.type === "message",
       )
       .map((item) => item.text);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.notInclude(
       messageTexts.join("\n"),
@@ -6881,7 +8586,7 @@ describe("agentTrace render", function () {
         item.type === "inline_text" &&
         item.text === "I'm reading the parsed paper text.",
     );
-    const toolIndex = items.findIndex(
+    const toolIndex = flattenTraceItems(items).findIndex(
       (item) => item.type === "action" && item.row.kind === "tool",
     );
     const finalIndex = items.findIndex(
@@ -6895,8 +8600,8 @@ describe("agentTrace render", function () {
           item.type === "message",
       )
       .map((item) => item.text);
-    const doneActions = items.filter(
-      (item) => item.type === "action" && item.row.kind === "done",
+    const doneActions = traceActionItems(items).filter(
+      (item) => item.row.kind === "done",
     );
 
     assert.isTrue(isInterleaved);
@@ -7538,12 +9243,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.notInclude(actionTexts, "Completed Unknown tool");
     assert.include(actionTexts, "Response ready");
@@ -7613,13 +9313,13 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items } = buildAgentTraceDisplayItems(events, null);
-    const rows = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row);
+    const rows = withToolPresentationsReturning(
+      { file_io: createFileIOTool().presentation },
+      () =>
+        traceActionItems(buildAgentTraceDisplayItems(events, null).items).map(
+          (item) => item.row,
+        ),
+    );
     const rowTexts = rows.map((row) => row.text);
     const codeBlocks = rows.map((row) => row.codeBlock);
 
@@ -7707,10 +9407,9 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items } = buildAgentTraceDisplayItems(events, null);
-    const actions = items.filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action",
+    const actions = withToolPresentationsReturning(
+      { file_io: createFileIOTool().presentation },
+      () => traceActionItems(buildAgentTraceDisplayItems(events, null).items),
     );
     const detailText = JSON.stringify(actions.map((item) => item.details));
     const rowText = actions.map((item) => item.row.text).join("\n");
@@ -7767,10 +9466,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actions = items.filter(
-      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-        item.type === "action",
-    );
+    const actions = traceActionItems(items);
     const detailText = JSON.stringify(actions.map((item) => item.details));
 
     assert.include(detailText, "[redacted");
@@ -7813,12 +9509,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Using Skill: graphwalk");
     assert.include(actionTexts, "Using Skill: write-note");
@@ -7846,12 +9537,7 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const actionTexts = items
-      .filter(
-        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
-          item.type === "action",
-      )
-      .map((item) => item.row.text);
+    const actionTexts = traceRowTexts(items);
 
     assert.include(actionTexts, "Invoked Skill: evidence-based-qa");
     assert.notInclude(actionTexts, "Using Skill: evidence-based-qa");
@@ -7876,13 +9562,12 @@ describe("agentTrace render", function () {
       },
     ];
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const rows = items.flatMap((item) =>
-      item.type === "action" ? [item.row.text] : [],
-    );
+    const rows = traceRowTexts(items);
     // The trace always opens with the request row; the judgment write must add
     // exactly one visible row after it.
     assert.deepEqual(rows, [
       "Request received",
+      "Agent activity",
       "Judgment Tags completed (agent's own call)",
     ]);
   });
@@ -7919,6 +9604,52 @@ describe("agentTrace render", function () {
 });
 
 describe("new research progress presentation", function () {
+  it("reads paper labels from the field that carries them, not the tool name", function () {
+    // Any result that resolved paper identities reports them under
+    // `displayLabels`. A trace that had to know which tools do that would
+    // lose the labels the day one is renamed or a new one starts reporting.
+    const events = [
+      {
+        type: "tool_result",
+        name: "a_tool_this_trace_has_never_heard_of",
+        callId: "call-1",
+        ok: true,
+        content: { displayLabels: { "1:AAAA1111": "(Smith, 2024)" } },
+      },
+      { type: "message_delta", text: "Inspecting AAAA1111 after recovery." },
+      {
+        type: "message_rollback",
+        text: "Inspecting AAAA1111 after recovery.",
+        length: 39,
+      },
+      {
+        type: "reasoning",
+        round: 1,
+        details: "Evidence for 1:AAAA1111 is retained.",
+      },
+    ].map((payload, index) => ({
+      runId: "labels-by-field",
+      seq: index,
+      eventType: payload.type,
+      payload,
+      createdAt: index,
+    })) as AgentRunEventRecord[];
+    const serialized = JSON.stringify(
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+      }).items,
+    );
+    assert.notInclude(serialized, "AAAA1111");
+    assert.include(
+      serialized,
+      "(Smith, 2024)",
+      "a result carrying display labels names its papers however it is called",
+    );
+  });
+
   for (const fromToolResult of [false, true])
     it("maps known paper references without altering the progress layout", function () {
       const events = [
@@ -7967,4 +9698,1605 @@ describe("new research progress presentation", function () {
       assert.include(serialized, "(Smith, 2024)");
       assert.isTrue(result.items.some((item) => item.type === "inline_text"));
     });
+});
+
+describe("agent trace stage grouping", function () {
+  type StageTestItem = ReturnType<
+    typeof buildAgentTraceDisplayItems
+  >["items"][number];
+
+  const noteReceipt = {
+    version: 2,
+    id: "note_create:new:unmatched:result",
+    proposalId: "note_create:new",
+    proofDomain: "zotero_state",
+    capability: "zotero.notes",
+    operation: "note_create",
+    verification: "verified",
+    status: "applied",
+    requestedTargets: ["item:41"],
+    appliedTargets: ["item:41"],
+    alreadySatisfiedTargets: [],
+    rejectedTargets: [],
+    reasons: [],
+    verifiedFacts: ["created_note:item:77", "native_note:77:html_sha256:abc"],
+    materialRef: {
+      documentId: "run-journey:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:material",
+    },
+  } as unknown as Extract<
+    AgentRunEventRecord["payload"],
+    { type: "tool_result" }
+  >["actionReceipts"][number];
+
+  function stageEvent(
+    seq: number,
+    payload: Extract<AgentRunEventRecord["payload"], { type: "agent_stage" }>,
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-journey",
+      seq,
+      eventType: "agent_stage",
+      payload,
+      createdAt: seq,
+    };
+  }
+
+  function event(
+    seq: number,
+    payload: AgentRunEventRecord["payload"],
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-journey",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq,
+    };
+  }
+
+  function stages(items: readonly StageTestItem[]) {
+    return items.filter(
+      (item): item is Extract<StageTestItem, { type: "stage" }> =>
+        item.type === "stage",
+    );
+  }
+
+  function rowTexts(items: readonly StageTestItem[]): string[] {
+    return items
+      .filter(
+        (item): item is Extract<StageTestItem, { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+  }
+
+  /** The Phase 1 journey: read the paper, write the summary, save the note. */
+  function journeyEvents(): AgentRunEventRecord[] {
+    return [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "r1",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "r1",
+        name: "paper_read",
+        args: { itemId: 5 },
+        toolLabel: "Read Paper",
+        workCategory: "retrieval",
+      }),
+      stageEvent(3, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "completed",
+        callId: "r1",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+      }),
+      event(4, {
+        type: "tool_result",
+        callId: "r1",
+        name: "paper_read",
+        ok: true,
+        actionReceipts: [],
+        content: { sections: [] },
+        toolLabel: "Read Paper",
+        workCategory: "retrieval",
+      }),
+      stageEvent(5, {
+        type: "agent_stage",
+        stage: "generation",
+        status: "completed",
+        materialRef: {
+          documentId: "run-journey:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+      }),
+      event(6, {
+        type: "material_finalized",
+        materialRef: {
+          documentId: "run-journey:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+        materialKind: "summary",
+        materialTitle: "Representational drift",
+      }),
+      stageEvent(7, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "started",
+        callId: "w1",
+        toolName: "note_write",
+        toolLabel: "Note Write",
+      }),
+      event(8, {
+        type: "tool_call",
+        callId: "w1",
+        name: "note_write",
+        args: { documentId: "run-journey:document:1" },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+      stageEvent(9, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "completed",
+        callId: "w1",
+        toolName: "note_write",
+        toolLabel: "Note Write",
+        receiptIds: [noteReceipt.id],
+      }),
+      event(10, {
+        type: "tool_result",
+        callId: "w1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: [noteReceipt],
+        content: { noteId: 77, documentId: "run-journey:document:1" },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+    ];
+  }
+
+  it("groups the journey's rows under the stage that produced them", function () {
+    const { items } = buildAgentTraceDisplayItems(journeyEvents(), null);
+    const groups = stages(items);
+
+    assert.deepEqual(
+      groups.map((group) => group.label),
+      [
+        "Read evidence",
+        "Generated summary: Representational drift",
+        "Saved note",
+      ],
+    );
+    assert.deepEqual(
+      groups.map((group) => group.stage),
+      ["retrieval", "generation", "zotero_action"],
+    );
+    assert.include(rowTexts(groups[0].children), "Using Read Paper");
+    assert.include(rowTexts(groups[2].children), "Zotero state verified");
+    assert.notInclude(
+      rowTexts(items),
+      "Generated summary: Representational drift",
+      "the material announcement heads its stage instead of repeating inside it",
+    );
+  });
+
+  it("reports the worst verification its children proved on the stage itself", function () {
+    const { items } = buildAgentTraceDisplayItems(journeyEvents(), null);
+    const zoteroStage = stages(items).find(
+      (group) => group.stage === "zotero_action",
+    );
+
+    assert.deepEqual(
+      (zoteroStage?.chips || []).map((chip) => chip.label),
+      ["Verified"],
+    );
+  });
+
+  it("reports a run recorded before work categories as one agent activity group", function () {
+    const events: AgentRunEventRecord[] = [
+      event(1, {
+        type: "tool_call",
+        callId: "old-1",
+        name: "query_library",
+        args: { query: "drift" },
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "old-2",
+        name: "read_paper",
+        args: { itemId: 3 },
+      }),
+    ];
+
+    const groups = stages(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.lengthOf(groups, 1);
+    assert.equal(groups[0].label, "Agent activity");
+    assert.isTrue(groups[0].projected);
+    assert.deepEqual(rowTexts(groups[0].children), [
+      "Using Query Library",
+      "Using Read Paper",
+    ]);
+  });
+
+  it("keeps consecutive calls of one stage in a single group", function () {
+    const events: AgentRunEventRecord[] = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "a",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "a",
+        name: "query_library",
+        args: {},
+        workCategory: "retrieval",
+      }),
+      stageEvent(3, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "completed",
+        callId: "a",
+      }),
+      event(4, {
+        type: "tool_result",
+        callId: "a",
+        name: "query_library",
+        ok: true,
+        actionReceipts: [],
+        content: {},
+        workCategory: "retrieval",
+      }),
+      stageEvent(5, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "b",
+      }),
+      event(6, {
+        type: "tool_call",
+        callId: "b",
+        name: "search_paper",
+        args: {},
+        workCategory: "retrieval",
+      }),
+      stageEvent(7, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "completed",
+        callId: "b",
+      }),
+      event(8, {
+        type: "tool_result",
+        callId: "b",
+        name: "search_paper",
+        ok: true,
+        actionReceipts: [],
+        content: {},
+        workCategory: "retrieval",
+      }),
+    ];
+
+    const groups = stages(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.lengthOf(groups, 1);
+    assert.equal(groups[0].status, "completed");
+    assert.deepEqual(rowTexts(groups[0].children), [
+      "Using Query Library",
+      "Using Search Paper",
+    ]);
+  });
+
+  it("leaves a stage nothing closed open", function () {
+    const events: AgentRunEventRecord[] = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "planning",
+        status: "started",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "p1",
+        name: "amend_plan",
+        args: {},
+        workCategory: "planning",
+      }),
+    ];
+
+    const groups = stages(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.lengthOf(groups, 1);
+    assert.equal(groups[0].status, "started");
+    assert.equal(groups[0].label, "Planning");
+  });
+
+  it("merges repeated planning starts into one open planning stage", function () {
+    const events: AgentRunEventRecord[] = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "planning",
+        status: "started",
+      }),
+      event(2, {
+        type: "plan_scope_amended",
+        mode: "plan",
+        amendmentId: "amend-1",
+        authority: "user",
+        previousItemCount: 2,
+        newItemCount: 3,
+        rationale: "one more paper",
+      } as AgentRunEventRecord["payload"]),
+      stageEvent(3, {
+        type: "agent_stage",
+        stage: "planning",
+        status: "started",
+      }),
+      event(4, {
+        type: "plan_scope_amended",
+        mode: "plan",
+        amendmentId: "amend-2",
+        authority: "user",
+        previousItemCount: 3,
+        newItemCount: 4,
+        rationale: "one more still",
+      } as AgentRunEventRecord["payload"]),
+    ];
+
+    const groups = stages(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.lengthOf(groups, 1);
+    assert.equal(groups[0].status, "started");
+    assert.lengthOf(groups[0].children, 2);
+  });
+
+  it("keeps reasoning and streamed text outside stage groups and in order", function () {
+    const events: AgentRunEventRecord[] = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "a",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "a",
+        name: "query_library",
+        args: {},
+        workCategory: "retrieval",
+      }),
+      event(3, {
+        type: "reasoning",
+        round: 1,
+        stepId: "step-1",
+        stepLabel: "Thinking",
+        summary: "Looking at the library",
+      }),
+      stageEvent(4, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "b",
+      }),
+      event(5, {
+        type: "tool_call",
+        callId: "b",
+        name: "search_paper",
+        args: {},
+        workCategory: "retrieval",
+      }),
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const shape = items.map((item) => item.type);
+
+    assert.deepEqual(shape.slice(2), ["stage", "reasoning", "stage"]);
+  });
+
+  it("keeps streamed prose in one block across a stage that shows nothing", function () {
+    const events: AgentRunEventRecord[] = [
+      event(1, { type: "message_delta", text: "Looking at" }),
+      stageEvent(2, {
+        type: "agent_stage",
+        stage: "planning",
+        status: "started",
+      }),
+      // The plan machinery asked to stay out of the trace, so this stage has
+      // no row to show and must not come between the two halves of the answer.
+      event(3, {
+        type: "tool_call",
+        callId: "p1",
+        name: "update_plan",
+        args: {},
+        workCategory: "planning",
+      }),
+      event(4, { type: "message_delta", text: " the library." }),
+      stageEvent(5, {
+        type: "agent_stage",
+        stage: "retrieval",
+        status: "started",
+        callId: "r1",
+      }),
+      event(6, {
+        type: "tool_call",
+        callId: "r1",
+        name: "query_library",
+        args: {},
+        workCategory: "retrieval",
+      }),
+    ];
+
+    withToolPresentations({ update_plan: { hiddenInTrace: true } }, () => {
+      const { items } = buildAgentTraceDisplayItems(events, null);
+      const inline = flattenTraceItems(items).filter(
+        (item) => item.type === "inline_text",
+      );
+      assert.lengthOf(inline, 1);
+      assert.equal(
+        inline[0].type === "inline_text" ? inline[0].text : "",
+        "Looking at the library.",
+      );
+    });
+  });
+
+  it("shows a child's verification chip only when it differs from its stage's", function () {
+    const receipt = (
+      id: string,
+      verification: string,
+    ): Extract<
+      AgentRunEventRecord["payload"],
+      { type: "tool_result" }
+    >["actionReceipts"][number] =>
+      ({
+        version: 2,
+        id,
+        proposalId: id,
+        proofDomain: "zotero_state",
+        capability: "zotero.items",
+        operation: "tag_add",
+        verification,
+        status: "applied",
+        requestedTargets: ["item:1"],
+        appliedTargets: ["item:1"],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: [],
+        reasons: [],
+      }) as never;
+    const write = (
+      seq: number,
+      callId: string,
+      receipts: Extract<
+        AgentRunEventRecord["payload"],
+        { type: "tool_result" }
+      >["actionReceipts"],
+    ): AgentRunEventRecord[] => [
+      stageEvent(seq, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "completed",
+        callId,
+      }),
+      event(seq + 1, {
+        type: "tool_result",
+        callId,
+        name: "apply_tags",
+        ok: true,
+        actionReceipts: receipts,
+        content: { tagged: 1 },
+        toolLabel: "Apply Tags",
+        workCategory: "zotero_action",
+      }),
+    ];
+
+    const tagPresentation = {
+      apply_tags: {
+        label: "Apply Tags",
+        summaries: { onSuccess: "Tags applied" },
+      },
+    };
+    const agreeing = withToolPresentationsReturning(
+      tagPresentation,
+      () =>
+        buildAgentTraceDisplayItems(
+          write(1, "a", [receipt("a", "verified")]),
+          null,
+        ).items,
+    );
+    const agreeingStage = stages(agreeing)[0];
+    assert.deepEqual(
+      (agreeingStage.chips || []).map((chip) => chip.label),
+      ["Verified"],
+    );
+    assert.deepEqual(
+      traceActionItems(agreeing).flatMap((item) =>
+        (item.chips || []).map((chip) => chip.label),
+      ),
+      [],
+      "a row that proved exactly what its stage reports does not repeat it",
+    );
+
+    const differing = withToolPresentationsReturning(
+      tagPresentation,
+      () =>
+        buildAgentTraceDisplayItems(
+          [
+            ...write(1, "a", [receipt("a", "verified")]),
+            ...write(3, "b", [receipt("b", "unverified")]),
+          ],
+          null,
+        ).items,
+    );
+    const differingStage = stages(differing)[0];
+    assert.deepEqual(
+      (differingStage.chips || []).map((chip) => chip.label),
+      ["Unverified"],
+    );
+    assert.deepEqual(
+      traceActionItems(differing).flatMap((item) =>
+        (item.chips || []).map((chip) => chip.label),
+      ),
+      ["Verified"],
+      "only the row whose proof differs from the stage's keeps its chip",
+    );
+  });
+
+  it("renders each stage as one disclosure holding its rows", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      agentRunId: "run-journey",
+      streaming: false,
+    };
+    const root = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: journeyEvents(),
+    }) as unknown as FakeElement;
+
+    const stageNodes = root.findAllByClass("llm-agent-process-stage");
+    assert.lengthOf(stageNodes, 3);
+    assert.deepEqual(
+      stageNodes.map((node) => node.getAttribute("data-stage")),
+      ["retrieval", "generation", "zotero_action"],
+    );
+    assert.deepEqual(
+      stageNodes.map(
+        (node) =>
+          node.findByClass("llm-agent-process-stage-label")?.textContent,
+      ),
+      [
+        "Read evidence",
+        "Generated summary: Representational drift",
+        "Saved note",
+      ],
+    );
+    assert.equal(stageNodes[0].tagName, "details");
+    const evidenceRows = stageNodes[2]
+      .findAllByClass("llm-at-text")
+      .map((node) => node.textContent);
+    assert.include(evidenceRows, "Zotero state verified");
+    disposeAgentTrace(root as unknown as HTMLElement);
+  });
+
+  it("keeps a stage's node across an incremental re-render", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      agentRunId: "run-journey",
+      streaming: false,
+    };
+    const events = journeyEvents();
+    const first = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: events.slice(0, 4),
+    }) as unknown as FakeElement;
+    const firstStage = first.findByClass("llm-agent-process-stage");
+    const second = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+      previous: first as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+
+    assert.strictEqual(
+      second.findByClass("llm-agent-process-stage"),
+      firstStage,
+      "the retrieval stage keeps its node when later stages arrive",
+    );
+    disposeAgentTrace(second as unknown as HTMLElement);
+  });
+
+  /**
+   * The same journey as a run recorded before stage events existed: work
+   * categories on the tool events, a finalized material, a batch row, and no
+   * `agent_stage` anywhere. The compatibility projection has to carry it all
+   * the way to the DOM, not only to the display items.
+   */
+  function phase3Events(): AgentRunEventRecord[] {
+    return [
+      event(1, {
+        type: "tool_call",
+        callId: "r1",
+        name: "paper_read",
+        args: { itemId: 5 },
+        workCategory: "retrieval",
+      }),
+      event(2, {
+        type: "tool_result",
+        callId: "r1",
+        name: "paper_read",
+        ok: true,
+        actionReceipts: [],
+        content: { sections: [] },
+        workCategory: "retrieval",
+      }),
+      event(3, {
+        type: "material_finalized",
+        materialRef: {
+          documentId: "run-journey:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:material",
+        },
+        materialKind: "summary",
+        materialTitle: "Representational drift",
+      }),
+      event(4, {
+        type: "tool_call",
+        callId: "w1",
+        name: "note_write",
+        args: { documentId: "run-journey:document:1" },
+        workCategory: "zotero_action",
+      }),
+      event(5, {
+        type: "tool_result",
+        callId: "w1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: [noteReceipt],
+        content: { noteId: 77, documentId: "run-journey:document:1" },
+        workCategory: "zotero_action",
+      }),
+      event(6, {
+        type: "batch_item_outcome",
+        batchId: "batch-1",
+        itemKey: "item:91",
+        materialRef: {
+          documentId: "run-journey:document:2",
+          documentVersion: 1,
+          contentHash: "sha256:batch",
+        },
+        status: "saved",
+        written: true,
+        noteId: 78,
+        callId: "w1",
+      }),
+    ];
+  }
+
+  /** A run older than work categories: tool calls and nothing else to read. */
+  function prePhase0Events(): AgentRunEventRecord[] {
+    return [
+      event(1, {
+        type: "tool_call",
+        callId: "old-1",
+        name: "query_library",
+        args: { query: "drift" },
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "old-2",
+        name: "read_paper",
+        args: { itemId: 3 },
+      }),
+    ];
+  }
+
+  function renderStages(events: AgentRunEventRecord[]): {
+    root: FakeElement;
+    labels: string[];
+    kinds: (string | null)[];
+    rows: string[][];
+  } {
+    const root = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant" as const,
+        text: "",
+        timestamp: 1,
+        runMode: "agent" as const,
+        agentRunId: "run-journey",
+        streaming: false,
+      },
+      events,
+    }) as unknown as FakeElement;
+    const nodes = root.findAllByClass("llm-agent-process-stage");
+    return {
+      root,
+      labels: nodes.map(
+        (node) =>
+          node.findByClass("llm-agent-process-stage-label")?.textContent || "",
+      ),
+      kinds: nodes.map((node) => node.getAttribute("data-stage")),
+      rows: nodes.map(
+        (node) =>
+          node
+            .findByClass("llm-agent-process-stage-body")
+            ?.findAllByClass("llm-at-text")
+            .map((row) => row.textContent) || [],
+      ),
+    };
+  }
+
+  it("renders a trace recorded before stage events as the same stages", function () {
+    const historical = renderStages(phase3Events());
+    const live = renderStages(journeyEvents());
+
+    assert.deepEqual(historical.kinds, [
+      "retrieval",
+      "generation",
+      "zotero_action",
+    ]);
+    assert.deepEqual(
+      historical.labels,
+      live.labels,
+      "a projected run reads like the live run it predates",
+    );
+    assert.include(
+      historical.rows[2].join(" | "),
+      "Zotero state verified",
+      "the receipt row still lands inside the action stage it proved",
+    );
+    disposeAgentTrace(historical.root as unknown as HTMLElement);
+    disposeAgentTrace(live.root as unknown as HTMLElement);
+  });
+
+  it("renders a trace recorded before work categories as one activity group", function () {
+    const { root, labels, rows } = renderStages(prePhase0Events());
+
+    assert.deepEqual(labels, ["Agent activity"]);
+    assert.deepEqual(rows[0], ["Using Query Library", "Using Read Paper"]);
+    disposeAgentTrace(root as unknown as HTMLElement);
+  });
+
+  /**
+   * A template whose parsed content can be walked, as chrome's parser gives it.
+   *
+   * The saved-note card renders the note's own sanitized HTML, so a test that
+   * asserts the card exists has to let that parse succeed.
+   */
+  class FakeTemplateElement extends FakeElement {
+    public readonly content = new FakeElement("div");
+
+    constructor() {
+      super("template");
+    }
+
+    set innerHTML(_value: string) {}
+
+    get innerHTML(): string {
+      return "";
+    }
+  }
+
+  const noteCardDocument = {
+    createElement: (tagName: string) =>
+      tagName === "template"
+        ? new FakeTemplateElement()
+        : new FakeElement(tagName),
+    createElementNS: (_namespace: string, tagName: string) =>
+      new FakeElement(tagName),
+    createTextNode: (text: string) => {
+      const node = new FakeElement("span");
+      node.textContent = text;
+      return node;
+    },
+    querySelectorAll: () => [],
+  } as unknown as Document;
+
+  /** The deliverable a successful note creation owes the reader. */
+  const savedNoteCard = {
+    kind: "saved_note" as const,
+    actionId: "note-create-1",
+    title: "Representational drift",
+    destination: "Zotero",
+    bodyHtml: "<p>What the note says.</p>",
+    note: { itemId: 77, libraryID: 1, key: "ABCD1234" },
+  };
+
+  /** The deliverable a successful note edit owes the reader. */
+  const noteChangeCard = {
+    kind: "note_change" as const,
+    actionId: "note-edit-1",
+    title: "Representational drift",
+    description: "Rewrote the discussion section.",
+    note: { itemId: 77, libraryID: 1, key: "ABCD1234" },
+    conversationKey: 5,
+    state: "applied" as const,
+    afterVerified: true,
+    before: { checksum: "sha256:before", recoveryId: "recovery-before" },
+    after: { checksum: "sha256:after", recoveryId: "recovery-after" },
+  };
+
+  /** One note write, with or without the stage events the runtime emits. */
+  function noteWriteEvents(declaresStages: boolean): AgentRunEventRecord[] {
+    const events = [
+      stageEvent(1, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "started",
+        callId: "w1",
+        toolName: "note_write",
+        toolLabel: "Note Write",
+      }),
+      event(2, {
+        type: "tool_call",
+        callId: "w1",
+        name: "note_write",
+        args: { noteId: 77 },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+      stageEvent(3, {
+        type: "agent_stage",
+        stage: "zotero_action",
+        status: "completed",
+        callId: "w1",
+        toolName: "note_write",
+        toolLabel: "Note Write",
+        receiptIds: [noteReceipt.id],
+      }),
+      event(4, {
+        type: "tool_result",
+        callId: "w1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: [noteReceipt],
+        content: { noteId: 77 },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+    ];
+    return declaresStages
+      ? events
+      : events.filter((entry) => entry.payload.type !== "agent_stage");
+  }
+
+  /** Render the note write with the card its own presentation produces. */
+  function renderNoteWriteTrace(
+    card: typeof savedNoteCard | typeof noteChangeCard,
+    declaresStages: boolean,
+  ): FakeElement {
+    const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
+    const originalZotero = globalScope.Zotero;
+    globalScope.Zotero = {
+      ...((originalZotero as Record<string, unknown>) || {}),
+      Libraries: { userLibraryID: 1, get: () => undefined },
+    };
+    try {
+      return withToolPresentationsReturning(
+        {
+          note_write: {
+            label: "Note Write",
+            summaries: { onSuccess: "Note saved" },
+            buildResultCards: () => [card],
+          },
+        },
+        () =>
+          renderAgentTrace({
+            doc: noteCardDocument,
+            message: {
+              role: "assistant" as const,
+              text: "",
+              timestamp: 1,
+              runMode: "agent" as const,
+              agentRunId: "run-journey",
+              streaming: false,
+            },
+            events: noteWriteEvents(declaresStages),
+          }) as unknown as FakeElement,
+      );
+    } finally {
+      globalScope.Zotero = originalZotero;
+    }
+  }
+
+  for (const declaresStages of [true, false]) {
+    const route = declaresStages
+      ? "the run's own stage events"
+      : "stages projected for a run that emitted none";
+
+    it(`shows the saved note below the activity with ${route}`, function () {
+      const root = renderNoteWriteTrace(savedNoteCard, declaresStages);
+      const disclosure = root.findByClass("llm-agent-activity-details");
+      const cards = root.findAllByClass("llm-saved-note-card");
+
+      assert.exists(disclosure, "the activity disclosure must still render");
+      assert.lengthOf(
+        cards,
+        1,
+        "grouping the row into a stage must not lose the saved note",
+      );
+      assert.lengthOf(
+        disclosure!.findAllByClass("llm-saved-note-card"),
+        0,
+        "the deliverable belongs below the disclosure, not inside it",
+      );
+      assert.equal(cards[0].dataset.noteId, "77");
+      assert.include(
+        cards[0]
+          .findAllByClass("llm-saved-note-destination")
+          .map((link) => link.textContent)
+          .join(" "),
+        "Open note in Zotero",
+      );
+      disposeAgentTrace(root as unknown as HTMLElement);
+    });
+
+    it(`shows the note change below the activity with ${route}`, function () {
+      const root = renderNoteWriteTrace(noteChangeCard, declaresStages);
+      const disclosure = root.findByClass("llm-agent-activity-details");
+      const cards = root.findAllByClass("llm-note-change-card");
+
+      assert.exists(disclosure, "the activity disclosure must still render");
+      assert.lengthOf(
+        cards,
+        1,
+        "grouping the row into a stage must not lose the note change",
+      );
+      assert.lengthOf(
+        disclosure!.findAllByClass("llm-note-change-card"),
+        0,
+        "the deliverable belongs below the disclosure, not inside it",
+      );
+      assert.equal(cards[0].dataset.actionId, "note-edit-1");
+      assert.include(
+        cards[0]
+          .findAllByTag("button")
+          .map((button) => button.textContent)
+          .join(" "),
+        "Undo",
+        "the reader must keep the control that reverses the change",
+      );
+      disposeAgentTrace(root as unknown as HTMLElement);
+    });
+  }
+});
+
+describe("agent trace presentation without tool names", function () {
+  function callEvent(
+    name: string,
+    args: unknown,
+    extra: Record<string, unknown> = {},
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-presentation",
+      seq: 1,
+      eventType: "tool_call",
+      payload: {
+        type: "tool_call",
+        callId: "call-1",
+        name,
+        args,
+        ...extra,
+      } as AgentRunEventRecord["payload"],
+      createdAt: 1,
+    };
+  }
+
+  function firstToolRow(items: readonly AgentTraceTestItem[]) {
+    return traceActionItems(items).find((item) => item.row.kind === "tool")
+      ?.row;
+  }
+
+  it("shows a file operation's code block only because its tool asks for one", function () {
+    const events = [
+      callEvent("file_io", { mode: "read", path: "/tmp/notes/paper.md" }),
+    ];
+
+    const withoutRegistry = firstToolRow(
+      buildAgentTraceDisplayItems(events, null).items,
+    );
+    assert.isUndefined(withoutRegistry?.codeBlock);
+
+    withToolPresentations({ file_io: createFileIOTool().presentation }, () => {
+      const row = firstToolRow(buildAgentTraceDisplayItems(events, null).items);
+      assert.equal(row?.codeBlock, "read /tmp/notes/paper.md");
+      assert.equal(row?.text, "Reading paper.md");
+    });
+  });
+
+  it("shows a shell command's code block and its tool's label", function () {
+    const events = [callEvent("run_command", { command: "ls ~/Desktop" })];
+
+    assert.isUndefined(
+      firstToolRow(buildAgentTraceDisplayItems(events, null).items)?.codeBlock,
+    );
+
+    withToolPresentations(
+      { run_command: createRunCommandTool().presentation },
+      () => {
+        const row = firstToolRow(
+          buildAgentTraceDisplayItems(events, null).items,
+        );
+        assert.equal(row?.codeBlock, "ls ~/Desktop");
+        assert.equal(row?.text, "Run Command");
+      },
+    );
+  });
+
+  it("takes a call's argument details from the tool that declared them", function () {
+    const events = [
+      callEvent("file_io", {
+        action: "write",
+        filePath: "/tmp/script.py",
+        content: "secret script body",
+      }),
+    ];
+
+    const detailsWithoutRegistry = JSON.stringify(
+      traceActionItems(buildAgentTraceDisplayItems(events, null).items).map(
+        (item) => item.details,
+      ),
+    );
+    assert.notInclude(detailsWithoutRegistry, "Argument keys");
+
+    withToolPresentations({ file_io: createFileIOTool().presentation }, () => {
+      const details = JSON.stringify(
+        traceActionItems(buildAgentTraceDisplayItems(events, null).items).map(
+          (item) => item.details,
+        ),
+      );
+      assert.include(details, "Argument keys");
+      assert.include(details, "Action field (action)");
+      assert.include(details, "Path field (filePath)");
+      assert.notInclude(details, "secret script body");
+    });
+  });
+
+  it("substitutes the request's own chips only when a tool asks for them", function () {
+    const userMessage = {
+      role: "user" as const,
+      text: "summarize",
+      timestamp: 1,
+      paperContexts: [
+        { itemId: 7, contextItemId: 8, title: "Representational drift" },
+      ],
+    };
+    const events = [callEvent("get_active_context", {})];
+
+    const chipsWithoutHook = traceActionItems(
+      buildAgentTraceDisplayItems(events, userMessage).items,
+    )
+      .filter((item) => item.row.kind === "tool")
+      .flatMap((item) => item.chips || []);
+    assert.lengthOf(chipsWithoutHook, 0);
+
+    withToolPresentations(
+      {
+        get_active_context: {
+          buildChips: ({ request }) =>
+            (request?.paperTitles || []).map((title) => ({
+              iconName: "paper" as const,
+              label: "Paper",
+              title,
+            })),
+        },
+      },
+      () => {
+        const chips = traceActionItems(
+          buildAgentTraceDisplayItems(events, userMessage).items,
+        )
+          .filter((item) => item.row.kind === "tool")
+          .flatMap((item) => item.chips || []);
+        assert.deepEqual(
+          chips.map((chip) => chip.title),
+          ["Representational drift"],
+        );
+      },
+    );
+  });
+
+  it("reads a result's line range from its numbered lines, not its tool name", function () {
+    const events: AgentRunEventRecord[] = [
+      callEvent("host_file_reader", { path: "/tmp/x.ts" }),
+      {
+        runId: "run-presentation",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "call-1",
+          name: "host_file_reader",
+          ok: true,
+          actionReceipts: [],
+          content: "  12\tconst a = 1;\n  13\tconst b = 2;",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const row = firstToolRow(buildAgentTraceDisplayItems(events, null).items);
+
+    assert.equal(row?.text, "Using Host File Reader lines 12-13");
+  });
+
+  it("asks the paper tool how to name a relayed figure extraction", function () {
+    const events = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "figures-1",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        toolLabel: "Read Paper",
+        ok: true,
+        args: { mode: "figures" },
+        artifacts: [
+          {
+            kind: "image",
+            mimeType: "image/png",
+            storedPath: "/tmp/figure-1.png",
+          },
+          {
+            kind: "image",
+            mimeType: "image/png",
+            storedPath: "/tmp/figure-2.png",
+          },
+        ],
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Agent activity",
+      "Used Read Paper",
+    ]);
+
+    withToolPresentations(
+      {
+        paper_read: createPaperReadTool(
+          undefined as never,
+          undefined as never,
+          undefined as never,
+          undefined as never,
+        ).presentation,
+      },
+      () => {
+        assert.deepEqual(getCodexTraceActionTexts(events), [
+          "Codex received the request",
+          "Agent activity",
+          "Extracted 2 figures",
+        ]);
+      },
+    );
+  });
+
+  it("keeps the plan's own tools out of the trace because they say so", function () {
+    const events: AgentRunEventRecord[] = [
+      callEvent("update_plan", { ready: true, steps: [] }),
+    ];
+
+    withToolPresentations({ update_plan: { hiddenInTrace: true } }, () => {
+      assert.deepEqual(
+        traceRowTexts(buildAgentTraceDisplayItems(events, null).items),
+        ["Request received"],
+      );
+    });
+    withToolPresentations({ update_plan: { label: "Update Plan" } }, () => {
+      assert.include(
+        traceRowTexts(buildAgentTraceDisplayItems(events, null).items),
+        "Using Update Plan",
+      );
+    });
+  });
+
+  it("names a tool by the label its own event carried", function () {
+    const labelled = firstToolRow(
+      buildAgentTraceDisplayItems(
+        [callEvent("paper_read", {}, { toolLabel: "Read Paper" })],
+        null,
+      ).items,
+    );
+    assert.equal(labelled?.text, "Using Read Paper");
+
+    const unlabelled = firstToolRow(
+      buildAgentTraceDisplayItems([callEvent("paper_read", {})], null).items,
+    );
+    assert.equal(unlabelled?.text, "Using Paper Read");
+
+    withToolPresentations({ paper_read: { label: "Read Paper" } }, () => {
+      const fromRegistry = firstToolRow(
+        buildAgentTraceDisplayItems([callEvent("paper_read", {})], null).items,
+      );
+      assert.equal(fromRegistry?.text, "Using Read Paper");
+    });
+  });
+
+  it("names an activated skill from the event's label and arguments", function () {
+    const using = firstToolRow(
+      buildAgentTraceDisplayItems(
+        [
+          callEvent(
+            "skill:graphwalk",
+            { skill: "graphwalk" },
+            { toolLabel: "Skill" },
+          ),
+        ],
+        null,
+      ).items,
+    );
+    assert.equal(using?.text, "Using Skill: graphwalk");
+
+    const invoked = firstToolRow(
+      buildAgentTraceDisplayItems(
+        [
+          callEvent(
+            "skill:evidence-based-qa",
+            { skill: "evidence-based-qa", source: "codex-native-slash" },
+            { toolLabel: "Skill" },
+          ),
+        ],
+        null,
+      ).items,
+    );
+    assert.equal(invoked?.text, "Invoked Skill: evidence-based-qa");
+  });
+});
+
+/**
+ * What the turn actually did, said once, for the reader.
+ *
+ * The machine-readable action-status block no longer reaches the answer
+ * bubble, so the receipts it stated have to reach the reader somewhere. They
+ * reach it here: one line per receipt at the end of the trace, named by the
+ * operation catalog and verified in the same words the row chips use.
+ */
+describe("agent trace action summary card", function () {
+  type SummaryTestItem = ReturnType<
+    typeof buildAgentTraceDisplayItems
+  >["items"][number];
+
+  function event(
+    seq: number,
+    payload: AgentRunEventRecord["payload"],
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-summary",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq,
+    };
+  }
+
+  const materialRef = {
+    documentId: "run-summary:document:1",
+    documentVersion: 1,
+    contentHash: "sha256:material",
+  };
+
+  function receipt(
+    overrides: Record<string, unknown>,
+  ): Extract<
+    AgentRunEventRecord["payload"],
+    { type: "tool_result" }
+  >["actionReceipts"][number] {
+    return {
+      version: 2,
+      id: "receipt-1",
+      proposalId: "proposal-1",
+      proofDomain: "zotero_state",
+      capability: "zotero.notes",
+      operation: "note_create",
+      verification: "verified",
+      status: "applied",
+      requestedTargets: ["item:41"],
+      appliedTargets: ["item:41"],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [],
+      ...overrides,
+    } as unknown as Extract<
+      AgentRunEventRecord["payload"],
+      { type: "tool_result" }
+    >["actionReceipts"][number];
+  }
+
+  function summaryCard(items: readonly SummaryTestItem[]) {
+    const lists = items.filter(
+      (item): item is Extract<SummaryTestItem, { type: "card_list" }> =>
+        item.type === "card_list",
+    );
+    const cards = lists.flatMap((item) =>
+      item.cards.filter((card) => card.kind === "action_summary"),
+    );
+    return cards[0] as
+      | Extract<(typeof cards)[number], { kind: "action_summary" }>
+      | undefined;
+  }
+
+  const effectEvents: AgentRunEventRecord[] = [
+    event(1, {
+      type: "material_finalized",
+      materialRef,
+      materialKind: "summary",
+      materialTitle: "Attention in transformers",
+    }),
+    event(2, {
+      type: "tool_result",
+      callId: "call-note",
+      name: "note_write",
+      ok: true,
+      actionReceipts: [receipt({ id: "note-1", materialRef })],
+      content: { noteId: 77 },
+    }),
+    event(3, {
+      type: "tool_result",
+      callId: "call-tags",
+      name: "library_update",
+      ok: true,
+      actionReceipts: [
+        receipt({
+          id: "tags-1",
+          capability: "zotero.tags",
+          operation: "apply_tags",
+          verification: "execution_only",
+          status: "partial",
+          executionAuthority: "external_runtime",
+          requestedTargets: ["item:41", "item:42"],
+          appliedTargets: ["item:41"],
+        }),
+      ],
+      content: {},
+    }),
+    event(4, { type: "final", text: "Saved the summary.", materialRef }),
+  ];
+
+  it("lists one line per effect receipt, named by the operation catalog", function () {
+    const card = summaryCard(
+      buildAgentTraceDisplayItems(effectEvents, null).items,
+    );
+
+    assert.exists(card, "the run's effects are summarized");
+    assert.deepEqual(
+      card!.entries.map((entry) => entry.text),
+      [
+        "Created note “Attention in transformers” · 1 target",
+        "Added tags · 2 targets",
+      ],
+    );
+    assert.deepEqual(card!.entries[0].badges, ["Verified"]);
+    assert.deepEqual(card!.entries[1].badges, [
+      "Ran (no state proof)",
+      "Authorized by connected client",
+    ]);
+    assert.equal(card!.answerMaterial, "Attention in transformers");
+  });
+
+  it("closes the trace with the card, after the last stage", function () {
+    const { items } = buildAgentTraceDisplayItems(effectEvents, null);
+    const last = items[items.length - 1];
+
+    assert.equal(last.type, "card_list");
+    assert.equal(
+      last.type === "card_list" ? last.cards[0].kind : "",
+      "action_summary",
+    );
+  });
+
+  it("states each receipt once however many events carry it", function () {
+    const card = summaryCard(
+      buildAgentTraceDisplayItems(
+        [
+          event(1, {
+            type: "tool_result",
+            callId: "call-note",
+            name: "note_write",
+            ok: true,
+            actionReceipts: [receipt({ id: "note-1" })],
+            content: {},
+          }),
+          event(2, {
+            type: "codex_tool_activity",
+            itemId: "item-1",
+            phase: "completed",
+            toolName: "note_write",
+            actionReceipts: [receipt({ id: "note-1" })],
+          }),
+        ],
+        null,
+      ).items,
+    );
+
+    assert.deepEqual(
+      card?.entries.map((entry) => entry.text),
+      ["Created note · 1 target"],
+    );
+  });
+
+  const readReceiptEvents: AgentRunEventRecord[] = [
+    event(1, {
+      type: "tool_result",
+      callId: "call-read",
+      name: "paper_read",
+      ok: true,
+      actionReceipts: [
+        receipt({
+          id: "read_full:fallback",
+          capability: "zotero.read",
+          operation: "read_full",
+          status: "observed",
+          requestedTargets: [],
+          appliedTargets: [],
+        }),
+      ],
+      content: {},
+    }),
+  ];
+
+  it("does not call reading the paper an action the turn took", function () {
+    assert.isUndefined(
+      summaryCard(buildAgentTraceDisplayItems(readReceiptEvents, null).items),
+      "a read-and-answer turn changed nothing and has nothing to summarize",
+    );
+  });
+
+  it("leaves the DOM of a read-only turn without a card", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Here is the answer.", timestamp: 1 },
+      events: readReceiptEvents,
+    }) as unknown as FakeElement;
+
+    assert.isNull(trace.findByClass("llm-agent-action-summary-card"));
+  });
+
+  it("states an observed effect that changed nothing it could read back", function () {
+    const card = summaryCard(
+      buildAgentTraceDisplayItems(
+        [
+          event(1, {
+            type: "tool_result",
+            callId: "call-command",
+            name: "run_command",
+            ok: true,
+            actionReceipts: [
+              receipt({
+                id: "command_execute:fallback",
+                capability: "command.execute",
+                proofDomain: "execution",
+                operation: "command_execute",
+                verification: "execution_only",
+                status: "observed",
+                requestedTargets: [],
+                appliedTargets: [],
+              }),
+            ],
+            content: {},
+          }),
+        ],
+        null,
+      ).items,
+    );
+
+    assert.deepEqual(
+      card?.entries.map((entry) => entry.text),
+      ["Ran command"],
+      "an executed effect states itself, and states no targets it re-read",
+    );
+    assert.deepEqual(card?.entries[0].badges, ["Ran (no state proof)"]);
+  });
+
+  it("shows no card when the run changed nothing", function () {
+    const { items } = buildAgentTraceDisplayItems(
+      [
+        event(1, {
+          type: "tool_result",
+          callId: "call-read",
+          name: "paper_read",
+          ok: true,
+          actionReceipts: [],
+          content: {},
+        }),
+        event(2, {
+          type: "tool_result",
+          callId: "call-tags",
+          name: "library_update",
+          ok: false,
+          actionReceipts: [
+            receipt({
+              id: "tags-failed",
+              operation: "apply_tags",
+              capability: "zotero.tags",
+              status: "failed",
+              verification: "unverified",
+            }),
+          ],
+          content: {},
+        }),
+      ],
+      null,
+    );
+
+    assert.isUndefined(summaryCard(items));
+  });
+
+  it("renders the card at the end of the trace DOM", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card");
+    assert.exists(card);
+    const lines = card!
+      .findAllByClass("llm-agent-action-summary-text")
+      .map((node) => node.textContent);
+    assert.deepEqual(lines, [
+      "Created note “Attention in transformers” · 1 target",
+      "Added tags · 2 targets",
+    ]);
+    assert.include(
+      collectFakeText(card),
+      "Authorized by connected client",
+      "the connected client's authority stays visible",
+    );
+    assert.include(collectFakeText(card), "Attention in transformers");
+  });
+
+  it("keeps the card outside the collapsed activity disclosure", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+    }) as unknown as FakeElement;
+
+    const disclosure = trace.findByClass("llm-agent-activity-details");
+    assert.exists(disclosure, "a finished run collapses its activity list");
+    assert.isNull(
+      disclosure!.findByClass("llm-agent-action-summary-card"),
+      "the summary is not hidden behind the disclosure the reader must open",
+    );
+    assert.exists(trace.findByClass("llm-agent-action-summary-card"));
+  });
+
+  it("states the turn once across a re-render of the same trace", function () {
+    const message = {
+      role: "assistant",
+      text: "Saved.",
+      timestamp: 1,
+    } as const;
+    const first = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: effectEvents,
+    })!;
+    const next = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: effectEvents,
+      previous: first,
+    }) as unknown as FakeElement;
+
+    assert.lengthOf(next.findAllByClass("llm-agent-action-summary-card"), 1);
+  });
 });

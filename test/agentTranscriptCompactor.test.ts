@@ -1,10 +1,49 @@
 import { assert } from "chai";
 import { buildAgentContextBudgetState } from "../src/agent/context/budgetPolicy";
 import { estimateTextTokens } from "../src/utils/modelInputCap";
-import { compactAgentTranscript } from "../src/agent/context/transcriptCompactor";
+import {
+  buildAgentSemanticCheckpoint,
+  compactAgentTranscript,
+} from "../src/agent/context/transcriptCompactor";
 import type { AgentModelMessage } from "../src/agent/types";
 
 describe("agent transcript compactor", function () {
+  it("never copies a prompt-only host message into a persisted checkpoint", function () {
+    const block = [
+      "Finalized material available (not saved as a note):",
+      'documentId=run-1:document:1 version=1 hash=sha256:guide title="Guide" status=finalized',
+      "If the user asks to save it, call note_write with that documentId; do not regenerate it.",
+    ].join("\n");
+    const messages: AgentModelMessage[] = [
+      { role: "user", content: "User request:\nWrite a guide" },
+      { role: "assistant", content: "Here is the guide." },
+      { role: "user", content: block, transient: true },
+      { role: "user", content: "User request:\nSave that as a note" },
+    ];
+
+    const { checkpoint } = buildAgentSemanticCheckpoint({
+      messages,
+      summaryTokens: 2_000,
+    });
+    assert.notInclude(checkpoint.content, "Finalized material available");
+    assert.notInclude(checkpoint.content, "run-1:document:1");
+    assert.include(
+      checkpoint.content,
+      "Save that as a note",
+      "the durable goals the checkpoint exists to preserve are untouched",
+    );
+
+    const compacted = compactAgentTranscript({
+      messages,
+      budget: buildAgentContextBudgetState({ messages, model: "test" }),
+      force: true,
+    });
+    assert.notInclude(
+      compacted.messages.map((message) => String(message.content)).join("\n"),
+      "Finalized material available",
+    );
+  });
+
   it("uses the profile context limit when deciding compaction thresholds", function () {
     const budget = buildAgentContextBudgetState({
       messages: [{ role: "user", content: "current request" }],

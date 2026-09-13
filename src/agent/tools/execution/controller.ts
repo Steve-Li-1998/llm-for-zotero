@@ -15,6 +15,7 @@ import type { PlanAmendmentGrant } from "../../plans/planAmendmentTypes";
 import { canonicalJson } from "../../services/libraryMutation/canonicalJson";
 import type {
   AgentActionEvidence,
+  AgentActionReceipt,
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentToolCall,
@@ -32,7 +33,46 @@ import {
   createRequestId,
   invocationExpands,
   normalizeExecutionOutput,
+  pendingActionMaterial,
 } from "./results";
+
+/**
+ * What an execution's evidence records are worth recording in the audit trail.
+ *
+ * The records themselves carry whole post-images — a script's guarded item
+ * JSON, a note body, a captured library state. Every one of those is already
+ * durable in the journal step the record names, so the audit row keeps the
+ * identity and the verdict and drops the payload: a summary tells a reader
+ * which durable step proved what, and nothing is stored twice.
+ */
+function summarizeActionEvidence(
+  evidence: AgentActionEvidence[] | undefined,
+  receipts: AgentActionReceipt[],
+):
+  | Array<{
+      source: AgentActionEvidence["source"];
+      stepId?: string;
+      verification?: AgentActionReceipt["verification"];
+      reason?: string;
+    }>
+  | undefined {
+  if (!evidence?.length) return undefined;
+  return evidence.map((entry) => {
+    const receipt = entry.journalStepId
+      ? receipts.find(
+          (candidate) => candidate.evidenceRef === entry.journalStepId,
+        )
+      : undefined;
+    const matched =
+      receipt || (receipts.length === 1 ? receipts[0] : undefined);
+    return {
+      source: entry.source,
+      ...(entry.journalStepId ? { stepId: entry.journalStepId } : {}),
+      ...(matched ? { verification: matched.verification } : {}),
+      ...(matched?.reasons.length ? { reason: matched.reasons[0] } : {}),
+    };
+  });
+}
 
 type ReceiptOutcome = {
   ok: boolean;
@@ -109,7 +149,7 @@ export class InvocationController {
         return this.execute(assessed, assessed.proposal.payloadDigest);
       return await this.dispatch(assessed);
     } catch (error) {
-      return this.result(this.failure(input, error));
+      return this.result(await this.failure(input, error));
     }
   }
 
@@ -119,7 +159,7 @@ export class InvocationController {
     return { kind: "result", execution };
   }
 
-  private receipts(
+  private async receipts(
     outcome: ReceiptOutcome,
     assessed?: AssessedInvocation,
     input?: unknown,
@@ -129,7 +169,7 @@ export class InvocationController {
     const details = this.amendment?.failure.amendableObligation;
     const receipts =
       prepared && this.contracts
-        ? this.contracts.finalize(
+        ? await this.contracts.finalize(
             this.context.request.actionContract,
             prepared,
             outcome,
@@ -169,12 +209,12 @@ export class InvocationController {
       : allReceipts;
   }
 
-  private failure(
+  private async failure(
     input: unknown,
     error: unknown,
     assessed?: AssessedInvocation,
     cancelled = false,
-  ): PreparedToolExecutionResult {
+  ): Promise<PreparedToolExecutionResult> {
     const reason = error instanceof Error ? error.message : String(error);
     return {
       tool: this.tool,
@@ -186,7 +226,7 @@ export class InvocationController {
         ...(error instanceof ToolInputRejection
           ? { inputRejected: true as const }
           : {}),
-        actionReceipts: this.receipts(
+        actionReceipts: await this.receipts(
           {
             ok: false,
             reason,
@@ -334,7 +374,11 @@ export class InvocationController {
       return this.result(this.scopeFailure(assessed));
     if (assessed.authorization.kind === "block")
       return this.result(
-        this.failure(assessed.input, assessed.authorization.reason, assessed),
+        await this.failure(
+          assessed.input,
+          assessed.authorization.reason,
+          assessed,
+        ),
       );
     const toolReview =
       this.tool.spec.interaction === "user_input" &&
@@ -372,9 +416,23 @@ export class InvocationController {
 
   private review(
     assessed: AssessedInvocation,
-    action: AgentPendingAction,
+    displayedAction: AgentPendingAction,
     applyToolResolution = true,
   ): PreparedToolExecution {
+    // The card a tool builds describes its own payload; only the host knows
+    // which frozen material the proposal bound, so the host stamps it here
+    // rather than asking every tool to repeat it. The interaction kind is
+    // stamped for the same reason: the spec already declares that this tool
+    // asks the user something, and a view that had to recognise such a tool
+    // by name would be reading identity for meaning.
+    const material = pendingActionMaterial(assessed.preparedAction?.proposals);
+    const action = {
+      ...displayedAction,
+      ...(material ? { material } : {}),
+      ...(this.tool.spec.interaction === "user_input"
+        ? { interaction: "user_input" as const }
+        : {}),
+    };
     return {
       kind: "confirmation",
       requestId: createRequestId(),
@@ -407,7 +465,7 @@ export class InvocationController {
         (!confirmation.actionId && !resolution.approved)
       )
         return this.result(
-          this.failure(input, "User denied action", displayed, true),
+          await this.failure(input, "User denied action", displayed, true),
         );
       if (applyToolResolution && this.tool.applyConfirmation) {
         const resolved = this.tool.applyConfirmation(
@@ -453,7 +511,7 @@ export class InvocationController {
       return this.execute(assessed, assessed.proposal.payloadDigest);
     } catch (error) {
       await this.failAmendment(error);
-      return this.result(this.failure(input, error, displayed));
+      return this.result(await this.failure(input, error, displayed));
     }
   }
 
@@ -650,7 +708,7 @@ export class InvocationController {
       grant = await this.stageAuthority(prepared, userApproval);
     } catch (error) {
       await this.failAmendment(error);
-      return this.result(this.failure(prepared.input, error, prepared));
+      return this.result(await this.failure(prepared.input, error, prepared));
     }
     const run = async (): Promise<PreparedToolExecution> => {
       let assessed = prepared;
@@ -750,9 +808,23 @@ export class InvocationController {
                   )
                 ? "applied"
                 : undefined;
+        // Receipts first: the audit row records what this execution proved,
+        // and that is only knowable once the receipts have re-read state.
+        const actionReceipts = await this.receipts(
+          {
+            ok: true,
+            effect,
+            content: output.content,
+            actionEvidence: output.actionEvidence,
+          },
+          assessed,
+        );
         await this.recordGrantOutcome(grant, "executed", {
           effect,
-          actionEvidence: output.actionEvidence,
+          actionEvidence: summarizeActionEvidence(
+            output.actionEvidence,
+            actionReceipts,
+          ),
           content: output.content,
         });
         return this.result({
@@ -765,21 +837,15 @@ export class InvocationController {
             effect,
             authority:
               authority === "yolo_judgment" ? "yolo_judgment" : undefined,
-            actionReceipts: this.receipts(
-              {
-                ok: true,
-                effect,
-                content: output.content,
-                actionEvidence: output.actionEvidence,
-              },
-              assessed,
-            ),
+            actionReceipts,
             content: output.content,
             artifacts: output.artifacts,
             continuationCheckpoint: output.continuationCheckpoint,
             materialRef: output.materialRef,
             materialKind: output.materialKind,
             materialTitle: output.materialTitle,
+            batchItems: output.batchItems,
+            researchJobId: output.researchJobId,
           },
         });
       } catch (error) {
@@ -788,7 +854,7 @@ export class InvocationController {
           error: String(error),
         });
         await this.failAmendment(error);
-        return this.result(this.failure(assessed.input, error, assessed));
+        return this.result(await this.failure(assessed.input, error, assessed));
       }
     };
     return prepared.plan.impact !== "read_only" && this.options.executeWithLock

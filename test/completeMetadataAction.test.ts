@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { describeLibraryMutationInput } from "../src/agent/contracts/actionContract";
 import { completeMetadataAction } from "../src/agent/actions/completeMetadata";
 import type { ActionExecutionContext } from "../src/agent/actions";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
@@ -36,6 +37,8 @@ function createStubTool<TInput extends Record<string, unknown>, TResult>(
     },
     ...(spec.executionClass === "external_effect"
       ? {
+          describeAction: describeLibraryMutationInput,
+          effectOperations: ["update_metadata" as const],
           planInvocation: async () =>
             stateChangeInvocationPlan({
               domains: ["zotero_library"],

@@ -207,7 +207,6 @@ export function createLibraryBatchTool(deps: {
       },
       executionClass: "control",
       workCategory: "zotero_action",
-      requiresConfirmation: false,
     },
 
     guidance: {
@@ -308,9 +307,11 @@ export function createLibraryBatchTool(deps: {
 
     async execute(input, context) {
       if (input.kind === "list") {
-        const jobs = await store.listInterruptedBatchJobs(
-          context.request.conversationKey,
-        );
+        // Other batch tools keep their rows in the same table. Offering one of
+        // theirs here would promise a resume this tool cannot perform.
+        const jobs = (
+          await store.listInterruptedBatchJobs(context.request.conversationKey)
+        ).filter((job) => DURABLE_BATCH_JOBS.has(job.action));
         return {
           content: {
             interruptedJobs: jobs.map(summarizeInterruptedJob),

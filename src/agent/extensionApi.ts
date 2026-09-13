@@ -40,7 +40,6 @@
  *        },
  *        executionClass: "read",       // "read" | "control" | "external_effect"
  *        workCategory: "retrieval",    // the product work the trace should show
- *        requiresConfirmation: false,  // set true to show a HITL confirm card
  *      },
  *      validate: (args) => {
  *        if (!args || typeof args !== "object") return fail("Expected an object");
@@ -80,9 +79,14 @@
  *   when the user needs to review or approve a sensitive step.
  * - `"control"` — the tool changes only internal Plan/approval state or pauses
  *   for user input. Controls are never deduplicated and need no action contract.
- * - `"external_effect"` — the tool modifies external state. Set `requiresConfirmation: true`
- *   and implement `createPendingAction` to show a HITL confirmation card before
- *   executing. External-effect tools must also provide a typed action adapter.
+ * - `"external_effect"` — the tool modifies external state. Registration
+ *   requires a typed action adapter: a `describeAction` that names the exact
+ *   operation, capability, proof domain and targets, plus an
+ *   `effectOperations` list of every operation it can describe, each already
+ *   present in the host's operation catalog. Whether the user is asked to
+ *   confirm is decided centrally from that proposal, never by the tool; a tool
+ *   implements `createPendingAction` to say what the card shows when the host
+ *   asks for one.
  *
  * Read tools can also pause after execution by implementing
  * `createResultReviewAction` and `resolveResultReview`. This lets the tool

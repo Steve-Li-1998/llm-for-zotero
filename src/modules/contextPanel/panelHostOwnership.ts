@@ -1,3 +1,4 @@
+import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   resolveActiveNoteSession,
   resolveConversationBaseItem,
@@ -5,6 +6,7 @@ import {
   resolveDisplayConversationKind,
   resolvePreferredConversationSystem,
 } from "./portalScope";
+import { COMPOSER_BOUND_KEYS } from "./composerKeyBindings";
 import { getConversationKey } from "./conversationIdentity";
 import type { ConversationSystem } from "../../shared/types";
 
@@ -121,7 +123,9 @@ function buildLifecycleBinding(
     surface: isReader ? "reader" : "library",
     tabType: normalizedTabType,
     tabID,
-    libraryID: normalizePositiveInt(item?.libraryID),
+    libraryID:
+      normalizePositiveInt(item?.libraryID) ||
+      (!isReader && !item ? normalizePositiveInt(resolveActiveLibraryID()) : 0),
     rawItemID: normalizePositiveInt(item?.id),
     basePaperItemID: getRawBasePaperItemID(item),
     noteID: normalizePositiveInt(note?.noteId),
@@ -306,7 +310,21 @@ export function evaluatePanelOwnership(
     return "unresolved";
   }
   const mounted = resolveMountedScope(body);
-  if (!mounted) return "unresolved";
+  if (!mounted) {
+    // A deliberately empty library panel may navigate to Library chat. It
+    // cannot inherit a paper scope or authorize a candidate conversation.
+    if (
+      binding.surface === "library" &&
+      binding.libraryID &&
+      !binding.rawItemID &&
+      root &&
+      !root.dataset.itemId &&
+      !root.dataset.conversationKind &&
+      normalizePositiveInt(root.dataset.libraryId) === binding.libraryID
+    )
+      return candidateItem ? "stale-candidate" : "match";
+    return "unresolved";
+  }
   if (!scopeBelongsToHost(binding, mounted)) return "host-mismatch";
   if (!candidateItem) return "match";
   const candidate = resolveScopeForItem(
@@ -447,6 +465,73 @@ export function renderPanelOwnershipBlocked(
   }
 }
 
+/**
+ * The controls that take the reader out of a panel which has lost ownership of
+ * its own conversation. Pressing one re-resolves the panel's declared scope from
+ * the conversation it is showing and then switches, so the fence must deliver
+ * the event instead of destroying it — otherwise the reader has no way out.
+ *
+ * Both surfaces that render these controls give every button the shared
+ * `llm-runtime-system-toggle` class on top of their own
+ * (`llm-panel-runtime-system-toggle`, `llm-standalone-runtime-system-toggle`),
+ * so the shared class is what this matches.
+ */
+const OWNERSHIP_FENCE_EXEMPT_SELECTOR =
+  "#llm-runtime-mode-toggle, .llm-runtime-system-toggle";
+
+function matchesWithin(target: unknown, selector: string): boolean {
+  const element = target as {
+    closest?: (selector: string) => unknown;
+  } | null;
+  if (!element || typeof element.closest !== "function") return false;
+  try {
+    return Boolean(element.closest(selector));
+  } catch (_error) {
+    return false;
+  }
+}
+
+/**
+ * Key combinations the application owns rather than the panel: Cmd+Q, Ctrl+W
+ * and the other menu accelerators. A panel must never be able to stop Zotero
+ * from being quit or a window from being closed, wherever focus happens to sit
+ * — which is why this holds inside the composer too, and why the keys the
+ * composer binds (`COMPOSER_BOUND_KEYS`, declared by the composer itself) are
+ * excluded rather than the composer as a whole.
+ */
+function isApplicationCommandKeyEvent(event: Event): boolean {
+  if (event?.type !== "keydown") return false;
+  const keyEvent = event as Partial<KeyboardEvent>;
+  if (keyEvent.metaKey !== true && keyEvent.ctrlKey !== true) return false;
+  return !COMPOSER_BOUND_KEYS.has(`${keyEvent.key || ""}`);
+}
+
+/**
+ * Events the panel ownership fence must let through even when it refuses the
+ * rest of the panel's input. Everything else stays fenced: a panel that is
+ * showing someone else's conversation must not act on typing or clicks.
+ */
+export function isOwnershipFenceExemptEvent(event: Event): boolean {
+  if (!event) return false;
+  if (matchesWithin(event.target, OWNERSHIP_FENCE_EXEMPT_SELECTOR)) return true;
+  return isApplicationCommandKeyEvent(event);
+}
+
+/**
+ * The panel ownership fence's whole decision, owned here so the fence in
+ * `setupHandlers.ts` is a two-line adapter over it and the rule can be tested
+ * as the fence actually runs it.
+ */
+export function shouldOwnershipFenceSwallowEvent(
+  body: Element,
+  item: Zotero.Item | null | undefined,
+  event: Event,
+): boolean {
+  if (!item || !event) return false;
+  if (isOwnershipFenceExemptEvent(event)) return false;
+  return !requireCurrentPanelOwnership(body, item, `panel-${event.type}`);
+}
+
 export function requireCurrentPanelOwnership(
   body: Element,
   item: Zotero.Item | null | undefined,
@@ -528,7 +613,11 @@ export function canLifecycleCommitPanelConversation(
     return false;
   }
   if (!targetItem) {
-    const validEmptyHost = !binding.rawItemID && !binding.libraryID;
+    const validEmptyHost =
+      !binding.rawItemID &&
+      !binding.basePaperItemID &&
+      !binding.noteID &&
+      (!binding.libraryID || binding.surface === "library");
     if (!validEmptyHost) {
       logOwnershipVerdict(body, operation, "unresolved");
     }

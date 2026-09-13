@@ -92,6 +92,7 @@ export function createRevertChangesTool(
               destinationCollectionIds: [],
             },
           ],
+    effectOperations: ["revert"],
     spec: {
       name: "revert_changes",
       description:
@@ -121,7 +122,6 @@ export function createRevertChangesTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {
@@ -294,6 +294,9 @@ export function createRevertChangesTool(
           partiallyReverted: outcome.partiallyReverted,
           actionIds: pending.map((action) => action.actionId),
           residuals: outcome.residuals,
+          // The receipt's proof: how each replayed step read back from native
+          // state, rather than the counters immediately above it.
+          revertedSteps: outcome.steps,
           // Named explicitly so the agent reports what it could NOT put back
           // rather than implying a clean rollback.
           skipped: [...skippedIrreversible, ...outcome.skipped],
@@ -301,7 +304,12 @@ export function createRevertChangesTool(
         },
         effect:
           outcome.reverted + outcome.partiallyReverted === 0
-            ? "none"
+            ? // An inverse that ran without completing its action still
+              // changed the library. Reporting "none" would hide that from
+              // the final gate as well as from the user.
+              outcome.steps.length
+              ? "partial"
+              : "none"
             : outcome.partiallyReverted > 0 ||
                 outcome.skipped.length > 0 ||
                 outcome.conflicts.length > 0

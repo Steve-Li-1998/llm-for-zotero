@@ -320,6 +320,57 @@ describe("AgentFinalAnswerController", function () {
     });
   });
 
+  /**
+   * The two values the final gate treats differently, pinned side by side.
+   *
+   * `unverified` means a re-read was possible and did not confirm the effect,
+   * so the turn cannot claim it. `execution_only` means there is no state to
+   * re-read at all — a shell command — and failing every such turn would make
+   * `run_command` unusable while proving nothing. Phase 3 keeps that split
+   * deliberately, so changing it has to change this test.
+   */
+  for (const scenario of [
+    {
+      verification: "unverified" as const,
+      expected: "fail" as const,
+      why: "a re-read was possible and did not confirm the effect",
+    },
+    {
+      verification: "execution_only" as const,
+      expected: "accept" as const,
+      why: "a shell command leaves no state to re-read",
+    },
+  ]) {
+    it(`${scenario.expected}s an applied write whose receipt is ${scenario.verification} because ${scenario.why}`, async function () {
+      const controller = new AgentFinalAnswerController(
+        makeRequest(),
+        acceptingActionSession(),
+        [],
+      );
+
+      const decision = await controller.evaluate({
+        candidateText: "Ran it.",
+        canCorrect: false,
+        toolExecutionRecords: [
+          {
+            name: "run_command",
+            ok: true,
+            mutability: "write",
+            effect: "applied",
+            actionReceipts: [
+              {
+                verification: scenario.verification,
+                status: "observed",
+              },
+            ],
+          } as never,
+        ],
+      });
+
+      assert.equal(decision.kind, scenario.expected);
+    });
+  }
+
   it("allows one collection evidence correction then accepts the next final", async function () {
     const request = makeRequest({
       userText: "What methods do these papers share?",

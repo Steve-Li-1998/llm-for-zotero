@@ -6,7 +6,10 @@ import {
   resolveAgentToolCallWorkCategory,
   resolveAgentWorkCategory,
   resolveCodexNativeWorkCategory,
+  SKILL_ACTIVATION_TRACE_LABEL,
+  SKILL_ACTIVATION_WORK_CATEGORY,
 } from "../src/agent/workCategory";
+import { mapCodexNativeSkillActivationToEvents } from "../src/codexAppServer/nativeActivityStages";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import { createLibraryBatchTool } from "../src/agent/tools/write/libraryBatch";
 import { createSelfContainedTestTool } from "../src/agent/tools/test/createSelfContainedTestTool";
@@ -289,21 +292,85 @@ describe("agent work categories", function () {
     );
   });
 
-  it("leaves the chat panel no second work-category taxonomy", function () {
-    const chat = readFileSync(
-      join(root, "src/modules/contextPanel/chat.ts"),
-      "utf8",
+  it("names skill activation in the table, not at the bridge that saw it", function () {
+    // A skill is chosen before the work, so it belongs with planning; the
+    // constant keeps that decision beside the registered tools' categories.
+    assert.equal(SKILL_ACTIVATION_WORK_CATEGORY, "planning");
+    const events = mapCodexNativeSkillActivationToEvents("graphwalk");
+    assert.equal(events?.stage?.stage, SKILL_ACTIVATION_WORK_CATEGORY);
+    assert.equal(
+      events?.activity?.workCategory,
+      SKILL_ACTIVATION_WORK_CATEGORY,
     );
-    const literals = chat.match(/workCategory:\s*"/g) || [];
-    assert.deepEqual(literals, [], "chat.ts must not hard-code categories");
+    assert.isNull(mapCodexNativeSkillActivationToEvents("  "));
+  });
+
+  it("labels a skill activation from one constant both sides read", function () {
+    // The bridge stamps the label and the trace reads it back; a label
+    // written twice is a label that can disagree with itself.
+    const events = mapCodexNativeSkillActivationToEvents("graphwalk");
+    assert.equal(events?.stage?.toolLabel, SKILL_ACTIVATION_TRACE_LABEL);
+    assert.equal(events?.activity?.toolLabel, SKILL_ACTIVATION_TRACE_LABEL);
+    for (const path of [
+      "src/codexAppServer/nativeActivityStages.ts",
+      "src/modules/contextPanel/agentTrace/render.ts",
+    ]) {
+      const source = readFileSync(join(root, path), "utf8");
+      assert.include(
+        source,
+        "SKILL_ACTIVATION_TRACE_LABEL",
+        `${path} must read the shared label`,
+      );
+      assert.notMatch(
+        source.replace(/SKILL_ACTIVATION_TRACE_LABEL/g, ""),
+        /toolLabel[^\n]*"Skill"|label !== "Skill"/,
+        `${path} must not spell the label a second time`,
+      );
+    }
+  });
+
+  it("leaves the panel and both bridges no second work-category taxonomy", function () {
+    // A category literal outside the table is a second taxonomy: it drifts
+    // from the specs without any test noticing.
+    const scanned = [
+      "src/modules/contextPanel/chat.ts",
+      "src/codexAppServer/nativeActivityStages.ts",
+      "src/codexAppServer/nativeClient.ts",
+      "src/agent/externalBackendBridge.ts",
+    ].map((path) => ({
+      path,
+      source: readFileSync(join(root, path), "utf8"),
+    }));
+    for (const file of scanned) {
+      assert.isAbove(
+        file.source.split("\n").length,
+        100,
+        `${file.path} was read but looks empty; the scan would pass vacuously`,
+      );
+      assert.deepEqual(
+        file.source.match(/workCategory:\s*"/g) || [],
+        [],
+        `${file.path} must not hard-code categories`,
+      );
+    }
+    // The kinds are resolved once, where the protocol is spoken; the panel
+    // appends what that mapping hands it.
+    const bridge = scanned.find((file) =>
+      file.path.endsWith("nativeActivityStages.ts"),
+    )!.source;
     const used = Array.from(
-      chat.matchAll(/resolveCodexNativeWorkCategory\("([a-z_]+)"\)/g),
+      bridge.matchAll(/kind:\s*"([a-z_]+)"/g),
       (match) => match[1],
     );
     assert.deepEqual(
       Array.from(new Set(used)).sort(),
       Array.from(CODEX_NATIVE_WORK_KINDS).sort(),
-      "the mapping table must be exhaustive over the kinds chat.ts handles",
+      "the mapping table must be exhaustive over the kinds the bridge handles",
+    );
+    assert.notMatch(
+      scanned[0].source,
+      /resolveCodexNativeWorkCategory\(/,
+      "the panel must not resolve a native work category for itself",
     );
   });
 });

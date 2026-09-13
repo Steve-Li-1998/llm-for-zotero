@@ -1,7 +1,9 @@
 import type { ActionConstraint } from "../authorization/types";
+import type { MaterialRef } from "../documents/materialRef";
 import type {
   LibraryMutationOperation,
   LibraryMutationState,
+  NativeNoteWriteEvidence,
 } from "../services/libraryMutation/contracts";
 
 export type AgentActionCapability =
@@ -78,6 +80,13 @@ export type AgentActionParameters = {
   filePath?: string;
   contentHash?: string;
   documentId?: string;
+  /** Frozen with `documentId` and `contentHash` to name one exact material version. */
+  documentVersion?: number;
+  /**
+   * One material identity per item of a batch, in item order. A batch has no
+   * single material, so it never fills the flat trio above.
+   */
+  materialRefs?: readonly MaterialRef[];
   commandFingerprint?: string;
   settingsKey?: string;
   settingsValue?: string;
@@ -241,6 +250,21 @@ export type AgentActionReceipt = {
   version: 2;
   /** Stamped by the invocation controller, never supplied by tool arguments. */
   executionAuthority?: "external_runtime";
+  /**
+   * Where the effect itself ran, which is not the same question as who
+   * authorized it.
+   *
+   * `executionAuthority: "external_runtime"` says a connected client's own
+   * decision was accepted as the authorization for a host tool call the host
+   * then executed, journaled and verified. `origin: "connected_runtime"` says
+   * the host executed nothing: the client performed the effect inside its own
+   * process, so there is no journal step and no post-state to re-read, and the
+   * verification can never be better than `execution_only`. Only the
+   * connected-runtime receipt owner (`contracts/externalRuntimeEffects.ts`)
+   * sets it, so readers can key on provenance instead of guessing it from a
+   * capability.
+   */
+  origin?: "connected_runtime";
   id: string;
   obligationId?: string;
   proposalId: string;
@@ -262,20 +286,104 @@ export type AgentActionReceipt = {
   rejectedTargets: string[];
   normalizedParameters?: AgentActionParameters;
   reasons: string[];
+  /**
+   * What this action's verification actually proved, one fact per claim.
+   *
+   * Note-write facts name their evidence strength:
+   * - `native_note:<noteId>:html_sha256:<hex>` — a forced native read-back
+   *   matched the expected HTML. The digest is taken over the read-back string
+   *   that came back with the tool result, which the verifier proved
+   *   *canonically* equal to the stored note (whitespace normalized, attributes
+   *   sorted, Zotero wrapper divs stripped) — not over the stored bytes. Treat
+   *   it as a strength token and as a receipt-to-receipt equality token only;
+   *   recomputing it from a live note will not reliably match.
+   * - `native_note:<noteId>:text_match` — only the weaker plain-text check ran.
+   * - neither — content was not proved at all; the receipt covers identity only.
+   */
   verifiedFacts: string[];
+  /** The exact material version this action consumed, frozen in the proposal. */
+  materialRef?: MaterialRef;
   evidenceRef?: string;
 };
 
+/**
+ * What re-reading a recorded post-image found.
+ *
+ * `not_re_readable` is deliberately separate from `mismatched`: a receipt that
+ * could not check must never be filed as one that checked and disagreed. The
+ * reader that produces it lives in `services/recordedPostImage`.
+ */
+export type AgentPostImageState = {
+  kind: "satisfied" | "mismatched" | "not_re_readable";
+  /** How many objects the recorded post-image covers. */
+  comparedTargets: number;
+  reason?: string;
+};
+
 /** Internal authoritative state captured at a journaled mutation boundary. */
-export type AgentActionEvidence = {
+export type AgentLibraryMutationEvidence = {
   version: 1;
+  source: "library_mutation";
   proofDomain: "zotero_state";
   operationValue: LibraryMutationOperation;
   preState: LibraryMutationState;
   postState: LibraryMutationState;
   journalStepId?: string;
   effect: "applied" | "partial" | "none";
+  /**
+   * Per-note read-backs, for an operation that created notes in bulk.
+   *
+   * The captured post-state proves the operation's postcondition, which is a
+   * claim about the whole set. It is not per-note content evidence, and a
+   * durable note batch owes the same read-back fact per note that a single
+   * note write owes. These are the read-backs its executor already forced,
+   * one per note the call physically created.
+   */
+  noteWrites?: readonly NativeNoteWriteEvidence[];
 };
+
+/**
+ * The same evidence for a write that no library mutation operation describes.
+ *
+ * A note edit, a preference change, an annotation, a file write, a command and
+ * a script all journal a pre-image and a post-image; what they lack is an
+ * authorized operation the contract could re-check the post-image against. So
+ * the record carries both images verbatim and the receipt owner re-reads live
+ * state in the shape of the post-image before it credits anything. A receipt
+ * built from this proves the effect is still in the library, not that the tool
+ * said it landed.
+ *
+ * It carries the two images and nothing else of the write. The forward payload
+ * and the step result are already durable in the journal step this record
+ * names, and a note body or a command's output has no business being copied
+ * into a second audit row.
+ */
+export type AgentExternalMutationEvidence = {
+  version: 1;
+  source: "external_mutation";
+  /** The journalled step operation, e.g. `update_preference`. */
+  operation: string;
+  /** What the plan recorded as true before the write. */
+  preImage?: unknown;
+  /** What the write recorded as true immediately after it applied. */
+  postImage?: unknown;
+  /**
+   * What the write was authorized to make true, in the same shape.
+   *
+   * Built from the validated input the user approved, so a receipt that
+   * re-reads against this proves the authorized change rather than proving
+   * that whatever the tool chose to write is still in place. When it is
+   * absent the post-image is the only thing there is to compare against, and
+   * the receipt claims no more than that.
+   */
+  authorizedPostImage?: unknown;
+  journalStepId?: string;
+  effect: "applied" | "partial" | "none";
+};
+
+export type AgentActionEvidence =
+  | AgentLibraryMutationEvidence
+  | AgentExternalMutationEvidence;
 
 /** Concrete proposals returned by a tool's validated action adapter. */
 export type AgentToolActionDescriptor = AgentActionProposal;

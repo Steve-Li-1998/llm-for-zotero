@@ -2,13 +2,17 @@ import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
-const read = (path: string) =>
-  ts.createSourceFile(
-    path,
-    readFileSync(path, "utf8"),
-    ts.ScriptTarget.Latest,
-    true,
+const read = (path: string) => {
+  const text = readFileSync(path, "utf8");
+  // Every scan below is an absence check. A file that moved, emptied or was
+  // reduced to a stub would satisfy all of them without proving anything.
+  assert.isAbove(
+    text.length,
+    200,
+    `${path} was read but looks empty; the scan would pass vacuously`,
   );
+  return ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+};
 
 describe("direct Agent ownership boundary", function () {
   it("does not change host permission mode based on the provider entry point", function () {

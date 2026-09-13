@@ -1,8 +1,10 @@
 import { installNativeNoteStore } from "./helpers/nativeNoteStore";
 import { assert } from "chai";
 import { LibraryMutationService } from "../src/agent/services/libraryMutationService";
+import { executeLibraryMutationAction } from "../src/agent/services/mutationCoordinator";
+import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { createWriteNotesBatchTool } from "../src/agent/tools/write/writeNotesBatch";
-import { replayLibraryInverse } from "./helpers/replayLibraryInverse";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 
 /**
  * The binding constraint on "write a summary note for each of my 50 most
@@ -108,20 +110,54 @@ describe("batched note writing", function () {
     assert.equal(result.failedCount, 1);
   });
 
-  it("undoes the whole set by trashing the notes it wrote", async function () {
+  it("undoes the set from one durable inverse per note, not a whole-batch inverse", async function () {
+    const db = new ChangeJournalTestDb();
+    globalThis.Zotero = { ...globalThis.Zotero, DB: db } as never;
+    await initAgentChangeJournal();
     const service = new LibraryMutationService(gateway() as never);
-    const outcome = await service.executeOperation(
-      {
-        type: "save_notes_batch",
-        notes: [
-          { targetItemId: 1, content: "a" },
-          { targetItemId: 2, content: "b" },
-        ],
-      },
+
+    const coordinated = await executeLibraryMutationAction({
+      service,
+      operations: [
+        {
+          type: "save_notes_batch",
+          notes: [
+            { targetItemId: 1, content: "a" },
+            { targetItemId: 2, content: "b" },
+          ],
+        },
+      ],
       context,
+      facadeToolName: "note_write_batch",
+    });
+
+    // The batch is one action; each note is a step that carries the inverse
+    // for exactly the note it wrote.
+    assert.lengthOf([...db.actions.values()], 1);
+    const steps = [...db.steps.values()].sort(
+      (left, right) => Number(left.sequence_no) - Number(right.sequence_no),
     );
-    await replayLibraryInverse(service, outcome, context as never);
-    assert.deepEqual(trashed, [[500, 501]]);
+    assert.lengthOf(steps, 2);
+    assert.deepEqual(
+      steps.map(
+        (step) => JSON.parse(String(step.inverse_json)).operations as unknown[],
+      ),
+      [
+        [{ type: "trash_items", itemIds: [500] }],
+        [{ type: "trash_items", itemIds: [501] }],
+      ],
+    );
+
+    // Replaying every recorded inverse, newest step first, trashes each note
+    // exactly once: there is no whole-batch inverse to double-trash them.
+    for (const step of [...steps].reverse()) {
+      for (const operation of JSON.parse(String(step.inverse_json))
+        .operations) {
+        await service.executeOperation(operation, context);
+      }
+    }
+    assert.deepEqual(trashed, [[501], [500]]);
+    assert.equal(coordinated.effect, "applied");
   });
 
   describe("the confirmation card", function () {

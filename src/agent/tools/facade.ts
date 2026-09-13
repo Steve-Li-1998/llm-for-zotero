@@ -137,21 +137,31 @@ export function createDelegatingTool<TResult = unknown>(params: {
   inputSchema: object;
   executionClass: "read" | "control" | "external_effect";
   workCategory: AgentWorkCategory;
-  requiresConfirmation: boolean;
   label: string;
   summaries?: NonNullable<AgentToolDefinition["presentation"]>["summaries"];
   tier?: "normal" | "advanced";
   guidance?: AgentToolDefinition<DelegatedInput<any>, TResult>["guidance"];
+  /**
+   * Every tool this facade can route to. The facade performs no effect of its
+   * own, so its declared effect operations are exactly the union of theirs;
+   * adding a delegate therefore widens the facade automatically and cannot
+   * leave the declaration behind.
+   */
+  delegates: AgentToolDefinition<any, any>[];
   chooseDelegate: (args: unknown) => AgentToolInputValidation<DelegateChoice>;
 }): AgentToolDefinition<DelegatedInput<any>, TResult> {
   return {
+    effectOperations: [
+      ...new Set(
+        params.delegates.flatMap((tool) => tool.effectOperations || []),
+      ),
+    ],
     spec: {
       name: params.name,
       description: params.description,
       inputSchema: params.inputSchema,
       executionClass: params.executionClass,
       workCategory: params.workCategory,
-      requiresConfirmation: params.requiresConfirmation,
       exposure: "model",
       tier: params.tier || "normal",
     },
@@ -175,13 +185,6 @@ export function createDelegatingTool<TResult = unknown>(params: {
     describeAction: (input, context) =>
       input.delegateTool.describeAction?.(input.delegateInput, context) ||
       describeLibraryMutationActions(input.delegateInput),
-    async shouldRequireConfirmation(input, context) {
-      const tool = input.delegateTool;
-      if (tool.shouldRequireConfirmation) {
-        return tool.shouldRequireConfirmation(input.delegateInput, context);
-      }
-      return tool.spec.requiresConfirmation;
-    },
     async planInvocation(input, context) {
       const tool = input.delegateTool;
       if (tool.planInvocation) {

@@ -23,7 +23,11 @@ import {
   savePlanDocumentAsNote,
   finalizeDocumentNoteHtml,
 } from "../../documents/actions";
-import { resolveWorkflowNoteDocument } from "../../documents/workflowMaterial";
+import {
+  materialRefFromDocument,
+  resolveWorkflowNoteDocument,
+} from "../../documents/workflowMaterial";
+import type { MaterialRef } from "../../documents/materialRef";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
@@ -79,7 +83,8 @@ function sanitizeNoteHtml(html: string): string {
 
 type EditCurrentNoteInput = {
   documentId?: string;
-  _documentContentHash?: string;
+  /** The exact material this proposal is frozen to, resolved once in preparation. */
+  _documentMaterialRef?: MaterialRef;
   _documentHasAssets?: boolean;
   mode: "edit" | "create" | "append";
   content: string;
@@ -409,6 +414,8 @@ async function prepareWorkflowDocumentNote(
       ? input.targetItemId
       : input.targetNoteId || input.noteId,
     input.mode,
+    // Preparation freezes the reference; every later pass re-checks against it.
+    input._documentMaterialRef,
   );
   if (input.content && input.content !== document.visibleHtml)
     throw new Error(
@@ -416,7 +423,7 @@ async function prepareWorkflowDocumentNote(
     );
   input.content = document.visibleHtml;
   input._isHtml = true;
-  input._documentContentHash = document.contentHash;
+  input._documentMaterialRef = materialRefFromDocument(document);
   input._documentHasAssets = document.assets.length > 0;
 }
 
@@ -439,7 +446,8 @@ export function createEditCurrentNoteTool(
         parameters: {
           noteMode: input.mode,
           documentId: input.documentId,
-          contentHash: input._documentContentHash,
+          documentVersion: input._documentMaterialRef?.documentVersion,
+          contentHash: input._documentMaterialRef?.contentHash,
           targetItemId: input.targetItemId,
           targetNoteId: input.targetNoteId || input.noteId,
           expectedText: input.content
@@ -460,6 +468,7 @@ export function createEditCurrentNoteTool(
         destinationCollectionIds: input.collections || [],
       },
     ],
+    effectOperations: ["note_create", "note_edit", "note_append"],
     spec: {
       name: "edit_current_note",
       description:
@@ -563,7 +572,6 @@ export function createEditCurrentNoteTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
     guidance: {
       matches: () => true,
@@ -967,7 +975,7 @@ export function createEditCurrentNoteTool(
             forward: {
               documentId,
               targetItemId: input.targetItemId,
-              contentHash: input._documentContentHash,
+              contentHash: input._documentMaterialRef?.contentHash,
             },
             reversibility: "full",
             deferredInverse: true,
@@ -985,6 +993,7 @@ export function createEditCurrentNoteTool(
                 title: note.getNoteTitle(),
                 status: saved.created ? "created" : "already_satisfied",
                 warnings: saved.warnings,
+                noteVerification: saved.noteVerification,
               },
               effect: saved.created ? ("applied" as const) : ("none" as const),
               affectedCount: saved.created ? 1 : 0,
@@ -1146,6 +1155,7 @@ export function createEditCurrentNoteTool(
                   input.documentId!,
                   targetNote.id,
                   input.mode,
+                  input._documentMaterialRef,
                 );
                 const finalized = await finalizeDocumentNoteHtml(document, {
                   noteId: targetNote.id,

@@ -45,7 +45,6 @@ export function createWorkflowScriptTool(
       },
       executionClass: "control",
       workCategory: "external_system",
-      requiresConfirmation: false,
       localAgentOnly: true,
     },
     describeAction: () => [],

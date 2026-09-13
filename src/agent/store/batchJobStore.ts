@@ -11,7 +11,7 @@
  * Schema and lifecycle follow the plugin's existing durable stores.
  */
 
-const BATCH_JOBS_TABLE = "llm_for_zotero_agent_batch_jobs";
+export const BATCH_JOBS_TABLE = "llm_for_zotero_agent_batch_jobs";
 
 export type BatchJobStatus = "running" | "completed" | "cancelled" | "failed";
 

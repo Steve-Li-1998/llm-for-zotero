@@ -524,7 +524,21 @@ export function resolveInitialPanelItemState(
   }
   const basePaperItem = resolveConversationBaseItem(item);
   if (!basePaperItem) {
-    return { item, basePaperItem: null };
+    const libraryID = resolveLibraryIdFromItem(item);
+    const system = resolvePreferredConversationSystem({
+      item,
+      preferredSystem: options?.conversationSystem,
+    });
+    const mode =
+      options?.conversationMode ||
+      resolvePreferredConversationMode(libraryID, system);
+    return {
+      item:
+        !item && mode === "global"
+          ? resolveRememberedGlobalPanelItem(libraryID, system)
+          : item,
+      basePaperItem: null,
+    };
   }
 
   if (

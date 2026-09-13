@@ -11,9 +11,10 @@ import { clearPlanModeState, takePendingPlanExecution } from "./planModeState";
 import { resolveAgentRuntimeRequest } from "../../agent/context/resolvedAgentRequest";
 import type { AgentRunEventRecord, AgentToolContext } from "../../agent/types";
 import {
-  createCodexNativeActivityTraceControllerForTests,
+  resolveCodexNativeApprovalWithOptionalReviewCard,
   resolveCodexNativeHostInteractionWithTrace,
 } from "./chat";
+import { createCodexNativeActivityTraceControllerForTests } from "./codexNativeTrace/controller";
 import type { Message } from "./types";
 import { agentRunTraceCache } from "./agentState";
 import { getConversationKey } from "./conversationIdentity";

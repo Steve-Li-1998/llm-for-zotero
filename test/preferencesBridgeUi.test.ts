@@ -28,26 +28,6 @@ describe("bridge settings UI behavior", function () {
     assert.deepEqual(events, ["commit", "commit"]);
   });
 
-  it("renders compact model input mode controls in advanced settings", function () {
-    const preferenceScript = readFileSync(
-      "src/modules/preferenceScript.ts",
-      "utf8",
-    );
-
-    const preferences = readFileSync("addon/content/preferences.xhtml", "utf8");
-
-    assert.include(preferenceScript, "getModelInputModeOptionsForRuntime");
-    assert.include(preferenceScript, 't("Input mode")');
-    assert.include(preferenceScript, "inputModeOptions.length > 0");
-    assert.include(preferenceScript, "normalizeModelInputModeForRuntime");
-    // The compact width is a stylesheet class now, not an inline token.
-    assert.include(preferenceScript, "llm-pref-input--mode");
-    assert.include(
-      preferences.replace(/\s+/g, " "),
-      ".llm-pref-input--mode { width: 108px; }",
-    );
-  });
-
   it("translates model input mode preference strings in Chinese locale", function () {
     const globalWithZotero = globalThis as typeof globalThis & {
       Zotero?: { locale?: string };

@@ -7,6 +7,7 @@
  * condition vocabulary — before that there was nothing to save.
  */
 import type { AgentWriteToolDefinition } from "../../types";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import {
   LibraryMutationService,
   type DeleteSavedSearchOperation,
@@ -33,6 +34,8 @@ export function createSavedSearchTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["save_saved_search", "delete_saved_search"],
     spec: {
       name: "saved_search_update",
       description:
@@ -73,7 +76,6 @@ export function createSavedSearchTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {

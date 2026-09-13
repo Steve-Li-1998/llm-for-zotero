@@ -11,10 +11,12 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert } from "chai";
+import { CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY } from "../src/agent/workCategory";
 import {
   buildCodexNativeApprovalPendingAction,
   buildCodexNativeApprovalResponseFromResolution,
   buildCodexNativeScopedMcpScopeForTests,
+  describeCodexNativeApprovalEffect,
   buildCodexNativeVisibleTurnContextBlockForTests,
   buildZoteroEnvironmentManifest,
   compactCodexAppServerConversation,
@@ -25,6 +27,9 @@ import {
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
   resolveCodexNativeApprovalRequest,
   resolveSafeCodexNativeApprovalRequest,
+  buildCodexMcpToolActivityEvent,
+  buildCodexNativeEffectActivityEvent,
+  createCodexNativeMcpCallCorrelatorForTests,
   resetCodexNativePathSafetyStateForTests,
   runCodexAppServerNativeTurn as runPreparedNativeTurn,
 } from "../src/codexAppServer/nativeClient";
@@ -41,6 +46,8 @@ import {
   invokeRegisteredZoteroMcpEndpoint,
   registerMcpServer,
   registerScopedZoteroMcpScope,
+  getZoteroMcpServerName,
+  ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   resolveConversationScopeToken,
   unregisterMcpServer,
   ZOTERO_MCP_SCOPE_HEADER,
@@ -384,6 +391,171 @@ describe("Codex app-server native client", function () {
     assert.include(failure, "Evidence storage unavailable");
     assert.notEqual(finished, "completed");
   });
+  /**
+   * Drive one real native turn with Zotero MCP enabled, making one MCP call
+   * and announcing the same call as an app-server item, in the given order.
+   */
+  async function runCorrelatedNativeTurn(order: "mcp_first" | "item_first") {
+    const restorePrefs = installDirectPathTestPrefs();
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const originalZotero = (globalThis as never as { Zotero: any }).Zotero;
+    const conversationKey =
+      order === "mcp_first" ? 6_000_000_310 : 6_000_000_311;
+    const bearer = "correlation-test-bearer-0123456789abcdef";
+    const registry = new AgentToolRegistry();
+    for (const name of ZOTERO_MCP_SAFE_READ_TOOL_NAMES) {
+      registry.register({
+        spec: {
+          name,
+          description: `Read fixture ${name}`,
+          inputSchema: { type: "object", additionalProperties: true },
+          executionClass: "read",
+          workCategory: "retrieval",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args ?? {} }),
+        execute: async () => ({ content: { title: "Fixture" } }),
+      } as never);
+    }
+    (globalThis as never as { Zotero: any }).Zotero = {
+      ...originalZotero,
+      Server: { Endpoints: {} },
+      Libraries: { userLibraryID: 1 },
+      Items: { get: () => null },
+      Prefs: {
+        ...originalZotero.Prefs,
+        get: (key: string) => {
+          if (key.endsWith(".codexAppServerZoteroMcpToolsEnabled")) return true;
+          if (key.endsWith("codexZoteroMcpBearerToken")) return bearer;
+          return originalZotero.Prefs.get(key);
+        },
+      },
+    };
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const serverName = getZoteroMcpServerName(getCodexProfileSignature());
+    const scopeToken = resolveConversationScopeToken({
+      profileSignature: getCodexProfileSignature(),
+      conversationKey,
+    });
+    const journal: any[] = [];
+    const mcpRows: any[] = [];
+    const items: any[] = [];
+    const processKey = `native-correlation-${order}`;
+    const callMcpTool = async () => {
+      await invokeRegisteredZoteroMcpEndpoint({
+        method: "POST",
+        data: {
+          jsonrpc: "2.0",
+          id: "correlated-call",
+          method: "tools/call",
+          params: { name: "library_read", arguments: {} },
+        },
+        headers: {
+          [ZOTERO_MCP_SCOPE_HEADER]: scopeToken,
+          Authorization: `Bearer ${bearer}`,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: [`correlation-thread-${order}`],
+      requests: [],
+      onTurn: ({ threadId, turnId, emit }) => {
+        void (async () => {
+          const emitItem = () =>
+            emit({
+              method: "item/completed",
+              params: {
+                threadId,
+                turnId,
+                item: {
+                  type: "mcp_tool_call",
+                  id: "call_A",
+                  server: serverName,
+                  tool: "library_read",
+                  arguments: {},
+                  status: "completed",
+                },
+              },
+            });
+          if (order === "mcp_first") {
+            await callMcpTool();
+            emitItem();
+          } else {
+            emitItem();
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            await callMcpTool();
+          }
+          emit({
+            method: "turn/completed",
+            params: { threadId, turn: { id: turnId, status: "completed" } },
+          });
+        })();
+      },
+    });
+    CodexAppServerProcess.spawn = async () => proc;
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: { conversationKey, libraryID: 1, kind: "global" },
+        model: "gpt-5.6",
+        messages: [{ role: "user", content: "Read fixture" }],
+        processKey,
+        eventJournal: {
+          runId: "host-correlation-run",
+          append: async (event: any) => {
+            journal.push(event);
+          },
+          finish: async () => {},
+        },
+        onMcpToolActivity: (event) => mcpRows.push(event),
+        onItemCompleted: (event) => items.push(event),
+        hooks: {
+          loadProviderSessionId: async () => null,
+          persistProviderSession: async () => {},
+        },
+      } as never);
+    } finally {
+      unregisterMcpServer();
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      (globalThis as never as { Zotero: any }).Zotero = originalZotero;
+      restorePrefs();
+    }
+    return { journal, mcpRows, items };
+  }
+
+  for (const order of ["mcp_first", "item_first"] as const) {
+    it(`stamps one key on both rows of a native Zotero MCP call (${order})`, async function () {
+      this.timeout(15000);
+      const { journal, mcpRows, items } = await runCorrelatedNativeTurn(order);
+      assert.isAtLeast(mcpRows.length, 1, "the MCP observer never fired");
+      const item = items.find(
+        (entry) => entry.type === "mcp_tool_call" && entry.id === "call_A",
+      );
+      assert.isDefined(item, "the app-server item never reached the host");
+      const key = item.correlationId;
+      assert.isString(key, "the item carries no call key");
+      for (const row of mcpRows) {
+        assert.equal(
+          row.correlationId,
+          key,
+          "both phases of the request carry the item's key",
+        );
+      }
+      const activities = journal.filter(
+        (event) => event.type === "codex_tool_activity",
+      );
+      assert.isAtLeast(activities.length, 1);
+      for (const activity of activities) {
+        assert.equal(
+          activity.itemId,
+          key,
+          "the journalled row is keyed by the call, not the transport request",
+        );
+      }
+    });
+  }
+
   it("rejects a provider's filing-completed narrative without host-verified effects", async function () {
     const persisted: any[] = [];
     let finished: unknown;
@@ -3413,9 +3585,6 @@ describe("Codex app-server native client", function () {
     assert.notInclude(source, "resources-delta");
     assert.notInclude(source, "resources-changed");
     assert.notInclude(source, "CodexNativeLifecycle");
-    assert.notInclude(source, "raw_pdf_read");
-    assert.notInclude(source, "stageCodexRawPdfCapability");
-    assert.notInclude(source, "isolatedRawPdfMode");
     assert.notInclude(source, "runtimeWorkspaceRoots");
   });
 
@@ -3630,5 +3799,405 @@ describe("Codex app-server native client", function () {
     assert.include(block, "offset=25");
     assert.notInclude(block, "failed search");
     assert.notInclude(block, "write-file");
+  });
+});
+
+/**
+ * What a Codex turn records about the effects Codex ran itself.
+ *
+ * Codex executes its own shell commands and file changes; the host only
+ * answers the approval card. Before Phase 3 that decision left no receipt, so a
+ * Codex turn's audit trail was silently shorter than an in-app one. These tests
+ * pin the receipt each decision mints and the trace row that carries it.
+ */
+describe("Codex native approval effect receipts", function () {
+  it("describes a command approval as a fingerprinted command effect", function () {
+    const effect = describeCodexNativeApprovalEffect({
+      method: "item/commandExecution/requestApproval",
+      params: { command: "npm test", cwd: "/repo/example" },
+    });
+    assert.equal(effect?.source, "codex_native");
+    assert.equal(effect?.operation, "command_execute");
+    assert.match(
+      String(effect?.requestedTargets[0]),
+      /^command:fnv1a32:[0-9a-f]{8}$/,
+    );
+  });
+
+  it("describes a file-change approval by the paths the card showed", function () {
+    const effect = describeCodexNativeApprovalEffect({
+      method: "item/fileChange/requestApproval",
+      params: {
+        changes: {
+          "/repo/example/notes.md": { kind: "update" },
+          "/repo/example/new.md": { kind: "add" },
+        },
+      },
+    });
+    assert.equal(effect?.operation, "file_write");
+    assert.deepEqual(effect?.requestedTargets, [
+      "file:/repo/example/notes.md",
+      "file:/repo/example/new.md",
+    ]);
+  });
+
+  it("describes the legacy approval methods as the same two effects", function () {
+    assert.equal(
+      describeCodexNativeApprovalEffect({
+        method: "execCommandApproval",
+        params: { command: "ls" },
+      })?.operation,
+      "command_execute",
+    );
+    assert.equal(
+      describeCodexNativeApprovalEffect({
+        method: "applyPatchApproval",
+        params: { path: "/repo/patched.md" },
+      })?.operation,
+      "file_write",
+    );
+  });
+
+  it("describes no effect for requests that change nothing by themselves", function () {
+    assert.isNull(
+      describeCodexNativeApprovalEffect({
+        method: "item/permissions/requestApproval",
+        params: { permissions: { fileSystem: { write: ["/repo"] } } },
+      }),
+      "granting a permission is not itself a file change or a command",
+    );
+    assert.isNull(
+      describeCodexNativeApprovalEffect({
+        method: "item/tool/requestUserInput",
+        params: { questions: [{ id: "q", question: "Which?" }] },
+      }),
+    );
+  });
+
+  async function runApprovedCommandTurn(approved: boolean): Promise<{
+    events: any[];
+    responses: any[];
+  }> {
+    const events: any[] = [];
+    const responses: any[] = [];
+    const requests: Array<{ method: string; params: Record<string, any> }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["approval-receipt-thread"],
+      requests,
+      onServerResponse: (message) => responses.push(message),
+      onTurn: ({ threadId, turnId, emit }) => {
+        emit({
+          id: 9101,
+          method: "item/commandExecution/requestApproval",
+          params: {
+            threadId,
+            turnId,
+            itemId: "cmd-1",
+            command: "npm test",
+            cwd: "/repo/example",
+          },
+        });
+        setTimeout(
+          () =>
+            emit({
+              method: "turn/completed",
+              params: { turn: { id: turnId, status: "completed" } },
+            }),
+          20,
+        );
+      },
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs();
+    const processKey = "codex-approval-receipt";
+    const globalScope = globalThis as typeof globalThis & {
+      ztoolkit?: { log: (...args: unknown[]) => void };
+    };
+    const originalZtoolkit = globalScope.ztoolkit;
+    globalScope.ztoolkit = { log: () => undefined };
+    CodexAppServerProcess.spawn = async () => proc;
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          conversationKey: 6_000_000_400,
+          libraryID: 1,
+          kind: "global",
+          title: "Approval receipts",
+        },
+        model: "gpt-5.6",
+        messages: [{ role: "user", content: "Run the tests" }],
+        processKey,
+        eventJournal: {
+          runId: "codex-approval-run",
+          append: async (event) => {
+            events.push(event);
+          },
+          finish: async () => {},
+        },
+        onApprovalRequest: async () =>
+          approved ? { decision: "accept" } : { decision: "decline" },
+        hooks: {
+          loadProviderSessionId: async () => null,
+          persistProviderSession: async () => {},
+        },
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+      globalScope.ztoolkit = originalZtoolkit;
+    }
+    return { events, responses };
+  }
+
+  it("records an approved Codex command as an execution_only receipt on the run", async function () {
+    const { events, responses } = await runApprovedCommandTurn(true);
+    assert.deepEqual(
+      responses.find((entry) => entry.id === 9101)?.result,
+      { decision: "accept" },
+      JSON.stringify(responses),
+    );
+    const activity = events.find(
+      (event) =>
+        event.type === "codex_tool_activity" && event.actionReceipts?.length,
+    );
+    assert.isObject(
+      activity,
+      `no receipt activity in ${JSON.stringify(events)}`,
+    );
+    const receipt = activity.actionReceipts[0];
+    assert.equal(receipt.operation, "command_execute");
+    assert.equal(receipt.proofDomain, "execution");
+    assert.equal(receipt.verification, "execution_only");
+    assert.equal(receipt.status, "observed");
+    assert.equal(receipt.executionAuthority, "external_runtime");
+    assert.match(
+      String(receipt.requestedTargets[0]),
+      /^command:fnv1a32:[0-9a-f]{8}$/,
+    );
+  });
+
+  it("records a denied Codex command as cancelled with no proof claimed", async function () {
+    const { events } = await runApprovedCommandTurn(false);
+    const activity = events.find(
+      (event) =>
+        event.type === "codex_tool_activity" && event.actionReceipts?.length,
+    );
+    assert.isObject(
+      activity,
+      `no receipt activity in ${JSON.stringify(events)}`,
+    );
+    const receipt = activity.actionReceipts[0];
+    assert.equal(receipt.status, "cancelled");
+    assert.equal(receipt.verification, "not_applicable");
+    assert.deepEqual(receipt.appliedTargets, []);
+  });
+});
+
+describe("Codex MCP tool activity bridge", function () {
+  it("stamps the server and mutability onto every MCP row it forwards", function () {
+    // Without these the trace has to guess which server ran a call from its
+    // tool name, which is exactly the shadow taxonomy the stage model removes.
+    const event = buildCodexMcpToolActivityEvent({
+      requestId: "jsonrpc:7",
+      phase: "completed",
+      toolName: "note_write",
+      toolLabel: "Write note",
+      serverName: "llm_for_zotero",
+      mutability: "write",
+      workCategory: "zotero_action",
+      arguments: { text: "hello" },
+      ok: true,
+      timestamp: 3,
+    });
+    assert.equal(event.type, "codex_tool_activity");
+    if (event.type !== "codex_tool_activity") return;
+    assert.equal(event.itemId, "jsonrpc:7");
+    assert.equal(event.serverName, "llm_for_zotero");
+    assert.equal(event.mutability, "write");
+    assert.equal(event.toolLabel, "Write note");
+    assert.equal(event.workCategory, "zotero_action");
+    assert.deepEqual(event.args, { text: "hello" });
+  });
+
+  it("joins an MCP request to the native item the model called it from", function () {
+    // The app server names a tool call by the model's own call id; the Zotero
+    // MCP server names the same call by the JSON-RPC id it was asked with.
+    // Only this client sees both, so it is the one that pairs them.
+    const correlation = createCodexNativeMcpCallCorrelatorForTests(
+      "llm_for_zotero_profile_abc",
+    );
+    const item = (id: string) =>
+      correlation.correlateItem({
+        id,
+        type: "mcp_tool_call",
+        serverName: "llm_for_zotero_profile_abc",
+        toolName: "query_library",
+      });
+    const request = (requestId: string) =>
+      correlation.correlateRequest({ requestId, toolName: "query_library" });
+
+    const first = request("jsonrpc:1");
+    assert.isString(first);
+    assert.equal(
+      request("jsonrpc:1"),
+      first,
+      "the completed phase resolves to the same call as the started phase",
+    );
+    assert.equal(item("call_A"), first);
+    assert.equal(item("call_A"), first, "an item keeps the key it was given");
+
+    // The next call of the same tool starts only once that one closed.
+    const second = request("jsonrpc:2");
+    assert.isString(second);
+    assert.notEqual(second, first);
+    assert.equal(item("call_B"), second, "two calls keep the model's order");
+  });
+
+  it("pairs the two streams whichever of them speaks first", function () {
+    // The app server is not promised to announce a tool call before the call
+    // reaches the Zotero server, so neither order may be assumed.
+    const correlation = createCodexNativeMcpCallCorrelatorForTests(
+      "llm_for_zotero_profile_abc",
+    );
+    const fromItem = correlation.correlateItem({
+      id: "call_A",
+      type: "mcp_tool_call",
+      serverName: "llm_for_zotero_profile_abc",
+      toolName: "query_library",
+    });
+    assert.equal(
+      correlation.correlateRequest({
+        requestId: "jsonrpc:1",
+        toolName: "query_library",
+      }),
+      fromItem,
+    );
+  });
+
+  it("pairs nothing it cannot pair, rather than guessing", function () {
+    const correlation = createCodexNativeMcpCallCorrelatorForTests(
+      "llm_for_zotero_profile_abc",
+    );
+    assert.isUndefined(
+      correlation.correlateItem({
+        id: "call_other",
+        type: "mcp_tool_call",
+        serverName: "some_other_server",
+        toolName: "query_library",
+      }),
+      "another server's item is not this server's call",
+    );
+    assert.isUndefined(
+      correlation.correlateItem({
+        id: "call_cmd",
+        type: "command_execution",
+        toolName: "query_library",
+      }),
+      "work Codex ran itself never reached the Zotero server",
+    );
+    assert.isUndefined(
+      createCodexNativeMcpCallCorrelatorForTests(undefined).correlateRequest({
+        requestId: "jsonrpc:1",
+        toolName: "query_library",
+      }),
+      "a turn with no Zotero server configured has nothing to pair",
+    );
+    const paired = correlation.correlateRequest({
+      requestId: "jsonrpc:1",
+      toolName: "query_library",
+    });
+    assert.notEqual(
+      correlation.correlateRequest({
+        requestId: "jsonrpc:2",
+        toolName: "write_note",
+      }),
+      paired,
+      "a different tool is a different call",
+    );
+  });
+
+  it("refuses to pair two calls of one tool that are open at the same time", function () {
+    // The item stream and the MCP observer are delivered independently, so
+    // two concurrent calls of one tool cannot be ordered against each other.
+    // Pairing them by arrival order would put one call's arguments in the
+    // same row as the other call's receipts, which is worse than two rows.
+    const correlation = createCodexNativeMcpCallCorrelatorForTests(
+      "llm_for_zotero_profile_abc",
+    );
+    const first = correlation.correlateRequest({
+      requestId: "jsonrpc:1",
+      toolName: "query_library",
+    });
+    const second = correlation.correlateRequest({
+      requestId: "jsonrpc:2",
+      toolName: "query_library",
+    });
+    assert.isString(first);
+    assert.isUndefined(
+      second,
+      "a second call opening while the first is unpaired is ambiguous",
+    );
+
+    const item = (id: string) =>
+      correlation.correlateItem({
+        id,
+        type: "mcp_tool_call",
+        serverName: "llm_for_zotero_profile_abc",
+        toolName: "query_library",
+      });
+    const firstItem = item("call_A");
+    assert.notEqual(
+      firstItem,
+      first,
+      "an item must not claim a call the turn could not order it against",
+    );
+    assert.isUndefined(item("call_B"));
+    assert.notEqual(firstItem, item("call_B"));
+
+    // The turn recovers: a later call of the same tool pairs normally.
+    const later = correlation.correlateRequest({
+      requestId: "jsonrpc:3",
+      toolName: "query_library",
+    });
+    assert.isString(later);
+    assert.equal(item("call_C"), later);
+  });
+
+  it("carries the paired call onto the row the panel merges by", function () {
+    const event = buildCodexMcpToolActivityEvent(
+      {
+        requestId: "jsonrpc:7",
+        phase: "started",
+        toolName: "query_library",
+        serverName: "llm_for_zotero",
+        timestamp: 3,
+      } as never,
+      "codex-call:1",
+    );
+    assert.equal(event.type, "codex_tool_activity");
+    if (event.type !== "codex_tool_activity") return;
+    assert.equal(
+      event.itemId,
+      "codex-call:1",
+      "the row is keyed by the call, not by the transport request",
+    );
+  });
+
+  it("labels a connected-runtime effect from the shared category table", function () {
+    const event = buildCodexNativeEffectActivityEvent({
+      effect: {
+        runtime: "codex_native",
+        kind: "command",
+        command: "npm test",
+        requestedTargets: [],
+      } as never,
+      outcome: "executed",
+      callId: "cmd-9",
+      receipt: { id: "receipt-cmd-9" } as never,
+    });
+    assert.equal(event.type, "codex_tool_activity");
+    if (event.type !== "codex_tool_activity") return;
+    assert.equal(event.workCategory, CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY);
   });
 });

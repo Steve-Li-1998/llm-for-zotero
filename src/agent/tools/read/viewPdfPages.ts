@@ -102,7 +102,6 @@ export function createViewPdfPagesTool(
       },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
     },
     presentation: {
       label: "View PDF Pages",

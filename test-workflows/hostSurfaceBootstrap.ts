@@ -20,6 +20,12 @@
  * Import it from every workflow test file whose bundle reaches a bridge; when
  * one is missing, the bridge says so by name ("The <name> adapter is not
  * configured for this application surface.").
+ *
+ * This composes the `src/services/**` host surfaces only, not the plugin's
+ * other composition root `composePanelSurfaces` — that one installs the chat
+ * renderer, and the scaffold's test bundler has no loader for the agent skill
+ * markdown the renderer imports, so pulling it in here stops every workflow
+ * bundle from building. No workflow bundle reaches the panel-internal bridges.
  */
 import { composeHostSurfaces } from "../src/modules/contextPanel/hostSurfaces";
 

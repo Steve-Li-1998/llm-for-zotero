@@ -615,6 +615,7 @@ export async function executeResearchUpdate(
     }
     return {
       content,
+      researchJobId: next.researchJobId,
       continuationCheckpoint: {
         reason: "research_batch_durable",
         instruction: compactRemainingManifest.length
@@ -623,5 +624,5 @@ export async function executeResearchUpdate(
       },
     };
   }
-  return content;
+  return { content, researchJobId: next.researchJobId };
 }

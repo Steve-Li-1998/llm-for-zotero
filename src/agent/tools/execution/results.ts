@@ -1,8 +1,14 @@
 import type { ActionProposal } from "../../authorization/types";
-import type { MaterialRef } from "../../documents/types";
+import {
+  readFlatMaterialRef,
+  type MaterialRef,
+} from "../../documents/materialRef";
 import type {
   AgentActionEvidence,
+  AgentActionProposal,
+  AgentBatchItemOutcome,
   AgentInvocationPlan,
+  AgentPendingAction,
   AgentToolArtifact,
   AgentToolCall,
   AgentToolContinuationCheckpoint,
@@ -54,7 +60,6 @@ export function createSyntheticErrorResult(
       inputSchema: { type: "object" },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
     },
     validate: () => ({ ok: true, value: {} }),
     execute: async () => ({ error: message }),
@@ -121,23 +126,41 @@ export function createProposalConfirmationAction(
   };
 }
 
-/** A material reference is identity, so every field must be present to use it. */
+/**
+ * The exact material version a confirmation would consume, read from the
+ * frozen proposal the user is about to authorize. The host owns this stamp so
+ * every confirmation card carries it, whichever tool built the card.
+ */
+export function pendingActionMaterial(
+  proposals: readonly AgentActionProposal[] | undefined,
+): AgentPendingAction["material"] | undefined {
+  for (const proposal of proposals || []) {
+    const ref = readFlatMaterialRef(proposal.parameters);
+    if (ref) return { operation: proposal.operation, ref };
+  }
+  return undefined;
+}
+
+/**
+ * A material reference read out of an untyped tool payload.
+ *
+ * Narrowing is all this adds; the completeness rule that decides whether the
+ * three fields name one revision lives with the identity itself.
+ */
 function readMaterialRef(value: unknown): MaterialRef | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value))
     return undefined;
   const record = value as Record<string, unknown>;
-  return typeof record.documentId === "string" &&
-    record.documentId &&
-    Number.isSafeInteger(record.documentVersion) &&
-    Number(record.documentVersion) >= 1 &&
-    typeof record.contentHash === "string" &&
-    record.contentHash
-    ? {
-        documentId: record.documentId,
-        documentVersion: Number(record.documentVersion),
-        contentHash: record.contentHash,
-      }
-    : undefined;
+  return readFlatMaterialRef({
+    documentId:
+      typeof record.documentId === "string" ? record.documentId : undefined,
+    documentVersion:
+      typeof record.documentVersion === "number"
+        ? record.documentVersion
+        : undefined,
+    contentHash:
+      typeof record.contentHash === "string" ? record.contentHash : undefined,
+  });
 }
 
 export function normalizeExecutionOutput(
@@ -151,6 +174,8 @@ export function normalizeExecutionOutput(
   materialRef?: MaterialRef;
   materialKind?: string;
   materialTitle?: string;
+  batchItems?: AgentBatchItemOutcome[];
+  researchJobId?: string;
 } {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const record = value as {
@@ -162,6 +187,8 @@ export function normalizeExecutionOutput(
       materialRef?: unknown;
       materialKind?: unknown;
       materialTitle?: unknown;
+      batchItems?: unknown;
+      researchJobId?: unknown;
     };
     if (Object.prototype.hasOwnProperty.call(record, "content")) {
       return {
@@ -196,6 +223,13 @@ export function normalizeExecutionOutput(
         materialTitle:
           typeof record.materialTitle === "string"
             ? record.materialTitle
+            : undefined,
+        batchItems: Array.isArray(record.batchItems)
+          ? (record.batchItems as AgentBatchItemOutcome[])
+          : undefined,
+        researchJobId:
+          typeof record.researchJobId === "string"
+            ? record.researchJobId
             : undefined,
       };
     }

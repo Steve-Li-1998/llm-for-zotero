@@ -1,4 +1,8 @@
 import {
+  getSidebarLayout,
+  SIDEBAR_LAYOUT_PREF,
+} from "./contextPanel/sidebarLayout";
+import {
   areExternalMcpWritesEnabled,
   setExternalMcpWritesEnabled,
 } from "../agent/mcp/prefs";
@@ -2725,6 +2729,37 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         true,
       );
     });
+  }
+
+  const sidebarLayoutSelect = doc.querySelector(
+    `#${config.addonRef}-sidebar-layout`,
+  ) as HTMLSelectElement | null;
+  if (sidebarLayoutSelect) {
+    const label = doc.querySelector(
+      `label[for="${config.addonRef}-sidebar-layout"]`,
+    );
+    if (label) label.textContent = t("Sidebar layout");
+    const hint = doc.getElementById(`${config.addonRef}-sidebar-layout-hint`);
+    if (hint)
+      hint.textContent = t(
+        "Show chat in its own sidebar or alongside Zotero’s other item sections. Changes apply immediately.",
+      );
+    for (const option of Array.from(sidebarLayoutSelect.options)) {
+      option.textContent = t(
+        option.getAttribute("value") === "stacked"
+          ? "Stacked"
+          : "Independent (default)",
+      );
+    }
+    sidebarLayoutSelect.value = getSidebarLayout();
+    sidebarLayoutSelect.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        SIDEBAR_LAYOUT_PREF,
+        sidebarLayoutSelect.value === "stacked" ? "stacked" : "independent",
+        true,
+      );
+    });
+    sidebarLayoutSelect.dataset.preferenceBound = "true";
   }
 
   const fontScaleSlider = doc.querySelector(

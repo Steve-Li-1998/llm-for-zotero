@@ -70,7 +70,6 @@ export function createCiteExportTool(
       },
       executionClass: "read",
       workCategory: "retrieval",
-      requiresConfirmation: false,
     },
 
     presentation: {

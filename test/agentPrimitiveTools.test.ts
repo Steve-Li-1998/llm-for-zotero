@@ -1598,6 +1598,11 @@ describe("primitive agent tools", function () {
     ];
     for (const filePath of writeToolPaths) {
       const source = await readFile(filePath, "utf-8");
+      assert.isAbove(
+        source.split("\n").length,
+        100,
+        `${filePath} was read but looks empty; the scan would pass vacuously`,
+      );
       assert.notInclude(source, "validateMineruFigureBlockEmbedsForCacheDirs");
       assert.notInclude(source, "mineruFigureBlockCache");
     }
@@ -4094,7 +4099,7 @@ await note.saveTx();
     ];
     for (const tool of tools) {
       const name = tool.spec.name;
-      assert.isFalse(tool.spec.requiresConfirmation, `${name} flag`);
+      assert.notProperty(tool.spec, "requiresConfirmation", `${name} flag`);
       assert.isUndefined(tool.shouldRequireConfirmation, `${name} hook`);
       const summaries = tool.presentation?.summaries || {};
       assert.notProperty(summaries, "onPending", `${name} onPending`);

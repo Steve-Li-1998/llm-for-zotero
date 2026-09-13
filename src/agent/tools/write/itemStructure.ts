@@ -6,6 +6,7 @@
  * onto the paper", "link these two" — had no path but a raw script.
  */
 import type { AgentWriteToolDefinition } from "../../types";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import {
   LibraryMutationService,
   type CreateItemsOperation,
@@ -53,6 +54,8 @@ export function createCreateItemsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["create_items"],
     spec: {
       name: "create_items",
       description:
@@ -97,7 +100,6 @@ export function createCreateItemsTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {
@@ -209,6 +211,8 @@ export function createReparentItemsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["reparent_items"],
     spec: {
       name: "reparent_items",
       description:
@@ -241,7 +245,6 @@ export function createReparentItemsTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {
@@ -350,6 +353,8 @@ export function createRelateItemsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["relate_items"],
     spec: {
       name: "relate_items",
       description:
@@ -374,7 +379,6 @@ export function createRelateItemsTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {

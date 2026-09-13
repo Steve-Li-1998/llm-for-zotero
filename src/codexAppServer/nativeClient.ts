@@ -46,6 +46,7 @@ import {
   type ZoteroMcpActiveScope,
   type ZoteroMcpToolActivityEvent,
 } from "../agent/mcp/server";
+import { CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY } from "../agent/workCategory";
 import {
   buildLegacyCodexAppServerChatInput,
   prepareCodexAppServerChatTurn,
@@ -102,6 +103,13 @@ import {
   recordCodexNativeReadActivity,
 } from "./nativeContextLedger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
+import {
+  externalRuntimeCommandEffect,
+  externalRuntimeFileEffect,
+  recordExternalRuntimeEffect,
+  type ExternalRuntimeEffect,
+  type ExternalRuntimeEffectOutcome,
+} from "../agent/contracts/externalRuntimeEffects";
 import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
 import { renderSelectedTextAnchorContext } from "../services/context/selectedTextAnchorFormatting";
 import {
@@ -139,6 +147,7 @@ import {
   PlanExecutionRunSession,
 } from "../agent/plans/runSession";
 import { evaluatePreparedActionContract } from "../agent/contracts/actionEvaluation";
+import { isCodexNativeItemType } from "./nativeActivityStages";
 import type { PlanExecutionLedger } from "../agent/plans/types";
 
 const CODEX_APP_SERVER_SERVICE_NAME = "llm_for_zotero";
@@ -437,6 +446,307 @@ function buildCodexNativeApprovalSummary(
     return "Legacy patch approval";
   }
   return "Codex native approval";
+}
+
+const CODEX_APPROVAL_FILE_PATH_KEYS = [
+  "path",
+  "filePath",
+  "file_path",
+  "targetPath",
+  "target_path",
+] as const;
+
+/**
+ * Every path a file-change approval names, in the order the card shows them.
+ *
+ * An approval may carry one `path` or a whole `changes` map keyed by path, and
+ * the receipt has to name all of them: a target the host displayed but left out
+ * of the receipt is a change nobody can audit afterwards.
+ */
+function collectCodexApprovalFilePaths(params: unknown): string[] {
+  const paths: string[] = [];
+  const add = (value: unknown): void => {
+    const path = normalizeNonEmptyString(value);
+    if (path && !paths.includes(path)) paths.push(path);
+  };
+  for (const record of collectNestedRecords(params)) {
+    const changes = record.changes;
+    if (changes && typeof changes === "object" && !Array.isArray(changes)) {
+      for (const key of Object.keys(changes)) add(key);
+    }
+    for (const key of CODEX_APPROVAL_FILE_PATH_KEYS) add(record[key]);
+  }
+  return paths;
+}
+
+/**
+ * The catalogued effect a Codex approval request is asking to perform.
+ *
+ * Only the two methods that change something outside the host produce an
+ * effect. A permission request grants Codex a capability but writes nothing by
+ * itself, and a question changes nothing at all, so neither mints a receipt —
+ * the effects they later enable arrive here as their own approvals.
+ */
+export function describeCodexNativeApprovalEffect(
+  request: CodexNativeApprovalRequest,
+): ExternalRuntimeEffect | null {
+  switch (request.method) {
+    case "item/commandExecution/requestApproval":
+    case "execCommandApproval":
+      return externalRuntimeCommandEffect(
+        "codex_native",
+        findCommandPreview(request.params),
+      );
+    case "item/fileChange/requestApproval":
+    case "applyPatchApproval": {
+      const paths = collectCodexApprovalFilePaths(request.params);
+      return externalRuntimeFileEffect(
+        "codex_native",
+        paths.length ? paths : [findPathSummary(request.params)],
+      );
+    }
+    default:
+      return null;
+  }
+}
+
+/** The trace row for what Codex itself did, distinct from the card that asked. */
+function codexNativeEffectActivityText(decision: {
+  effect: ExternalRuntimeEffect;
+  outcome: ExternalRuntimeEffectOutcome;
+}): string {
+  const command = decision.effect.operation === "command_execute";
+  return decision.outcome === "executed"
+    ? command
+      ? "Codex ran an approved shell command"
+      : "Codex applied an approved file change"
+    : command
+      ? "Codex shell command denied"
+      : "Codex file change denied";
+}
+
+/**
+ * The trace row carrying one connected-client effect and its receipt.
+ *
+ * Every one of these rows shares a constant tool name and one of four fixed
+ * sentences, so what tells two of them apart is the effect itself: the paths,
+ * or the command fingerprint. They travel in `args`, which the visible dedupe
+ * key reads, so two approvals seconds apart stay two rows instead of merging
+ * into one — and stay auditable in the row's own details.
+ */
+export function buildCodexNativeEffectActivityEvent(decision: {
+  effect: ExternalRuntimeEffect;
+  outcome: ExternalRuntimeEffectOutcome;
+  callId: string;
+  receipt: import("../agent/contracts/types").AgentActionReceipt;
+}): import("../agent/types").AgentEvent {
+  return {
+    type: "codex_tool_activity",
+    itemId: `codex-effect:${decision.callId}`,
+    phase: "completed",
+    toolName: "codex_native_effect",
+    args: { targets: decision.effect.requestedTargets },
+    ok: decision.outcome === "executed",
+    text: codexNativeEffectActivityText(decision),
+    actionReceipts: [decision.receipt],
+    workCategory: CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY,
+  };
+}
+
+/**
+ * The trace row for a Zotero MCP call Codex made.
+ *
+ * The server name and the call's mutability travel with the row because the
+ * bridge is the only place that still knows them: a panel that had to
+ * recognise the server from a tool name would be back to inferring meaning
+ * from identity.
+ */
+export function buildCodexMcpToolActivityEvent(
+  event: ZoteroMcpToolActivityEvent,
+  correlationId?: string,
+): import("../agent/types").AgentEvent {
+  return {
+    type: "codex_tool_activity",
+    itemId: correlationId || event.requestId,
+    phase: event.phase,
+    toolName: event.toolName,
+    toolLabel: event.toolLabel,
+    serverName: event.serverName,
+    args: event.arguments,
+    ok: event.ok,
+    text: event.error,
+    actionReceipts: event.actionReceipts,
+    workCategory: event.workCategory,
+    mutability: event.mutability,
+  };
+}
+
+/**
+ * A Zotero MCP activity event, with the key of the call it belongs to when
+ * this turn could pair the protocol's two identity spaces.
+ */
+export type CodexNativeMcpToolActivityEvent = ZoteroMcpToolActivityEvent & {
+  correlationId?: string;
+};
+
+/** A native item, with that same key when the item is one of those calls. */
+export type CodexNativeItemEvent = CodexAppServerItemEvent & {
+  correlationId?: string;
+};
+
+/**
+ * The two names one Zotero MCP call carries inside a native turn.
+ *
+ * The app server announces the call as an item of its own protocol, named by
+ * the model's function-call id (`call_...`) and carrying the server and the
+ * tool it is about. The Zotero MCP server sees the same call arrive over
+ * JSON-RPC and names it by that request's id. Neither id appears in the other
+ * stream, and this client is the only place that sees both: the item
+ * notification is delivered here, and the MCP observer fires here.
+ *
+ * So the pairing is made here, from the identity both streams state -- this
+ * turn's configured server and the tool's name -- and in the order the calls
+ * happened. Which stream speaks first is not assumed, because the protocol
+ * does not promise it: the first side to arrive opens a pair and is given its
+ * key, and the second side claims that pair and is given the same key. The
+ * panel then merges two rows because they are one call, not because one went
+ * past recently enough to look like the other.
+ *
+ * Two calls of one tool that are open at the same time are refused outright:
+ * the two streams are delivered independently, so nothing in this turn can
+ * say which item belongs to which request, and a row merging one call's
+ * arguments with the other's receipts would be a single wrong row. A call
+ * this cannot pair keeps its own key instead: two rows for one call is a
+ * smaller lie than one wrong row for two calls.
+ */
+export function createCodexNativeMcpCallCorrelator(serverName?: string) {
+  const expectedServer = normalizeNonEmptyString(serverName);
+  type OpenPair = { key: string; hasRequest: boolean; hasItem: boolean };
+  const openPairsByTool = new Map<string, OpenPair[]>();
+  // `null` records a side this turn refused to pair, so asking again answers
+  // the same instead of opening a fresh pair a later call could claim.
+  const keyByRequestId = new Map<string, string | null>();
+  const keyByItemId = new Map<string, string | null>();
+  let minted = 0;
+
+  /**
+   * The key for one call, or nothing when this turn cannot tell which call
+   * it is.
+   *
+   * Pairing is only trustworthy while calls of a tool are one at a time: the
+   * item notifications and the MCP observer are delivered independently, so
+   * two calls of one tool that are open together cannot be ordered against
+   * each other. Claiming by arrival order there would put one call's
+   * arguments in the same row as the other call's receipts -- a single wrong
+   * row, which is worse than the two right ones this refuses with. The open
+   * pairs are dropped at the same time, so the turn recovers for the next
+   * call rather than staying ambiguous to its end.
+   */
+  const claim = (
+    toolName: string,
+    side: "request" | "item",
+  ): string | undefined => {
+    const open = openPairsByTool.get(toolName) || [];
+    if (open.length > 1) {
+      openPairsByTool.delete(toolName);
+      return undefined;
+    }
+    const [pending] = open;
+    if (pending) {
+      const opposite =
+        side === "request"
+          ? pending.hasItem && !pending.hasRequest
+          : pending.hasRequest && !pending.hasItem;
+      if (!opposite) {
+        // The same side twice: a second call opened while the first is still
+        // unpaired.
+        openPairsByTool.delete(toolName);
+        return undefined;
+      }
+      openPairsByTool.delete(toolName);
+      return pending.key;
+    }
+    minted += 1;
+    openPairsByTool.set(toolName, [
+      {
+        key: `codex-call:${minted}`,
+        hasRequest: side === "request",
+        hasItem: side === "item",
+      },
+    ]);
+    return `codex-call:${minted}`;
+  };
+
+  return {
+    /** The key for one Zotero MCP request, stable across its two phases. */
+    correlateRequest(event: {
+      requestId?: string;
+      toolName?: string;
+    }): string | undefined {
+      if (!expectedServer) return undefined;
+      const requestId = normalizeNonEmptyString(event.requestId);
+      if (requestId && keyByRequestId.has(requestId)) {
+        return keyByRequestId.get(requestId) || undefined;
+      }
+      const toolName = normalizeNonEmptyString(event.toolName);
+      if (!toolName) return undefined;
+      const key = claim(toolName, "request");
+      if (requestId) keyByRequestId.set(requestId, key ?? null);
+      return key;
+    },
+    /** The key for one native item, when the item is a call to this server. */
+    correlateItem(item: {
+      id?: string;
+      type?: string;
+      serverName?: string;
+      toolName?: string;
+      name?: string;
+    }): string | undefined {
+      if (!expectedServer) return undefined;
+      if (!isCodexNativeItemType(item, ["mcptool"])) return undefined;
+      if (normalizeNonEmptyString(item.serverName) !== expectedServer) {
+        return undefined;
+      }
+      const itemId = normalizeNonEmptyString(item.id);
+      if (itemId && keyByItemId.has(itemId)) {
+        return keyByItemId.get(itemId) || undefined;
+      }
+      const toolName = normalizeNonEmptyString(item.toolName || item.name);
+      if (!toolName) return undefined;
+      const key = claim(toolName, "item");
+      if (itemId) keyByItemId.set(itemId, key ?? null);
+      return key;
+    },
+  };
+}
+
+export const createCodexNativeMcpCallCorrelatorForTests =
+  createCodexNativeMcpCallCorrelator;
+
+let codexNativeApprovalEffectSequence = 0;
+
+/** Stable identity for the approval this receipt covers. */
+function codexNativeApprovalCallId(
+  request: CodexNativeApprovalRequest,
+): string {
+  return (
+    firstNonEmptyString(normalizeRecord(request.params), [
+      "itemId",
+      "approvalId",
+      "callId",
+      "id",
+    ]) || `${request.method}:${++codexNativeApprovalEffectSequence}`
+  );
+}
+
+/** Whether an app-server approval response granted the request. */
+function codexNativeApprovalResponseGranted(response: unknown): boolean {
+  const record = normalizeRecord(response);
+  return Boolean(
+    record.approved ||
+    record.decision === "accept" ||
+    record.decision === "approved",
+  );
 }
 
 export function isCodexNativeBuiltInApprovalRequest(
@@ -2253,6 +2563,15 @@ function registerNativeApprovalRequestHandlers(params: {
   isTurnStillLive?: () => void;
   signal?: AbortSignal;
   planning?: boolean;
+  /**
+   * Called once for every decision the host returns about an effect Codex
+   * wants to run itself, so the turn can receipt and journal it.
+   */
+  onApprovalEffect?: (decision: {
+    effect: ExternalRuntimeEffect;
+    outcome: ExternalRuntimeEffectOutcome;
+    callId: string;
+  }) => void | Promise<void>;
   getTurnIdentity?: () => Promise<
     { threadId: string; turnId?: string } | undefined
   >;
@@ -2275,6 +2594,23 @@ function registerNativeApprovalRequestHandlers(params: {
           params: rawParams,
           signal: controller.signal,
         };
+        // Every decision about a Codex-run effect is receipted here, which is
+        // the one place all of them pass through: the approval card, the
+        // planning-mode refusal, and the default denial when no host surface
+        // answered. An aborted turn is the exception — nothing was decided.
+        const reportApprovalEffect = async (
+          response: unknown,
+        ): Promise<void> => {
+          const effect = describeCodexNativeApprovalEffect(request);
+          if (!effect || !params.onApprovalEffect) return;
+          await params.onApprovalEffect({
+            effect,
+            outcome: codexNativeApprovalResponseGranted(response)
+              ? "executed"
+              : "declined",
+            callId: codexNativeApprovalCallId(request),
+          });
+        };
         try {
           const identity = await params.getTurnIdentity?.();
           if (controller.signal.aborted) return { answers: {} };
@@ -2286,8 +2622,12 @@ function registerNativeApprovalRequestHandlers(params: {
               (record.turnId && record.turnId !== identity?.turnId))
           )
             throw new Error("Stale native request");
-          if (params.planning && isCodexNativeBuiltInApprovalRequest(request))
-            return resolveCodexNativeApprovalRequest(request).response;
+          if (params.planning && isCodexNativeBuiltInApprovalRequest(request)) {
+            const planningResponse =
+              resolveCodexNativeApprovalRequest(request).response;
+            await reportApprovalEffect(planningResponse);
+            return planningResponse;
+          }
           const questions = readNativeQuestions(request);
           const response = params.onApprovalRequest
             ? await params.onApprovalRequest(request)
@@ -2310,21 +2650,20 @@ function registerNativeApprovalRequestHandlers(params: {
               turnId: identity.turnId,
             });
           }
-          if (!questions)
+          if (!questions) {
+            await reportApprovalEffect(response);
             logCodexNativeApprovalDecision({
               method,
               requestParams: rawParams,
               decision: {
-                approved: Boolean(
-                  normalizeRecord(response).approved ||
-                  normalizeRecord(response).decision === "accept",
-                ),
+                approved: codexNativeApprovalResponseGranted(response),
                 response,
                 reason: "native_handler",
                 target: getApprovalRequestTarget(rawParams),
               },
               redactText: params.redactText,
             });
+          }
           return response;
         } finally {
           for (const signal of signals)
@@ -2632,8 +2971,8 @@ export async function runCodexAppServerNativeTurn(input: {
   onAgentMessageDelta?: (event: CodexAppServerAgentMessageDeltaEvent) => void;
   onReasoning?: (event: ReasoningEvent) => void;
   onUsage?: (usage: UsageStats) => void;
-  onItemStarted?: (event: CodexAppServerItemEvent) => void;
-  onItemCompleted?: (event: CodexAppServerItemEvent) => void;
+  onItemStarted?: (event: CodexNativeItemEvent) => void;
+  onItemCompleted?: (event: CodexNativeItemEvent) => void;
   onPlanDelta?: (event: CodexNativePlanDelta) => void | Promise<void>;
   onPlanArtifact?: (
     artifact: import("../agent/plans/types").PlanArtifact,
@@ -2648,7 +2987,7 @@ export async function runCodexAppServerNativeTurn(input: {
   onHostEvent?: (
     event: import("../agent/types").AgentEvent,
   ) => void | Promise<void>;
-  onMcpToolActivity?: (event: ZoteroMcpToolActivityEvent) => void;
+  onMcpToolActivity?: (event: CodexNativeMcpToolActivityEvent) => void;
   onTurnCompleted?: (event: { turnId: string; status?: string }) => void;
   onMcpSetupWarning?: (message: string) => void;
   onDiagnostics?: (diagnostics: CodexNativeDiagnostics) => void;
@@ -2779,6 +3118,10 @@ export async function runCodexAppServerNativeTurn(input: {
           throw new Error("Conversation write generation changed");
         }
       };
+      // Declared before the approval handlers are registered: a decision can
+      // arrive as soon as they are, and it must have somewhere to record itself.
+      const hostReceipts: import("../agent/contracts/types").AgentActionReceipt[] =
+        [];
       let activeTurnIdentity: { threadId: string; turnId?: string } | undefined;
       let turnStarted = Promise.resolve();
       let resolveTurnStarted: () => void = () => {};
@@ -2795,6 +3138,26 @@ export async function runCodexAppServerNativeTurn(input: {
         isTurnStillLive: assertApprovalTurnStillLive,
         signal: params.signal,
         planning: planContext?.phase === "planning",
+        onApprovalEffect: async (decision) => {
+          const receipt = await recordExternalRuntimeEffect({
+            ...decision,
+            runId: activeTurnIdentity?.turnId || activeTurnIdentity?.threadId,
+            conversationKey: params.scope.conversationKey,
+          });
+          hostReceipts.push(receipt);
+          try {
+            await publishHost(
+              buildCodexNativeEffectActivityEvent({ ...decision, receipt }),
+            );
+          } catch (error) {
+            // The client's effect and its durable receipt are already settled;
+            // a dead or superseded turn must not turn that into a failure.
+            ztoolkit.log(
+              "Codex app-server native: effect receipt not published",
+              error,
+            );
+          }
+        },
         getTurnIdentity: async () => {
           await turnStarted;
           return activeTurnIdentity;
@@ -2814,8 +3177,6 @@ export async function runCodexAppServerNativeTurn(input: {
         instanceID: params.scope.instanceID || summary?.instanceID,
         conversationGeneration: expectedGeneration,
       };
-      const hostReceipts: import("../agent/contracts/types").AgentActionReceipt[] =
-        [];
       let successfulHostToolResults = 0;
       let submittedDocument = false;
       let latestPlanLedger: PlanExecutionLedger | undefined;
@@ -3007,6 +3368,19 @@ export async function runCodexAppServerNativeTurn(input: {
             ),
           );
           const pendingPlanEvidence: Promise<void>[] = [];
+          // One turn, two names per Zotero MCP call; this is where they meet.
+          const mcpCallCorrelation = createCodexNativeMcpCallCorrelator(
+            mcpThreadConfig?.serverName,
+          );
+          // An item that is a call to this turn's Zotero server carries the
+          // key its MCP request carries, whichever of the two arrived first.
+          const correlatedItem = (
+            event: CodexAppServerItemEvent,
+          ): CodexNativeItemEvent => {
+            const redacted = redactTerminalValue(event);
+            const correlationId = mcpCallCorrelation.correlateItem(redacted);
+            return correlationId ? { ...redacted, correlationId } : redacted;
+          };
           const unregisterMcpToolActivity = addZoteroMcpToolActivityObserver(
             (event) => {
               const sameConversation =
@@ -3033,19 +3407,17 @@ export async function runCodexAppServerNativeTurn(input: {
                 scope: scopeWithProfile,
                 event: redactedEvent,
               });
-              params.onMcpToolActivity?.(redactedEvent);
+              const correlationId =
+                mcpCallCorrelation.correlateRequest(redactedEvent);
+              params.onMcpToolActivity?.(
+                correlationId
+                  ? { ...redactedEvent, correlationId }
+                  : redactedEvent,
+              );
               const pending = params.eventJournal
-                .append({
-                  type: "codex_tool_activity",
-                  itemId: event.requestId,
-                  phase: event.phase,
-                  toolName: event.toolName,
-                  args: redactedEvent.arguments,
-                  ok: event.ok,
-                  text: event.error,
-                  actionReceipts: redactedEvent.actionReceipts,
-                  workCategory: redactedEvent.workCategory,
-                })
+                .append(
+                  buildCodexMcpToolActivityEvent(redactedEvent, correlationId),
+                )
                 .then(() => publishAuthority())
                 .then(() => recordMcpPlanEvidence(planContext, redactedEvent))
                 .then(async (ledger) => {
@@ -3195,13 +3567,12 @@ export async function runCodexAppServerNativeTurn(input: {
                   }
                 : undefined,
               onUsage: params.onUsage,
-              onItemStarted: params.onItemStarted
-                ? (event) => params.onItemStarted?.(redactTerminalValue(event))
-                : undefined,
-              onItemCompleted: params.onItemCompleted
-                ? (event) =>
-                    params.onItemCompleted?.(redactTerminalValue(event))
-                : undefined,
+              onItemStarted: (event) => {
+                params.onItemStarted?.(correlatedItem(event));
+              },
+              onItemCompleted: (event) => {
+                params.onItemCompleted?.(correlatedItem(event));
+              },
               onPlanUpdated: params.onPlanUpdated,
               onTurnCompleted: params.onTurnCompleted
                 ? (event) =>

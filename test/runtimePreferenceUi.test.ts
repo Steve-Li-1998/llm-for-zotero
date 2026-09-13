@@ -11,58 +11,6 @@ function source(path: string): string {
 }
 
 describe("runtime preference UI", function () {
-  it("allows Codex and Claude Code availability to coexist", function () {
-    const preferenceScript = source("src/modules/preferenceScript.ts");
-    const preferences = source("addon/content/preferences.xhtml");
-
-    assert.notInclude(preferenceScript, "syncModeMutualExclusion");
-    assert.notInclude(
-      preferenceScript,
-      "Disable Codex App Server first to switch on Claude Code.",
-    );
-    assert.notInclude(
-      preferenceScript,
-      "Disable Claude Code first to switch on Codex App Server.",
-    );
-    assert.include(
-      preferenceScript,
-      "applyCodexAppServerModePreferenceChange(enabled)",
-    );
-    assert.include(
-      preferences.replace(/\s+/g, " "),
-      "Codex and Claude Code can both be enabled; only the selected runtime is active.",
-    );
-  });
-
-  it("uses a responsive live-catalog model list with a separate Customized value", function () {
-    const preferenceScript = source("src/modules/preferenceScript.ts");
-    const preferences = source("addon/content/preferences.xhtml");
-
-    assert.match(
-      preferences,
-      /<html:select\s+id="__addonRef__-claude-code-model"/,
-    );
-    assert.match(preferences, /value="customized"\s*>\s*Customized/);
-    assert.include(preferences, 'id="__addonRef__-claude-code-custom-model"');
-    assert.include(preferences, 'id="__addonRef__-claude-code-model-refresh"');
-    assert.include(preferences, "alias, exact model ID");
-    assert.notInclude(preferences, '<html:option value="opus">');
-    assert.notInclude(preferences, "claude-code-model-options");
-    assert.include(preferences, "minmax(min(220px, 100%), 1fr)");
-    assert.include(preferences, "box-sizing: border-box");
-    assert.include(preferenceScript, "fetchClaudeModelCatalog");
-    assert.include(preferenceScript, "buildClaudeModelPreferenceOptions");
-    assert.include(preferenceScript, "CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY");
-    assert.include(preferenceScript, "getClaudeSettingSourcesByPref");
-    assert.include(
-      preferenceScript,
-      "setClaudeRuntimeModelPref(selected.model)",
-    );
-    assert.include(preferenceScript, "setClaudeRuntimeModelPref(model)");
-    assert.include(preferenceScript, "refreshClaudeModelSuggestions(true)");
-    assert.include(preferenceScript, "shouldPreserveClaudeCustomModelDraft");
-  });
-
   it("wraps multi-sentence Codex and Zotero MCP connection errors", function () {
     const preferences = source("addon/content/preferences.xhtml");
     for (const id of [

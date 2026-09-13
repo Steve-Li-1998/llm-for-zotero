@@ -7,6 +7,7 @@
  */
 import type {
   AgentToolContext,
+  AgentActionEvidence,
   AgentToolEffect,
   AgentWriteToolDefinition,
 } from "../../types";
@@ -1028,6 +1029,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
         destinationCollectionIds: [],
       },
     ],
+    effectOperations: ["command_execute"],
     spec: {
       name: "run_command",
       description:
@@ -1058,7 +1060,6 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
       },
       executionClass: "external_effect",
       workCategory: "external_system",
-      requiresConfirmation: true,
     },
 
     guidance: {
@@ -1078,6 +1079,17 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
 
     presentation: {
       label: "Run Command",
+      // The command itself is the row's content, so the row shows the tool's
+      // label and the block carries the text rather than saying it twice.
+      buildTraceCodeBlock: ({ args }) => {
+        const command =
+          args && typeof args === "object" && !Array.isArray(args)
+            ? (args as Record<string, unknown>).command
+            : undefined;
+        return typeof command === "string" && command.trim()
+          ? { code: command, replacesSummary: true }
+          : null;
+      },
       summaries: {
         onCall: ({ args }) => {
           const a =
@@ -1194,6 +1206,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
       const formatResult = (
         commandResult: Awaited<ReturnType<typeof executeCommand>>,
         effect: AgentToolEffect,
+        actionEvidence?: AgentActionEvidence[],
       ) => {
         const maxLen = 8000;
         const stdout =
@@ -1214,6 +1227,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
             command: input.command,
           },
           effect,
+          ...(actionEvidence ? { actionEvidence } : {}),
         };
       };
       if (context.invocationPlan?.impact === "read_only") {
@@ -1315,7 +1329,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           };
         },
       });
-      return formatResult(result.content, result.effect);
+      return formatResult(result.content, result.effect, result.actionEvidence);
     },
   };
 }

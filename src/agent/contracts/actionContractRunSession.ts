@@ -13,6 +13,7 @@ import type {
 import {
   evaluatePreparedActionContract,
   formatReceiptStatus,
+  receiptReportsEffect,
 } from "./actionEvaluation";
 import type {
   AgentActionContract,
@@ -221,14 +222,7 @@ export class ActionContractRunSession {
   receiptStatus(): string {
     const contract = this.request.actionContract;
     if (!contract) {
-      const directReceipts = this.receipts.filter(
-        (receipt) =>
-          receipt.capability !== "zotero.read" &&
-          (receipt.status === "applied" ||
-            receipt.status === "already_satisfied" ||
-            receipt.status === "partial" ||
-            receipt.status === "observed"),
-      );
+      const directReceipts = this.receipts.filter(receiptReportsEffect);
       return formatReceiptStatus(directReceipts);
     }
     const relevantReceipts = this.receipts.filter((receipt) =>

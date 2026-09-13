@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { loadPlanDocument } from "../src/agent/documents/store";
+import { normalizeExecutionOutput } from "../src/agent/tools/execution/results";
 import { collectReaderSelectionDocuments } from "../src/modules/contextPanel/readerSelection";
 import { createTrustedReadObservations } from "../src/agent/plans/readObservation";
 import type { AgentToolContext } from "../src/agent/types";
@@ -124,9 +125,10 @@ describe("workflow: direct document quote publication", function () {
       );
       const validated = tool.validate(input);
       assert.isTrue(validated.ok, JSON.stringify(validated));
-      const result = await tool.execute(validated.value, context);
-      assert.isString(result.content.documentId);
-      const document = await loadPlanDocument(result.content.documentId);
+      const result = normalizeExecutionOutput(
+        await tool.execute(validated.value, context),
+      ).content as { documentId: string };
+      const document = await loadPlanDocument(result.documentId);
       assert.isOk(document, "the tool publishes a durable document");
       if (!document) return;
       assert.equal(document.validation.quoteVerified, "verified");

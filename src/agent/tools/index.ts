@@ -242,7 +242,6 @@ function createLibraryUpdateTool(tools: {
       "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links.",
     executionClass: "external_effect",
     workCategory: "zotero_action",
-    requiresConfirmation: true,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -352,6 +351,7 @@ function createLibraryUpdateTool(tools: {
             : "Library updated",
     },
     guidance: LIBRARY_UPDATE_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with kind");
@@ -424,7 +424,6 @@ function createLibraryImportTool(tools: {
     // and is labelled external_system for that call.
     executionClass: "external_effect",
     workCategory: "zotero_action",
-    requiresConfirmation: true,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -471,6 +470,7 @@ function createLibraryImportTool(tools: {
       onSuccess: "Import completed",
     },
     guidance: LIBRARY_IMPORT_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with kind");
@@ -503,7 +503,6 @@ function createLibraryDeleteTool(tools: {
       "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item.",
     executionClass: "external_effect",
     workCategory: "zotero_action",
-    requiresConfirmation: true,
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -546,6 +545,7 @@ function createLibraryDeleteTool(tools: {
       onSuccess: "Library delete/restore/merge completed",
     },
     guidance: LIBRARY_DELETE_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with mode");
@@ -702,7 +702,7 @@ export function createBuiltInToolRegistry(
       name: "note_write_batch",
       label: "Write Notes",
       description:
-        "Write a note onto each of many explicitly identified items in one checkpointed batch operation.",
+        "Write a note onto each of many explicitly identified items in one checkpointed batch operation. To continue an interrupted batch, pass resumeBatchId alone: written items are skipped and the rest are written from the bodies already prepared, so no note is written again or regenerated.",
     }),
   );
   registry.register(savedSearchUpdate);

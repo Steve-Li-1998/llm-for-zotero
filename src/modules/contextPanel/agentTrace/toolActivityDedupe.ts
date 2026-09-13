@@ -7,37 +7,6 @@ type CodexToolActivityPayload = Extract<
 >;
 
 export const TOOL_ACTIVITY_VISIBLE_DEDUPE_WINDOW_MS = 8000;
-const ZOTERO_MCP_TRACE_TOOL_NAMES = new Set([
-  "query_library",
-  "read_paper",
-  "search_paper",
-  "view_pdf_pages",
-  "search_literature_online",
-  "edit_current_note",
-  "import_identifiers",
-  "update_metadata",
-  "library_search",
-  "library_read",
-  "library_retrieve",
-  "paper_read",
-  "literature_search",
-  "library_update",
-  "collection_update",
-  "note_write",
-  "library_import",
-  "library_delete",
-  "attachment_update",
-  "undo_last_action",
-]);
-const ZOTERO_MCP_TRACE_SERVER_NAMES = new Set([
-  "llm_for_zotero",
-  "llm-for-zotero",
-  "llm for zotero",
-  "claude_zotero",
-  "claude-zotero",
-  "claude zotero",
-]);
-
 function normalizeCodexServerIdentityTextForDedupe(value: string): string {
   return sanitizeText(value || "")
     .trim()
@@ -102,6 +71,14 @@ function normalizeCodexToolNameForDedupe(name: string | undefined): string {
   return mcpMatch?.[1] || clean;
 }
 
+/**
+ * Which server a relayed activity row came from.
+ *
+ * Both bridges stamp `serverName` on every activity event they emit, so the
+ * answer is the event's own; a tool identifier that spells the server into
+ * itself (`mcp__<server>__<tool>`) is the one other place the fact is
+ * recorded, and reading it back out is parsing, not inference.
+ */
 function normalizeCodexServerNameForDedupe(
   serverName: string | undefined,
   toolName: string | undefined,
@@ -110,16 +87,8 @@ function normalizeCodexServerNameForDedupe(
   if (explicit) return explicit;
   const cleanToolName = sanitizeText(toolName || "").trim();
   const mcpMatch = cleanToolName.match(/^mcp__(.+)__(.+)$/);
-  if (mcpMatch?.[1]) {
-    const serverAlias = normalizeZoteroMcpServerAliasForDedupe(mcpMatch[1]);
-    if (ZOTERO_MCP_TRACE_SERVER_NAMES.has(mcpMatch[1].toLowerCase())) {
-      return "llm_for_zotero";
-    }
-    return serverAlias;
-  }
-  const normalizedToolName = normalizeCodexToolNameForDedupe(cleanToolName);
-  return ZOTERO_MCP_TRACE_TOOL_NAMES.has(normalizedToolName)
-    ? "llm_for_zotero"
+  return mcpMatch?.[1]
+    ? normalizeZoteroMcpServerAliasForDedupe(mcpMatch[1])
     : "";
 }
 
@@ -201,6 +170,34 @@ export function isWithinToolActivityDedupeWindow(
   );
 }
 
+/**
+ * The receipts of both merged rows, never only the later row's.
+ *
+ * A merge is a presentation decision: two rows read as one activity. The
+ * evidence is not presentation, so it accumulates instead of being replaced —
+ * otherwise merging two effects would silently discard one effect's proof and
+ * the surviving chip would speak for work it never covered. A receipt that
+ * arrives twice (a started/completed pair for one call) is kept once, by id.
+ */
+function mergeToolActivityReceipts(
+  previousPayload: CodexToolActivityPayload,
+  nextPayload: CodexToolActivityPayload,
+): CodexToolActivityPayload["actionReceipts"] {
+  const merged = [
+    ...(previousPayload.actionReceipts || []),
+    ...(nextPayload.actionReceipts || []),
+  ];
+  if (!merged.length) return previousPayload.actionReceipts;
+  const seen = new Set<string>();
+  return merged.filter((receipt) => {
+    const id = receipt?.id;
+    if (!id) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 export function mergeToolActivityPayload(
   previousPayload: CodexToolActivityPayload,
   nextPayload: CodexToolActivityPayload,
@@ -208,6 +205,7 @@ export function mergeToolActivityPayload(
   return {
     ...previousPayload,
     ...nextPayload,
+    actionReceipts: mergeToolActivityReceipts(previousPayload, nextPayload),
     toolName: nextPayload.toolName || previousPayload.toolName,
     toolLabel: nextPayload.toolLabel || previousPayload.toolLabel,
     serverName: nextPayload.serverName || previousPayload.serverName,

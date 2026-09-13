@@ -7,6 +7,10 @@ import type {
   AgentActionReceipt,
   AgentToolEffect,
 } from "../types";
+import {
+  AGENT_ACTION_VERIFICATION_LABELS,
+  readAgentActionVerification,
+} from "./actionVerificationLabels";
 import { innermostToolResult } from "./toolResultEnvelope";
 import { operationCatalogEntry } from "./operationCatalog";
 
@@ -34,19 +38,21 @@ export function evaluatePreparedActionContract(
   receipts: AgentActionReceipt[],
 ): ContractEvaluation {
   const delegated = receipts.filter(
-    (receipt) => receipt.executionAuthority === "external_runtime",
+    (receipt) =>
+      receipt.executionAuthority === "external_runtime" &&
+      !isConnectedRuntimeSideEffect(receipt),
   );
   if (delegated.length) {
     // The calling agent owns action intent. Report the actual effects without
     // reinterpreting them through Original Agent obligations or inviting replay.
-    if (delegated.every(receiptVerified)) return { state: "satisfied" };
+    if (delegated.every(receiptProved)) return { state: "satisfied" };
     const state = delegated.some((receipt) => receipt.status === "failed")
       ? "failed"
       : delegated.every((receipt) => receipt.status === "cancelled")
         ? "cancelled"
         : delegated.some(
               (receipt) =>
-                receipt.status === "partial" || receiptVerified(receipt),
+                receipt.status === "partial" || receiptProved(receipt),
             )
           ? "partial"
           : "unverified";
@@ -331,12 +337,59 @@ function receiptMatches(
   return receipt.obligationId === obligation.id;
 }
 
-function receiptVerified(receipt: AgentActionReceipt): boolean {
+/**
+ * An effect the connected client ran inside its own runtime.
+ *
+ * A file Claude Code wrote or a command Codex executed is receipted and
+ * journaled so the trace and the audit trail show it, but it says nothing
+ * about the Zotero action the turn owes. Reading it as delegated action
+ * evidence would break completion in both directions: a shell command would
+ * stand in for an unperformed tag write, and an approved command — whose proof
+ * can only ever be `execution_only` — would report an otherwise complete turn
+ * as unverified.
+ *
+ * The test is provenance, not capability. A `file.write` receipt can equally
+ * come from `file_io` run as a host tool, which the host journaled and
+ * verified and which is delegated evidence like any other; reading the
+ * capability as a proxy would only work while that tool stays off the MCP
+ * surface, and would break silently on the day it is exposed. `origin` is set
+ * by exactly one owner and says what actually matters: the host executed
+ * nothing here.
+ */
+function isConnectedRuntimeSideEffect(receipt: AgentActionReceipt): boolean {
+  return receipt.origin === "connected_runtime";
+}
+
+function receiptTookEffect(receipt: AgentActionReceipt): boolean {
   return (
-    receipt.verification === "verified" &&
-    (receipt.status === "applied" ||
-      receipt.status === "already_satisfied" ||
-      receipt.status === "observed")
+    receipt.status === "applied" ||
+    receipt.status === "already_satisfied" ||
+    receipt.status === "observed"
+  );
+}
+
+function receiptVerified(receipt: AgentActionReceipt): boolean {
+  return receipt.verification === "verified" && receiptTookEffect(receipt);
+}
+
+/**
+ * The receipt carries the strongest proof its proof domain admits.
+ *
+ * `verified` is a re-read that matched. `execution_only` is the whole proof a
+ * shell command or an effect-free script can ever have: it ran, and there is
+ * no state to read back. Phase 3 task 3 ruled that such a receipt passes the
+ * host's own final gate, so the delegated gate must not read it as a failure
+ * either — a client that ran one would be told its complete turn was
+ * unverified and invited to run the command a second time.
+ *
+ * `unverified` stays a failure in both gates: there a re-read was possible
+ * and either disagreed or never happened.
+ */
+function receiptProved(receipt: AgentActionReceipt): boolean {
+  return (
+    (receipt.verification === "verified" ||
+      receipt.verification === "execution_only") &&
+    receiptTookEffect(receipt)
   );
 }
 
@@ -417,10 +470,18 @@ export function evaluateActionContract(
     const matching = receipts.filter((receipt) =>
       receiptMatches(receipt, obligation),
     );
-    const verified = matching.filter(receiptVerified);
+    // What credits an obligation is the strongest proof its own proof domain
+    // admits. `execution` has no state to read back, so `execution_only` —
+    // which both completion gates accept — is what an execution obligation
+    // can be shown. Every other domain still requires a re-read that matched,
+    // and a receipt only ever matches an obligation of its own operation, so
+    // this never lets a command stand in for a library write.
+    const credited = matching.filter(
+      obligation.proofDomain === "execution" ? receiptProved : receiptVerified,
+    );
     if (
       matching.some((receipt) => receipt.status === "cancelled") &&
-      !verified.length
+      !credited.length
     ) {
       return {
         state: "cancelled",
@@ -435,7 +496,7 @@ export function evaluateActionContract(
       (obligation.scopeRole !== "destination" || obligation.destinationCreation)
     ) {
       const covered = new Set(
-        verified.flatMap((receipt) => [
+        credited.flatMap((receipt) => [
           ...receipt.appliedTargets,
           ...receipt.alreadySatisfiedTargets,
         ]),
@@ -447,7 +508,7 @@ export function evaluateActionContract(
       ) {
         missing.push(obligation);
       }
-    } else if (!verified.length) {
+    } else if (!credited.length) {
       missing.push(obligation);
     }
     sawPartial ||= matching.some((receipt) => receipt.status === "partial");
@@ -500,6 +561,18 @@ export function evaluateActionContract(
   };
 }
 
+/**
+ * The per-receipt status block, written for the model that reads the answer.
+ *
+ * This text is appended to the answer the runtime finalizes, which is at once
+ * the transcript the model reads next turn, the correction it receives this
+ * turn, and the string the panel renders. The first two audiences need the
+ * machine-readable statement; the reader gets the same facts as a card at the
+ * end of the trace, so the panel removes the block at display time with
+ * `stripReceiptStatusForDisplay` and nothing changes about what is persisted.
+ * A receipt journaled before the verification field existed states no proof,
+ * and the block leaves it out rather than printing an empty claim.
+ */
 export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
   return receipts
     .map((receipt) => {
@@ -508,7 +581,72 @@ export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
       const coverage = receipt.requestedTargets.length
         ? ` ${verified}/${receipt.requestedTargets.length}`
         : "";
-      return `[Action status: ${receipt.operation} — ${receipt.status}${coverage}; ${receipt.verification}; proof:${receipt.proofDomain}]`;
+      const verification = readAgentActionVerification(receipt.verification);
+      const proof = verification
+        ? ` ${AGENT_ACTION_VERIFICATION_LABELS[verification]};`
+        : "";
+      return `[Action status: ${receipt.operation} — ${receipt.status}${coverage};${proof} proof:${receipt.proofDomain}]`;
     })
     .join("\n");
+}
+
+/**
+ * The statuses under which a receipt claims the turn did something.
+ *
+ * Work that landed, work that was already true, work that landed for some of
+ * its targets, and an effect that ran with nothing to re-read afterwards. A
+ * cancelled or failed action is reported where it failed; counting it here
+ * would say the opposite of what happened.
+ */
+const REPORTED_EFFECT_STATUSES: ReadonlySet<AgentActionReceipt["status"]> =
+  new Set(["applied", "already_satisfied", "partial", "observed"]);
+
+/**
+ * Whether a receipt states an effect worth reporting as work the turn did.
+ *
+ * One predicate serves the model-facing status block and the reader-facing
+ * summary card, so the two can never come to disagree about what the turn
+ * did. Reads are excluded deliberately: a full read journals a receipt to
+ * prove the evidence was actually consulted, and answering a question after
+ * reading a paper is not an action taken on the library.
+ */
+export function receiptReportsEffect(
+  receipt: Pick<AgentActionReceipt, "capability" | "status">,
+): boolean {
+  return (
+    receipt.capability !== "zotero.read" &&
+    REPORTED_EFFECT_STATUSES.has(receipt.status)
+  );
+}
+
+/** One finished block line, exactly as `formatReceiptStatus` writes it. */
+const RECEIPT_STATUS_LINE = /^\[Action status:[^\n]*\]\s*$/;
+
+/**
+ * The block's last line while the answer is still streaming, before its
+ * closing bracket has arrived.
+ */
+const RECEIPT_STATUS_PARTIAL_LINE = /^\[Action status:[^\]\n]*$/;
+
+/**
+ * The answer without the block `formatReceiptStatus` appended to it.
+ *
+ * The runtime concatenates the block onto the end of the final text, so this
+ * removes the trailing run of block lines and the blank line that separated
+ * them from the answer, and nothing else: an action-status line the answer
+ * itself quotes sits before other content and is left alone. The incremental
+ * render path sees the block one delta at a time, so a last line that has
+ * opened the block without closing it goes too, rather than flashing a half
+ * written receipt at the reader.
+ */
+export function stripReceiptStatusForDisplay(text: string): string {
+  const lines = text.split("\n");
+  let end = lines.length;
+  while (end && !lines[end - 1].trim()) end -= 1;
+  const blockEnd = end;
+  if (end && RECEIPT_STATUS_PARTIAL_LINE.test(lines[end - 1])) end -= 1;
+  while (end && RECEIPT_STATUS_LINE.test(lines[end - 1])) end -= 1;
+  if (end === blockEnd) return text;
+  while (end && !lines[end - 1].trim()) end -= 1;
+  return lines.slice(0, end).join("\n");
 }

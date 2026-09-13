@@ -196,9 +196,9 @@ import {
   editLatestUserMessageAndRetry,
   editUserTurnAndRetry,
   findLatestRetryPair,
-  scheduleConversationQuoteRevalidation,
   type EditLatestTurnMarker,
 } from "./chat";
+import { scheduleConversationQuoteRevalidation } from "./quoteValidation/scheduling";
 import {
   getWorkflowTestSendInterceptor,
   notifyWorkflowTestSendSettled,
@@ -208,10 +208,12 @@ import {
   bindTestPanelHost,
   canCommitPanelConversation,
   capturePanelOperationLease,
+  evaluatePanelOwnership,
   getPanelHostBinding,
   isPanelHostCompatibleWithPaper,
   isPanelOperationLeaseCurrent,
   requireCurrentPanelOwnership,
+  shouldOwnershipFenceSwallowEvent,
 } from "./panelHostOwnership";
 import {
   getActiveContextAttachmentFromTabs,
@@ -377,7 +379,11 @@ import {
   isAutoLoadedSnapshotForCurrentPaper,
 } from "./paperContextPreloadIdentity";
 import type { SetupHandlersContext } from "./setupHandlers/types";
-import { observeElementDisconnected } from "./setupHandlers/lifecycle";
+import {
+  observeElementDisconnected,
+  PanelLifecycle,
+} from "./setupHandlers/lifecycle";
+import { createWebChatFeature } from "./setupHandlers/features/webChat";
 import {
   MODEL_MENU_OPEN_CLASS,
   REASONING_MENU_OPEN_CLASS,
@@ -842,9 +848,13 @@ export function setupHandlers(
     if (!item) return;
     const target = event.target as Node | null;
     if (target !== body && target && !panelRoot.contains(target)) return;
-    if (requireCurrentPanelOwnership(body, item, `panel-${event.type}`)) {
-      return;
-    }
+    // The decision itself lives in panelHostOwnership.ts: a panel that refuses
+    // its own input must still be escapable, so events aimed at the runtime
+    // toggles (which re-resolve the panel's scope before switching) and
+    // application accelerators the panel does not bind are delivered, while
+    // everything else stays fenced. Without that, any scope bug degrades into a
+    // dead, apparently unquittable UI.
+    if (!shouldOwnershipFenceSwallowEvent(body, item, event)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
@@ -1509,7 +1519,13 @@ export function setupHandlers(
     persistDraftInputForCurrentConversation();
     setConversationSystemPref(nextSystem);
     currentConversationSystem = nextSystem;
-    panelRoot.dataset.conversationSystem = nextSystem;
+    // The mounted DOM scope must keep describing the conversation the panel is
+    // actually on. `dataset.conversationSystem` is half of that scope, so
+    // writing the new system here — before the conversation key has moved —
+    // makes the panel's own ownership check disagree with its own item, and
+    // every later step of this switch is refused by that check. It is written
+    // by `syncConversationIdentity` instead, together with the new key, once
+    // the panel has committed the conversation of the system being entered.
     syncQueuedFollowUpRegistration();
     updateRuntimeSystemToggles();
     if (nextSystem === "claude_code") {
@@ -1705,6 +1721,7 @@ export function setupHandlers(
     if ((body as HTMLElement).dataset?.standalone === "true") {
       activeContextPanelRawItems.set(body, item || null);
     }
+    const noteSession = resolveCurrentNoteSession();
     panelRoot.dataset.itemId =
       Number.isFinite(conversationKey) && (conversationKey as number) > 0
         ? `${conversationKey}`
@@ -1712,7 +1729,6 @@ export function setupHandlers(
     syncPlanModeChip();
     const libraryID = getCurrentLibraryID();
     panelRoot.dataset.libraryId = libraryID > 0 ? `${libraryID}` : "";
-    const noteSession = resolveCurrentNoteSession();
     const mode: "global" | "paper" | null = item
       ? resolveDisplayConversationKind(item)
       : null;
@@ -2491,6 +2507,11 @@ export function setupHandlers(
         (current.width !== previous.width ||
           current.height !== previous.height),
       );
+      if (!item && panelRoot.dataset.startPageActive === "true") {
+        chatBox.scrollTop = 0;
+        captureChatBoxViewportState();
+        return;
+      }
       if (viewportChanged && previous && previous.nearBottom) {
         const targetBottom = Math.max(
           0,
@@ -5019,6 +5040,28 @@ export function setupHandlers(
     historyLifecycleController.forkConversationFromTurn;
   resetHistorySearchState = historyLifecycleController.resetHistorySearchState;
 
+  /**
+   * The runtime toggle is the reader's way out of a panel whose declared scope
+   * has drifted from the conversation it is showing. Delivering the click is
+   * only half of that: `switchConversationSystem` gates on the same ownership
+   * verdict, so without this the click would arrive and then be refused. A
+   * `stale-candidate` verdict means the panel's own item is sound and only its
+   * declaration is wrong, so re-derive the declaration from the item and carry
+   * on. Any other verdict is a genuine host problem and is left to the gate.
+   */
+  const recoverDriftedPanelScopeForRuntimeToggle = () => {
+    if (!item) return;
+    if (evaluatePanelOwnership(body, item) !== "stale-candidate") return;
+    ztoolkit.log(
+      "LLM: re-resolving a drifted panel scope for the runtime toggle",
+      {
+        conversationKey: getConversationKey(item),
+        declaredSystem: panelRoot.dataset.conversationSystem,
+      },
+    );
+    syncConversationIdentity();
+  };
+
   const switchRuntimeSystemFromControl = async (
     clickedSystem: RuntimeConversationSystem,
   ) => {
@@ -5031,6 +5074,7 @@ export function setupHandlers(
     ) {
       return;
     }
+    recoverDriftedPanelScopeForRuntimeToggle();
     runtimeSystemSwitchInFlight = true;
     updateRuntimeSystemToggles();
     try {
@@ -5503,9 +5547,7 @@ export function setupHandlers(
               ) as HTMLElement | null;
               if (chatShellEl) {
                 try {
-                  abortWebChatPreload();
-                  const token = { aborted: false };
-                  webchatPreloadAbort = token;
+                  const token = webChatFeature.beginPreload();
                   const { showWebChatPreloadScreen } =
                     await import("../../webchat/preloadScreen");
                   const { getWebChatTargetByModelName } =
@@ -5528,7 +5570,7 @@ export function setupHandlers(
                 } catch {
                   // Preload failed or was aborted — still apply UI (dot will show status)
                 } finally {
-                  webchatPreloadAbort = null;
+                  webChatFeature.clearPreload();
                 }
               }
 
@@ -5915,16 +5957,19 @@ export function setupHandlers(
     }
   };
 
-  let webchatConnectionTimer: ReturnType<typeof setInterval> | null = null;
-  // Simple abort token — Zotero's Gecko context lacks AbortController.
-  let webchatPreloadAbort: { aborted: boolean } | null = null;
-
-  const abortWebChatPreload = () => {
-    if (webchatPreloadAbort) {
-      webchatPreloadAbort.aborted = true;
-      webchatPreloadAbort = null;
-    }
-  };
+  // Panel features register their teardown here. cleanupSetupHandlers stays
+  // explicitly ordered, so it calls the handle returned by add() at the exact
+  // position the feature's undo used to sit; dispose() is the safety net for
+  // any feature that is registered but not listed there.
+  const panelLifecycle = new PanelLifecycle();
+  const webChatFeature = createWebChatFeature({
+    isWebChatMode: () => isWebChatMode(),
+    hasExistingWebChatSession: () => hasExistingWebChatSessionForCurrentItem(),
+    getCurrentModelName: () => getSelectedModelInfo().currentModel,
+  });
+  const disposeWebChatFeature = panelLifecycle.add(() =>
+    webChatFeature.unmount(),
+  );
 
   markNextWebChatSendAsNewChat = () => {
     if (!item) return;
@@ -6005,11 +6050,11 @@ export function setupHandlers(
     getSelectedModelEntryId: () =>
       getSelectedModelInfo().selectedEntryId || null,
     setSelectedModelEntry,
-    abortPreload: abortWebChatPreload,
+    abortPreload: () => webChatFeature.abortPreload(),
     removePreloadOverlay: () => {
       body.querySelector(".llm-webchat-preload")?.remove();
     },
-    stopConnectionCheck: () => stopWebChatConnectionCheck(),
+    stopConnectionCheck: () => webChatFeature.stopConnectionCheck(),
     clearNewChatIntent: clearNextWebChatNewChatIntent,
     applyWebChatModeUI: () => applyWebChatModeUI(),
     updateModelButton: () => updateModelButton(),
@@ -6036,33 +6081,6 @@ export function setupHandlers(
     hooks.leaveWebChatMode = () =>
       leaveWebChatMode({ restoreConversation: false });
   }
-
-  const startWebChatConnectionCheck = (dot: HTMLElement) => {
-    stopWebChatConnectionCheck();
-    const check = async () => {
-      try {
-        // Always use dynamic port — saved apiBase may be stale
-        const { getRelayBaseUrl } = await import("../../webchat/relayServer");
-        const host = getRelayBaseUrl();
-        const { testConnection } = await import("../../webchat/client");
-        const alive = await testConnection(host);
-        dot.className = alive
-          ? "llm-webchat-dot llm-webchat-dot-connected"
-          : "llm-webchat-dot llm-webchat-dot-disconnected";
-      } catch {
-        dot.className = "llm-webchat-dot llm-webchat-dot-disconnected";
-      }
-    };
-    void check(); // immediate first check
-    webchatConnectionTimer = setInterval(check, 5000);
-  };
-
-  const stopWebChatConnectionCheck = () => {
-    if (webchatConnectionTimer !== null) {
-      clearInterval(webchatConnectionTimer);
-      webchatConnectionTimer = null;
-    }
-  };
 
   updateReasoningButton = () => {
     if (!item || !reasoningBtn) return;
@@ -6500,7 +6518,7 @@ export function setupHandlers(
         modeChipBtn.setAttribute("aria-disabled", "true");
         modeChipBtn.dataset.webchatStatic = "true";
         modeChipBtn.style.cursor = "default";
-        startWebChatConnectionCheck(dot);
+        webChatFeature.startConnectionCheck(dot);
       } else {
         const oldDot = modeChipBtn.querySelector(".llm-webchat-dot");
         if (oldDot) {
@@ -6512,7 +6530,7 @@ export function setupHandlers(
             ? "Switch to paper chat"
             : "Switch to library chat";
         }
-        stopWebChatConnectionCheck();
+        webChatFeature.stopConnectionCheck();
         modeChipBtn.disabled = false;
         modeChipBtn.removeAttribute("aria-disabled");
         delete modeChipBtn.dataset.webchatStatic;
@@ -6567,62 +6585,12 @@ export function setupHandlers(
   syncModelFromPrefs();
   flushResponsiveLayoutSyncNow();
   // Set active_target before applyWebChatModeUI so sidebar filters by the correct site
-  try {
-    if (isWebChatMode()) {
-      const { getWebChatTargetByModelName: getColdTarget } =
-        require("../../webchat/types") as typeof import("../../webchat/types");
-      const { relaySetActiveTarget: setColdTarget } =
-        require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
-      const { currentModel: coldStartModel } = getSelectedModelInfo();
-      const coldEntry = getColdTarget(coldStartModel || "");
-      if (coldEntry?.id) setColdTarget(coldEntry.id);
-    }
-  } catch {
-    /* isWebChatMode may not be ready */
-  }
+  webChatFeature.primeColdStartTarget();
   applyWebChatModeUI();
   resetComposePreviewUI();
   flushPanelStateRefreshNow();
   // [webchat] Cold startup → show preload screen so user knows they're in webchat mode
-  try {
-    if (isWebChatMode() && !hasExistingWebChatSessionForCurrentItem()) {
-      const chatShellEl = body.querySelector(
-        ".llm-chat-shell",
-      ) as HTMLElement | null;
-      if (chatShellEl) {
-        void (async () => {
-          try {
-            abortWebChatPreload();
-            const token = { aborted: false };
-            webchatPreloadAbort = token;
-            const { showWebChatPreloadScreen } =
-              await import("../../webchat/preloadScreen");
-            const { getWebChatTargetByModelName } =
-              await import("../../webchat/types");
-            const { relaySetActiveTarget: relaySetTarget2 } =
-              await import("../../webchat/relayServer");
-            const { currentModel: coldModel } = getSelectedModelInfo();
-            const coldTargetEntry = getWebChatTargetByModelName(
-              coldModel || "",
-            );
-            if (coldTargetEntry?.id) relaySetTarget2(coldTargetEntry.id);
-            await showWebChatPreloadScreen(
-              chatShellEl,
-              token,
-              coldTargetEntry?.label,
-              coldTargetEntry?.modelName,
-            );
-          } catch {
-            // Preload failed or was aborted — dot will show connection status
-          } finally {
-            webchatPreloadAbort = null;
-          }
-        })();
-      }
-    }
-  } catch {
-    // isWebChatMode may not be ready during initial render
-  }
+  webChatFeature.mount(handlerContext);
   restoreDraftInputForCurrentConversation();
   if (isWebChatMode()) {
     initializeWebChatConversationForCurrentItem();
@@ -7725,6 +7693,10 @@ export function setupHandlers(
     runtimeModeBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      // Same contract as the runtime-system toggles: the fence delivers this
+      // click even on a drifted panel, so the handler repairs the drift instead
+      // of refusing the only control that can end it.
+      recoverDriftedPanelScopeForRuntimeToggle();
       if (
         !item ||
         !requireCurrentPanelOwnership(body, item, "switch-runtime-mode")
@@ -7834,7 +7806,10 @@ export function setupHandlers(
     });
   }
 
-  // Enter key (Shift+Enter for newline)
+  // Enter key (Shift+Enter for newline).
+  // Every key this handler binds is declared in `composerKeyBindings.ts`; the
+  // panel ownership fence reads that declaration to keep these keys behind the
+  // fence, so a binding added here must be added there too.
   inputBox.addEventListener("keydown", (e: Event) => {
     const ke = e as KeyboardEvent;
     if (isFloatingMenuOpen(slashMenu)) {
@@ -8396,10 +8371,9 @@ export function setupHandlers(
   const cleanupSetupHandlers = () => {
     if (setupHandlersCleaned) return;
     setupHandlersCleaned = true;
-    // The connection-check interval and preload token outlive the detached
-    // body otherwise — one leaked 5s timer per abandoned WebChat panel.
-    stopWebChatConnectionCheck();
-    abortWebChatPreload();
+    // WebChat first, exactly where its undo used to sit: the connection-check
+    // interval and preload token outlive the detached body otherwise.
+    disposeWebChatFeature();
     disconnectObserverCleanup?.();
     disconnectObserverCleanup = null;
     cleanupPrefObservers?.();
@@ -8440,6 +8414,7 @@ export function setupHandlers(
     delete (body as any).__llmScheduleClaudeThreadQueueDrain;
     delete (body as any).__llmQueueTurnDeletion;
     delete (body as any).__llmSearchPanelHistory;
+    panelLifecycle.dispose();
     unregisterContextSurfaceActions();
     disposePendingDeletionSubscriptionForBody(body);
     void releaseClaudeRuntimeForBody(body);

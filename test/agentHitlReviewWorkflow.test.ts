@@ -183,6 +183,7 @@ function createStubFacadeTool(
   acceptActionIds: string[] = [],
 ): AgentToolDefinition<Record<string, unknown>, unknown> {
   return {
+    effectOperations: ["settings_update"],
     spec: {
       name: toolName,
       description: toolName,

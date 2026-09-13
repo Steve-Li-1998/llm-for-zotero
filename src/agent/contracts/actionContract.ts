@@ -12,6 +12,8 @@ import type {
   AgentActionProgressLedger,
   AgentActionProposal,
   AgentActionReceipt,
+  AgentExternalMutationEvidence,
+  AgentLibraryMutationEvidence,
   AgentRuntimeRequest,
   AgentToolDefinition,
   AgentToolEffect,
@@ -21,6 +23,7 @@ import {
   itemTarget,
   normalizePath,
   prepareActionExecution,
+  nativeNoteWriteFacts,
   verifyNoteWriteTarget,
   type ActionContractGateway,
   type PreparedActionExecution,
@@ -37,7 +40,13 @@ import { getOriginalAgentPermissionMode } from "../originalAgentPermissionMode";
 import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPermissionMode";
 import { canonicalJsonEqual } from "../services/libraryMutation/canonicalJson";
 import { mutationPostconditionIsSatisfied } from "../services/libraryMutation/handlerOperations";
+import {
+  verifyRecordedPostImage,
+  type PostImageReader,
+} from "../services/recordedPostImage";
+import type { RevertedStep } from "../services/changeReverter";
 import { innermostToolResult, toolResultString } from "./toolResultEnvelope";
+import { readFlatMaterialRef } from "../documents/materialRef";
 
 export type {
   ActionContractGateway,
@@ -45,6 +54,7 @@ export type {
 } from "./actionOperationEvidence";
 export {
   describeLibraryMutationActions,
+  describeLibraryMutationInput,
   extractLibraryMutationOperations,
 } from "./actionOperationEvidence";
 
@@ -281,11 +291,29 @@ function targetDelta(previous: readonly number[], current: readonly number[]) {
   };
 }
 
+/**
+ * What the action contract can read back for itself.
+ *
+ * It holds its own narrow Zotero gateway, not the mutation service, so a
+ * post-image whose shape needs the mutation handlers reads back as "not
+ * re-readable" here rather than as agreement.
+ */
+function contractPostImageReader(
+  gateway: ActionContractGateway,
+): PostImageReader {
+  return {
+    getItem: (itemId) => gateway.getItem(itemId),
+    ...(gateway.getSettingNativeState
+      ? { readSetting: (key) => gateway.getSettingNativeState!(key).value }
+      : {}),
+  };
+}
+
 function readEvidenceRef(content: unknown): string | undefined {
   return toolResultString(content, ["actionId", "journalStepId"]);
 }
 
-function evidenceTargets(evidence: AgentActionEvidence): string[] {
+function evidenceTargets(evidence: AgentLibraryMutationEvidence): string[] {
   return [
     ...(evidence.postState.items || []).map((item) => `item:${item.itemId}`),
     ...(evidence.postState.collections || []).map(
@@ -300,13 +328,87 @@ function evidenceTargets(evidence: AgentActionEvidence): string[] {
 function matchingNativeEvidence(
   proposal: AgentActionProposal,
   evidence: AgentActionEvidence[] | undefined,
-): AgentActionEvidence | undefined {
+): AgentLibraryMutationEvidence | undefined {
   return evidence?.find(
-    (entry) =>
+    (entry): entry is AgentLibraryMutationEvidence =>
+      entry.source === "library_mutation" &&
       entry.proofDomain === "zotero_state" &&
       proposal.operationValue !== undefined &&
       canonicalJsonEqual(entry.operationValue, proposal.operationValue),
   );
+}
+
+/**
+ * The record the mutation boundary attached for a write that no library
+ * mutation operation describes.
+ *
+ * One `executeExternalMutation` call journals exactly one such step and
+ * attaches exactly one record, and a proposal that reaches this point has no
+ * operation of its own to match evidence against. Identity therefore comes
+ * from the call, and a result carrying several records — a multi-file export
+ * writes one per file — is not matched at all rather than matched to whichever
+ * came first.
+ */
+function externalMutationEvidence(
+  evidence: AgentActionEvidence[] | undefined,
+): AgentExternalMutationEvidence | undefined {
+  const external = (evidence || []).filter(
+    (entry): entry is AgentExternalMutationEvidence =>
+      entry.source === "external_mutation",
+  );
+  return external.length === 1 ? external[0] : undefined;
+}
+
+/**
+ * The per-step native re-read `revertActions` performed, as the undo and
+ * revert tools report it. A result without it proves nothing about native
+ * state, so the receipt treats an empty list as "not re-read".
+ */
+function revertedSteps(result: Record<string, unknown>): RevertedStep[] {
+  const entries = Array.isArray(result.revertedSteps)
+    ? result.revertedSteps
+    : [];
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const step = entry as Record<string, unknown>;
+    const verification = String(step.verification || "");
+    if (
+      verification !== "matched" &&
+      verification !== "mismatched" &&
+      verification !== "not_re_readable"
+    ) {
+      return [];
+    }
+    return [
+      {
+        actionId: String(step.actionId || ""),
+        sequence: Number(step.sequence) || 0,
+        verification,
+        ...(typeof step.reason === "string" ? { reason: step.reason } : {}),
+      } as RevertedStep,
+    ];
+  });
+}
+
+/**
+ * A post-state re-read the tool performed for itself, for effects whose proof
+ * domain is `execution`. A shell command has no such state and attaches none,
+ * which is what keeps `run_command` at `execution_only`.
+ */
+function readExecutionPostState(content: unknown): {
+  verified: boolean;
+  facts: string[];
+  reason?: string;
+} | null {
+  const report = innermostToolResult(content).executionPostState;
+  if (!report || typeof report !== "object") return null;
+  const record = report as Record<string, unknown>;
+  if (typeof record.verified !== "boolean") return null;
+  return {
+    verified: record.verified,
+    facts: Array.isArray(record.facts) ? record.facts.map(String) : [],
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+  };
 }
 
 function fileEvidence(
@@ -1122,7 +1224,7 @@ export class ActionContractService {
     return null;
   }
 
-  finalize(
+  async finalize(
     contract: AgentActionContract | undefined,
     prepared: PreparedActionExecution,
     params: {
@@ -1138,10 +1240,10 @@ export class ActionContractService {
       obligationId: string;
       addedTargetIds: readonly number[];
     }>,
-  ): AgentActionReceipt[] {
+  ): Promise<AgentActionReceipt[]> {
     if (contract)
       contract = resolveCreatedDestinations(this.gateway, contract, progress);
-    return prepared.proposals.flatMap((proposal) => {
+    const batches = prepared.proposals.map((proposal) => {
       let obligations: Array<AgentActionObligation | undefined>;
       if (!contract) {
         obligations = [undefined];
@@ -1166,8 +1268,12 @@ export class ActionContractService {
           : matches;
       }
       return (obligations.length ? obligations : [undefined]).map(
-        (obligation) => {
-          const receipt = this.finalizeProposal(proposal, obligation, params);
+        async (obligation) => {
+          const receipt = await this.finalizeProposal(
+            proposal,
+            obligation,
+            params,
+          );
           return obligation && isSourceCollectionItemObligation(obligation)
             ? narrowReceiptToBoundary(
                 receipt,
@@ -1180,9 +1286,12 @@ export class ActionContractService {
         },
       );
     });
+    return (
+      await Promise.all(batches.map((batch) => Promise.all(batch)))
+    ).flat();
   }
 
-  private finalizeProposal(
+  private async finalizeProposal(
     proposal: AgentActionProposal,
     obligation: AgentActionObligation | undefined,
     params: {
@@ -1193,7 +1302,7 @@ export class ActionContractService {
       content?: unknown;
       actionEvidence?: AgentActionEvidence[];
     },
-  ): AgentActionReceipt {
+  ): Promise<AgentActionReceipt> {
     const evidenceRef = readEvidenceRef(params.content);
     const base = {
       version: 2 as const,
@@ -1209,6 +1318,7 @@ export class ActionContractService {
       reasons: params.reason ? [params.reason] : [],
       verifiedFacts:
         proposal.operation === "read_full" ? ["read_mode:full"] : [],
+      materialRef: readFlatMaterialRef(proposal.parameters),
       evidenceRef,
     };
     if (params.cancelled) {
@@ -1238,12 +1348,36 @@ export class ActionContractService {
       };
     }
     if (proposal.proofDomain === "execution") {
+      const postState = readExecutionPostState(params.content);
+      // No re-readable state is the normal case here — a shell command leaves
+      // none. An execution that *did* declare an expected effect re-reads it
+      // and says so, and then the receipt reports that proof rather than
+      // hiding a library write behind "the command ran".
+      if (!postState) {
+        return {
+          ...base,
+          verification: "execution_only",
+          status: "observed",
+          appliedTargets: [],
+          alreadySatisfiedTargets: [],
+        };
+      }
       return {
         ...base,
-        verification: "execution_only",
-        status: "observed",
-        appliedTargets: [],
+        verification: postState.verified ? "verified" : "unverified",
+        status: postState.verified ? "applied" : "unverified",
+        appliedTargets: postState.verified ? proposal.requestedTargets : [],
         alreadySatisfiedTargets: [],
+        rejectedTargets: postState.verified ? [] : proposal.requestedTargets,
+        // Carried whether or not the re-read confirmed the effect: each fact
+        // names its own outcome, so a receipt that could not check is
+        // distinguishable from one that checked and disagreed. The tool never
+        // emits a "satisfied" fact for a re-read that was not satisfied.
+        verifiedFacts: [...base.verifiedFacts, ...postState.facts],
+        reasons: [
+          ...base.reasons,
+          ...(postState.reason ? [postState.reason] : []),
+        ],
       };
     }
     if (proposal.proofDomain === "file_state") {
@@ -1294,7 +1428,7 @@ export class ActionContractService {
       proposal.operation === "note_edit" ||
       proposal.operation === "note_append"
     ) {
-      const verification = verifyNoteWriteTarget(
+      const verification = await verifyNoteWriteTarget(
         proposal,
         params.content,
         this.gateway,
@@ -1318,6 +1452,7 @@ export class ActionContractService {
               ...(proposal.operation === "note_create"
                 ? verification.targets.map((target) => `created_note:${target}`)
                 : []),
+              ...verification.facts,
             ],
             appliedTargets: params.effect === "none" ? [] : coveredTargets!,
             alreadySatisfiedTargets:
@@ -1331,30 +1466,6 @@ export class ActionContractService {
             alreadySatisfiedTargets: [],
             reasons: [...base.reasons, verification.reason],
           };
-    }
-
-    if (proposal.operation === "settings_update") {
-      const key = proposal.parameters?.settingsKey || "";
-      const state = key ? this.gateway.getSettingNativeState?.(key) : undefined;
-      const verified = Boolean(
-        state?.exists &&
-        JSON.stringify(state.value) === proposal.parameters?.settingsValue,
-      );
-      const target = `setting:${key || "unknown"}`;
-      return {
-        ...base,
-        verification: verified ? "verified" : "unverified",
-        status: verified
-          ? params.effect === "none"
-            ? "already_satisfied"
-            : "applied"
-          : "unverified",
-        requestedTargets: [target],
-        appliedTargets: verified && params.effect !== "none" ? [target] : [],
-        alreadySatisfiedTargets:
-          verified && params.effect === "none" ? [target] : [],
-        rejectedTargets: verified ? [] : [target],
-      };
     }
     if (proposal.operation === "annotation_write") {
       const result = innermostToolResult(params.content);
@@ -1382,18 +1493,37 @@ export class ActionContractService {
     }
     if (proposal.operation === "undo" || proposal.operation === "revert") {
       const result = innermostToolResult(params.content);
+      // The actions this call actually tried to put back. `revert_changes`
+      // also discloses newer irreversible actions it never attempted, and
+      // those must not count against it either way.
+      const attempted = Array.isArray(result.actionIds)
+        ? result.actionIds.length
+        : 0;
       const noWork =
         result.status === "nothing_reversible" ||
-        (Number(result.reverted) === 0 &&
+        (attempted === 0 &&
+          Number(result.reverted) === 0 &&
           Number(result.partiallyReverted) === 0 &&
           params.effect === "none");
+      const reverted = revertedSteps(result);
+      const reportedComplete =
+        proposal.operation === "undo"
+          ? result.status === "undone"
+          : attempted > 0 &&
+            Number(result.reverted) === attempted &&
+            Number(result.partiallyReverted) === 0;
+      // Replaying an inverse is not proof that the inverse landed. Every step
+      // this call replayed re-read its own target afterwards; the receipt is
+      // verified only when every attempted action came back and all of those
+      // re-reads found the recorded pre-image in place.
       const verified =
         noWork ||
-        (proposal.operation === "undo"
-          ? result.status === "undone"
-          : Number(result.reverted) > 0 &&
-            Number(result.partiallyReverted) === 0 &&
-            Array.isArray(result.actionIds));
+        (reportedComplete &&
+          reverted.length > 0 &&
+          reverted.every((step) => step.verification === "matched"));
+      const unmatched = reverted.filter(
+        (step) => step.verification !== "matched",
+      );
       return {
         ...base,
         verification: verified ? "verified" : "unverified",
@@ -1406,6 +1536,31 @@ export class ActionContractService {
         alreadySatisfiedTargets:
           verified && noWork ? proposal.requestedTargets : [],
         rejectedTargets: verified ? [] : proposal.requestedTargets,
+        // Named even on an unverified receipt: the reader needs to know how
+        // much of the undo was proven, not only that it was not all of it.
+        verifiedFacts: [
+          ...base.verifiedFacts,
+          ...reverted
+            .filter((step) => step.verification === "matched")
+            .map(
+              (step) =>
+                `reverted_step:${step.actionId}:${step.sequence}:matched`,
+            ),
+        ],
+        reasons: [
+          ...base.reasons,
+          ...unmatched.map(
+            (step) =>
+              `Reverted step ${step.sequence} of ${step.actionId} re-read as ${step.verification}${
+                step.reason ? `: ${step.reason}` : ""
+              }.`,
+          ),
+          ...(!verified && !unmatched.length && !reverted.length && !noWork
+            ? [
+                "No reverted step re-read its target, so nothing proves the inverse landed.",
+              ]
+            : []),
+        ],
         evidenceRef:
           proposal.operation === "undo" && typeof result.actionId === "string"
             ? result.actionId
@@ -1415,17 +1570,7 @@ export class ActionContractService {
 
     const operation = proposal.operationValue;
     if (!operation) {
-      return {
-        ...base,
-        verification: "unverified",
-        status: "unverified",
-        appliedTargets: [],
-        alreadySatisfiedTargets: [],
-        reasons: [
-          ...base.reasons,
-          "No native Zotero post-state verifier is registered for this action.",
-        ],
-      };
+      return this.externalMutationReceipt(base, proposal, params);
     }
     const evidence = matchingNativeEvidence(proposal, params.actionEvidence);
     const verified = Boolean(
@@ -1443,10 +1588,32 @@ export class ActionContractService {
     );
     const alreadySatisfied =
       verified && (wasAlreadySatisfied || params.effect === "none");
+    // The captured post-state proves the operation's postcondition, which is a
+    // claim about the whole set. A write that created notes carries, beside
+    // it, the read-back each note's creation forced; those are re-checked here
+    // against live state so the receipt names the same per-note content
+    // evidence a single note write names. They are additive: each fact stands
+    // on its own re-read, so they are minted whether or not the whole-set
+    // postcondition held, and a note this call did not write has none. A note
+    // whose re-read fails states why instead, so the receipt names the note it
+    // could not read back rather than leaving a silent gap in the facts.
+    const noteReadBacks = await nativeNoteWriteFacts(
+      proposal,
+      evidence?.noteWrites,
+      this.gateway,
+    );
+    // The set-level postcondition decides what landed; the per-note re-reads
+    // decide what this receipt can vouch for. A note the receipt could not
+    // read back leaves the write in place -- the mutation window proved it --
+    // but the verdict drops to `unverified`, exactly as the single-note branch
+    // does for the same failed re-read. A receipt must never say "verified"
+    // beside a reason that names a note it could not confirm.
+    const readBackGap = noteReadBacks.reasons.length > 0;
     return {
       ...base,
+      verifiedFacts: [...base.verifiedFacts, ...noteReadBacks.facts],
       evidenceRef: evidence?.journalStepId || base.evidenceRef,
-      verification: verified ? "verified" : "unverified",
+      verification: verified && !readBackGap ? "verified" : "unverified",
       status: verified
         ? alreadySatisfied
           ? "already_satisfied"
@@ -1464,6 +1631,98 @@ export class ActionContractService {
               evidence
                 ? `The mutation handler rejected the captured native post-state for ${operation.type}.`
                 : `No captured native post-state was attached for ${operation.type}.`,
+            ]),
+        ...noteReadBacks.reasons,
+      ],
+    };
+  }
+
+  /**
+   * The receipt for a Zotero write that no library mutation operation
+   * describes and that has no operation-specific verifier of its own.
+   *
+   * Its evidence is the pre-image and post-image the mutation boundary
+   * journalled. Neither proves anything by itself — both were written by the
+   * call being judged — so an image is re-read here, against live Zotero
+   * state, at the moment the receipt is minted. When the write declared what
+   * it was *authorized* to make true, that is the image compared, and
+   * `verified` then means live state holds the authorized change rather than
+   * whatever the tool chose to write.
+   *
+   * Scope. The contract holds its own narrow Zotero gateway, so the shapes it
+   * can read back are the single-object ones: a note, a created item, a file,
+   * a path, a preference. A post-image that is a captured library-operation
+   * state needs the mutation handlers and the operation it was captured for;
+   * that is the library branch's evidence, which carries both, and such an
+   * image reaching this branch reads back as `not_re_readable` rather than as
+   * agreement.
+   */
+  private async externalMutationReceipt(
+    base: Omit<
+      AgentActionReceipt,
+      "verification" | "status" | "appliedTargets" | "alreadySatisfiedTargets"
+    >,
+    proposal: AgentActionProposal,
+    params: {
+      effect?: AgentToolEffect;
+      actionEvidence?: AgentActionEvidence[];
+    },
+  ): Promise<AgentActionReceipt> {
+    const evidence = externalMutationEvidence(params.actionEvidence);
+    if (!evidence) {
+      return {
+        ...base,
+        verification: "unverified",
+        status: "unverified",
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+        reasons: [
+          ...base.reasons,
+          "No native Zotero post-state verifier is registered for this action.",
+        ],
+      };
+    }
+    const authorized = evidence.authorizedPostImage !== undefined;
+    const postImage = await verifyRecordedPostImage({
+      image: {
+        expected: authorized
+          ? evidence.authorizedPostImage
+          : evidence.postImage,
+      },
+      reader: contractPostImageReader(this.gateway),
+    });
+    const verified = postImage.kind === "satisfied";
+    const targets = proposal.requestedTargets;
+    // A write that changed nothing already held the state its post-image
+    // records, which is the same "already satisfied" the library path reports
+    // for an operation whose pre-image already met its postcondition.
+    const alreadySatisfied = verified && params.effect === "none";
+    return {
+      ...base,
+      evidenceRef: evidence.journalStepId || base.evidenceRef,
+      verification: verified ? "verified" : "unverified",
+      status: verified
+        ? alreadySatisfied
+          ? "already_satisfied"
+          : "applied"
+        : "unverified",
+      requestedTargets: targets,
+      appliedTargets: verified && !alreadySatisfied ? targets : [],
+      alreadySatisfiedTargets: alreadySatisfied ? targets : [],
+      rejectedTargets: verified ? [] : targets,
+      reasons: [
+        ...base.reasons,
+        ...(verified
+          ? []
+          : [
+              `This ${evidence.operation} write could not be verified: ${
+                postImage.kind === "mismatched"
+                  ? authorized
+                    ? "live Zotero state does not hold what this write was authorized to produce"
+                    : "live Zotero state no longer matches what this write recorded when it applied"
+                  : postImage.reason ||
+                    "its recorded post-image could not be read back"
+              }.`,
             ]),
       ],
     };

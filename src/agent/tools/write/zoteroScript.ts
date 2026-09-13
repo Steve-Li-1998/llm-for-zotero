@@ -6,7 +6,11 @@
  * Library/read mode runs against a host-owned allowlisted facade. Privileged
  * mode retains broader APIs and is therefore never treated as a proven read.
  */
-import type { AgentWriteToolDefinition, AgentToolContext } from "../../types";
+import type {
+  AgentToolContext,
+  AgentWriteToolDefinition,
+  AgentWriteToolOutput,
+} from "../../types";
 import {
   ambiguousInvocationPlan,
   prohibitedInvocationPlan,
@@ -17,7 +21,10 @@ import type { ActionRiskSignal } from "../../authorization/types";
 import { ok, fail, validateObject } from "../shared";
 import { currentMutationActionId } from "../../services/mutationCoordinator";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
-import { listJournalObservationObjectIds } from "../../store/changeJournal";
+import {
+  listJournalObservationObjectIds,
+  listJournalSteps,
+} from "../../store/changeJournal";
 import {
   sha256Bytes,
   sha256Text,
@@ -26,7 +33,11 @@ import {
 import { zoteroChangeDispatcher } from "../../../services/zoteroChangeDispatcher";
 import { LibraryMutationService } from "../../services/libraryMutationService";
 import { ZoteroGateway } from "../../services/zoteroGateway";
-import { parseInverseValue } from "../../services/changeReverter";
+import {
+  parseInverseValue,
+  verifyJournalStepPostcondition,
+  type JournalStepPostState,
+} from "../../services/changeReverter";
 import { fingerprintText } from "../../contracts/actionOperationEvidence";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -1220,6 +1231,7 @@ export function createZoteroScriptTool(
               destinationCollectionIds: [],
             },
           ],
+    effectOperations: ["zotero_script_execute"],
     spec: {
       name: "zotero_script",
       description:
@@ -1265,7 +1277,6 @@ export function createZoteroScriptTool(
       },
       executionClass: "external_effect",
       workCategory: "external_system",
-      requiresConfirmation: true,
     },
 
     guidance: {
@@ -1464,7 +1475,7 @@ export function createZoteroScriptTool(
         };
       }
 
-      return executeExternalMutation({
+      const outcome = await executeExternalMutation({
         context,
         toolName: "zotero_script",
         plan: {
@@ -1579,6 +1590,88 @@ export function createZoteroScriptTool(
           };
         },
       });
+      return withScriptPostState(outcome, context);
+    },
+  };
+}
+
+/**
+ * Reads the script's own effect back out of native state.
+ *
+ * A script's effects are not declarable in advance, so the journal records
+ * what it found immediately afterwards as the step's post-image. That image is
+ * the only thing there is to verify against, and verifying against it is worth
+ * doing: this reloads the durable step from the journal and re-reads live
+ * Zotero state in its shape, so an object that never committed, was rolled
+ * back, or was changed again before the turn ended fails the check instead of
+ * passing as "the script ran".
+ *
+ * A run that declared no expected effect — a privileged read, or a write that
+ * snapshotted nothing — has no post-image, attaches no report, and keeps the
+ * `execution_only` receipt that honestly describes it.
+ *
+ * What `verified` means here is deliberately narrow: the objects the journal
+ * recorded still hold the state it recorded. It is a claim about state, not
+ * about intent, so a library-mode script whose post-image re-reads intact is
+ * verified even when the script changed nothing. That is why the fact names
+ * how many targets were compared — a run that guarded four objects and one
+ * that guarded none must not read identically in the audit trail.
+ */
+async function withScriptPostState<T>(
+  outcome: AgentWriteToolOutput<T> & {
+    journalStep?: { actionId: string; sequence: number };
+  },
+  context: AgentToolContext,
+): Promise<AgentWriteToolOutput<T>> {
+  const journalStep = outcome.journalStep;
+  if (!journalStep || !outcome.content || typeof outcome.content !== "object") {
+    return outcome;
+  }
+  // executeJournaledStep derives the durable step id from its action and
+  // sequence, so it is known even when reading the step back fails.
+  const stepId = `${journalStep.actionId}:${journalStep.sequence}`;
+  let reread: JournalStepPostState;
+  try {
+    const step = (await listJournalSteps(journalStep.actionId)).find(
+      (entry) => entry.sequence === journalStep.sequence,
+    );
+    if (!step?.expectedPostconditionJson) return outcome;
+    reread = await verifyJournalStepPostcondition({
+      step,
+      zoteroGateway: new ZoteroGateway(),
+      context,
+    });
+  } catch (error) {
+    // The write itself already succeeded and is journalled. A failure to read
+    // the step back is reported as a verification the receipt does not have,
+    // never as a failure of the script.
+    reread = {
+      kind: "not_re_readable",
+      comparedTargets: 0,
+      reason: `the journalled step could not be loaded: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  return {
+    ...outcome,
+    content: {
+      ...outcome.content,
+      executionPostState: {
+        verified: reread.kind === "satisfied",
+        // One fact, and its suffix is the outcome. "Could not check" must
+        // never be filed under the same string as "checked and matched".
+        facts: [
+          reread.kind === "satisfied"
+            ? `script_postcondition:${stepId}:satisfied:${reread.comparedTargets} targets`
+            : `script_postcondition:${stepId}:${reread.kind}`,
+        ],
+        ...(reread.reason
+          ? {
+              reason: `The script's recorded effect could not be confirmed: ${reread.reason}.`,
+            }
+          : {}),
+      },
     },
   };
 }

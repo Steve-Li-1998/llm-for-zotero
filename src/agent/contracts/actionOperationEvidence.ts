@@ -5,6 +5,7 @@ import type {
   AgentToolDefinition,
 } from "../types";
 import type { LibraryMutationOperation } from "../services/libraryMutationService";
+import type { NativeNoteWriteEvidence } from "../services/libraryMutation/contracts";
 import {
   actionDetailsForLibraryMutation,
   capabilityForLibraryMutation,
@@ -13,6 +14,7 @@ import {
 import { innermostToolResult } from "./toolResultEnvelope";
 import { operationAuthorityIsConsistent } from "./operationCatalog";
 import { normalizeNotePlainText, stripNoteHtml } from "../../utils/noteText";
+import { sha256Text } from "../store/journalRecoveryBlobStore";
 
 export type CollectionSummary = {
   collectionId: number;
@@ -149,6 +151,32 @@ export function describeLibraryMutationActions(
   });
 }
 
+/**
+ * The shared adapter for tools whose validated input already carries canonical
+ * library mutation operations.
+ *
+ * `prepareActionExecution` applies exactly this rule when a definition declares
+ * no `describeAction`. Registration now requires every external effect to name
+ * its adapter, so these tools declare this function instead of relying on the
+ * implicit fallback, and their adapter no longer appears and disappears with
+ * the shape of the input.
+ *
+ * It has two branches, and a tool that names it owns both. When the validated
+ * input carries no library mutation operation this falls through to
+ * `explicitReadActions`, which describes `read_full` for an input with
+ * `mode: "full"`. A tool whose schema can reach that branch must declare
+ * `read_full` in its `effectOperations`; none of the current callers can, and
+ * `prepareActionExecution` refuses the descriptor if one ever does without
+ * declaring it.
+ */
+export function describeLibraryMutationInput(
+  input: unknown,
+): AgentToolActionDescriptor[] {
+  return extractLibraryMutationOperations(input).length
+    ? describeLibraryMutationActions(input)
+    : explicitReadActions(input);
+}
+
 function explicitReadActions(input: unknown): AgentActionProposal[] {
   if (
     input &&
@@ -184,14 +212,25 @@ function itemCollections(item: Zotero.Item | null): number[] {
 }
 
 export type NoteWriteVerification =
-  | { targets: string[]; reason?: never }
-  | { targets: null; reason: string };
+  | {
+      targets: string[];
+      /**
+       * Content evidence this verification actually consumed, as receipt facts.
+       * A native read-back yields a digest fact, the weaker plain-text fallback
+       * yields only a text-match fact, so the two evidence strengths stay
+       * distinguishable on the receipt. See the digest's provenance limit where
+       * the `html_sha256` fact is built below.
+       */
+      facts: string[];
+      reason?: never;
+    }
+  | { targets: null; facts?: never; reason: string };
 
-export function verifyNoteWriteTarget(
+export async function verifyNoteWriteTarget(
   proposal: AgentActionProposal,
   content: unknown,
   gateway: ActionContractGateway,
-): NoteWriteVerification {
+): Promise<NoteWriteVerification> {
   if (
     proposal.operation !== "note_create" &&
     proposal.operation !== "note_edit" &&
@@ -281,7 +320,22 @@ export function verifyNoteWriteTarget(
           "The native note evidence does not prove the prepared change on the bound note.",
       };
     }
-    return { targets: [itemTarget(noteId)] };
+    // Provenance limit, and it is narrow: the digest is taken over the
+    // read-back string the tool result supplied, not over the stored note
+    // bytes. The checks above prove that string is *canonically* equal to
+    // `note.getNote()` and to the expected HTML — `noteHtmlMatches` normalizes
+    // whitespace, sorts attributes and strips Zotero's wrapper divs — so two
+    // semantically identical spellings of the same note hash differently. The
+    // fact therefore means "a forced native read-back matched the expected
+    // HTML", and it is only usable as a strength token and as a
+    // receipt-to-receipt equality token. Never recompute it from a live note
+    // and expect a match.
+    return {
+      targets: [itemTarget(noteId)],
+      facts: [
+        `native_note:${noteId}:html_sha256:${await sha256Text(verification.html)}`,
+      ],
+    };
   }
   if (proposal.parameters?.expectedText?.trim()) {
     const actual = normalizeNotePlainText(
@@ -296,8 +350,64 @@ export function verifyNoteWriteTarget(
         reason: `Stored content for note ${noteId} does not satisfy the requested note text.`,
       };
     }
+    return {
+      targets: [itemTarget(noteId)],
+      facts: [`native_note:${noteId}:text_match`],
+    };
   }
-  return { targets: [itemTarget(noteId)] };
+  return { targets: [itemTarget(noteId)], facts: [] };
+}
+
+/**
+ * The per-note facts a write that created several notes at once owes.
+ *
+ * A batch that wrote three notes is still three note writes, and the rule
+ * every native write answers to -- a receipt fact minted from a native
+ * re-read of what was written -- does not weaken because the notes shared one
+ * approval. Each entry is therefore put through exactly the verifier a single
+ * `note_write` is put through: the note is read back out of live Zotero state
+ * here, at receipt time, and checked against the read-back its creation
+ * forced. Nothing else is credited -- the evidence carries only the notes the
+ * call physically created, so an item it skipped as already written, or one it
+ * failed on, contributes no fact and is left to the receipt that did write it.
+ *
+ * A note whose re-read fails contributes a REASON instead, in the same
+ * wording and from the same verifier the single-note branch reports. The
+ * whole-set postcondition is a claim about the set and can still hold while
+ * one note of the set is gone, so without the reason the only symptom would
+ * be a missing fact -- indistinguishable from a note the call never wrote.
+ */
+export async function nativeNoteWriteFacts(
+  proposal: AgentActionProposal,
+  noteWrites: readonly NativeNoteWriteEvidence[] | undefined,
+  gateway: ActionContractGateway,
+): Promise<{ facts: string[]; reasons: string[] }> {
+  const facts: string[] = [];
+  const reasons: string[] = [];
+  for (const write of noteWrites || []) {
+    const verification = await verifyNoteWriteTarget(
+      {
+        ...proposal,
+        operation: "note_create",
+        parameters: {
+          noteMode: "create",
+          ...(write.parentItemId ? { targetItemId: write.parentItemId } : {}),
+        },
+        destinationCollectionIds: write.collections || [],
+      },
+      { noteId: write.noteId, noteVerification: write.verification },
+      gateway,
+    );
+    if (!verification.targets) {
+      reasons.push(verification.reason);
+      continue;
+    }
+    facts.push(
+      ...verification.targets.map((target) => `created_note:${target}`),
+      ...verification.facts,
+    );
+  }
+  return { facts, reasons };
 }
 
 export async function prepareActionExecution(
@@ -314,10 +424,21 @@ export async function prepareActionExecution(
     (operations.length
       ? describeLibraryMutationActions(input)
       : explicitReadActions(input));
+  // The registry validates the definition's declared operations against the
+  // catalog, but registration has no input and so cannot see what the adapter
+  // actually produces. This is the other half: the declaration is only worth
+  // anything if a descriptor outside it is refused. Tools that declare nothing
+  // are reads and controls, which own no effect to declare.
+  const declared = tool.effectOperations;
   for (const proposal of proposals) {
     if (!operationAuthorityIsConsistent(proposal)) {
       throw new Error(
         `Typed action adapter rejected an inconsistent authority triple for ${proposal.operation}.`,
+      );
+    }
+    if (declared && !declared.includes(proposal.operation)) {
+      throw new Error(
+        `Typed action adapter for ${tool.spec.name} described "${proposal.operation}", which it never declared: effectOperations is [${declared.join(", ")}].`,
       );
     }
   }

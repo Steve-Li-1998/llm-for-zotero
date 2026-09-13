@@ -66,11 +66,15 @@ describe("finalized document file export", function () {
       DB: {
         queryAsync: async (sql: string) => {
           if (
-            sql.includes(
-              "SELECT document_id AS documentId FROM llm_for_zotero_plan_documents",
-            )
+            sql.includes("FROM llm_for_zotero_plan_documents") &&
+            sql.includes("document_id AS documentId")
           )
-            return [{ documentId: document.documentId }];
+            return [
+              {
+                documentId: document.documentId,
+                payloadJson: JSON.stringify(document),
+              },
+            ];
           if (
             sql.includes(
               "SELECT payload_json AS payloadJson FROM llm_for_zotero_plan_documents",
@@ -144,20 +148,24 @@ describe("finalized document file export", function () {
     const markdown = new TextDecoder().decode(files.get("/vault/report.md"));
     assert.include(markdown, "![Figure 1](report_assets/figure-1.png)");
     assert.equal(
-      service.finalize(undefined, prepared, {
-        ok: true,
-        effect: result.effect,
-        content: result.content,
-      })[0].verification,
+      (
+        await service.finalize(undefined, prepared, {
+          ok: true,
+          effect: result.effect,
+          content: result.content,
+        })
+      )[0].verification,
       "verified",
     );
     const corrupted = { ...(result.content as any), exportedFiles: [] };
     assert.equal(
-      service.finalize(undefined, prepared, {
-        ok: true,
-        effect: result.effect,
-        content: corrupted,
-      })[0].verification,
+      (
+        await service.finalize(undefined, prepared, {
+          ok: true,
+          effect: result.effect,
+          content: corrupted,
+        })
+      )[0].verification,
       "unverified",
     );
   });

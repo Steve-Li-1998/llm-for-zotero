@@ -28,7 +28,7 @@ import type {
   ActionMechanism,
   ActionRiskSignal,
 } from "./authorization/types";
-import type { MaterialRef } from "./documents/types";
+import type { MaterialRef } from "./documents/materialRef";
 import type {
   ResolvedTurnSelectedTextAnchor,
   ResolvedTurnSelectedTextContext,
@@ -40,6 +40,7 @@ import type {
   AgentActionContract,
   AgentActionEvidence,
   AgentActionIntent,
+  AgentActionOperation,
   AgentActionProgressLedger,
   AgentActionReceipt,
   AgentToolActionDescriptor,
@@ -56,6 +57,7 @@ import type { LoadedSkillRecord } from "./skills/loadingTypes";
 import type {
   ExecutionCheckpoint,
   ExecutionEvidenceInventory,
+  MaterialOutcomeEntry,
 } from "./execution/types";
 
 export type {
@@ -81,6 +83,9 @@ export type {
   AgentActionCapability,
   AgentActionContract,
   AgentActionEvidence,
+  AgentExternalMutationEvidence,
+  AgentLibraryMutationEvidence,
+  AgentPostImageState,
   AgentActionIntent,
   AgentActionObligation,
   AgentActionOperation,
@@ -97,6 +102,9 @@ export type {
   ExecutionCheckpointTask,
   ExecutionCheckpointTaskUpdate,
   ExecutionEvidenceInventory,
+  MaterialOutcomeEntry,
+  MaterialOutcomeLedger,
+  MaterialOutcomeStatus,
 } from "./execution/types";
 
 export type AgentRequest = {
@@ -328,6 +336,22 @@ export type AgentPendingField =
 export type AgentPendingAction = {
   /** Stable identity for an expandable discovery card. */
   discovery?: { sessionId: string; revision: number };
+  /**
+   * The exact material version this action would consume, copied from the
+   * frozen proposal parameters the user is authorizing. The host stamps it;
+   * a tool never supplies it, and it is absent unless the proposal named a
+   * complete `MaterialRef`.
+   */
+  material?: { operation: AgentActionOperation; ref: MaterialRef };
+  /**
+   * The card is a question the run is waiting on an answer to, not an
+   * approval of work it already prepared.
+   *
+   * The tool spec declares this (`interaction: "user_input"`) and the host
+   * copies it here, so a view can tell the two apart without holding a list
+   * of the names of the tools that ask questions.
+   */
+  interaction?: "user_input";
   toolName: string;
   title: string;
   mode?: "approval" | "review";
@@ -363,7 +387,17 @@ export type AgentWorkCategory =
   | "zotero_action"
   | "external_system";
 
-export type ToolSpec = {
+/**
+ * The product stage a trace groups by.
+ *
+ * It is the work category under the name the reader's model of the run uses:
+ * one vocabulary, so a stage can never disagree with the category its own
+ * tool declared. `external_system` reads as "External action" in the panel;
+ * that is a display label, not a second value.
+ */
+export type AgentStage = AgentWorkCategory;
+
+type ToolSpecBase = {
   name: string;
   description: string;
   /**
@@ -395,7 +429,6 @@ export type ToolSpec = {
    * library changes and external-effect tools reach past the library.
    */
   workCategory: AgentWorkCategory;
-  requiresConfirmation: boolean;
   /**
    * Model-visible tools are advertised to agent/model runtimes and MCP
    * clients. Internal tools stay registered so plugin-owned migration
@@ -413,9 +446,28 @@ export type ToolSpec = {
    * MCP, and public tool catalogs must not expose it.
    */
   localAgentOnly?: boolean;
-  /** Host-owned interaction tools pause for input even though they are reads. */
-  interaction?: "user_input";
 };
+
+/**
+ * A tool's confirmation rule is not its own to declare.
+ *
+ * Every external effect is gated centrally by `authorizeOriginalAction` from
+ * the typed proposal it produced, never by a flag on its spec. The one place
+ * the host reads a spec-level pause is `InvocationController.dispatch`, and
+ * only for the host-owned tools that stop the turn to ask the user something.
+ * Keeping `requiresConfirmation` inside that shape is what stops a write tool
+ * from writing a private permission rule that nothing enforces.
+ */
+export type ToolSpec = ToolSpecBase &
+  (
+    | {
+        /** Host-owned interaction tools pause for input even though they are reads. */
+        interaction: "user_input";
+        /** Whether this interaction pauses for the user by default. */
+        requiresConfirmation: boolean;
+      }
+    | { interaction?: never; requiresConfirmation?: never }
+  );
 
 export type AgentEvent =
   | PlanEvent
@@ -445,6 +497,8 @@ export type AgentEvent =
       callId: string;
       name: string;
       args: unknown;
+      /** The tool's own presentation label, resolved when the call was made. */
+      toolLabel?: string;
       workCategory?: AgentWorkCategory;
       executionId?: string;
       taskId?: string;
@@ -454,6 +508,8 @@ export type AgentEvent =
       callId: string;
       name: string;
       ok: boolean;
+      /** The tool's own presentation label, resolved when the call was made. */
+      toolLabel?: string;
       workCategory?: AgentWorkCategory;
       effect?: AgentToolEffect;
       authority?: "yolo_judgment";
@@ -469,6 +525,8 @@ export type AgentEvent =
       name: string;
       error: string;
       round: number;
+      /** The tool's own presentation label, resolved when the call was made. */
+      toolLabel?: string;
       workCategory?: AgentWorkCategory;
     }
   | {
@@ -506,6 +564,8 @@ export type AgentEvent =
       artifacts?: AgentToolArtifact[];
       actionReceipts?: AgentActionReceipt[];
       workCategory?: AgentWorkCategory;
+      /** Whether the call could change library state, as the server saw it. */
+      mutability?: "read" | "write";
     }
   | {
       type: "usage";
@@ -523,6 +583,50 @@ export type AgentEvent =
   | { type: "context_compacted"; automatic?: boolean }
   | { type: "fallback"; reason: string }
   | {
+      /**
+       * One product stage of the run, as the reader will see it grouped.
+       *
+       * The stage is required and always comes from a declared contract --
+       * the tool's `workCategory`, or the fixed category of the event this
+       * announces -- so nothing downstream has to infer work from a tool
+       * name.
+       *
+       * A stage event is emitted immediately before the event it describes:
+       * `started` before the `tool_call`, the closing event before the
+       * `tool_result` that reports the call's outcome. A `tool_error` is a
+       * detail of the call rather than the event a stage describes, so it
+       * stays inside the open stage and precedes the close. A live run and a
+       * trace projected from an older run therefore interleave identically.
+       */
+      type: "agent_stage";
+      stage: AgentStage;
+      status: "started" | "completed" | "failed";
+      /** The tool call this stage brackets, when one call owns it. */
+      callId?: string;
+      toolName?: string;
+      toolLabel?: string;
+      /** The material this stage finalized, when it finalized one. */
+      materialRef?: MaterialRef;
+      /** Receipts the closing call produced, by `AgentActionReceipt.id`. */
+      receiptIds?: string[];
+      /** The durable batch this stage reports one item of. */
+      batchId?: string;
+      itemKey?: string;
+      /**
+       * Reconstructed while rendering a trace recorded before stages
+       * existed, rather than emitted by the run itself.
+       */
+      projected?: boolean;
+      /**
+       * Set on the one stage that stands for a whole run whose events
+       * declare no work category at all. Such a trace predates the category
+       * contract, and a category guessed from a tool name is exactly what
+       * the stage model exists to remove, so the run reports one
+       * undifferentiated stage instead of several invented ones.
+       */
+      undifferentiated?: boolean;
+    }
+  | {
       type: "material_finalized";
       /** Immutable identity of the material this run finalized. */
       materialRef: MaterialRef;
@@ -530,6 +634,33 @@ export type AgentEvent =
       materialTitle?: string;
       /** The tool call that finalized it; absent for host-side publication. */
       callId?: string;
+    }
+  | {
+      /**
+       * One item of a durable batch and the material it wrote.
+       *
+       * Batch material is announced here rather than through
+       * `material_finalized`, so fifty note bodies never flood the turn's
+       * material ledger; batches recover from their own durable rows.
+       */
+      type: "batch_item_outcome";
+      batchId: string;
+      itemKey: string;
+      /** Absent only for an item whose body could not be finalized. */
+      materialRef?: MaterialRef;
+      status: "pending" | "saved" | "failed";
+      /**
+       * Whether the carrying call wrote this note, or only reported a row an
+       * earlier call had already written. A resumed batch announces every row
+       * it holds, so a `saved` row that this call skipped is `written: false`;
+       * anything that presents these events as "what just happened" must read
+       * this rather than the status.
+       */
+      written: boolean;
+      noteId?: number;
+      error?: string;
+      /** The tool call that carried this batch. */
+      callId: string;
     }
   | {
       type: "final";
@@ -654,6 +785,16 @@ export type AgentSystemMessage = {
 export type AgentUserMessage = {
   role: "user";
   content: string | AgentModelContentPart[];
+  /**
+   * Host state the model should see this turn and never again.
+   *
+   * The transcript and its checkpoints are durable; a transient message is
+   * recomputed from durable evidence at every turn start, so persisting it
+   * would stack duplicates and keep serving a stale copy after the state it
+   * described has changed.  Providers never see this field: adapters build
+   * their payload from `role` and `content` alone.
+   */
+  transient?: true;
 };
 
 export type AgentAssistantMessage = {
@@ -779,6 +920,11 @@ export type AgentRuntimeRequestInput = AgentRequest & {
   executionContext?: AgentExecutionContext;
   /** Latest durable ordinary-work progress. This record never grants authority. */
   executionCheckpoint?: ExecutionCheckpoint;
+  /**
+   * What happened to the material this conversation finalized, derived from
+   * persisted run events at turn start.  Evidence, never authority.
+   */
+  materialOutcomes?: readonly MaterialOutcomeEntry[];
   /** Exact skill instructions loaded or forced by the host for this workflow. */
   loadedSkillRecords?: LoadedSkillRecord[];
   /** Legacy stored-artifact compatibility; absent on fresh ordinary turns. */
@@ -978,6 +1124,53 @@ export type AgentToolResult = {
   materialRef?: MaterialRef;
   materialKind?: string;
   materialTitle?: string;
+  /**
+   * Per-item outcomes of a durable batch. The host announces one run event
+   * each, so a batch's material is recoverable per item instead of collapsing
+   * into a single turn-level `materialRef`.
+   */
+  batchItems?: AgentBatchItemOutcome[];
+  /** The research job this call advanced, as the tool's result declared it. */
+  researchJobId?: string;
+};
+
+/**
+ * Host-owned binding between a batch operation's items and their durable rows.
+ *
+ * It travels on the tool context rather than inside the operation: the
+ * operation value is the semantic change the user approved, and the action
+ * contract only verifies a receipt when the executed operation is byte-equal
+ * to the proposed one.
+ */
+export type AgentBatchBinding = {
+  batchId: string;
+  /** One entry per note of the operation, in that operation's own order. */
+  items: ReadonlyArray<{
+    itemKey: string;
+    targetItemId: number;
+    /** The item's place in the durable batch, which a resume writes a subset of. */
+    position: number;
+    material?: MaterialRef;
+    /** Why this item has no material; it is recorded failed and never written. */
+    failure?: string;
+  }>;
+};
+
+/** One item of a durable batch, with the material it wrote. */
+export type AgentBatchItemOutcome = {
+  batchId: string;
+  itemKey: string;
+  /** Absent only for an item whose body could not be finalized. */
+  materialRef?: MaterialRef;
+  status: "pending" | "saved" | "failed";
+  /**
+   * Whether this call wrote the note, as opposed to reporting a row an
+   * earlier call had already written. A batch reports every row it holds,
+   * so `status: "saved"` alone cannot tell the two apart.
+   */
+  written: boolean;
+  noteId?: number;
+  error?: string;
 };
 
 export type AgentToolReviewResolution =
@@ -1017,6 +1210,15 @@ export type AgentToolExecutionOutput<TResult = unknown> =
       materialRef?: MaterialRef;
       materialKind?: string;
       materialTitle?: string;
+      batchItems?: AgentBatchItemOutcome[];
+      /**
+       * The research job this call advanced.
+       *
+       * A research tool's own answer to "which investigation moved", so a
+       * bridge that wants to show the reader its progress reads a fact the
+       * result stated instead of recognising the tool by name.
+       */
+      researchJobId?: string;
     };
 
 /** Explicit execution contract for tools whose validated operation can write. */
@@ -1025,6 +1227,7 @@ export type AgentWriteToolOutput<TResult = unknown> = {
   effect: AgentToolEffect;
   artifacts?: AgentToolArtifact[];
   actionEvidence?: AgentActionEvidence[];
+  batchItems?: AgentBatchItemOutcome[];
 };
 
 export type AgentJournalStepOutcome = {
@@ -1100,8 +1303,25 @@ export type AgentToolContext = {
   journalToolName?: string;
   /** Internal parent action used by composite tools such as library_batch. */
   journalActionScope?: AgentJournalActionScope;
-  /** Stable prefix allocated by a composite effect owner for child actions. */
-  journalChildActionPrefix?: string;
+  /**
+   * Internal action this call continues rather than replaces.
+   *
+   * A resumed batch belongs to the action its first attempt opened, so undo
+   * still reverts every item of it. The coordinator reopens that action only
+   * while it is still this conversation's and still holds applied work;
+   * otherwise it mints a new one.
+   */
+  resumeJournalAction?: {
+    actionId: string;
+    /**
+     * Work the action is still missing that this call is not performing.
+     * A batch holding an item it can never write leaves its action partially
+     * applied however well this call itself goes.
+     */
+    unfinishedWork?: boolean;
+  };
+  /** Internal durable batch this call's items belong to. */
+  batchBinding?: AgentBatchBinding;
   /** Host-owned registered operation bridge. Each call retains its own authorization and native receipts. */
   invokeRegisteredOperation?: (
     name: string,
@@ -1190,9 +1410,31 @@ export type AgentNoteChangeResultCard = {
   after: import("./store/journalRecoveryBlobStore").RecoveryPayload;
 };
 
+/**
+ * What one turn did, as the reader is told at the end of its trace.
+ *
+ * Every line comes from a receipt: the operation the receipt states, the
+ * targets it covered, and what its verification proved. Nothing here is read
+ * from a tool name, and nothing is added that no receipt claims.
+ */
+export type AgentActionSummaryResultCard = {
+  kind: "action_summary";
+  /** Title of the material the visible answer was rendered from, if any. */
+  answerMaterial?: string;
+  entries: readonly {
+    /** The receipt this line reports, so one effect is listed once. */
+    receiptId: string;
+    /** Operation label, targets, and the material the effect landed. */
+    text: string;
+    /** Verification wording, and the authority the effect ran under. */
+    badges: readonly string[];
+  }[];
+};
+
 export type AgentToolResultCard =
   | AgentNoteChangeResultCard
   | AgentSavedNoteResultCard
+  | AgentActionSummaryResultCard
   | {
       kind?: "paper";
       title: string;
@@ -1207,10 +1449,31 @@ export type AgentToolResultCard =
       importIdentifier?: string;
     };
 
+/**
+ * A code block a tool wants shown under its trace row.
+ *
+ * `replacesSummary` says the block already carries what the row's summary
+ * would say -- a shell command whose summary is "Running: <the command>" --
+ * so the row shows the tool's label instead of repeating the block.
+ */
+export type AgentToolTraceCodeBlock = {
+  code: string;
+  replacesSummary?: boolean;
+};
+
 export type AgentToolPresentation = {
   label?: string;
   /** Optional semantic icon for this tool's compact activity-summary row. */
   traceIcon?: "library" | "web";
+  /**
+   * Keep this tool out of the activity trace entirely.
+   *
+   * Set by the tools that are the plan machinery itself: their calls and
+   * results are how a plan is drafted and advanced, and the plan card already
+   * shows the reader the result. Declared here so the trace reads the fact
+   * from the tool instead of holding its own list of names.
+   */
+  hiddenInTrace?: boolean;
   summaries?: {
     onCall?: AgentToolPresentationSummary;
     onPending?: AgentToolPresentationSummary;
@@ -1228,11 +1491,31 @@ export type AgentToolPresentation = {
     args: unknown;
     content?: unknown;
   }) => AgentTraceDetail[];
+  /**
+   * Details drawn from the call's arguments alone, shown whether or not a
+   * result has arrived yet. `buildTraceDetails` replaces the generic details
+   * once a result exists; these are added to them.
+   */
+  buildTraceArgDetails?: (params: { args: unknown }) => AgentTraceDetail[];
+  /** The code block this call shows under its row, if any. */
+  buildTraceCodeBlock?: (params: {
+    args: unknown;
+  }) => AgentToolTraceCodeBlock | null;
   /** Merge a successful result into its expandable call row in the trace. */
   mergeResultIntoCallTrace?: boolean;
+  /**
+   * The row a completed call gets instead of its generic summary.
+   *
+   * A call relayed from a connected client reaches the trace with artifacts
+   * and no result payload, so the phase, outcome and artifacts are passed
+   * alongside the content for the tools that can say something about them.
+   */
   buildTraceSummary?: (params: {
     args: unknown;
     content?: unknown;
+    artifacts?: AgentToolArtifact[];
+    phase?: "started" | "completed";
+    ok?: boolean;
   }) => string | null;
   /**
    * When provided, the agent trace renders a read-only card list below the
@@ -1263,6 +1546,15 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
     input: TInput,
     context?: AgentToolContext,
   ) => AgentToolActionDescriptor[] | Promise<AgentToolActionDescriptor[]>;
+  /**
+   * Every operation this tool's `describeAction` can produce.
+   *
+   * Registration has no input, so the descriptors themselves cannot be
+   * inspected there. This static list is what the registry validates against
+   * `OPERATION_CATALOG`, which owns each operation's capability and proof
+   * domain. Required for `executionClass: "external_effect"`.
+   */
+  effectOperations?: readonly AgentActionOperation[];
   validate: (args: unknown) => AgentToolInputValidation<TInput>;
   /**
    * Narrow this call's work category when one spec fronts several kinds of
@@ -1406,5 +1698,5 @@ export type PreparedToolExecution =
       execute: (
         resolution: AgentConfirmationResolution,
       ) => Promise<PreparedToolExecution>;
-      deny: (resolutionData?: unknown) => PreparedToolExecutionResult;
+      deny: (resolutionData?: unknown) => Promise<PreparedToolExecutionResult>;
     };

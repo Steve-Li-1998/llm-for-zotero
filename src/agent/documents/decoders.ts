@@ -419,6 +419,7 @@ export function decodePlanDocument(value: unknown): PlanDocument {
       "report",
       "guide",
       "custom",
+      "note",
     ];
     if (!documentKinds.includes(String(input.documentKind))) {
       throw new Error("documentKind is invalid");

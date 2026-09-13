@@ -3,6 +3,7 @@
  * Provides a self-describing schema for managing Zotero collections.
  */
 import type { AgentWriteToolDefinition } from "../../types";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import {
   LibraryMutationService,
   type UpdateCollectionOperation,
@@ -29,6 +30,12 @@ export function createManageCollectionsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: [
+      "create_collection",
+      "delete_collection",
+      "update_collection",
+    ],
     spec: {
       name: "manage_collections",
       description:
@@ -79,7 +86,6 @@ export function createManageCollectionsTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     presentation: {

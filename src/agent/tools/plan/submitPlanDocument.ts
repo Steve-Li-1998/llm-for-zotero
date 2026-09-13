@@ -15,12 +15,12 @@ import type {
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { DirectDocumentFinalizer } from "../../documents/directFinalization";
 import { PlanDocumentFinalizer } from "../../documents/planFinalization";
+import type { MaterialRef } from "../../documents/materialRef";
 import type {
   DocumentAssetProvenance,
   PlanCitationCluster,
   PlanCitationSource,
   PlanDocumentAsset,
-  MaterialRef,
   SubmitPlanDocumentInput,
 } from "../../documents/types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
@@ -483,8 +483,13 @@ export function createSubmitDocumentTool(
       },
       executionClass: "control",
       workCategory: "generation",
-      requiresConfirmation: false,
     },
+    /**
+     * The plan machinery itself. Its calls are how a plan is drafted and
+     * advanced, and the plan card already shows the reader the outcome, so a
+     * row for each of them would report the trace's own plumbing.
+     */
+    presentation: { hiddenInTrace: true },
     isAvailable: (request) => request.planContext?.phase !== "planning",
     guidance: {
       matches: (request) => request.documentOutcomePolicy?.required === true,
@@ -585,6 +590,9 @@ export function createSubmitPlanDocumentTool(
 ): AgentToolDefinition<SubmitPlanDocumentInput, SubmitPlanDocumentResult> {
   const tool = createSubmitDocumentTool(gateway);
   return {
+    // Everything but the spec is inherited, `presentation` included, so this
+    // tool stays out of the trace exactly as the one it wraps does. The
+    // registry test in `test/agentTraceNoNameMeaning.test.ts` pins that.
     ...tool,
     spec: {
       ...tool.spec,

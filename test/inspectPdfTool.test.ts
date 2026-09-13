@@ -231,7 +231,7 @@ describe("read_attachment tool", function () {
     assert.isTrue(validated.ok);
     if (!validated.ok) return;
 
-    assert.isFalse(tool.spec.requiresConfirmation);
+    assert.notProperty(tool.spec, "requiresConfirmation");
     assert.isUndefined(tool.shouldRequireConfirmation);
   });
 

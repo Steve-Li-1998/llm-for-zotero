@@ -354,6 +354,32 @@
       >
         <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
+            for="__addonRef__-sidebar-layout"
+            style="font-weight: 600; font-size: 12px"
+            >Sidebar layout</html:label
+          >
+          <html:select
+            id="__addonRef__-sidebar-layout"
+            style="
+              width: 220px;
+              padding: 4px 8px;
+              font-size: 12px;
+              border-radius: 6px;
+            "
+          >
+            <html:option value="independent">Independent (default)</html:option>
+            <html:option value="stacked">Stacked</html:option>
+          </html:select>
+          <html:span
+            id="__addonRef__-sidebar-layout-hint"
+            style="font-size: 11px; color: var(--fill-secondary, #888)"
+            >Show chat in its own sidebar or alongside Zotero’s other item
+            sections. Changes apply immediately.</html:span
+          >
+        </html:div>
+
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
             for="__addonRef__-system-prompt"
             style="
               display: block;

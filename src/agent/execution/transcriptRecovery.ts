@@ -5,6 +5,10 @@ import type {
   AgentRunRecord,
   AgentRuntimeRequest,
 } from "../types";
+import type { ResumableBatch } from "../store/batchItemStore";
+import { formatResumableBatchRecoveryLines } from "./batchOutcomes";
+import { formatMaterialOutcomeRecoveryLines } from "./materialOutcomes";
+import type { MaterialOutcomeEntry } from "./types";
 
 export function isManualCompactRequest(request: AgentRuntimeRequest): boolean {
   return /^\/compact(?:\s|$)/i.test((request.userText || "").trim());
@@ -69,10 +73,37 @@ export function readLatestTranscriptGoal(
   return undefined;
 }
 
+/**
+ * What a turn has to know about work the conversation left unfinished.
+ *
+ * Both sections answer the same question -- what already exists, so that the
+ * model continues it instead of making it again -- so they travel as one host
+ * message. A second message would stack another block into every prompt for
+ * as long as either stayed outstanding. Returns null when nothing is
+ * outstanding.
+ */
+export function buildTurnStartRecoveryMessage(params: {
+  materialOutcomes?: readonly MaterialOutcomeEntry[];
+  resumableBatches?: readonly ResumableBatch[];
+}): AgentModelMessage | null {
+  const lines = [
+    ...formatMaterialOutcomeRecoveryLines(params.materialOutcomes || []),
+    ...formatResumableBatchRecoveryLines(params.resumableBatches || []),
+  ];
+  // Transient: the ledger and the batch rows behind it are read again at every
+  // turn start, so this message must never be copied into the transcript or
+  // one of its checkpoints.
+  return lines.length
+    ? { role: "user", content: lines.join("\n"), transient: true }
+    : null;
+}
+
 export function buildInterruptedRunRecoveryMessage(params: {
   run: AgentRunRecord;
   actions: JournalActionWithSteps[];
   priorGoal?: string;
+  materialOutcomes?: readonly MaterialOutcomeEntry[];
+  resumableBatches?: readonly ResumableBatch[];
 }): AgentModelMessage {
   const actions = [...params.actions].sort(
     (left, right) =>
@@ -94,6 +125,10 @@ export function buildInterruptedRunRecoveryMessage(params: {
   } else {
     lines.push("No journaled writes were recorded.");
   }
+  lines.push(
+    ...formatMaterialOutcomeRecoveryLines(params.materialOutcomes || []),
+    ...formatResumableBatchRecoveryLines(params.resumableBatches || []),
+  );
   lines.push(
     "Any unfinished confirmation was discarded and must be proposed and approved again.",
   );

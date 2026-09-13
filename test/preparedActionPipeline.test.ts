@@ -1,4 +1,5 @@
 import { createBuiltInToolRegistry } from "../src/agent/tools";
+import { describeLibraryMutationInput } from "../src/agent/contracts/actionContract";
 import { actionContractFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
@@ -108,6 +109,8 @@ describe("bound action dispatch", function () {
     request.actionPreparation = { state: "ready", issues: [] };
     const registry = new AgentToolRegistry();
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["move_to_collection"],
       spec: {
         name: "library_update",
         description: "write",

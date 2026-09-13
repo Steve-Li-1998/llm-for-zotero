@@ -42,6 +42,7 @@ describe("invocation-plan confirmation policy", function () {
     plan?: AgentInvocationPlan,
   ): AgentToolDefinition<Record<string, never>, unknown> {
     return {
+      effectOperations: ["settings_update"],
       spec: {
         name: "future_write",
         description: "test write",

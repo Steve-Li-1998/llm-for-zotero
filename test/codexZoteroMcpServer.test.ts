@@ -18,7 +18,11 @@ import {
 } from "../src/agent/mcp/server";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
-import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
+import type {
+  AgentActionOperation,
+  AgentToolContext,
+  AgentToolDefinition,
+} from "../src/agent/types";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import { createResearchUpdateTool } from "../src/agent/tools/plan/researchUpdate";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
@@ -53,6 +57,13 @@ function testWriteDescriptor(name: string) {
   ];
 }
 
+/** The operations testWriteDescriptor can produce for a given fixture name. */
+function testWriteOperations(name: string): AgentActionOperation[] {
+  return name === "zotero_script"
+    ? ["zotero_script_execute"]
+    : ["settings_update"];
+}
+
 function createReadTool(name: string): AgentToolDefinition<unknown, unknown> {
   return {
     spec: {
@@ -70,6 +81,7 @@ function createReadTool(name: string): AgentToolDefinition<unknown, unknown> {
 
 function createWriteTool(name: string): AgentToolDefinition<unknown, unknown> {
   return {
+    effectOperations: testWriteOperations(name),
     spec: {
       name,
       description: `Write tool ${name}`,
@@ -1561,6 +1573,7 @@ describe("Zotero MCP server", function () {
       );
       for (const name of ["run_command", "file_io", "zotero_script"]) {
         registry.register({
+          effectOperations: testWriteOperations(name),
           spec: {
             name,
             description: `Native access tool ${name}`,
@@ -1702,6 +1715,7 @@ describe("Zotero MCP server", function () {
     );
     for (const name of ["run_command", "file_io", "zotero_script"]) {
       registry.register({
+        effectOperations: testWriteOperations(name),
         spec: {
           name,
           description: `Native access tool ${name}`,
@@ -1852,6 +1866,75 @@ describe("Zotero MCP server", function () {
           libraryID: 999,
           workCategory: "retrieval",
         },
+      ],
+    );
+  });
+
+  it("carries a declared research job onto the completed activity", async function () {
+    // The panel used to notice research progress by recognising one tool's
+    // name. The tool now declares the job its result advanced, and the row
+    // carries it, so the reader of the row needs no list of names.
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    registry.register({
+      spec: {
+        name: "research_update",
+        description: "Persist research decisions",
+        inputSchema: { type: "object", additionalProperties: true },
+        executionClass: "control",
+        workCategory: "planning",
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async () => ({
+        content: { ok: true },
+        researchJobId: "research-77",
+      }),
+    } as AgentToolDefinition<unknown, unknown>);
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-dev",
+        conversationKey: 790,
+        libraryID: 7,
+        kind: "paper",
+      },
+      { token: "research-scope-token" },
+    );
+    const events: Array<{
+      phase: "started" | "completed";
+      researchJobId?: string;
+    }> = [];
+    const unregister = addZoteroMcpToolActivityObserver((event) => {
+      events.push(event);
+    });
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: "research-call-1",
+          method: "tools/call",
+          params: { name: "research_update", arguments: { operation: "x" } },
+        },
+      });
+      assert.equal(response[0], 200);
+    } finally {
+      unregister();
+      scoped.clear();
+    }
+    assert.deepEqual(
+      events.map((event) => ({
+        phase: event.phase,
+        researchJobId: event.researchJobId,
+      })),
+      [
+        { phase: "started", researchJobId: undefined },
+        { phase: "completed", researchJobId: "research-77" },
       ],
     );
   });
@@ -2790,6 +2873,7 @@ describe("Zotero MCP server", function () {
       },
     });
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Update library",
@@ -3190,6 +3274,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Apply tags",
@@ -3263,6 +3348,7 @@ describe("Zotero MCP server", function () {
     );
     for (const name of ["run_command", "file_io"]) {
       registry.register({
+        effectOperations: testWriteOperations(name),
         spec: {
           name,
           description: `Policy-controlled tool ${name}`,
@@ -3342,6 +3428,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "note_write",
         description: "Edit or create notes",
@@ -3452,6 +3539,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "note_write",
         description: "Edit active note",
@@ -3686,6 +3774,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Apply tags",
@@ -3755,6 +3844,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["zotero_script_execute"],
       spec: {
         name: "zotero_script",
         description: "Run Zotero script",

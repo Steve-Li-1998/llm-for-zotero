@@ -1,6 +1,7 @@
 /** Native history-loading regression and timing fixture, used only by workflow tests. */
 import { getAgentRuntime } from "../../agent";
 import { savePlanArtifact } from "../../agent/plans/store";
+import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
 import type { AgentRunEventRecord } from "../../agent/types";
 import type { PlanArtifact } from "../../agent/plans/types";
 import {
@@ -40,38 +41,39 @@ export async function exercisePlanHistoryReplay(
     text: "Write a hypothetical tutorial document.",
     timestamp: stamp,
   });
-  const result = (await getAgentRuntime()
-    .getToolDefinition("submit_document")!
-    .execute(
-      {
-        title: "History loading tutorial",
-        markdown,
-        citations: [],
-        quotes: [],
-        assets: [],
-        groundingReviewed: "passed",
-        groundingIssues: [],
-      },
-      {
-        request: {
-          conversationKey: key,
-          mode: "agent",
-          libraryID: item.libraryID,
-          userText: "Write a hypothetical tutorial document.",
-          documentOutcomePolicy: {
-            required: true,
-            documentKind: "custom",
-            integrityPolicy: "authored",
-            trigger: "document_intent",
-          },
+  const prepared = normalizeExecutionOutput(
+    await getAgentRuntime()
+      .getToolDefinition("submit_document")!
+      .execute(
+        {
+          title: "History loading tutorial",
+          markdown,
+          citations: [],
+          quotes: [],
+          assets: [],
+          groundingReviewed: "passed",
+          groundingIssues: [],
         },
-        runId: `${prefix}-document`,
-        item,
-        modelName: "workflow",
-        currentAnswerText: "",
-      } as never,
-    )) as { content: { documentId: string; visibleMarkdown: string } };
-  const prepared = result.content;
+        {
+          request: {
+            conversationKey: key,
+            mode: "agent",
+            libraryID: item.libraryID,
+            userText: "Write a hypothetical tutorial document.",
+            documentOutcomePolicy: {
+              required: true,
+              documentKind: "custom",
+              integrityPolicy: "authored",
+              trigger: "document_intent",
+            },
+          },
+          runId: `${prefix}-document`,
+          item,
+          modelName: "workflow",
+          currentAnswerText: "",
+        } as never,
+      ),
+  ).content as { documentId: string; visibleMarkdown: string };
   await deps.persistConversationMessage(key, {
     role: "assistant",
     text: prepared.visibleMarkdown,

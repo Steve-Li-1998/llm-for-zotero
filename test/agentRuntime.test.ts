@@ -18,6 +18,10 @@ import { stripNoteHtml } from "../src/utils/noteText";
 import { renderMarkdownForNote } from "../src/utils/markdown";
 import { DatabaseSync } from "node:sqlite";
 import { initPlanDocumentStore } from "../src/agent/documents/store";
+import { initAgentPlanStore } from "../src/agent/plans/store";
+import { initResearchStore } from "../src/agent/research/store";
+import { createDocumentPlan } from "./helpers/documentPlan";
+import type { MaterialRef } from "../src/agent/documents/materialRef";
 import { createSubmitDocumentTool } from "../src/agent/tools/plan/submitPlanDocument";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -78,35 +82,27 @@ import type {
   AgentModelAdapter,
   AgentStepParams,
 } from "../src/agent/model/adapter";
-import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import {
+  createBatchItems,
+  initAgentBatchItemStore,
+  markBatchItemFailed,
+  markBatchItemSaved,
+} from "../src/agent/store/batchItemStore";
+import {
+  createBatchJob,
+  initAgentBatchJobStore,
+} from "../src/agent/store/batchJobStore";
+import {
+  installMockDb,
+  installAgentStoreSqlite,
+  type InstalledMockDb,
+} from "./helpers/agentRuntimeMockDb";
+import { createTestActionContractService } from "./helpers/actionContractService";
 import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
-
-type MockDbRow = Record<string, unknown>;
-
-type InstalledMockDb = (() => void) & {
-  runs: Map<string, MockDbRow>;
-  events: MockDbRow[];
-  transcripts: MockDbRow[];
-  journalDb: ChangeJournalTestDb;
-  setTranscriptWriteFailure: (enabled: boolean) => void;
-  transcriptWriteAttempts: () => number;
-};
-
-function createTestActionContractService(
-  getItem: (itemId: number) => Zotero.Item | null = () => null,
-): ActionContractService {
-  return new ActionContractService({
-    getCollectionSummary: () => null,
-    listCollectionSummaries: () => [],
-    listCollectionPaperTargets: async () => ({ papers: [] }),
-    listCollectionItemTargets: async () => ({ items: [] }),
-    getItem,
-    getEditableArticleMetadata: () => null,
-  });
-}
 
 function registerZeroEffectLibraryUpdate(registry: AgentToolRegistry): void {
   registry.register({
+    effectOperations: ["move_to_collection"],
     spec: {
       name: "library_update",
       description: "update",
@@ -183,179 +179,6 @@ function commandActionDescriptor(id: string) {
       destinationCollectionIds: [],
     },
   ];
-}
-
-function installMockDb(): InstalledMockDb {
-  const runs = new Map<string, MockDbRow>();
-  const events: MockDbRow[] = [];
-  const transcripts: MockDbRow[] = [];
-  const prefs = new Map<string, unknown>();
-  const journalDb = new ChangeJournalTestDb();
-  let failTranscriptWrites = false;
-  let transcriptWriteAttempts = 0;
-  const originalZotero = (
-    globalThis as typeof globalThis & { Zotero?: unknown }
-  ).Zotero;
-  (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
-    DB: {
-      executeTransaction: async (fn: () => Promise<unknown>) => fn(),
-      queryAsync: async (sql: string, params: unknown[] = []) => {
-        if (
-          sql.includes("llm_for_zotero_agent_transcript") &&
-          (sql.includes("DELETE FROM") || sql.includes("INSERT INTO"))
-        ) {
-          transcriptWriteAttempts += 1;
-          if (failTranscriptWrites) {
-            throw new Error("Injected transcript write failure");
-          }
-        }
-        if (sql.includes("INSERT OR REPLACE INTO llm_for_zotero_agent_runs")) {
-          runs.set(String(params[0]), {
-            runId: params[0],
-            conversationKey: params[1],
-            mode: params[2],
-            modelName: params[3],
-            status: params[4],
-            createdAt: params[5],
-            completedAt: params[6],
-            finalText: params[7],
-          });
-          return [];
-        }
-        if (
-          sql.includes("UPDATE llm_for_zotero_agent_runs") &&
-          sql.includes("WHERE status = 'running'")
-        ) {
-          for (const run of runs.values()) {
-            if (run.status !== "running") continue;
-            run.status = params[0];
-            run.completedAt = params[1];
-            run.finalText = params[2];
-          }
-          return [];
-        }
-        if (sql.includes("UPDATE llm_for_zotero_agent_runs")) {
-          const run = runs.get(String(params[3]));
-          if (run) {
-            run.status = params[0];
-            run.completedAt = params[1];
-            run.finalText = params[2];
-          }
-          return [];
-        }
-        if (sql.includes("INSERT INTO llm_for_zotero_agent_run_events")) {
-          events.push({
-            runId: params[0],
-            seq: params[1],
-            eventType: params[2],
-            payloadJson: params[3],
-            createdAt: params[4],
-          });
-          return [];
-        }
-        if (
-          sql.includes("SELECT run_id AS runId") &&
-          sql.includes("agent_run_events")
-        ) {
-          return events
-            .filter((entry) => entry.runId === params[0])
-            .sort((a, b) => Number(a.seq) - Number(b.seq));
-        }
-        if (
-          sql.includes("SELECT run_id AS runId") &&
-          sql.includes("agent_runs") &&
-          sql.includes("WHERE conversation_key = ?")
-        ) {
-          return [...runs.values()]
-            .filter((run) => Number(run.conversationKey) === Number(params[0]))
-            .sort(
-              (left, right) => Number(right.createdAt) - Number(left.createdAt),
-            )
-            .slice(0, 1);
-        }
-        if (
-          sql.includes("SELECT run_id AS runId") &&
-          sql.includes("agent_runs")
-        ) {
-          const run = runs.get(String(params[0]));
-          return run ? [run] : [];
-        }
-        if (sql.includes("DELETE FROM llm_for_zotero_agent_transcript")) {
-          for (let index = transcripts.length - 1; index >= 0; index -= 1) {
-            if (
-              Number(transcripts[index].conversationKey) ===
-                Number(params[0]) &&
-              transcripts[index].compatibilityKey === params[1]
-            ) {
-              transcripts.splice(index, 1);
-            }
-          }
-          return [];
-        }
-        if (sql.includes("INSERT INTO llm_for_zotero_agent_transcript")) {
-          transcripts.push({
-            conversationKey: params[0],
-            compatibilityKey: params[1],
-            sequence: params[2],
-            messageJson: params[3],
-            compactedAt: params[4],
-            createdAt: params[5],
-          });
-          return [];
-        }
-        if (
-          sql.includes("FROM llm_for_zotero_agent_transcript") &&
-          sql.includes("ORDER BY created_at DESC")
-        ) {
-          return transcripts
-            .filter(
-              (row) =>
-                Number(row.conversationKey) === Number(params[0]) &&
-                typeof row.compatibilityKey === "string",
-            )
-            .sort(
-              (left, right) =>
-                Number(right.createdAt) - Number(left.createdAt) ||
-                transcripts.indexOf(right) - transcripts.indexOf(left),
-            )
-            .slice(0, 1)
-            .map((row) => ({ compatibilityKey: row.compatibilityKey }));
-        }
-        if (sql.includes("FROM llm_for_zotero_agent_transcript")) {
-          return transcripts
-            .filter(
-              (row) =>
-                Number(row.conversationKey) === Number(params[0]) &&
-                row.compatibilityKey === params[1],
-            )
-            .sort(
-              (left, right) => Number(left.sequence) - Number(right.sequence),
-            );
-        }
-        return journalDb.queryAsync(sql, params);
-      },
-    },
-    Prefs: {
-      get: (key: string) => prefs.get(key),
-      set: (key: string, value: unknown) => {
-        prefs.set(key, value);
-      },
-    },
-  };
-  const restore = () => {
-    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
-      originalZotero;
-  };
-  return Object.assign(restore, {
-    runs,
-    events,
-    transcripts,
-    journalDb,
-    setTranscriptWriteFailure: (enabled: boolean) => {
-      failTranscriptWrites = enabled;
-    },
-    transcriptWriteAttempts: () => transcriptWriteAttempts,
-  });
 }
 
 function readPersistedTranscript(
@@ -1227,6 +1050,7 @@ describe("AgentRuntime", function () {
         ),
       );
       registry.register({
+        effectOperations: ["note_create"],
         spec: {
           name: "mutate_library",
           description: "mutate",
@@ -1381,7 +1205,7 @@ describe("AgentRuntime", function () {
       if (outcome.kind !== "completed") return;
       assert.equal(
         outcome.text,
-        "Saved.\n\n[Action status: note_create — applied 1/1; verified; proof:zotero_state]",
+        "Saved.\n\n[Action status: note_create — applied 1/1; Verified; proof:zotero_state]",
       );
       assert.isTrue(events.some((event) => event.type === "tool_call"));
       assert.isTrue(events.some((event) => event.type === "tool_result"));
@@ -3377,6 +3201,10 @@ describe("AgentRuntime", function () {
         name: "zotero_script" | "run_command",
       ) => {
         registry.register({
+          effectOperations:
+            name === "zotero_script"
+              ? ["zotero_script_execute"]
+              : ["command_execute"],
           spec: {
             name,
             description: name,
@@ -3766,6 +3594,7 @@ describe("AgentRuntime", function () {
       );
       const noteWrites: unknown[] = [];
       registry.register({
+        effectOperations: ["note_create"],
         spec: {
           name: "note_write",
           description: "write note",
@@ -4846,6 +4675,7 @@ describe("AgentRuntime", function () {
       const conversationKey = 704;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
+        effectOperations: ["command_execute"],
         spec: {
           name: "confirmation_write",
           description: "write",
@@ -5067,6 +4897,7 @@ describe("AgentRuntime", function () {
       let writes = 0;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
+        effectOperations: ["command_execute"],
         spec: {
           name: "recovery_write",
           description: "write",
@@ -5237,6 +5068,7 @@ describe("AgentRuntime", function () {
       let writes = 0;
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
+        effectOperations: ["command_execute"],
         spec: {
           name: "changed_key_write",
           description: "write",
@@ -6968,6 +6800,7 @@ describe("AgentRuntime", function () {
         );
         let writes = 0;
         registry.register({
+          effectOperations: ["apply_tags"],
           spec: {
             name: "tag_related",
             description: "tag a related paper",
@@ -7087,6 +6920,7 @@ describe("AgentRuntime", function () {
       let requestedWrites = 0;
       let judgmentWrites = 0;
       registry.register({
+        effectOperations: ["note_create"],
         spec: {
           name: "mutate_library",
           description: "mutate",
@@ -7117,6 +6951,7 @@ describe("AgentRuntime", function () {
         },
       });
       registry.register({
+        effectOperations: ["apply_tags"],
         spec: {
           name: "tag_related",
           description: "tag a related paper",
@@ -7724,6 +7559,7 @@ describe("shallow guard round-limit safety", function () {
       await initAgentChangeJournal();
       const registry = new AgentToolRegistry(createTestActionContractService());
       registry.register({
+        effectOperations: ["command_execute"],
         spec: {
           name: "library_update",
           description: "update",
@@ -7860,6 +7696,7 @@ describe("shallow guard round-limit safety", function () {
         ),
       );
       registry.register({
+        effectOperations: ["apply_tags"],
         spec: {
           name: "library_update",
           description: "update",
@@ -7905,6 +7742,7 @@ describe("shallow guard round-limit safety", function () {
                 actionEvidence: [
                   {
                     version: 1 as const,
+                    source: "library_mutation" as const,
                     proofDomain: "zotero_state" as const,
                     operationValue: operation,
                     preState: {
@@ -8272,19 +8110,18 @@ describe("delegating facade trace labels", function () {
   }
 });
 
-/**
- * The agent-run mock database is hand-written SQL pattern matching. The
- * document store needs real SQL, so plan-document statements are routed to an
- * in-memory sqlite database while every other statement stays on the mock.
- */
-function installPlanDocumentSqlite(): () => void {
+/** Plan, document and research stores need real SQL; the rest stays on the mock. */
+function installPlanSqlite(): () => void {
   const zotero = globalThis as typeof globalThis & { Zotero: typeof Zotero };
   const base = zotero.Zotero.DB;
   const db = new DatabaseSync(":memory:");
   zotero.Zotero.DB = {
     ...base,
     queryAsync: async (sql: string, params: unknown[] = []) => {
-      if (!sql.includes("llm_for_zotero_plan_document"))
+      if (
+        !sql.includes("llm_for_zotero_plan_") &&
+        !sql.includes("llm_for_zotero_research")
+      )
         return base.queryAsync(sql, params);
       const statement = db.prepare(sql);
       const values = params.map((value) =>
@@ -8315,7 +8152,7 @@ const submitDocumentGateway = {
 describe("finalized material announcement", function () {
   it("emits material_finalized and carries the same ref on the final event", async function () {
     const restoreDb = installMockDb();
-    const restoreDocuments = installPlanDocumentSqlite();
+    const restoreDocuments = installAgentStoreSqlite();
     const events: AgentEvent[] = [];
     let steps = 0;
     try {
@@ -8405,6 +8242,32 @@ describe("finalized material announcement", function () {
       assert.equal(announced?.materialKind, "guide");
       assert.equal(announced?.materialTitle, "Representational drift");
 
+      const materialIndex = events.findIndex(
+        (event) => event.type === "material_finalized",
+      );
+      const materialStage = events[materialIndex - 1];
+      assert.equal(
+        materialStage?.type,
+        "agent_stage",
+        "the generation stage precedes the material it announces",
+      );
+      assert.deepEqual(
+        materialStage?.type === "agent_stage"
+          ? [materialStage.stage, materialStage.status]
+          : null,
+        ["generation", "completed"],
+      );
+      assert.deepEqual(
+        materialStage?.type === "agent_stage"
+          ? materialStage.materialRef
+          : null,
+        announced?.materialRef,
+      );
+      assert.equal(
+        materialStage?.type === "agent_stage" ? materialStage.callId : null,
+        "submit-document-1",
+      );
+
       const finalEvent = events.find((event) => event.type === "final") as
         | Extract<AgentEvent, { type: "final" }>
         | undefined;
@@ -8434,6 +8297,1669 @@ describe("finalized material announcement", function () {
       );
     } finally {
       restoreDocuments();
+      restoreDb();
+    }
+  });
+
+  it("announces each batch item and never as turn material", async function () {
+    const restoreDb = installMockDb();
+    const events: AgentEvent[] = [];
+    const batchItems = [1, 2, 3].map((position) => ({
+      batchId: "batch-note_write_batch-1",
+      itemKey: `item:${position}`,
+      materialRef: {
+        documentId: `run:document:${position}`,
+        documentVersion: 1,
+        contentHash: `sha256:note-${position}`,
+      },
+      status: position === 2 ? ("failed" as const) : ("saved" as const),
+      written: position !== 2,
+      ...(position === 2
+        ? { error: "Zotero refused the note write" }
+        : { noteId: 500 + position }),
+    }));
+    let steps = 0;
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry();
+      registry.register({
+        effectOperations: ["save_notes_batch"],
+        spec: {
+          name: "note_write_batch",
+          description: "Write a note onto each of many items",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        planInvocation: async () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test note batch.",
+          }),
+        describeAction: () => [
+          {
+            id: "save_notes_batch:0",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "save_notes_batch",
+            source: "library_mutation",
+            requestedTargets: ["item:1", "item:2", "item:3"],
+            destinationCollectionIds: [],
+          },
+        ],
+        execute: async () => ({
+          content: { createdCount: 2, failedCount: 1 },
+          effect: "partial",
+          batchItems,
+        }),
+      } as never);
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            if (steps++ === 0) {
+              const call = {
+                id: "note-batch-1",
+                name: "note_write_batch",
+                arguments: { notes: [] },
+              };
+              return {
+                kind: "tool_calls",
+                calls: [call],
+                assistantMessage: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [call],
+                },
+              };
+            }
+            return {
+              kind: "final",
+              text: "Wrote the notes.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Wrote the notes.",
+              },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 774422,
+          mode: "agent",
+          userText: "Write a note on each of these papers",
+          libraryID: 1,
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+          metadata: { sourceMessageTimestamp: 100 },
+        },
+        onEvent: (event) => events.push(event),
+      });
+      assert.equal(outcome.kind, "completed");
+
+      const announced = events.filter(
+        (event) => event.type === "batch_item_outcome",
+      ) as Extract<AgentEvent, { type: "batch_item_outcome" }>[];
+      assert.lengthOf(announced, 3, "one announcement per batch item");
+      assert.deepEqual(
+        announced.map((event) => event.itemKey),
+        ["item:1", "item:2", "item:3"],
+      );
+      assert.deepEqual(
+        announced.map((event) => event.status),
+        ["saved", "failed", "saved"],
+      );
+      assert.deepEqual(announced[0].materialRef, batchItems[0].materialRef);
+      assert.equal(announced[0].noteId, 501);
+      assert.equal(announced[1].error, "Zotero refused the note write");
+      assert.deepEqual(
+        announced.map((event) => event.callId),
+        ["note-batch-1", "note-batch-1", "note-batch-1"],
+      );
+
+      const itemStages = events.filter(
+        (event) => event.type === "agent_stage" && Boolean(event.itemKey),
+      ) as Extract<AgentEvent, { type: "agent_stage" }>[];
+      assert.deepEqual(
+        itemStages.map((event) => [event.stage, event.status, event.itemKey]),
+        [
+          ["zotero_action", "completed", "item:1"],
+          ["zotero_action", "failed", "item:2"],
+          ["zotero_action", "completed", "item:3"],
+        ],
+        "each announced item reports its own stage outcome",
+      );
+      assert.deepEqual(
+        itemStages.map((event) => event.batchId),
+        [
+          "batch-note_write_batch-1",
+          "batch-note_write_batch-1",
+          "batch-note_write_batch-1",
+        ],
+      );
+      assert.deepEqual(itemStages[0].materialRef, batchItems[0].materialRef);
+      const batchOrder = events.map((event) => event.type);
+      assert.equal(
+        batchOrder[batchOrder.indexOf("batch_item_outcome") - 1],
+        "agent_stage",
+        "the item stage precedes the outcome it describes",
+      );
+      // Fifty note bodies must never flood the turn's material ledger.
+      assert.isEmpty(
+        events.filter((event) => event.type === "material_finalized"),
+      );
+
+      const trace = await getAgentRunTrace(outcome.runId);
+      const persisted = trace.events.filter(
+        (entry) => entry.eventType === "batch_item_outcome",
+      );
+      assert.lengthOf(persisted, 3, "the announcements are persisted");
+      const toolResultIndex = trace.events.findIndex(
+        (entry) => entry.eventType === "tool_result",
+      );
+      assert.isAbove(
+        persisted[0].seq,
+        trace.events[toolResultIndex].seq,
+        "items are announced after the tool result that carried them",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("separates the items a resumed batch wrote from the ones it skipped", async function () {
+    const restoreDb = installMockDb();
+    const events: AgentEvent[] = [];
+    // What a resume reports: it announces every row the batch holds, and both
+    // of these are saved. Only the second one was saved by this call.
+    const resumedItems = [
+      {
+        batchId: "batch-note_write_batch-1",
+        itemKey: "item:1",
+        materialRef: {
+          documentId: "run:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:note-1",
+        },
+        status: "saved" as const,
+        written: false,
+        noteId: 501,
+      },
+      {
+        batchId: "batch-note_write_batch-1",
+        itemKey: "item:2",
+        materialRef: {
+          documentId: "run:document:2",
+          documentVersion: 1,
+          contentHash: "sha256:note-2",
+        },
+        status: "saved" as const,
+        written: true,
+        noteId: 502,
+      },
+    ];
+    let steps = 0;
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry();
+      registry.register({
+        effectOperations: ["save_notes_batch"],
+        spec: {
+          name: "note_write_batch",
+          description: "Write a note onto each of many items",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        planInvocation: async () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test note batch resume.",
+          }),
+        describeAction: () => [
+          {
+            id: "save_notes_batch:0",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "save_notes_batch",
+            source: "library_mutation",
+            requestedTargets: ["item:2"],
+            destinationCollectionIds: [],
+          },
+        ],
+        execute: async () => ({
+          content: { createdCount: 1, alreadySavedCount: 1 },
+          effect: "applied",
+          batchItems: resumedItems,
+        }),
+      } as never);
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            if (steps++ === 0) {
+              const call = {
+                id: "note-batch-resume",
+                name: "note_write_batch",
+                arguments: { resumeBatchId: "batch-note_write_batch-1" },
+              };
+              return {
+                kind: "tool_calls",
+                calls: [call],
+                assistantMessage: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [call],
+                },
+              };
+            }
+            return {
+              kind: "final",
+              text: "Finished the batch.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Finished the batch.",
+              },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 774423,
+          mode: "agent",
+          userText: "Finish that batch",
+          libraryID: 1,
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+          metadata: { sourceMessageTimestamp: 100 },
+        },
+        onEvent: (event) => events.push(event),
+      });
+      assert.equal(outcome.kind, "completed");
+
+      const announced = events.filter(
+        (event) => event.type === "batch_item_outcome",
+      ) as Extract<AgentEvent, { type: "batch_item_outcome" }>[];
+      assert.deepEqual(
+        announced.map((event) => event.status),
+        ["saved", "saved"],
+      );
+      // Anything rendering these as "what just happened" must read `written`;
+      // the status alone would show the same note being written twice.
+      assert.deepEqual(
+        announced.map((event) => ({
+          itemKey: event.itemKey,
+          written: event.written,
+        })),
+        [
+          { itemKey: "item:1", written: false },
+          { itemKey: "item:2", written: true },
+        ],
+      );
+      const persisted = (await getAgentRunTrace(outcome.runId)).events
+        .filter((entry) => entry.eventType === "batch_item_outcome")
+        .map(
+          (entry) =>
+            (
+              entry.payload as Extract<
+                AgentEvent,
+                { type: "batch_item_outcome" }
+              >
+            ).written,
+        );
+      assert.deepEqual(
+        persisted,
+        [false, true],
+        "the distinction survives into the durable trace",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  /** Turn 1 finalizes a direct document through the real submit_document tool. */
+  async function runFinalizingTurn(
+    conversationKey: number,
+  ): Promise<{ documentId: string; materialRef: MaterialRef }> {
+    const registry = new AgentToolRegistry();
+    registry.register(createSubmitDocumentTool(submitDocumentGateway));
+    const events: AgentEvent[] = [];
+    let steps = 0;
+    const runtime = new AgentRuntime({
+      registry,
+      adapterFactory: () => ({
+        getCapabilities: () => ({
+          streaming: false,
+          toolCalls: true,
+          multimodal: false,
+        }),
+        supportsTools: () => true,
+        async runStep(): Promise<AgentModelStep> {
+          if (steps++ === 0) {
+            const call = {
+              id: "submit-document-1",
+              name: "submit_document",
+              arguments: {
+                documentKind: "guide",
+                integrityPolicy: "authored",
+                title: "Representational drift",
+                markdown: "# Representational drift\n\nA complete guide.",
+                citations: [],
+                quotes: [],
+                assets: [],
+                groundingReviewed: "passed",
+                groundingIssues: [],
+              },
+            };
+            return {
+              kind: "tool_calls",
+              calls: [call],
+              assistantMessage: {
+                role: "assistant",
+                content: "",
+                tool_calls: [call],
+              },
+            };
+          }
+          return {
+            kind: "final",
+            text: "Unreachable: submit_document ends the turn.",
+            assistantMessage: {
+              role: "assistant",
+              content: "Unreachable: submit_document ends the turn.",
+            },
+          };
+        },
+      }),
+    });
+    const outcome = await runtime.runTurn({
+      request: {
+        conversationKey,
+        mode: "agent",
+        userText: "Write a guide about representational drift",
+        libraryID: 1,
+        model: "test",
+        apiKey: "test",
+        apiBase: "https://example.invalid",
+        metadata: { sourceMessageTimestamp: 100 },
+      },
+      onEvent: (event) => events.push(event),
+    });
+    assert.equal(outcome.kind, "completed");
+    const announced = events.find(
+      (event) => event.type === "material_finalized",
+    ) as Extract<AgentEvent, { type: "material_finalized" }> | undefined;
+    assert.exists(announced, "turn 1 must finalize material");
+    return {
+      runId: outcome.runId,
+      documentId: announced!.materialRef.documentId,
+      materialRef: announced!.materialRef,
+    };
+  }
+
+  const BLOCK_HEADER = "Finalized material available (not saved as a note):";
+
+  /** A plain turn whose adapter answers immediately; returns its prompt. */
+  async function runPlainTurn(
+    conversationKey: number,
+    userText: string,
+    sourceMessageTimestamp: number,
+  ): Promise<{
+    request: AgentRuntimeRequest | undefined;
+    promptMessages: AgentModelMessage[];
+  }> {
+    const registry = new AgentToolRegistry();
+    registry.register(createSubmitDocumentTool(submitDocumentGateway));
+    let request: AgentRuntimeRequest | undefined;
+    let promptMessages: AgentModelMessage[] = [];
+    const runtime = new AgentRuntime({
+      registry,
+      adapterFactory: (resolved) => {
+        request = resolved;
+        return {
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            promptMessages = params.messages;
+            return {
+              kind: "final",
+              text: "Acknowledged.",
+              assistantMessage: { role: "assistant", content: "Acknowledged." },
+            };
+          },
+        };
+      },
+    });
+    const outcome = await runtime.runTurn({
+      request: {
+        conversationKey,
+        mode: "agent",
+        userText,
+        libraryID: 1,
+        model: "test",
+        apiKey: "test",
+        apiBase: "https://example.invalid",
+        metadata: { sourceMessageTimestamp },
+      },
+    });
+    assert.equal(outcome.kind, "completed");
+    return { request, promptMessages };
+  }
+
+  function countBlocks(messages: readonly AgentModelMessage[]): number {
+    return messages.filter((message) =>
+      String(message.content).includes(BLOCK_HEADER),
+    ).length;
+  }
+
+  it("tells the next turn which finalized material is still unsaved, without persisting the block", async function () {
+    const installed = installMockDb();
+    const restoreDocuments = installAgentStoreSqlite();
+    clearAgentTranscriptStore();
+    try {
+      await initPlanDocumentStore();
+      const conversationKey = 774412;
+      const { runId, documentId, materialRef } =
+        await runFinalizingTurn(conversationKey);
+
+      const second = await runPlainTurn(
+        conversationKey,
+        "Save that as a note",
+        200,
+      );
+      assert.deepEqual(
+        second.request?.materialOutcomes?.map((entry) => ({
+          documentId: entry.materialRef.documentId,
+          status: entry.status,
+        })),
+        [{ documentId, status: "finalized" }],
+        "the ledger is exposed on the request the turn ran with",
+      );
+
+      assert.equal(
+        countBlocks(second.promptMessages),
+        1,
+        "the next turn's prompt names the unsaved material exactly once",
+      );
+      const blockIndex = second.promptMessages.findIndex((message) =>
+        String(message.content).includes(BLOCK_HEADER),
+      );
+      assert.isTrue(
+        (second.promptMessages[blockIndex] as { transient?: boolean })
+          .transient,
+        "the block is marked transient, so no checkpoint can copy it into the transcript",
+      );
+      const block = String(second.promptMessages[blockIndex]?.content);
+      assert.include(
+        block,
+        `documentId=${documentId} version=${materialRef.documentVersion} hash=${materialRef.contentHash} title="Representational drift" status=finalized`,
+      );
+      assert.include(
+        block,
+        "If the user asks to save it, call note_write with that documentId; do not regenerate it.",
+      );
+      assert.include(
+        String(second.promptMessages[blockIndex + 1]?.content),
+        "Save that as a note",
+        "the host block sits immediately before this turn's user message",
+      );
+      const persisted = readPersistedTranscript(installed, conversationKey)
+        .map((message) => String(message.content))
+        .join("\n");
+      assert.notInclude(
+        persisted,
+        BLOCK_HEADER,
+        "the block is recomputed every turn, so it must never enter the transcript",
+      );
+
+      // A third turn must not stack a second copy: if the block were durable,
+      // the prompt would carry one per turn while the material stays unsaved.
+      const third = await runPlainTurn(conversationKey, "And now?", 300);
+      assert.equal(
+        countBlocks(third.promptMessages),
+        1,
+        "a later turn still names the material exactly once",
+      );
+      assert.notInclude(
+        readPersistedTranscript(installed, conversationKey)
+          .map((message) => String(message.content))
+          .join("\n"),
+        BLOCK_HEADER,
+      );
+
+      // Once the material is written, no turn may still tell the model to
+      // save it -- a stale copy is what makes a second, unrequested note.
+      await appendAgentRunEvent(runId, 100, {
+        type: "tool_result",
+        callId: "note-write-1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: [
+          {
+            version: 2,
+            id: "receipt:saved",
+            proposalId: "proposal:saved",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "note_create",
+            verification: "verified",
+            status: "applied",
+            requestedTargets: ["item:101"],
+            appliedTargets: ["item:101"],
+            alreadySatisfiedTargets: [],
+            rejectedTargets: [],
+            reasons: [],
+            materialRef,
+          },
+        ],
+        content: { noteId: 501 },
+      });
+      const fourth = await runPlainTurn(conversationKey, "Thanks", 400);
+      assert.deepEqual(
+        fourth.request?.materialOutcomes?.map((entry) => entry.status),
+        ["saved"],
+      );
+      assert.equal(
+        countBlocks(fourth.promptMessages),
+        0,
+        "saved material is never offered for saving again",
+      );
+    } finally {
+      restoreDocuments();
+      installed();
+    }
+  });
+
+  const BATCH_HEADER = "Resumable note batches:";
+
+  /** Seeds one interrupted batch: A saved, B failed, C never attempted. */
+  async function seedInterruptedBatch(
+    conversationKey: number,
+    batchId: string,
+  ): Promise<void> {
+    await initAgentBatchJobStore();
+    await initAgentBatchItemStore();
+    await createBatchJob({
+      jobId: batchId,
+      conversationKey,
+      action: "note_write_batch",
+      input: { target: "item" },
+      totalCount: 3,
+      now: 1000,
+    });
+    await createBatchItems(
+      batchId,
+      [1, 2, 3].map((id) => ({
+        itemKey: `item:${id}`,
+        position: id,
+        materialRef: {
+          documentId: `run-batch:document:${id}`,
+          documentVersion: 1,
+          contentHash: `sha256:note-${id}`,
+        },
+      })),
+      1000,
+    );
+    await markBatchItemSaved(batchId, "item:1", {
+      actionId: "action-batch",
+      stepSequence: 1,
+      noteId: 900,
+      now: 1100,
+    });
+    await markBatchItemFailed(batchId, "item:2", {
+      actionId: "action-batch",
+      stepSequence: 2,
+      error: "Zotero refused the note write",
+      now: 1100,
+    });
+  }
+
+  it("tells the next turn which note batch it can continue, and where", async function () {
+    const installed = installMockDb();
+    const restoreStores = installAgentStoreSqlite();
+    clearAgentTranscriptStore();
+    try {
+      await initPlanDocumentStore();
+      const conversationKey = 774413;
+      const batchId = "batch-note_write_batch-resume";
+      await seedInterruptedBatch(conversationKey, batchId);
+
+      const next = await runPlainTurn(conversationKey, "Keep going", 200);
+      const blockIndex = next.promptMessages.findIndex((message) =>
+        String(message.content).includes(BATCH_HEADER),
+      );
+      assert.isAtLeast(blockIndex, 0, "the turn must name the open batch");
+      const block = String(next.promptMessages[blockIndex]?.content);
+      assert.include(
+        block,
+        `batchId=${batchId} total=3 saved=1 failed=1 pending=1`,
+      );
+      assert.include(
+        block,
+        `To continue, call note_write_batch with resumeBatchId=${batchId}; the saved items are skipped and no note is regenerated.`,
+      );
+      assert.isTrue(
+        (next.promptMessages[blockIndex] as { transient?: boolean }).transient,
+        "the rows are read again every turn, so the block must never persist",
+      );
+      assert.include(
+        String(next.promptMessages[blockIndex + 1]?.content),
+        "Keep going",
+        "the host block sits immediately before this turn's user message",
+      );
+      assert.notInclude(
+        readPersistedTranscript(installed, conversationKey)
+          .map((message) => String(message.content))
+          .join("\n"),
+        BATCH_HEADER,
+      );
+
+      // Once every item has landed there is nothing to continue, and an
+      // offer to resume would write the same three notes a second time.
+      await markBatchItemSaved(batchId, "item:2", {
+        actionId: "action-batch",
+        stepSequence: 3,
+        noteId: 901,
+        now: 1200,
+      });
+      await markBatchItemSaved(batchId, "item:3", {
+        actionId: "action-batch",
+        stepSequence: 4,
+        noteId: 902,
+        now: 1200,
+      });
+      const after = await runPlainTurn(conversationKey, "And now?", 300);
+      assert.isEmpty(
+        after.promptMessages.filter((message) =>
+          String(message.content).includes(BATCH_HEADER),
+        ),
+        "a batch whose items are all written is never offered",
+      );
+    } finally {
+      restoreStores();
+      installed();
+    }
+  });
+
+  it("carries the material ref on the final event when a later turn re-adopts the document", async function () {
+    const installed = installMockDb();
+    const restoreStores = installPlanSqlite();
+    clearAgentTranscriptStore();
+    try {
+      await initAgentPlanStore();
+      await initPlanDocumentStore();
+      await initResearchStore();
+      const conversationKey = 41;
+      const { documentId, materialRef } =
+        await runFinalizingTurn(conversationKey);
+      // Only a plan-executing turn keeps a progress ledger across runs; an
+      // ordinary turn discards any contract it is handed (runtime.ts clears
+      // actionContract/actionProgress/classifiedIntent before the model runs).
+      const plan = await createDocumentPlan(conversationKey);
+
+      const registry = new AgentToolRegistry();
+      registry.register(createSubmitDocumentTool(submitDocumentGateway));
+      const events: AgentEvent[] = [];
+      const secondTurn = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            return {
+              kind: "final",
+              text: "The guide is ready.",
+              assistantMessage: {
+                role: "assistant",
+                content: "The guide is ready.",
+              },
+            };
+          },
+        }),
+      });
+      const intent = classifiedFixture({
+        semantic: semanticFixture({
+          materialOutputs: [
+            {
+              id: "guide",
+              description: "The requested guide",
+              afterActions: [],
+              sourceActionIndexes: [],
+              requiredEvidence: "none",
+            },
+          ],
+        }),
+      });
+      await secondTurn.runTurn({
+        request: {
+          conversationKey,
+          mode: "agent",
+          userText: "Continue the approved plan",
+          libraryID: 1,
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+          metadata: { sourceMessageTimestamp: 200 },
+          planContext: {
+            phase: "executing",
+            planId: plan.planId,
+            revision: plan.revision,
+            executionId: plan.executionId,
+            approvedDigest: plan.planDigest,
+            provider: "original",
+          },
+          actionContract: {
+            version: 4,
+            id: "contract:reused",
+            interpretationSource: "semantic",
+            writeDisposition: "none",
+            intent,
+            obligations: [],
+          },
+          actionProgress: {
+            version: 1,
+            contractId: "contract:reused",
+            state: "pending",
+            correctionCount: 0,
+            obligations: [],
+            appliedReceiptKeys: [],
+            materialOutputs: [{ outputId: "guide", ...materialRef }],
+          },
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      const finalEvent = events.find((event) => event.type === "final") as
+        | Extract<AgentEvent, { type: "final" }>
+        | undefined;
+      assert.equal(
+        finalEvent?.documentId,
+        documentId,
+        "the re-adopted document must name the turn's outcome",
+      );
+      assert.deepEqual(
+        finalEvent?.materialRef,
+        materialRef,
+        "re-adopted material keeps the exact identity turn 1 finalized",
+      );
+    } finally {
+      restoreStores();
+      installed();
+    }
+  });
+});
+
+/**
+ * The stage events the trace groups by.
+ *
+ * A stage event is emitted immediately before the event it describes, so a
+ * live run and a projected legacy run interleave identically.
+ */
+describe("agent stage events", function () {
+  type StageEvent = Extract<AgentEvent, { type: "agent_stage" }>;
+
+  function stageEvents(events: AgentEvent[]): StageEvent[] {
+    return events.filter(
+      (event): event is StageEvent => event.type === "agent_stage",
+    );
+  }
+
+  function registerStageReadTool(registry: AgentToolRegistry): void {
+    registry.register({
+      spec: {
+        name: "library_search",
+        description: "search",
+        inputSchema: { type: "object" },
+        executionClass: "read",
+        workCategory: "retrieval",
+      },
+      presentation: { label: "Search library" },
+      validate: (args) => ({ ok: true, value: args as never }),
+      execute: async () => ({ content: { hits: [] } }),
+    } as never);
+  }
+
+  function registerStageNoteTool(registry: AgentToolRegistry): void {
+    registry.register({
+      effectOperations: ["note_create"],
+      spec: {
+        name: "note_write",
+        description: "write a note",
+        inputSchema: { type: "object" },
+        executionClass: "external_effect",
+        workCategory: "zotero_action",
+        requiresConfirmation: false,
+      },
+      presentation: { label: "Write note" },
+      validate: (args) => ({ ok: true, value: args as never }),
+      planInvocation: async () =>
+        stateChangeInvocationPlan({
+          reversibility: "full",
+          reason: "Test note write.",
+        }),
+      describeAction: () => [
+        {
+          id: "note_create:stage-test",
+          proofDomain: "zotero_state",
+          capability: "zotero.notes",
+          operation: "note_create",
+          source: "zotero_native",
+          requestedTargets: [],
+          destinationCollectionIds: [],
+        },
+      ],
+      execute: async () => ({
+        content: { status: "created", noteId: 900 },
+        effect: "applied",
+      }),
+    } as never);
+  }
+
+  function toolCallStep(id: string, name: string): AgentModelStep {
+    const call = { id, name, arguments: {} };
+    return {
+      kind: "tool_calls",
+      calls: [call],
+      assistantMessage: { role: "assistant", content: "", tool_calls: [call] },
+    };
+  }
+
+  it("brackets a read and a note write with their own stages", async function () {
+    const restoreDb = installMockDb();
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registerStageReadTool(registry);
+      registerStageNoteTool(registry);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("read-1", "library_search"),
+              toolCallStep("write-1", "note_write"),
+              {
+                kind: "final",
+                text: "Done.",
+                assistantMessage: { role: "assistant", content: "Done." },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_101,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Find it and note it",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+      assert.equal(outcome.kind, "completed");
+
+      const stages = stageEvents(events);
+      assert.deepEqual(
+        stages.map((event) => [event.stage, event.status]),
+        [
+          ["retrieval", "started"],
+          ["retrieval", "completed"],
+          ["zotero_action", "started"],
+          ["zotero_action", "completed"],
+        ],
+        "each resolved call opens and closes exactly one stage",
+      );
+      assert.deepEqual(
+        stages.map((event) => event.toolLabel),
+        ["Search library", "Search library", "Write note", "Write note"],
+        "the label is stamped at emission, never re-derived from the name",
+      );
+      assert.deepEqual(
+        stages.map((event) => event.callId),
+        ["read-1", "read-1", "write-1", "write-1"],
+      );
+      assert.deepEqual(
+        stages.map((event) => event.toolName),
+        ["library_search", "library_search", "note_write", "note_write"],
+      );
+
+      const writeResult = events.find(
+        (event) => event.type === "tool_result" && event.name === "note_write",
+      ) as Extract<AgentEvent, { type: "tool_result" }> | undefined;
+      assert.isNotEmpty(
+        writeResult?.actionReceipts || [],
+        "the note write must produce a receipt for the stage to carry",
+      );
+      assert.deepEqual(
+        stages[3].receiptIds,
+        (writeResult?.actionReceipts || []).map((receipt) => receipt.id),
+        "the closing stage carries the receipts its call produced",
+      );
+      assert.isUndefined(
+        stages[0].receiptIds,
+        "a read produces no receipts to carry",
+      );
+
+      const types = events.map((event) => event.type);
+      const firstStage = types.indexOf("agent_stage");
+      assert.equal(
+        types[firstStage + 1],
+        "tool_call",
+        "a stage event precedes the event it describes",
+      );
+      assert.equal(
+        types[types.indexOf("tool_result") - 1],
+        "agent_stage",
+        "the closing stage precedes the result it describes",
+      );
+
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "tool_call")
+          .map((event) => event.toolLabel),
+        ["Search library", "Write note"],
+        "tool calls carry their label at emission",
+      );
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "tool_result")
+          .map((event) => event.toolLabel),
+        ["Search library", "Write note"],
+        "tool results carry their label at emission",
+      );
+
+      const trace = await getAgentRunTrace(outcome.runId);
+      assert.deepEqual(
+        trace.events
+          .filter((entry) => entry.eventType === "agent_stage")
+          .map((entry) => entry.payload),
+        stages,
+        "a replayed stage event is structurally identical to the live one",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("closes a failed call's stage as failed and carries its label", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registry.register({
+        spec: {
+          name: "library_search",
+          description: "search",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          workCategory: "retrieval",
+        },
+        presentation: { label: "Search library" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async () => {
+          throw new Error("the library is unavailable");
+        },
+      } as never);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("read-1", "library_search"),
+              {
+                kind: "final",
+                text: "Could not read.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "Could not read.",
+                },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+      const outcome = await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_102,
+          mode: "agent",
+          userText: "Find it",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      assert.deepEqual(
+        stageEvents(events).map((event) => [event.stage, event.status]),
+        [
+          ["retrieval", "started"],
+          ["retrieval", "failed"],
+        ],
+      );
+      assert.equal(
+        events.find((event) => event.type === "tool_error")?.toolLabel,
+        "Search library",
+      );
+
+      // The close describes the result, not the error: the error is a detail
+      // inside the still-open stage.
+      const persisted = (await getAgentRunTrace(outcome.runId)).events
+        .slice()
+        .sort((left, right) => left.seq - right.seq);
+      const firstStage = persisted.findIndex(
+        (entry) => entry.eventType === "agent_stage",
+      );
+      assert.isAtLeast(firstStage, 0, "the run must persist a stage event");
+      assert.deepEqual(
+        persisted.slice(firstStage, firstStage + 5).map((entry) => {
+          const payload = entry.payload;
+          return payload.type === "agent_stage"
+            ? `agent_stage:${payload.status}`
+            : payload.type;
+        }),
+        [
+          "agent_stage:started",
+          "tool_call",
+          "tool_error",
+          "agent_stage:failed",
+          "tool_result",
+        ],
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("emits no stage for a call the registry cannot resolve", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registerStageReadTool(registry);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("ghost-1", "no_such_tool"),
+              {
+                kind: "final",
+                text: "Done.",
+                assistantMessage: { role: "assistant", content: "Done." },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+      await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_103,
+          mode: "agent",
+          userText: "Do something",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+      assert.isEmpty(
+        stageEvents(events),
+        "an unresolvable call must never guess a stage",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("reports no stage for a batch item this run has not written", async function () {
+    const restoreDb = installMockDb();
+    const batchItems = [
+      {
+        batchId: "batch-stage-1",
+        itemKey: "item:saved",
+        materialRef: {
+          documentId: "run:document:1",
+          documentVersion: 1,
+          contentHash: "sha256:note-1",
+        },
+        status: "saved" as const,
+        written: true,
+        noteId: 601,
+      },
+      {
+        batchId: "batch-stage-1",
+        itemKey: "item:pending",
+        status: "pending" as const,
+        written: false,
+      },
+      {
+        batchId: "batch-stage-1",
+        itemKey: "item:failed",
+        status: "failed" as const,
+        written: false,
+        error: "Zotero refused the note write",
+      },
+    ];
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registry.register({
+        effectOperations: ["save_notes_batch"],
+        spec: {
+          name: "note_write_batch",
+          description: "Write a note onto each of many items",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          workCategory: "zotero_action",
+          requiresConfirmation: false,
+        },
+        presentation: { label: "Write notes" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        planInvocation: async () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test note batch.",
+          }),
+        describeAction: () => [
+          {
+            id: "save_notes_batch:stage",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "save_notes_batch",
+            source: "library_mutation",
+            requestedTargets: ["item:saved", "item:pending", "item:failed"],
+            destinationCollectionIds: [],
+          },
+        ],
+        execute: async () => ({
+          content: { createdCount: 1, failedCount: 1 },
+          effect: "partial",
+          batchItems,
+        }),
+      } as never);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("batch-1", "note_write_batch"),
+              {
+                kind: "final",
+                text: "Wrote what I could.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "Wrote what I could.",
+                },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+      await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_105,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Note each of these",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "batch_item_outcome")
+          .map((event) => event.itemKey),
+        ["item:saved", "item:pending", "item:failed"],
+        "every item is still announced",
+      );
+      assert.deepEqual(
+        stageEvents(events)
+          .filter((event) => Boolean(event.itemKey))
+          .map((event) => [event.itemKey, event.status]),
+        [
+          ["item:saved", "completed"],
+          ["item:failed", "failed"],
+        ],
+        "a pending item reports no stage rather than a wrong one",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("reports each plan event as a planning stage", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registry.register({
+        spec: {
+          name: "plan_probe",
+          description: "publish plan events",
+          inputSchema: { type: "object" },
+          executionClass: "control",
+          workCategory: "planning",
+        },
+        presentation: { label: "Plan" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async (_input: unknown, context: any) => {
+          await context.publishPlanEvent?.({
+            type: "plan_updated",
+            artifact: { planId: "p1", revision: 1 } as never,
+          });
+          await context.publishPlanEvent?.({
+            type: "plan_ready",
+            artifact: { planId: "p1", revision: 1 } as never,
+          });
+          await context.publishPlanEvent?.({
+            type: "plan_execution_updated",
+            ledger: { executionId: "e1", tasks: [] } as never,
+          });
+          await context.publishPlanEvent?.({
+            type: "plan_research_progress",
+            progress: { researchJobId: "r1" } as never,
+          });
+          return { content: { ok: true } };
+        },
+      } as never);
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("plan-1", "plan_probe"),
+              {
+                kind: "final",
+                text: "Planned.",
+                assistantMessage: { role: "assistant", content: "Planned." },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+      await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 990_104,
+          mode: "agent",
+          userText: "Plan it",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      const planning = stageEvents(events).filter(
+        (event) => event.stage === "planning" && !event.callId,
+      );
+      assert.deepEqual(
+        planning.map((event) => event.status),
+        ["started", "completed"],
+        "only a drafted revision and a reviewable plan move the stage",
+      );
+      const types = events.map((event) => event.type);
+      assert.equal(
+        types[types.indexOf("plan_updated") - 1],
+        "agent_stage",
+        "the planning stage precedes the plan event it describes",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+});
+
+describe("tool result review delivery", function () {
+  function toolCallStep(id: string, name: string): AgentModelStep {
+    const call = { id, name, arguments: {} };
+    return {
+      kind: "tool_calls",
+      calls: [call],
+      assistantMessage: { role: "assistant", content: "", tool_calls: [call] },
+    };
+  }
+
+  function reviewAction(toolName: string) {
+    return {
+      toolName,
+      title: "Review the results",
+      mode: "review" as const,
+      confirmLabel: "Use these",
+      cancelLabel: "Cancel",
+      fields: [],
+      actions: [{ id: "use", label: "Use these" }],
+    };
+  }
+
+  it("delivers a review's replacement content and both follow-up messages", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      let reviewsCreated = 0;
+      registry.register({
+        spec: {
+          name: "literature_search",
+          description: "search",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          workCategory: "retrieval",
+        },
+        presentation: { label: "Search literature" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async () => ({ content: { hits: ["raw"] } }),
+        buildFollowupMessage: async () => ({
+          role: "user",
+          content: "tool-followup",
+        }),
+        createResultReviewAction: async () => {
+          reviewsCreated += 1;
+          return reviewAction("literature_search");
+        },
+        resolveResultReview: async () => ({
+          kind: "deliver",
+          toolMessageContent: { reviewed: ["kept"] },
+          followupMessages: [{ role: "user", content: "review-followup" }],
+        }),
+      } as never);
+
+      const events: AgentEvent[] = [];
+      const modelInputs: AgentModelMessage[][] = [];
+      const steps: AgentModelStep[] = [
+        toolCallStep("call-review", "literature_search"),
+        {
+          kind: "final",
+          text: "Done.",
+          assistantMessage: { role: "assistant", content: "Done." },
+        },
+      ];
+      let stepIndex = 0;
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            modelInputs.push(params.messages);
+            const step = steps[stepIndex];
+            stepIndex += 1;
+            return step;
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 991_201,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Find papers",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => {
+          events.push(event);
+          if (event.type === "confirmation_required")
+            runtime.resolveConfirmation(event.requestId, {
+              approved: true,
+              actionId: "use",
+            });
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      assert.equal(reviewsCreated, 1, "the review card is built exactly once");
+      assert.deepEqual(
+        events
+          .map((event) => event.type)
+          .filter((type) =>
+            [
+              "tool_call",
+              "tool_result",
+              "confirmation_required",
+              "confirmation_resolved",
+            ].includes(type),
+          ),
+        [
+          "tool_call",
+          "tool_result",
+          "confirmation_required",
+          "confirmation_resolved",
+        ],
+        "the result is published before its review card is raised",
+      );
+
+      const secondStep = modelInputs[1];
+      const toolMessage = secondStep.find(
+        (message) => message.role === "tool",
+      ) as Extract<AgentModelMessage, { role: "tool" }> | undefined;
+      assert.equal(toolMessage?.tool_call_id, "call-review");
+      assert.deepEqual(JSON.parse(String(toolMessage?.content)), {
+        reviewed: ["kept"],
+        actionReceipts: [],
+      });
+      assert.deepEqual(
+        secondStep
+          .filter(
+            (message) =>
+              message.role === "user" && typeof message.content === "string",
+          )
+          .map((message) => message.content)
+          .filter(
+            (content) =>
+              content === "review-followup" || content === "tool-followup",
+          ),
+        ["review-followup", "tool-followup"],
+        "the review's own follow-ups precede the tool's built one",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("chains an approved review into another tool and reports its terminal text", async function () {
+    const restoreDb = installMockDb();
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      const chainedInputs: unknown[] = [];
+      registry.register({
+        spec: {
+          name: "literature_search",
+          description: "search",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          workCategory: "retrieval",
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        execute: async () => ({ content: { hits: ["raw"] } }),
+        createResultReviewAction: async () => reviewAction("literature_search"),
+        resolveResultReview: async () => ({
+          kind: "invoke_tool",
+          call: {
+            name: "note_write",
+            arguments: { text: "chained" },
+            inheritedApproval: {
+              sourceToolName: "literature_search",
+              sourceActionId: "use",
+              sourceMode: "review",
+            },
+          },
+          terminalText: {
+            onSuccess: "Saved the reviewed results.",
+            onDenied: "Nothing was saved.",
+            onError: "The save failed.",
+          },
+        }),
+      } as never);
+      registry.register({
+        effectOperations: ["note_create"],
+        spec: {
+          name: "note_write",
+          description: "write a note",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          workCategory: "zotero_action",
+          requiresConfirmation: false,
+        },
+        presentation: { label: "Write note" },
+        validate: (args) => ({ ok: true, value: args as never }),
+        acceptInheritedApproval: () => true,
+        planInvocation: async () =>
+          stateChangeInvocationPlan({
+            reversibility: "full",
+            reason: "Test note write.",
+          }),
+        describeAction: () => [
+          {
+            id: "note_create:review-chain",
+            proofDomain: "zotero_state",
+            capability: "zotero.notes",
+            operation: "note_create",
+            source: "zotero_native",
+            requestedTargets: [],
+            destinationCollectionIds: [],
+          },
+        ],
+        execute: async (input: unknown) => {
+          chainedInputs.push(input);
+          return {
+            content: { status: "created", noteId: 901 },
+            effect: "applied",
+          };
+        },
+      } as never);
+
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              toolCallStep("call-review", "literature_search"),
+              {
+                kind: "final",
+                text: "Unused.",
+                assistantMessage: { role: "assistant", content: "Unused." },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          classifiedIntent: classifiedFixture(),
+          conversationKey: 991_202,
+          mode: "agent",
+          libraryID: 1,
+          userText: "Find papers and save them",
+          model: "test",
+          apiKey: "test",
+          apiBase: "https://example.invalid",
+        },
+        onEvent: (event) => {
+          events.push(event);
+          if (event.type === "confirmation_required")
+            runtime.resolveConfirmation(event.requestId, {
+              approved: true,
+              actionId: "use",
+            });
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      assert.equal(
+        outcome.kind === "completed" ? outcome.text : "",
+        "Saved the reviewed results.",
+        "the review's success text, not the provider's final step, ends the run",
+      );
+      assert.deepEqual(chainedInputs, [{ text: "chained" }]);
+      assert.deepEqual(
+        events
+          .filter(
+            (event) =>
+              event.type === "tool_call" || event.type === "tool_result",
+          )
+          .map((event) => [
+            event.type,
+            (event as Extract<AgentEvent, { type: "tool_call" }>).name,
+          ]),
+        [
+          ["tool_call", "literature_search"],
+          ["tool_result", "literature_search"],
+          ["tool_call", "note_write"],
+          ["tool_result", "note_write"],
+        ],
+        "the chained call is executed and published like any other call",
+      );
+      const chainedCallEvent = events.find(
+        (event) => event.type === "tool_call" && event.name === "note_write",
+      ) as Extract<AgentEvent, { type: "tool_call" }>;
+      assert.notEqual(
+        chainedCallEvent.callId,
+        "call-review",
+        "the chained call carries its own synthetic id",
+      );
+      const noteReceipts = (
+        events.find(
+          (event) =>
+            event.type === "tool_result" && event.name === "note_write",
+        ) as Extract<AgentEvent, { type: "tool_result" }>
+      ).actionReceipts;
+      assert.isNotEmpty(
+        noteReceipts || [],
+        "the chained write still produces its receipt",
+      );
+    } finally {
       restoreDb();
     }
   });

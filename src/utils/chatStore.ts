@@ -39,18 +39,12 @@ import {
   deleteRegisteredConversationScopeInTransaction,
   repairRegisteredConversationScope,
   registerConversationScope,
-  type ConversationRegistryRow,
   type PaperContextJsonColumns,
 } from "../shared/conversationRegistry";
+import { repairRecoverableCatalogMessageConversationIDs } from "../shared/conversationMessageIdentityRepair";
 import {
-  repairRecoverableCatalogMessageConversationIDs,
-  repairRecoverableMessageConversationIDs,
-} from "../shared/conversationMessageIdentityRepair";
-import {
-  deleteConversationSearchIndexRow,
   deleteConversationSearchIndexRowInTransaction,
   initConversationSearchIndexStore,
-  refreshConversationSearchIndexForConversation,
 } from "../shared/conversationSearchIndex";
 import {
   CONVERSATION_ID_TRANSITION_MIGRATION_ID,
@@ -104,6 +98,25 @@ import {
   deleteConversationForkLinksForInstanceInTransaction,
   initConversationForkLinksStore,
 } from "../shared/conversationForkLinks";
+import {
+  normalizeCatalogTimestamp,
+  normalizeConversationKey,
+  normalizeLibraryID,
+  normalizeLimit,
+  normalizeOptionalLimit,
+  normalizePaperItemID,
+} from "../shared/conversationStore/keyNormalization";
+import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
+import {
+  messageJoinCondition,
+  resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
+  type MessageConversationSelector,
+} from "../shared/conversationStore/messageConversationSelector";
+import { getMessagePaperContextRows } from "../shared/conversationStore/messagePaperContextRows";
+import {
+  deleteStoreConversationSearchIndex,
+  refreshStoreConversationSearchIndex,
+} from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import { clearOwnerAttachmentRefsInTransaction } from "./attachmentRefStore";
 import {
@@ -309,24 +322,6 @@ async function migrateLegacyChatStore(): Promise<void> {
   );
 }
 
-function normalizeConversationKey(conversationKey: number): number | null {
-  if (!Number.isFinite(conversationKey)) return null;
-  const normalized = Math.floor(conversationKey);
-  return normalized > 0 ? normalized : null;
-}
-
-function normalizeLibraryID(libraryID: number): number | null {
-  if (!Number.isFinite(libraryID)) return null;
-  const normalized = Math.floor(libraryID);
-  return normalized > 0 ? normalized : null;
-}
-
-function normalizePaperItemID(paperItemID: number): number | null {
-  if (!Number.isFinite(paperItemID)) return null;
-  const normalized = Math.floor(paperItemID);
-  return normalized > 0 ? normalized : null;
-}
-
 function normalizeSessionVersion(sessionVersion: number): number | null {
   if (!Number.isFinite(sessionVersion)) return null;
   const normalized = Math.floor(sessionVersion);
@@ -342,20 +337,6 @@ function normalizeConversationTitleSeed(value: string): string {
     .trim();
   if (!normalized) return "";
   return normalized.slice(0, 64);
-}
-
-function normalizeLimit(limit: number, fallback: number): number {
-  if (!Number.isFinite(limit)) return fallback;
-  return Math.max(1, Math.floor(limit));
-}
-
-function normalizeOptionalLimit(
-  limit: number | null | undefined,
-): number | null {
-  if (limit === null) return null;
-  if (!Number.isFinite(Number(limit))) return null;
-  const normalized = Math.floor(Number(limit));
-  return normalized > 0 ? normalized : null;
 }
 
 function normalizeStoredAttachments(
@@ -513,12 +494,6 @@ const CHAT_MESSAGE_COPY_COLUMNS = [
   "context_window",
 ] as const;
 
-function normalizeCatalogTimestamp(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
-  return Math.floor(parsed);
-}
-
 function buildUpstreamConversationID(params: {
   conversationKey: number;
   kind: "global" | "paper";
@@ -641,109 +616,38 @@ async function resolveUpstreamAppendIdentity(
   };
 }
 
-type MessageConversationSelector = {
-  whereSql: string;
-  params: unknown[];
-  registered?: ConversationRegistryRow | null;
+const UPSTREAM_MESSAGE_SELECTOR_CONFIG = {
+  messagesTable: CHAT_MESSAGES_TABLE,
+  storeLabel: "upstream",
+  getPaperContextRows: getUpstreamMessagePaperContextRows,
+  log: logConversationStoreWarning,
 };
-
-async function resolveMessageConversationSelector(
-  conversationKey: number,
-): Promise<MessageConversationSelector> {
-  const registered = await getRegisteredConversationScope(conversationKey);
-  const conversationID = registered?.conversationID || null;
-  return conversationID
-    ? {
-        whereSql:
-          "(conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?))",
-        params: [conversationID, conversationKey],
-        registered,
-      }
-    : {
-        whereSql: "1 = 0",
-        params: [],
-        registered,
-      };
-}
-
-function messageJoinCondition(
-  messageAlias: string,
-  conversationAlias: string,
-): string {
-  return (
-    `(${messageAlias}.conversation_id = ${conversationAlias}.conversation_id OR ((` +
-    `${messageAlias}.conversation_id IS NULL OR TRIM(${messageAlias}.conversation_id) = '') AND ` +
-    `${messageAlias}.conversation_key = ${conversationAlias}.conversation_key))`
-  );
-}
-
-function canonicalMessageConversationSelector(
-  registered: ConversationRegistryRow,
-): MessageConversationSelector {
-  return {
-    whereSql: "conversation_id = ?",
-    params: [registered.conversationID],
-    registered,
-  };
-}
 
 async function resolveRepairingMessageConversationSelector(
   conversationKey: number,
   options: { destructive?: boolean } = {},
 ): Promise<MessageConversationSelector> {
-  let selector = await resolveMessageConversationSelector(conversationKey);
-  if (!selector.registered?.conversationID) return selector;
-  const repair = await repairRecoverableMessageConversationIDs({
-    queryAsync: Zotero.DB.queryAsync.bind(Zotero.DB),
-    tableName: CHAT_MESSAGES_TABLE,
-    registered: selector.registered,
-    getPaperContextRows: getUpstreamMessagePaperContextRows,
-    storeLabel: "upstream",
-    log: logChatStoreWarning,
-  });
-  if (repair.status === "refused") {
-    if (options.destructive) {
-      throw new Error(
-        `Refused destructive upstream conversation operation for ${conversationKey}: ${repair.reason || "ambiguous stale message ids found"}.`,
-      );
-    }
-    selector = canonicalMessageConversationSelector(selector.registered);
-  }
-  return selector;
-}
-
-function logChatStoreWarning(message: string): void {
-  const debug = (
-    globalThis as typeof globalThis & {
-      Zotero?: { debug?: (message: string) => void };
-    }
-  ).Zotero?.debug;
-  debug?.(`LLM: ${message}`);
-}
-
-function formatSearchIndexError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return await resolveSharedRepairingMessageConversationSelector(
+    UPSTREAM_MESSAGE_SELECTOR_CONFIG,
+    conversationKey,
+    options,
+  );
 }
 
 async function refreshUpstreamConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  try {
-    await refreshConversationSearchIndexForConversation({
-      system: "upstream",
-      conversationKey,
-    });
-  } catch (error) {
-    logChatStoreWarning(
-      `Failed to refresh upstream conversation search index for ${conversationKey}: ${formatSearchIndexError(error)}`,
-    );
-  }
+  await refreshStoreConversationSearchIndex({
+    system: "upstream",
+    storeLabel: "upstream",
+    conversationKey,
+  });
 }
 
 async function deleteUpstreamConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  await deleteConversationSearchIndexRow({
+  await deleteStoreConversationSearchIndex({
     system: "upstream",
     conversationKey,
   });
@@ -752,23 +656,7 @@ async function deleteUpstreamConversationSearchIndex(
 async function getUpstreamMessagePaperContextRows(
   conversationKey: number,
 ): Promise<PaperContextJsonColumns[]> {
-  return ((await Zotero.DB.queryAsync(
-    `SELECT paper_contexts_json AS paperContextsJson,
-            pdf_paper_contexts_json AS pdfPaperContextsJson,
-            full_text_paper_contexts_json AS fullTextPaperContextsJson,
-            selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
-            citation_paper_contexts_json AS citationPaperContextsJson
-     FROM ${CHAT_MESSAGES_TABLE}
-     WHERE conversation_key = ?
-       AND (
-         paper_contexts_json IS NOT NULL OR
-         pdf_paper_contexts_json IS NOT NULL OR
-         full_text_paper_contexts_json IS NOT NULL OR
-         selected_text_paper_contexts_json IS NOT NULL OR
-         citation_paper_contexts_json IS NOT NULL
-       )`,
-    [conversationKey],
-  )) || []) as PaperContextJsonColumns[];
+  return await getMessagePaperContextRows(CHAT_MESSAGES_TABLE, conversationKey);
 }
 
 async function repairRecoverableUpstreamCatalogMessageConversationIDs(
@@ -798,7 +686,7 @@ async function repairRecoverableUpstreamCatalogMessageConversationIDs(
     paperItemIDSql: "NULL",
     getPaperContextRows: getUpstreamMessagePaperContextRows,
     storeLabel: "upstream",
-    log: logChatStoreWarning,
+    log: logConversationStoreWarning,
     ...filter,
   });
   const paperRepair = await repairRecoverableCatalogMessageConversationIDs({
@@ -810,7 +698,7 @@ async function repairRecoverableUpstreamCatalogMessageConversationIDs(
     paperItemIDSql: "c.paper_item_id",
     getPaperContextRows: getUpstreamMessagePaperContextRows,
     storeLabel: "upstream",
-    log: logChatStoreWarning,
+    log: logConversationStoreWarning,
     ...filter,
   });
   return {
@@ -2065,7 +1953,7 @@ async function cleanupLeakedWebchatGhostTitlesOnce(): Promise<void> {
           // webchat-leaked title from a hand-renamed empty draft, so the old
           // value must at least be recoverable from the debug log.
           for (const entry of cleared) {
-            logChatStoreWarning(
+            logConversationStoreWarning(
               `Cleared leaked webchat title from message-less conversation ${entry.key}: "${entry.title}"`,
             );
           }
@@ -2077,7 +1965,7 @@ async function cleanupLeakedWebchatGhostTitlesOnce(): Promise<void> {
       },
     );
   } catch (err) {
-    logChatStoreWarning(
+    logConversationStoreWarning(
       `Failed to clear leaked webchat ghost titles: ${String(err)}`,
     );
   }
@@ -2125,7 +2013,7 @@ async function sweepWebchatSessionConversations(): Promise<void> {
           [conversationKey],
         );
         await refreshUpstreamConversationSearchIndex(conversationKey);
-        logChatStoreWarning(
+        logConversationStoreWarning(
           `Adopted webchat session ${conversationKey} instead of sweeping it; the row owns persisted messages.`,
         );
         continue;
@@ -2145,7 +2033,7 @@ async function sweepWebchatSessionConversations(): Promise<void> {
         // startup sweep from adopting or deleting other sessions.  The row
         // remains visible only to this maintenance pass and is retried on the
         // next startup after the underlying local failure is repaired.
-        logChatStoreWarning(
+        logConversationStoreWarning(
           `Failed to sweep webchat session ${conversationKey}: ${String(error)}`,
         );
       }
@@ -2155,7 +2043,7 @@ async function sweepWebchatSessionConversations(): Promise<void> {
     await sweepTable(PAPER_CONVERSATIONS_TABLE, "paper");
     await sweepTable(GLOBAL_CONVERSATIONS_TABLE, "global");
   } catch (err) {
-    logChatStoreWarning(
+    logConversationStoreWarning(
       `Failed to sweep webchat session conversations: ${String(err)}`,
     );
   }
@@ -3761,7 +3649,7 @@ export async function ensureGlobalConversationExists(
   const existing = await getGlobalConversation(normalizedKey);
   if (existing) {
     if (normalizeLibraryID(existing.libraryID) !== normalizedLibraryID) {
-      logChatStoreWarning(
+      logConversationStoreWarning(
         `Refused to ensure global conversation ${normalizedKey} for library ${normalizedLibraryID}; catalog row belongs to library ${existing.libraryID}.`,
       );
       return false;

@@ -123,7 +123,7 @@ describe("application surface bridges", function () {
 });
 
 describe("host surface composition", function () {
-  it("composes every bridge at startup and clears them all on shutdown", async function () {
+  it("composes every services bridge at startup and clears them all on shutdown", async function () {
     const dispose = composeHostSurfaces();
     try {
       assert.notMatch(

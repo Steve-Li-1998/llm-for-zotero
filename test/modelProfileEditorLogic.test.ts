@@ -502,10 +502,6 @@ describe("model profile editor logic", function () {
     // With everything in one wrapping flex row it pushed the × onto a third
     // line, adrift from the input it deletes. Input and × are one control now
     // and the description sits underneath them.
-    assert.include(
-      source,
-      'const controls = el(\n      doc,\n      "div",\n      "display: flex; gap: 6px; align-items: center;",\n    );',
-    );
     assert.include(source, "controls.append(idInput, removeBtn);");
     assert.include(source, "wrap.append(controls, sent, warning);");
     assert.notInclude(

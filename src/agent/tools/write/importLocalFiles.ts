@@ -8,6 +8,7 @@ import {
   LibraryMutationService,
   type ImportLocalFilesOperation,
 } from "../../services/libraryMutationService";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import type { AgentWriteToolDefinition } from "../../types";
 import {
@@ -35,6 +36,8 @@ export function createImportLocalFilesTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["import_local_files"],
     spec: {
       name: "import_local_files",
       description:
@@ -76,7 +79,6 @@ export function createImportLocalFilesTool(
       },
       executionClass: "external_effect",
       workCategory: "external_system",
-      requiresConfirmation: true,
     },
 
     guidance: {

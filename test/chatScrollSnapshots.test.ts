@@ -485,14 +485,21 @@ describe("chat scroll snapshots", function () {
       resolve(here, "../src/modules/contextPanel/chat.ts"),
       "utf8",
     );
-    const validationRefreshStart = chatSource.indexOf(
+    const schedulingSource = readFileSync(
+      resolve(
+        here,
+        "../src/modules/contextPanel/quoteValidation/scheduling.ts",
+      ),
+      "utf8",
+    );
+    const validationRefreshStart = schedulingSource.indexOf(
       "function refreshConversationAfterQuoteValidation(",
     );
-    const validationRefreshEnd = chatSource.indexOf(
+    const validationRefreshEnd = schedulingSource.indexOf(
       "function startConversationQuoteValidation(",
       validationRefreshStart,
     );
-    const validationRefreshSource = chatSource.slice(
+    const validationRefreshSource = schedulingSource.slice(
       validationRefreshStart,
       validationRefreshEnd,
     );
@@ -505,23 +512,28 @@ describe("chat scroll snapshots", function () {
       refreshChatStart,
       refreshChatEnd,
     );
-    const validationTaskStart = chatSource.indexOf(
+    const validationTaskStart = schedulingSource.indexOf(
       "function startConversationQuoteValidation(",
     );
-    const validationTaskEnd = chatSource.indexOf(
+    const validationTaskEnd = schedulingSource.indexOf(
       "function scheduleAssistantMessageQuoteValidation(",
       validationTaskStart,
     );
-    const validationTaskSource = chatSource.slice(
+    const validationTaskSource = schedulingSource.slice(
       validationTaskStart,
       validationTaskEnd,
     );
 
+    // The refresh names the messages it changed instead of rebuilding the
+    // panel. It used to be paired with a check that the whole-panel rebuild
+    // was not called here; that check cannot fail now the validator lives in
+    // its own module and cannot import the renderer at all, so the behaviour
+    // is pinned by test/quoteGateWorkflow.test.ts ("repaints the changed
+    // message through the composed chat refresher") instead.
     assert.include(
       validationRefreshSource,
       "rerenderAssistantMessages: changedMessages",
     );
-    assert.notInclude(validationRefreshSource, "refreshConversationPanels(");
     // The validation task classifies on-screen messages first and flips each
     // one the moment it is classified (progressive refresh), instead of
     // accumulating a batch and refreshing once at the end.

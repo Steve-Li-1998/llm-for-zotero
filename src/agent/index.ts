@@ -28,6 +28,7 @@ import {
   initAgentBatchJobStore,
   sweepInterruptedBatchJobs,
 } from "./store/batchJobStore";
+import { initAgentBatchItemStore } from "./store/batchItemStore";
 import { initAgentChangeJournal } from "./store/changeJournal";
 import { initConversationMemoryStore } from "./store/conversationMemory";
 import { initAgentToolResultHandleStore } from "./store/toolResultHandles";
@@ -119,6 +120,9 @@ async function createAgentSubsystemRuntime(
     }),
   );
   await initAgentBatchJobStore();
+  // The per-item rows of a note batch live beside its job row, so both tables
+  // must exist before any batch can record what it wrote.
+  await initAgentBatchItemStore();
   // Claim abandoned rows before the runtime is published. A deferred sweep
   // can race with a newly started job and misclassify live work as failed.
   await sweepInterruptedBatchJobs({ now: Date.now() });
@@ -273,7 +277,6 @@ export function getAgentApi() {
      *     inputSchema: { type: "object", properties: { query: { type: "string" } } },
      *     executionClass: "read",
      *     workCategory: "retrieval",
-     *     requiresConfirmation: false,
      *   },
      *   validate: (args) => {
      *     if (!args || typeof args !== "object") return fail("Expected object");

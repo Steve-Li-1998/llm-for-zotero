@@ -6,6 +6,11 @@
  * from plugin startup — never as a side effect of importing a UI module — so
  * that whether a capability is available depends on the plugin being started,
  * not on which module some code path happened to import first.
+ *
+ * Bridges whose two halves both live in the panel are composed in
+ * `panelSurfaces.ts` instead. That split is load-bearing: workflow test bundles
+ * carry this module, and their bundler has no `.md` loader, so nothing reached
+ * from here may import the chat renderer and its agent skill markdown.
  */
 import { configureContextSelectionBridge } from "../../services/context/contextSelectionBridge";
 import { configureAssistantNoteWriter } from "../../services/notes/assistantNoteWriterBridge";

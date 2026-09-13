@@ -720,22 +720,22 @@ describe("multi-operation durable mutation recovery", function () {
     assert.equal([...db.steps.values()][0].status, "partially_applied");
   });
 
-  it("keeps a committed child-note row in durable history when its ID is unavailable", async function () {
+  it("keeps a committed creation in durable history when its ID is unavailable", async function () {
     const db = await installJournal();
     const mutationService = {
       planOperation: async () => ({
         effect: "write" as const,
         reversibility: "none" as const,
-        description: "create a child note",
-        reason: "The committed note ID was unavailable for recovery.",
+        description: "create an item",
+        reason: "The committed item ID was unavailable for recovery.",
       }),
       executeOperation: async () => ({
         result: {
-          operation: "save_notes_batch",
+          operation: "create_items",
           result: {
             createdCount: 0,
             failedCount: 0,
-            notes: [{ targetItemId: 1, status: "created" }],
+            items: [{ status: "created" }],
           },
         },
         inverse: null,
@@ -744,7 +744,7 @@ describe("multi-operation durable mutation recovery", function () {
       }),
       captureOperationState: async () => ({
         version: 1,
-        operation: "save_notes_batch",
+        operation: "create_items",
       }),
     };
 
@@ -752,12 +752,12 @@ describe("multi-operation durable mutation recovery", function () {
       service: mutationService as never,
       operations: [
         {
-          type: "save_notes_batch",
-          notes: [{ targetItemId: 1, content: "Created note" }],
+          type: "create_items",
+          items: [{ itemType: "document", title: "Created item" }],
         },
       ],
       context,
-      facadeToolName: "note_write",
+      facadeToolName: "create_items",
     });
 
     const action = [...db.actions.values()][0];

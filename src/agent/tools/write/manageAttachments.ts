@@ -2,6 +2,7 @@
  * Tool for managing Zotero attachments — delete, rename, or re-link.
  */
 import type { AgentWriteToolDefinition } from "../../types";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import {
   LibraryMutationService,
   type DeleteAttachmentOperation,
@@ -28,6 +29,12 @@ export function createManageAttachmentsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: [
+      "delete_attachment",
+      "rename_attachment",
+      "relink_attachment",
+    ],
     spec: {
       name: "manage_attachments",
       description:
@@ -60,7 +67,6 @@ export function createManageAttachmentsTool(
       },
       executionClass: "external_effect",
       workCategory: "zotero_action",
-      requiresConfirmation: true,
     },
 
     guidance: {

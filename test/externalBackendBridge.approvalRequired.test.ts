@@ -1,10 +1,19 @@
 import { PlanExecutionRunSession } from "../src/agent/plans/runSession";
 import { resolveAgentRuntimeRequest } from "../src/agent/context/resolvedAgentRequest";
-import { getConversationWriteGeneration } from "../src/shared/conversationWriteFence";
+import {
+  freezeConversationWrites,
+  getConversationWriteGeneration,
+  unfreezeConversationWrites,
+} from "../src/shared/conversationWriteFence";
 import { classifiedFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
-import { describe, it } from "mocha";
-import { createExternalBackendBridgeRuntime } from "../src/agent/externalBackendBridge";
+import { afterEach, beforeEach, describe, it } from "mocha";
+import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
+import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import {
+  createExternalBackendBridgeRuntime,
+  describeClaudeRuntimeToolEffect,
+} from "../src/agent/externalBackendBridge";
 import {
   AGENT_ACTION_CONTRACT,
   CORE_RESEARCH_CONTRACT,
@@ -203,11 +212,15 @@ describe("external bridge action approval handling", function () {
       DB: {
         queryAsync: async (sql: string) => {
           if (
-            sql.includes(
-              "SELECT document_id AS documentId FROM llm_for_zotero_plan_documents",
-            )
+            sql.includes("FROM llm_for_zotero_plan_documents") &&
+            sql.includes("document_id AS documentId")
           )
-            return [{ documentId: document.documentId }];
+            return [
+              {
+                documentId: document.documentId,
+                payloadJson: JSON.stringify(document),
+              },
+            ];
           if (
             sql.includes(
               "SELECT payload_json AS payloadJson FROM llm_for_zotero_plan_documents",
@@ -687,6 +700,21 @@ describe("external bridge action approval handling", function () {
         customInstruction,
         "Do not create a Papers, papers, Notes, or other alternate subfolder",
       );
+      // A Markdown note written with Claude Code's own Write tool bypasses
+      // note_write and every property the host proves through it, so the
+      // prompt must route notes to note_write and leave Write for other files.
+      assert.notInclude(
+        customInstruction,
+        "If using Claude Code's Write tool for a Markdown note",
+      );
+      assert.include(
+        customInstruction,
+        "use the Zotero note_write tool, not Claude Code's Write tool",
+      );
+      assert.include(
+        customInstruction,
+        "Claude Code's Write tool stays available for files that are not notes",
+      );
       assert.include(customInstruction, "Original agent-mode Zotero behavior");
       assert.include(customInstruction, "(creator, year)");
       assert.include(
@@ -761,6 +789,78 @@ describe("external bridge action approval handling", function () {
           ...pinnedPaper,
           mineruFullMdPath: "/tmp/mineru-cache/pinned-bridge/full.md",
         },
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+    }
+  });
+
+  it("routes notes to note_write even when no notes directory is configured", async function () {
+    // The note_write routing is a property of Zotero, not of whether this user
+    // has a vault: gating it on the notes-directory block would leave a user
+    // without one with no instruction about where notes belong at all.
+    const originalFetch = globalThis.fetch;
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    let capturedBody: Record<string, any> | null = null;
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Prefs: {
+        get(key: string) {
+          if (key.endsWith("enableClaudeCodeMode")) return true;
+          if (key.endsWith("agentClaudeConfigSource")) return "default";
+          if (key.endsWith("claudeCodePermissionMode")) return "default";
+          if (key.endsWith("conversationSystem")) return "claude_code";
+          if (key.endsWith("codexAppServerZoteroMcpToolsEnabled")) return false;
+          return "";
+        },
+        set() {},
+      },
+      Profile: { dir: "/tmp/llm-for-zotero-test-profile" },
+      Items: { get: () => null },
+      DB: { queryAsync: async () => [] },
+    };
+
+    globalThis.fetch = (async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      capturedBody = JSON.parse(String(init?.body || "{}"));
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              '{"type":"outcome","outcome":{"kind":"completed","runId":"r1","text":"ok","usedFallback":false}}\n',
+            ),
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200 }) as Response;
+    }) as typeof fetch;
+
+    try {
+      const runtime = createRuntime();
+      await runtime.runTurn({
+        request: {
+          userText: "Write a note about drift",
+          conversationKey: 7_200_000_001,
+          mode: "library",
+          model: "claude-sonnet-4-5",
+          apiKey: "",
+          libraryID: 1,
+        },
+      });
+      const customInstruction = String(
+        capturedBody?.metadata?.customInstruction || "",
+      );
+      assert.notInclude(customInstruction, "Notes directory configuration");
+      assert.include(
+        customInstruction,
+        "use the Zotero note_write tool, not Claude Code's Write tool",
       );
     } finally {
       globalThis.fetch = originalFetch;
@@ -1048,5 +1148,195 @@ describe("external bridge action approval handling", function () {
       (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
         originalZotero;
     }
+  });
+
+  /**
+   * What the host records when Claude Code runs one of its own tools.
+   *
+   * A `cc_tool::` action is Claude Code's own Write/Edit/Bash, executed inside
+   * the connected runtime rather than by a registered Zotero tool. The host never
+   * sees a post-state for it, so the receipt claims `execution_only` and says
+   * whose runtime ran it; a denied card claims nothing at all.
+   */
+  describe("Claude provider action effect receipts", function () {
+    const originalZotero = globalThis.Zotero;
+    const originalFetch = globalThis.fetch;
+    let db: ChangeJournalTestDb;
+
+    beforeEach(async function () {
+      db = new ChangeJournalTestDb();
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+        Prefs: {
+          get(key: string) {
+            if (key.endsWith("enableClaudeCodeMode")) return true;
+            if (key.endsWith("agentClaudeConfigSource")) return "default";
+            if (key.endsWith("claudeCodePermissionMode")) return "default";
+            if (key.endsWith("conversationSystem")) return "claude_code";
+            return "";
+          },
+        },
+        Profile: { dir: "/tmp/llm-for-zotero-test-profile" },
+        DB: db,
+        debug: () => undefined,
+      };
+      await initAgentChangeJournal();
+    });
+
+    afterEach(function () {
+      globalThis.fetch = originalFetch;
+      globalThis.Zotero = originalZotero;
+    });
+
+    function respondWith(line: string): void {
+      globalThis.fetch = (async () => {
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(line));
+            controller.close();
+          },
+        });
+        return new Response(stream, { status: 200 }) as Response;
+      }) as typeof fetch;
+    }
+
+    function observedReceipts(): any[] {
+      return [...db.observations.values()]
+        .filter((row) => row.event === "external_runtime_effect_observed")
+        .map((row) => JSON.parse(String(row.extra_json)));
+    }
+
+    it("classifies each of Claude Code's own tools by what it changes", function () {
+      const operations = Object.fromEntries(
+        [
+          "Write",
+          "Edit",
+          "MultiEdit",
+          "NotebookEdit",
+          "Bash",
+          "Read",
+          "Glob",
+          "Grep",
+          "WebFetch",
+          "constructor",
+        ].map((toolName) => [
+          toolName,
+          describeClaudeRuntimeToolEffect(toolName, {})?.operation ?? null,
+        ]),
+      );
+      assert.deepEqual(operations, {
+        Write: "file_write",
+        Edit: "file_write",
+        MultiEdit: "file_write",
+        NotebookEdit: "file_write",
+        Bash: "command_execute",
+        Read: null,
+        Glob: null,
+        Grep: null,
+        WebFetch: null,
+        // A tool name that collides with an inherited object property must not
+        // be read as an effect this table never declared.
+        constructor: null,
+      });
+      assert.deepEqual(
+        describeClaudeRuntimeToolEffect("NotebookEdit", {
+          notebook_path: "/vault/analysis.ipynb",
+        })?.requestedTargets,
+        ["file:/vault/analysis.ipynb"],
+      );
+    });
+
+    it("receipts a Claude Code file write as an execution_only effect", async function () {
+      respondWith(
+        '{"type":"outcome","outcome":{"kind":"completed","runId":"r1","text":"ok","usedFallback":false}}\n',
+      );
+      const runtime = createRuntime();
+      await runtime.runExternalAction("cc_tool::Write", {
+        file_path: "/vault/Zotero Notes/drift.md",
+        content: "# Drift",
+      });
+      const [observed] = observedReceipts();
+      assert.equal(observed?.source, "claude_code");
+      assert.equal(observed?.receipt.operation, "file_write");
+      assert.equal(observed?.receipt.proofDomain, "file_state");
+      assert.equal(observed?.receipt.verification, "execution_only");
+      assert.equal(observed?.receipt.status, "observed");
+      assert.equal(observed?.receipt.executionAuthority, "external_runtime");
+      assert.deepEqual(observed?.receipt.requestedTargets, [
+        "file:/vault/Zotero Notes/drift.md",
+      ]);
+    });
+
+    it("receipts a Claude Code shell command by fingerprint, not by its text", async function () {
+      respondWith(
+        '{"type":"outcome","outcome":{"kind":"completed","runId":"r1","text":"ok","usedFallback":false}}\n',
+      );
+      const runtime = createRuntime();
+      await runtime.runExternalAction("cc_tool::Bash", {
+        command: "pandoc note.md -o note.docx",
+      });
+      const [observed] = observedReceipts();
+      assert.equal(observed?.receipt.operation, "command_execute");
+      assert.equal(observed?.receipt.proofDomain, "execution");
+      assert.equal(observed?.receipt.verification, "execution_only");
+      assert.match(
+        String(observed?.receipt.requestedTargets[0]),
+        /^command:fnv1a32:[0-9a-f]{8}$/,
+      );
+      assert.notInclude(JSON.stringify(observed), "pandoc");
+    });
+
+    it("receipts a denied Claude Code effect as cancelled", async function () {
+      respondWith(
+        '{"type":"outcome","outcome":{"kind":"fallback","runId":"r1","reason":"approval_required","usedFallback":true}}\n',
+      );
+      const runtime = createRuntime();
+      await runtime.runExternalAction(
+        "cc_tool::Write",
+        { file_path: "/vault/denied.md" },
+        {
+          confirmationMode: "native_ui",
+          requestConfirmation: async () => ({ approved: false }),
+        },
+      );
+      const [observed] = observedReceipts();
+      assert.equal(observed?.receipt.status, "cancelled");
+      assert.equal(observed?.receipt.verification, "not_applicable");
+      assert.deepEqual(observed?.receipt.appliedTargets, []);
+      assert.deepEqual(observed?.receipt.rejectedTargets, [
+        "file:/vault/denied.md",
+      ]);
+    });
+
+    it("records an action the host never dispatched as cancelled, not failed", async function () {
+      respondWith(
+        '{"type":"outcome","outcome":{"kind":"completed","runId":"r1","text":"ok","usedFallback":false}}\n',
+      );
+      const runtime = createRuntime();
+      const conversationKey = 7_100_000_001;
+      freezeConversationWrites(conversationKey);
+      try {
+        await runtime.runExternalAction(
+          "cc_tool::Bash",
+          { command: "echo frozen" },
+          { conversationKey },
+        );
+      } finally {
+        unfreezeConversationWrites(conversationKey);
+      }
+      const [observed] = observedReceipts();
+      assert.equal(observed?.receipt.status, "cancelled");
+      assert.equal(observed?.receipt.verification, "not_applicable");
+    });
+
+    it("records nothing for a Claude Code tool that changes no state", async function () {
+      respondWith(
+        '{"type":"outcome","outcome":{"kind":"completed","runId":"r1","text":"ok","usedFallback":false}}\n',
+      );
+      const runtime = createRuntime();
+      await runtime.runExternalAction("cc_tool::Read", {
+        file_path: "/vault/drift.md",
+      });
+      assert.deepEqual(observedReceipts(), []);
+    });
   });
 });

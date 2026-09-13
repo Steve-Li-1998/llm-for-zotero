@@ -9,8 +9,8 @@ describe("action card vocabulary", function () {
   it("gives every catalog operation a verb", function () {
     for (const operation of Object.keys(OPERATION_CATALOG)) {
       assert.property(OPERATION_VERBS, operation);
-      assert.isString(
-        OPERATION_VERBS[operation as keyof typeof OPERATION_VERBS].word,
+      assert.isObject(
+        OPERATION_VERBS[operation as keyof typeof OPERATION_VERBS],
       );
     }
   });
@@ -39,9 +39,7 @@ describe("action card vocabulary", function () {
     }
   });
 
-  it("spells an unknown operation from its token", function () {
-    assert.deepEqual(operationVerb("frobnicate_items"), {
-      word: "frobnicate items",
-    });
+  it("has no glyph for an unknown operation", function () {
+    assert.deepEqual(operationVerb("frobnicate_items"), {});
   });
 });

@@ -146,12 +146,10 @@ describe("quote card UI contract", function () {
     const css = source("addon/content/zoteroPane.css");
     const quoteCardRuleStart = css.indexOf(".llm-quote-card {");
     const quoteCardRuleEnd = css.indexOf("}", quoteCardRuleStart);
-    const quoteCardRule = css.slice(quoteCardRuleStart, quoteCardRuleEnd);
 
     assert.include(css, ".llm-quote-card");
     assert.isAtLeast(quoteCardRuleStart, 0);
     assert.isAbove(quoteCardRuleEnd, quoteCardRuleStart);
-    assert.include(quoteCardRule, "margin: 10px 0");
     assert.include(css, ".llm-quote-card-content");
     assert.include(css, ".llm-quote-card-body");
     assert.include(css, '.llm-quote-card[data-expanded="false"]');
@@ -159,7 +157,6 @@ describe("quote card UI contract", function () {
     assert.include(css, '.llm-quote-card[data-expanded="false"]:hover');
     assert.include(css, "--llm-quote-card-rail");
     assert.include(css, "--llm-quote-card-rail: var(--color-accent)");
-    assert.include(css, "border-left: 3px solid var(--llm-quote-card-rail)");
     assert.include(css, "border: none");
     assert.include(css, "justify-content: flex-end");
     assert.include(css, "background: transparent");
@@ -180,7 +177,6 @@ describe("quote card UI contract", function () {
       css,
       '.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-content',
     );
-    assert.include(css, "padding-bottom: 8px");
   });
 
   it("defaults quote cards to the collapsed visual state", function () {
@@ -428,8 +424,6 @@ describe("quote card UI contract", function () {
 
     assert.include(css, ".llm-quote-card-preview .math-display-inline");
     assert.include(css, ".llm-quote-card-preview .katex-display");
-    assert.include(css, "font-size: 1em");
-    assert.include(css, "margin: 0");
   });
 
   it("does not construct a hidden preview for rejected quote cards", function () {

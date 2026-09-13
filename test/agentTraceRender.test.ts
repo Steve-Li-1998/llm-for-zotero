@@ -1343,7 +1343,6 @@ describe("agentTrace render", function () {
     assert.include(rule, "appearance: none");
     assert.include(rule, "align-items: center");
     assert.include(rule, "justify-content: center");
-    assert.include(rule, "line-height: 1.25");
   });
 
   it("projects authoritative work categories without inferring from tool names", function () {

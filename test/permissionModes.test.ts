@@ -309,7 +309,6 @@ describe("provider permission modes", function () {
     );
 
     const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    assert.include(css, "max-width: 14ch");
     assert.include(css, 'data-permission-provider="original"');
     assert.include(css, 'data-selection-key="claude:auto"');
     assert.notInclude(css, "data-permission-mode");

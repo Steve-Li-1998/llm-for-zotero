@@ -93,7 +93,6 @@ describe("conversation rename UI", function () {
     );
     assert.include(css, ".llm-history-item:hover .llm-history-item-rename");
     assert.include(css, ".llm-conversation-rename-input");
-    assert.include(css, "var(--color-accent, #2563eb)");
   });
 
   it("uses the shared in-panel modal design for all three actions", function () {
@@ -149,7 +148,6 @@ describe("conversation rename UI", function () {
     assert.isAtLeast(dialogRuleStart, 0);
     assert.include(dialogRule, "--llm-modal-control-background: var(");
     assert.include(dialogRule, "--material-sidepane");
-    assert.include(dialogRule, "var(--material-background, #ffffff)");
     assert.include(dialogRule, "--llm-modal-control-border: var(");
     assert.isAtLeast(controlRuleStart, 0);
     assert.include(

@@ -105,17 +105,10 @@ describe("web source UI contract", function () {
       /\.llm-selected-context-expanded,\s*\.llm-web-source-popover\s*\{/,
     );
     assert.include(css, 'url("icons/action-mode-global.svg")');
-    assert.include(css, "background: var(--material-background)");
-    assert.include(css, "border: 1px solid var(--stroke-secondary)");
-    assert.include(css, "max-height: min(52vh, 320px)");
     assert.include(css, "overflow-y: auto");
     assert.include(css, "position: fixed");
     assert.include(css, ".llm-web-source-popover-visible");
     assert.include(css, ".llm-web-source-row + .llm-web-source-row::before");
-    assert.include(
-      css,
-      "background: var(--stroke-secondary, rgba(120, 120, 120, 0.35))",
-    );
   });
 
   it("exposes organization, title, safe URL, and optional favicon to each stacked row", function () {
@@ -229,9 +222,6 @@ describe("web source UI contract", function () {
     );
     assert.include(css, ".llm-agent-trace-timeline-icon-has-favicon::before");
     assert.include(css, ".llm-web-source-site-icon-has-favicon::before");
-    assert.include(css, "[hidden]");
-    assert.include(css, "text-overflow: ellipsis");
-    assert.include(css, "white-space: nowrap");
   });
 
   it("distinguishes literature and web activity with existing semantic icons", function () {

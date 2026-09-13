@@ -28,7 +28,14 @@
             "announcedNotWritten": 0,
             "failed": 0
           },
-          "materialFinalized": 1
+          "materialFinalized": 1,
+          "retrieval": {
+            "toolCalls": 0,
+            "candidateBuilds": 0,
+            "paperContextEnsures": 0,
+            "repeatedCallsForSameItem": 0,
+            "cacheHitRate": null
+          }
         },
         "batchMaterial": {
           "modelCallsPerTurn": [2, 2, 2],
@@ -45,7 +52,38 @@
             "announcedNotWritten": 2,
             "failed": 1
           },
-          "materialFinalized": 0
+          "materialFinalized": 0,
+          "retrieval": {
+            "toolCalls": 0,
+            "candidateBuilds": 0,
+            "paperContextEnsures": 0,
+            "repeatedCallsForSameItem": 0,
+            "cacheHitRate": null
+          }
+        },
+        "retrieval": {
+          "modelCallsPerTurn": [4],
+          "modelCallsTotal": 4,
+          "modelCallsPerBatchItem": null,
+          "toolCallsByStage": {
+            "retrieval": 3
+          },
+          "nativeWrites": 0,
+          "nativeSaves": 0,
+          "duplicateNativeWrites": 0,
+          "batchItems": {
+            "written": 0,
+            "announcedNotWritten": 0,
+            "failed": 0
+          },
+          "materialFinalized": 0,
+          "retrieval": {
+            "toolCalls": 3,
+            "candidateBuilds": 2,
+            "paperContextEnsures": 6,
+            "repeatedCallsForSameItem": 1,
+            "cacheHitRate": 0.33
+          }
         },
         "render": {
           "delta1": {
@@ -92,6 +130,10 @@
         "batchMaterial.nativeWrites": "Counts only notes proved by receipt FACTS (created_note: / native_note: content read-backs). The durable note batch takes the library-mutation receipt branch: its receipt is verification \"verified\" against captured post-state, but it carries an empty verifiedFacts, and a receipt verified only against post-state counts zero here. Zero means no content read-back was recorded -- never that the writes were unverified. The three notes it wrote are visible as batchItems.written.",
         "batchMaterial.duplicateNativeWrites": "Three physical writes that no receipt FACT accounts for -- the missing content read-backs above, not three duplicate notes. Read it together with batchItems.written.",
         "batchMaterial.announcedNotWritten": "The resume announces all three rows it holds and names the one it wrote, so two rows are announced without being written.",
+        "retrieval": "One scripted turn that reads the same paper twice with the same question and then reads a second paper, driven by test/helpers/retrievalJourney.ts. The runtime, the registry, the search_paper tool and RetrievalService are real; the two seams that would otherwise open a PDF are counting fakes. Measured when this journey was added, later than this row's commit field: that field names the measurement point of the two material journeys and is left where it was.",
+        "retrieval.retrieval.cacheHitRate": "Three retrieval calls cost two candidate-ranking passes, so one call in three was answered from the evidence cache. That cache is keyed on the paper's context item and the query plan, lives on the RetrievalService instance, and never expires -- so it is process-lifetime, not per-run: a second run of the same three reads on the same instance builds nothing at all, and only clearEvidenceCache() makes it pay again.",
+        "retrieval.retrieval.paperContextEnsures": "Six ensures for three calls: every retrieval call ensures its paper's context twice -- once in the search_paper auto-index loop and once inside retrieveEvidence, which ensures before it checks the evidence cache. The cache therefore saves the ranking pass but never the ensure. It is also what proves the repeated call really executed rather than being dropped before it ran.",
+        "directMaterial.retrieval": "Zero, pinned rather than omitted: the two material journeys retrieve nothing, and a retrieval call appearing in a write journey is exactly the kind of drift this fixture exists to catch.",
         "render": "A fixed 2,000-character transcript pushed through the block coalescer the way createStreamingResponse drives it, at three provider delta sizes plus the stalled worst case. Measured when this journey was added, later than this row's commit field: that field names the measurement point of the two material journeys and is left where it was.",
         "render.rig": "createStreamingResponse builds its coalescer with onBlock alone, so it offers no seam to hold the 450 ms stall timer still. The runs therefore go through createBlockStreamCoalescer with the owner's own options and onBlock body plus an injected timer; test/renderFlightMetrics.test.ts checks the rig against the real owner at every delta size.",
         "render.refreshesPerKChar": "Repaints per thousand characters of answer. It stays between 2 and 3.5 across delta sizes because the answer's paragraph structure decides where blocks end, not the provider's chunk size.",

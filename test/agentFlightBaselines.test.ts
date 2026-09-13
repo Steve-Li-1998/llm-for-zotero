@@ -10,6 +10,7 @@ import {
   runDirectMaterialJourney,
 } from "./helpers/materialJourneys";
 import { measureRenderFlight } from "./helpers/renderFlight";
+import { runRetrievalJourney } from "./helpers/retrievalJourney";
 import type {
   AgentFlightSummary,
   RenderFlightSummary,
@@ -24,8 +25,9 @@ import type {
  * fixture, so a change that moves a number has to say so in the same review
  * that makes it.
  *
- * The two material journeys run against the scripted adapter and the sqlite
- * fakes. The render journey is not an agent run at all: it is a fixed
+ * The three agent journeys run against the scripted adapter and the sqlite
+ * fakes: two of them measure what writing costs, the third what a repeated
+ * read costs. The render journey is not an agent run at all: it is a fixed
  * transcript streamed into the panel, pinned here because it is the same
  * question -- what one turn costs -- asked of the other end of the turn.
  */
@@ -113,6 +115,7 @@ describe("agent flight baselines", function () {
   before(async function () {
     const direct = await runDirectMaterialJourney();
     const batch = await runBatchMaterialJourney();
+    const retrieval = await runRetrievalJourney();
     measured = {
       directMaterial: summarizeAgentFlight(direct.events, {
         modelCalls: direct.modelCalls,
@@ -124,6 +127,17 @@ describe("agent flight baselines", function () {
         nativeSaves: batch.nativeSaves,
         // The turn split is what keeps the undo turn out of the batch's cost.
         turnEvents: batch.turns.map((turn) => turn.events),
+      }),
+      retrieval: summarizeAgentFlight(retrieval.events, {
+        modelCalls: retrieval.modelCalls,
+        nativeSaves: retrieval.nativeSaves,
+        turnEvents: retrieval.turns.map((turn) => turn.events),
+        // Neither counter leaves an event behind, so they come from the seams
+        // the journey injected: the candidate builder and the PDF service.
+        retrievalCounters: {
+          candidateBuilds: retrieval.candidateBuilds,
+          paperContextEnsures: retrieval.paperContextEnsures,
+        },
       }),
       render: summarizeRenderFlight(measureRenderFlight()),
     };
@@ -167,6 +181,14 @@ describe("agent flight baselines", function () {
       measured.batchMaterial,
       latest.journeys!.batchMaterial,
     );
+  });
+
+  it("measures the retrieval journey at its pinned baseline", function () {
+    assert.isNotNull(
+      latest.journeys,
+      "the newest row must carry measured journeys",
+    );
+    assertPinned("retrieval", measured.retrieval, latest.journeys!.retrieval);
   });
 
   it("measures the render flight at its pinned baseline", function () {

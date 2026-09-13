@@ -35,6 +35,12 @@ import type { AgentStepParams } from "../../src/agent/model/adapter";
  * exact same journeys without a second copy of the script drifting away from
  * the one the acceptance tests run.
  *
+ * The scripted-turn rig itself -- `runJourneyTurn`, the two step builders and
+ * `collectRun` -- is exported because it is not about material at all: it is
+ * "run one turn against a fixed script and keep everything it emitted", which
+ * is what any scripted journey needs. `test/helpers/retrievalJourney.ts`
+ * builds its own registry and script on top of it.
+ *
  * The journeys are phased rather than run end to end: each phase is one turn,
  * and the caller drives the phases itself. That is what lets the acceptance
  * tests keep asserting on live mid-journey state (how many notes exist after
@@ -81,7 +87,7 @@ export type MaterialJourneyRun = {
   nativeSaves: number;
 };
 
-function finalStep(text: string): AgentModelStep {
+export function finalStep(text: string): AgentModelStep {
   return {
     kind: "final",
     text,
@@ -89,7 +95,7 @@ function finalStep(text: string): AgentModelStep {
   };
 }
 
-function toolCallStep(
+export function toolCallStep(
   callId: string,
   name: string,
   args: Record<string, unknown>,
@@ -171,7 +177,7 @@ export function hostBlock(
  * fails the turn, which is what proves a journey never regenerated material it
  * had already finalized.
  */
-async function runJourneyTurn(params: {
+export async function runJourneyTurn(params: {
   registry: AgentToolRegistry;
   conversationKey: number;
   userText: string;
@@ -225,7 +231,7 @@ async function runJourneyTurn(params: {
   return { outcome, events, prompts, request: resolvedRequest, steps: index };
 }
 
-function collectRun(
+export function collectRun(
   turns: JourneyTurn[],
   nativeSaves: number,
 ): MaterialJourneyRun {

@@ -1513,7 +1513,13 @@ export function setupHandlers(
     persistDraftInputForCurrentConversation();
     setConversationSystemPref(nextSystem);
     currentConversationSystem = nextSystem;
-    panelRoot.dataset.conversationSystem = nextSystem;
+    // The mounted DOM scope must keep describing the conversation the panel is
+    // actually on. `dataset.conversationSystem` is half of that scope, so
+    // writing the new system here — before the conversation key has moved —
+    // makes the panel's own ownership check disagree with its own item, and
+    // every later step of this switch is refused by that check. It is written
+    // by `syncConversationIdentity` instead, together with the new key, once
+    // the panel has committed the conversation of the system being entered.
     syncQueuedFollowUpRegistration();
     updateRuntimeSystemToggles();
     if (nextSystem === "claude_code") {

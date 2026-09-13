@@ -2282,6 +2282,102 @@ describe("Action Contract V2", function () {
     assert.equal(decoded.normalizedParameters?.documentVersion, 4);
   });
 
+  it("says which note of a batch could not be re-read at receipt time", async function () {
+    // The whole-set postcondition is a claim about the set, so it can still
+    // hold while one note the call physically wrote is gone by the time the
+    // receipt re-reads it. Without a reason the only symptom is a missing
+    // fact, which reads as "this note was never written".
+    const html = "<p>Grounded summary.</p>";
+    const { service, items } = createHarness();
+    items.set(41, { tags: [], collections: [], fields: { title: "First" } });
+    items.set(42, { tags: [], collections: [], fields: { title: "Second" } });
+    items.set(700, {
+      tags: [],
+      collections: [],
+      fields: {},
+      kind: "note",
+      parentItemId: 41,
+      noteHtml: html,
+    });
+    items.set(701, {
+      tags: [],
+      collections: [],
+      fields: {},
+      kind: "note",
+      parentItemId: 42,
+      noteHtml: html,
+      // Trashed between the write and the receipt.
+      deleted: true,
+    });
+    const operation: LibraryMutationOperation = {
+      type: "save_notes_batch",
+      notes: [
+        { targetItemId: 41, content: "Grounded summary." },
+        { targetItemId: 42, content: "Grounded summary." },
+      ],
+    };
+    const prepared = await service.prepare(mutationTool(), { operation });
+    const postState: LibraryMutationState = {
+      version: 1,
+      operation: "save_notes_batch",
+      items: [
+        { itemId: 700, exists: true, parentItemId: 41, noteHtml: html },
+        { itemId: 701, exists: true, parentItemId: 42, noteHtml: html },
+      ],
+    };
+    const verificationFor = (noteId: number) => ({
+      schemaVersion: 1,
+      noteId,
+      matches: true,
+      html,
+      expectedHtml: html,
+    });
+    const receipts = await service.finalize(undefined, prepared, {
+      ok: true,
+      effect: "applied",
+      actionEvidence: [
+        {
+          ...mutationEvidence(
+            operation,
+            { version: 1, operation: "save_notes_batch", items: [] },
+            postState,
+            "journal-batch",
+          )[0],
+          noteWrites: [
+            {
+              noteId: 700,
+              parentItemId: 41,
+              verification: verificationFor(700),
+            },
+            {
+              noteId: 701,
+              parentItemId: 42,
+              verification: verificationFor(701),
+            },
+          ],
+        },
+      ],
+    });
+    const receipt = receipts[0];
+    assert.equal(
+      receipt.verification,
+      "verified",
+      "the captured post-state still proves the set",
+    );
+    assert.include(receipt.verifiedFacts, "created_note:item:700");
+    assert.lengthOf(
+      receipt.verifiedFacts.filter((fact) => fact.startsWith("native_note:")),
+      1,
+      "only the note that survived its re-read carries a content fact",
+    );
+    assert.notInclude(receipt.verifiedFacts.join(" "), "native_note:701:");
+    assert.deepEqual(
+      receipt.reasons.filter((reason) => reason.includes("701")),
+      ["Zotero item 701 is not a live note after mutation."],
+      "the receipt names the written note it could not re-read",
+    );
+  });
+
   it("closes Zotero-note and file-export obligations independently", async function () {
     const { service, items } = createHarness();
     items.set(700, {

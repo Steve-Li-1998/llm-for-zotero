@@ -1594,15 +1594,17 @@ export class ActionContractService {
     // against live state so the receipt names the same per-note content
     // evidence a single note write names. They are additive: each fact stands
     // on its own re-read, so they are minted whether or not the whole-set
-    // postcondition held, and a note this call did not write has none.
-    const noteFacts = await nativeNoteWriteFacts(
+    // postcondition held, and a note this call did not write has none. A note
+    // whose re-read fails states why instead, so the receipt names the note it
+    // could not read back rather than leaving a silent gap in the facts.
+    const noteReadBacks = await nativeNoteWriteFacts(
       proposal,
       evidence?.noteWrites,
       this.gateway,
     );
     return {
       ...base,
-      verifiedFacts: [...base.verifiedFacts, ...noteFacts],
+      verifiedFacts: [...base.verifiedFacts, ...noteReadBacks.facts],
       evidenceRef: evidence?.journalStepId || base.evidenceRef,
       verification: verified ? "verified" : "unverified",
       status: verified
@@ -1623,6 +1625,7 @@ export class ActionContractService {
                 ? `The mutation handler rejected the captured native post-state for ${operation.type}.`
                 : `No captured native post-state was attached for ${operation.type}.`,
             ]),
+        ...noteReadBacks.reasons,
       ],
     };
   }

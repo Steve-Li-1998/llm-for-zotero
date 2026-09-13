@@ -370,13 +370,20 @@ export async function verifyNoteWriteTarget(
  * forced. Nothing else is credited -- the evidence carries only the notes the
  * call physically created, so an item it skipped as already written, or one it
  * failed on, contributes no fact and is left to the receipt that did write it.
+ *
+ * A note whose re-read fails contributes a REASON instead, in the same
+ * wording and from the same verifier the single-note branch reports. The
+ * whole-set postcondition is a claim about the set and can still hold while
+ * one note of the set is gone, so without the reason the only symptom would
+ * be a missing fact -- indistinguishable from a note the call never wrote.
  */
 export async function nativeNoteWriteFacts(
   proposal: AgentActionProposal,
   noteWrites: readonly NativeNoteWriteEvidence[] | undefined,
   gateway: ActionContractGateway,
-): Promise<string[]> {
+): Promise<{ facts: string[]; reasons: string[] }> {
   const facts: string[] = [];
+  const reasons: string[] = [];
   for (const write of noteWrites || []) {
     const verification = await verifyNoteWriteTarget(
       {
@@ -391,13 +398,16 @@ export async function nativeNoteWriteFacts(
       { noteId: write.noteId, noteVerification: write.verification },
       gateway,
     );
-    if (!verification.targets) continue;
+    if (!verification.targets) {
+      reasons.push(verification.reason);
+      continue;
+    }
     facts.push(
       ...verification.targets.map((target) => `created_note:${target}`),
       ...verification.facts,
     );
   }
-  return facts;
+  return { facts, reasons };
 }
 
 export async function prepareActionExecution(

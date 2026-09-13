@@ -96,6 +96,7 @@ import {
   buildAgentActionSummaryCard,
   renderActionSummaryCard,
 } from "./actionSummaryCard";
+import type { NavigationHost } from "./actionCardNavigation";
 import { actionCardNoteMode, attachNoteDetails } from "./actionCardModel";
 import { renderActionCardDetail } from "./actionCardNoteDetail";
 import { createZoteroActionCardResolvers } from "./actionCardResolvers";
@@ -229,6 +230,8 @@ type RenderAgentTraceParams = {
   allowPlanRecovery?: boolean;
   onTraceMissing?: () => void;
   onInterleavedText?: () => void;
+  /** Where the action card's chips take the reader; the running Zotero by default. */
+  actionCardNavigation?: NavigationHost;
 };
 
 export function formatAgentActivityDuration(durationMs: number): string {
@@ -6383,6 +6386,7 @@ export function renderAgentTrace({
   onInterleavedText,
   previous,
   allowPlanRecovery = false,
+  actionCardNavigation,
 }: RenderAgentTraceParams): HTMLElement | null {
   const runId = message.agentRunId?.trim() || "pending";
   // Temporary native events remain visible until the durable run is loaded.
@@ -6854,6 +6858,7 @@ export function renderAgentTrace({
       mode: noteMode ? "note" : "action",
       ...(noteMode ? { header: noteMode } : {}),
       renderDetail: renderActionCardDetail,
+      ...(actionCardNavigation ? { navigation: actionCardNavigation } : {}),
     });
   }
 

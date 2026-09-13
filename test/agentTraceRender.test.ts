@@ -64,6 +64,7 @@ import type {
 } from "../src/agent/types";
 import { renderActionCardDetail } from "../src/modules/contextPanel/agentTrace/actionCardNoteDetail";
 import { renderActionSummaryCard } from "../src/modules/contextPanel/agentTrace/actionSummaryCard";
+import type { NavigationHost } from "../src/modules/contextPanel/agentTrace/actionCardNavigation";
 import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import {
@@ -11051,6 +11052,103 @@ describe("agent trace action summary card", function () {
       "the connected client's authority stays visible",
     );
     assert.include(collectFakeText(card), "Attention in transformers");
+  });
+
+  /** A stand-in library window, recording where the card sent the reader. */
+  function navigationHost(
+    pane: () => Record<string, unknown> | null,
+  ): NavigationHost & { calls: string[] } {
+    const calls: string[] = [];
+    return {
+      calls,
+      pane: pane as NavigationHost["pane"],
+      openNote: async () => {
+        calls.push("note");
+        return true;
+      },
+      revealFile: async () => {
+        calls.push("file");
+        return true;
+      },
+      focusMainWindow: () => calls.push("focus"),
+    };
+  }
+
+  it("sends the reader to the paper a chip names", async function () {
+    const host = navigationHost(() => ({
+      selectItems: async (ids: number[]) => {
+        host.calls.push(`items:${ids.join(",")}`);
+        return true;
+      },
+    }));
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+      actionCardNavigation: host,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const chip = card.findByClass("llm-paper-context-chip")!;
+    assert.include(chip.className, "llm-agent-action-link");
+    const event = await card.dispatchFakeEventAsync("click", {
+      target: chip.findByClass("llm-paper-context-chip-text")!,
+    });
+
+    assert.deepEqual(host.calls, ["items:41", "focus"]);
+    assert.isTrue(
+      event.propagationStopped,
+      "clicking a chip inside a row does not fold the row",
+    );
+  });
+
+  it("says in the card's pill when it could not open what a chip names", async function () {
+    // The pane is there when the card is drawn and refuses the selection when
+    // the reader clicks, the way an item deleted since the turn behaves.
+    const host = navigationHost(() => ({ selectItems: async () => false }));
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+      actionCardNavigation: host,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const status = card.findByClass("llm-plan-status")!;
+    await card.dispatchFakeEventAsync("click", {
+      target: card.findByClass("llm-paper-context-chip")!,
+    });
+
+    assert.equal(status.textContent, "Item 41 is unavailable");
+    assert.equal(status.dataset.status, "error");
+  });
+
+  it("does not draw a chip as a link when there is nowhere to send the reader", function () {
+    const host = navigationHost(() => ({
+      selectItems: async () => true,
+      tagSelector: null,
+    }));
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+      actionCardNavigation: host,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const tag = card.findByClass("llm-tag-context-chip")!;
+    assert.notInclude(tag.className, "llm-agent-action-link");
+    assert.isNull(tag.getAttribute("role"));
+    assert.isNull(tag.getAttribute("tabindex"));
+    assert.isNull(
+      tag.findByClass("llm-citation-icon"),
+      "a chip that opens nothing shows no jump glyph",
+    );
+    assert.include(
+      card.findByClass("llm-paper-context-chip")!.className,
+      "llm-agent-action-link",
+      "the papers the pane can still select stay links",
+    );
   });
 
   it("turns the pill amber and adds a skip row when a target was rejected", function () {

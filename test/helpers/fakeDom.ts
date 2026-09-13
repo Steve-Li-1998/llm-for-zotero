@@ -46,6 +46,25 @@ class FakeStyleDeclaration {
   }
 }
 
+/** Whether a selector is the plain single-class form the fake can answer. */
+function isClassSelector(selector: string): boolean {
+  return /^\.[\w-]+$/u.test(selector);
+}
+
+/** What a test says about the gesture it is dispatching. */
+export type FakeEventInit = { target?: FakeElement; key?: string };
+
+/** The event a fake listener is handed. */
+export type FakeEvent = FakeEventInit & {
+  defaultPrevented: boolean;
+  propagationStopped: boolean;
+  immediatePropagationStopped: boolean;
+  target: FakeElement;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+  stopImmediatePropagation: () => void;
+};
+
 export class FakeElement {
   public readonly classList = new FakeClassList();
   public readonly dataset: Record<string, string | undefined> = {};
@@ -144,10 +163,16 @@ export class FakeElement {
         ),
       ];
     }
-    if (selector === ".llm-codeblock-shell") {
-      return this.findAllByClass("llm-codeblock-shell");
-    }
+    if (isClassSelector(selector))
+      return this.findAllByClass(selector.slice(1));
     return [];
+  }
+
+  /** The nearest element at or above this one that carries the class asked for. */
+  closest(selector: string): FakeElement | null {
+    if (!isClassSelector(selector)) return null;
+    if (this.classList.contains(selector.slice(1))) return this;
+    return this.parentElement?.closest(selector) || null;
   }
 
   querySelector(selector: string): FakeElement | null {
@@ -179,15 +204,15 @@ export class FakeElement {
     this.listeners.set(type, existing);
   }
 
-  dispatchFakeEvent(type: string): {
-    defaultPrevented: boolean;
-    propagationStopped: boolean;
-    immediatePropagationStopped: boolean;
-  } {
-    const event = {
+  private createEvent(init: FakeEventInit): FakeEvent {
+    return {
       defaultPrevented: false,
       propagationStopped: false,
       immediatePropagationStopped: false,
+      // A delegated listener reads the node the gesture landed on; dispatching
+      // on an element without saying otherwise is that element's own event.
+      target: this,
+      ...init,
       preventDefault() {
         this.defaultPrevented = true;
       },
@@ -198,31 +223,21 @@ export class FakeElement {
         this.immediatePropagationStopped = true;
       },
     };
+  }
+
+  dispatchFakeEvent(type: string, init: FakeEventInit = {}): FakeEvent {
+    const event = this.createEvent(init);
     for (const listener of this.listeners.get(type) || []) {
       listener(event);
     }
     return event;
   }
 
-  async dispatchFakeEventAsync(type: string): Promise<{
-    defaultPrevented: boolean;
-    propagationStopped: boolean;
-    immediatePropagationStopped: boolean;
-  }> {
-    const event = {
-      defaultPrevented: false,
-      propagationStopped: false,
-      immediatePropagationStopped: false,
-      preventDefault() {
-        this.defaultPrevented = true;
-      },
-      stopPropagation() {
-        this.propagationStopped = true;
-      },
-      stopImmediatePropagation() {
-        this.immediatePropagationStopped = true;
-      },
-    };
+  async dispatchFakeEventAsync(
+    type: string,
+    init: FakeEventInit = {},
+  ): Promise<FakeEvent> {
+    const event = this.createEvent(init);
     await Promise.all(
       (this.listeners.get(type) || []).map((listener) => listener(event)),
     );

@@ -2,12 +2,19 @@ import type { AgentActionSummaryResultCard } from "../../../agent/types";
 import { createDocumentCardLayout } from "../documentCard";
 import type { ActionCardEntry } from "./actionCardModel";
 import {
+  navigationTargetOf,
   renderObjectChip,
   renderProcessChips,
   renderSkipRow,
   renderTargetList,
   renderVerb,
 } from "./actionCardChips";
+import {
+  attachActionCardNavigation,
+  canNavigate,
+  createZoteroNavigationHost,
+  type NavigationHost,
+} from "./actionCardNavigation";
 
 // The projection that builds the card lives in `actionCardModel`; this module
 // draws what it produced. Callers keep importing the builder from here until
@@ -35,6 +42,8 @@ export type ActionCardRenderOptions = {
     entry: ActionCardEntry,
     status: HTMLElement,
   ) => HTMLElement | null;
+  /** Where a clicked chip takes the reader; the running Zotero by default. */
+  navigation?: NavigationHost;
 };
 
 /**
@@ -165,6 +174,22 @@ export function renderActionSummaryCard(
     list.appendChild(item);
   }
   container.appendChild(list);
+  // A chip is only a link where the reader can actually be taken: a tag with
+  // no tag selector on screen, or an object this window cannot reach, is left
+  // as the plain chip it is rather than one that would click for nothing.
+  const navigation = options.navigation || createZoteroNavigationHost();
+  const links = Array.from(
+    container.querySelectorAll(".llm-agent-action-link"),
+  ) as HTMLElement[];
+  for (const link of links) {
+    const target = navigationTargetOf(link);
+    if (target && canNavigate(target, navigation)) continue;
+    link.classList.remove("llm-agent-action-link");
+    link.removeAttribute("role");
+    link.removeAttribute("tabindex");
+    link.querySelector(".llm-citation-icon")?.remove();
+  }
+  attachActionCardNavigation(container, status, navigation);
   if (card.answerMaterial) {
     const source = doc.createElement("div");
     source.className = "llm-agent-action-summary-source";

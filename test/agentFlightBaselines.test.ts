@@ -1,21 +1,33 @@
 import { assert } from "chai";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
-import { summarizeAgentFlight } from "../src/agent/flightMetrics";
+import {
+  summarizeAgentFlight,
+  summarizeRenderFlight,
+} from "../src/agent/flightMetrics";
 import {
   runBatchMaterialJourney,
   runDirectMaterialJourney,
 } from "./helpers/materialJourneys";
-import type { AgentFlightSummary } from "../src/agent/flightMetrics";
+import { measureRenderFlight } from "./helpers/renderFlight";
+import type {
+  AgentFlightSummary,
+  RenderFlightSummary,
+} from "../src/agent/flightMetrics";
 
 /**
- * The pinned cost of the two acceptance journeys.
+ * The pinned cost of the acceptance journeys.
  *
  * `test/fixtures/agentFlightBaselines.json` is the source of truth for these
  * numbers -- `docs/` is git-ignored, so nothing there can hold them. This test
- * replays each journey against the scripted adapter and the sqlite fakes and
- * compares what it measures with the last row of the fixture, so a change that
- * moves a number has to say so in the same review that makes it.
+ * replays each journey and compares what it measures with the last row of the
+ * fixture, so a change that moves a number has to say so in the same review
+ * that makes it.
+ *
+ * The two material journeys run against the scripted adapter and the sqlite
+ * fakes. The render journey is not an agent run at all: it is a fixed
+ * transcript streamed into the panel, pinned here because it is the same
+ * question -- what one turn costs -- asked of the other end of the turn.
  */
 
 const FIXTURE_PATH = fileURLToPath(
@@ -25,12 +37,15 @@ const FIXTURE_PATH = fileURLToPath(
 const UPDATE_INSTRUCTION =
   "If the move is intended, update test/fixtures/agentFlightBaselines.json in the same commit as the behavior change that moved it, so the number and the change that caused it are reviewed together.";
 
+/** What one journey's pinned numbers look like, whatever it measures. */
+type JourneySummary = AgentFlightSummary | RenderFlightSummary;
+
 type BaselineRow = {
   phase: string;
   commit: string;
   source?: string;
   reason?: string;
-  journeys: Record<string, AgentFlightSummary> | null;
+  journeys: Record<string, JourneySummary> | null;
 };
 
 type Baselines = { schemaVersion: number; rows: BaselineRow[] };
@@ -63,8 +78,8 @@ function flattenMetrics(
 /** Fails on the first metric that moved, naming it and both of its values. */
 function assertPinned(
   journey: string,
-  measured: AgentFlightSummary,
-  pinned: AgentFlightSummary,
+  measured: JourneySummary,
+  pinned: JourneySummary,
 ): void {
   const now = flattenMetrics(measured);
   const baseline = flattenMetrics(pinned);
@@ -92,7 +107,7 @@ function assertPinned(
 }
 
 describe("agent flight baselines", function () {
-  let measured: Record<string, AgentFlightSummary>;
+  let measured: Record<string, JourneySummary>;
   let latest: BaselineRow;
 
   before(async function () {
@@ -107,6 +122,7 @@ describe("agent flight baselines", function () {
         modelCalls: batch.modelCalls,
         nativeSaves: batch.nativeSaves,
       }),
+      render: summarizeRenderFlight(measureRenderFlight()),
     };
     const rows = loadBaselines().rows;
     latest = rows[rows.length - 1];
@@ -148,6 +164,14 @@ describe("agent flight baselines", function () {
       measured.batchMaterial,
       latest.journeys!.batchMaterial,
     );
+  });
+
+  it("measures the render flight at its pinned baseline", function () {
+    assert.isNotNull(
+      latest.journeys,
+      "the newest row must carry measured journeys",
+    );
+    assertPinned("render", measured.render, latest.journeys!.render);
   });
 
   it("pins every journey it measures, and measures every journey it pins", function () {

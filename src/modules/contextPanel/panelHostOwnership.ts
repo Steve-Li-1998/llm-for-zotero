@@ -447,6 +447,49 @@ export function renderPanelOwnershipBlocked(
   }
 }
 
+/**
+ * Controls that take the user out of a panel that has lost ownership of its own
+ * conversation. The runtime-system toggles and the Agent/Chat toggle are how a
+ * panel is put back on a conversation it owns, so a fence that swallowed them
+ * would leave the reader with no way out of the blocked state.
+ */
+const OWNERSHIP_FENCE_EXEMPT_SELECTOR =
+  "#llm-runtime-mode-toggle, .llm-runtime-system-toggle";
+
+function isRuntimeModeControlTarget(target: unknown): boolean {
+  const element = target as {
+    closest?: (selector: string) => unknown;
+  } | null;
+  if (!element || typeof element.closest !== "function") return false;
+  try {
+    return Boolean(element.closest(OWNERSHIP_FENCE_EXEMPT_SELECTOR));
+  } catch (_error) {
+    return false;
+  }
+}
+
+/**
+ * Key combinations the application owns rather than the panel: Cmd+Q, Ctrl+W,
+ * and every other menu accelerator. A panel must never be able to stop Zotero
+ * from being quit or a window from being closed.
+ */
+function isApplicationCommandKeyEvent(event: Event): boolean {
+  if (event?.type !== "keydown") return false;
+  const keyEvent = event as Partial<KeyboardEvent>;
+  return keyEvent.metaKey === true || keyEvent.ctrlKey === true;
+}
+
+/**
+ * Events the panel ownership fence must let through even when it refuses the
+ * rest of the panel's input. Everything else stays fenced: a panel that is
+ * showing someone else's conversation must not act on typing or clicks.
+ */
+export function isOwnershipFenceExemptEvent(event: Event): boolean {
+  if (!event) return false;
+  if (isApplicationCommandKeyEvent(event)) return true;
+  return isRuntimeModeControlTarget(event.target);
+}
+
 export function requireCurrentPanelOwnership(
   body: Element,
   item: Zotero.Item | null | undefined,

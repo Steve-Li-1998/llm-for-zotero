@@ -7,6 +7,7 @@ import {
   bindStandalonePanelHost,
   clearPanelHostBinding,
   evaluatePanelOwnership,
+  isOwnershipFenceExemptEvent,
   isPanelHostCompatibleWithPaper,
   getConversationScopeIdentityForTests,
   requireCurrentPanelOwnership,
@@ -315,6 +316,129 @@ describe("panel host ownership", function () {
     activeContextPanels.set(panel.body, () => itemB);
 
     assert.equal(evaluatePanelOwnership(panel.body, itemB), "match");
+    clearPanelHostBinding(panel.body);
+  });
+});
+
+describe("panel ownership fence exemptions", function () {
+  const originalZotero = globalThis.Zotero;
+
+  beforeEach(function () {
+    (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
+      Prefs: { get: () => undefined },
+      Items: { get: () => null },
+      Libraries: { userLibraryID: 1 },
+      Profile: { dir: "/tmp/zotero-profile" },
+      Tabs: { selectedID: "reader-a" },
+    } as typeof Zotero;
+  });
+
+  afterEach(function () {
+    clearAllState();
+    (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
+      originalZotero;
+  });
+
+  /** The decision the capture-phase fence in setupHandlers.ts makes. */
+  function fenceWouldSwallow(
+    body: Element,
+    item: Zotero.Item,
+    event: Event,
+  ): boolean {
+    if (isOwnershipFenceExemptEvent(event)) return false;
+    return !requireCurrentPanelOwnership(body, item, `panel-${event.type}`);
+  }
+
+  function fakeEvent(params: {
+    type: string;
+    matches?: string[];
+    metaKey?: boolean;
+    ctrlKey?: boolean;
+  }): Event {
+    const target = {
+      closest: (selector: string) =>
+        (params.matches || []).some((candidate) => selector.includes(candidate))
+          ? target
+          : null,
+    };
+    return {
+      type: params.type,
+      target,
+      metaKey: params.metaKey === true,
+      ctrlKey: params.ctrlKey === true,
+    } as unknown as Event;
+  }
+
+  it("keeps swallowing ordinary input while the verdict is stale-candidate", function () {
+    const itemA = fakePaper(101);
+    const itemB = fakePaper(202);
+    const panel = fakePanel({
+      conversationKey: 202,
+      paperItemID: 202,
+      tabID: "reader-a",
+    });
+    bindEmbeddedPanelHost(panel.body, itemB, "reader");
+    activeContextPanels.set(panel.body, () => itemB);
+
+    assert.equal(evaluatePanelOwnership(panel.body, itemA), "stale-candidate");
+    assert.isTrue(
+      fenceWouldSwallow(panel.body, itemA, fakeEvent({ type: "keydown" })),
+    );
+    assert.isTrue(
+      fenceWouldSwallow(panel.body, itemA, fakeEvent({ type: "click" })),
+    );
+    clearPanelHostBinding(panel.body);
+  });
+
+  it("lets the runtime toggles and application commands through a stale-candidate verdict", function () {
+    const itemA = fakePaper(101);
+    const itemB = fakePaper(202);
+    const panel = fakePanel({
+      conversationKey: 202,
+      paperItemID: 202,
+      tabID: "reader-a",
+    });
+    bindEmbeddedPanelHost(panel.body, itemB, "reader");
+    activeContextPanels.set(panel.body, () => itemB);
+
+    assert.equal(evaluatePanelOwnership(panel.body, itemA), "stale-candidate");
+    // The click that returns the reader to the runtime they came from.
+    assert.isFalse(
+      fenceWouldSwallow(
+        panel.body,
+        itemA,
+        fakeEvent({
+          type: "click",
+          matches: [".llm-runtime-system-toggle"],
+        }),
+      ),
+    );
+    // The Agent/Chat toggle.
+    assert.isFalse(
+      fenceWouldSwallow(
+        panel.body,
+        itemA,
+        fakeEvent({
+          type: "click",
+          matches: ["#llm-runtime-mode-toggle"],
+        }),
+      ),
+    );
+    // Cmd+Q with focus inside the panel, and its Windows/Linux equivalent.
+    assert.isFalse(
+      fenceWouldSwallow(
+        panel.body,
+        itemA,
+        fakeEvent({ type: "keydown", metaKey: true }),
+      ),
+    );
+    assert.isFalse(
+      fenceWouldSwallow(
+        panel.body,
+        itemA,
+        fakeEvent({ type: "keydown", ctrlKey: true }),
+      ),
+    );
     clearPanelHostBinding(panel.body);
   });
 });

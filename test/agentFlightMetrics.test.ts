@@ -186,8 +186,44 @@ describe("agent flight metrics", function () {
     });
     assert.equal(
       summary.modelCallsPerBatchItem,
-      1.333,
-      "four model calls covered three distinct items, rounded for a fixture",
+      1.33,
+      "with no turn split, every model call of the flight is charged to the batch",
+    );
+  });
+
+  it("charges the batch only for the turns that carried batch work", function () {
+    const batchTurn = [
+      batchItem({ itemKey: "item:1", status: "saved", written: true }),
+      batchItem({ itemKey: "item:2", status: "failed", written: false }),
+      batchItem({ itemKey: "item:3", status: "saved", written: true }),
+    ];
+    const resumeTurn = [
+      batchItem({ itemKey: "item:2", status: "saved", written: true }),
+    ];
+    // The last turn undoes the batch: real work, but not the batch's cost.
+    const undoTurn = [
+      stageEvent({
+        stage: "zotero_action",
+        callId: "call-undo",
+        toolName: "undo_last_action",
+      }),
+      toolCall({ callId: "call-undo", name: "undo_last_action" }),
+    ];
+    const turnEvents = [batchTurn, resumeTurn, undoTurn];
+    const summary = summarizeAgentFlight(turnEvents.flat(), {
+      modelCalls: [2, 2, 2],
+      nativeSaves: 3,
+      turnEvents,
+    });
+    assert.equal(
+      summary.modelCallsTotal,
+      6,
+      "the flight still reports every model call it made",
+    );
+    assert.equal(
+      summary.modelCallsPerBatchItem,
+      1.33,
+      "four calls over three items: the undo turn is not the batch's cost",
     );
   });
 

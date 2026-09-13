@@ -117,10 +117,13 @@ describe("agent flight baselines", function () {
       directMaterial: summarizeAgentFlight(direct.events, {
         modelCalls: direct.modelCalls,
         nativeSaves: direct.nativeSaves,
+        turnEvents: direct.turns.map((turn) => turn.events),
       }),
       batchMaterial: summarizeAgentFlight(batch.events, {
         modelCalls: batch.modelCalls,
         nativeSaves: batch.nativeSaves,
+        // The turn split is what keeps the undo turn out of the batch's cost.
+        turnEvents: batch.turns.map((turn) => turn.events),
       }),
       render: summarizeRenderFlight(measureRenderFlight()),
     };

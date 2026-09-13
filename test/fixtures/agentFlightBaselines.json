@@ -33,7 +33,7 @@
         "batchMaterial": {
           "modelCallsPerTurn": [2, 2, 2],
           "modelCallsTotal": 6,
-          "modelCallsPerBatchItem": 2,
+          "modelCallsPerBatchItem": 1.33,
           "toolCallsByStage": {
             "zotero_action": 3
           },
@@ -88,8 +88,9 @@
       },
       "notes": {
         "source": "Measured by test/agentFlightBaselines.test.ts against the scripted adapter and the sqlite fakes: no live model, so the model-call counts measure the harness contract (how many generation steps the journey needs), not model behavior.",
-        "batchMaterial.nativeWrites": "Zero because the durable note batch mints one aggregate receipt with no per-note facts; the three notes it physically wrote are visible as batchItems.written instead.",
-        "batchMaterial.duplicateNativeWrites": "Three physical writes no receipt fact accounts for -- a receipt-evidence gap, not three duplicate notes. Read it together with batchItems.written.",
+        "batchMaterial.modelCallsPerBatchItem": "Four model calls over three items: only the two turns that carried batch work are charged. The undo turn's two calls are real work but not the batch's cost, and modelCallsTotal (6) still reports them.",
+        "batchMaterial.nativeWrites": "Counts only notes proved by receipt FACTS (created_note: / native_note: content read-backs). The durable note batch takes the library-mutation receipt branch: its receipt is verification \"verified\" against captured post-state, but it carries an empty verifiedFacts, and a receipt verified only against post-state counts zero here. Zero means no content read-back was recorded -- never that the writes were unverified. The three notes it wrote are visible as batchItems.written.",
+        "batchMaterial.duplicateNativeWrites": "Three physical writes that no receipt FACT accounts for -- the missing content read-backs above, not three duplicate notes. Read it together with batchItems.written.",
         "batchMaterial.announcedNotWritten": "The resume announces all three rows it holds and names the one it wrote, so two rows are announced without being written.",
         "render": "A fixed 2,000-character transcript pushed through the block coalescer the way createStreamingResponse drives it, at three provider delta sizes plus the stalled worst case. Measured when this journey was added, later than this row's commit field: that field names the measurement point of the two material journeys and is left where it was.",
         "render.rig": "createStreamingResponse builds its coalescer with onBlock alone, so it offers no seam to hold the 450 ms stall timer still. The runs therefore go through createBlockStreamCoalescer with the owner's own options and onBlock body plus an injected timer; test/renderFlightMetrics.test.ts checks the rig against the real owner at every delta size.",

@@ -10733,7 +10733,13 @@ describe("agent trace action summary card", function () {
       callId: "call-note",
       name: "note_write",
       ok: true,
-      actionReceipts: [receipt({ id: "note-1", materialRef })],
+      actionReceipts: [
+        receipt({
+          id: "note-1",
+          materialRef,
+          verifiedFacts: ["native_note:77:text_match"],
+        }),
+      ],
       content: { noteId: 77 },
     }),
     event(3, {
@@ -10751,6 +10757,7 @@ describe("agent trace action summary card", function () {
           executionAuthority: "external_runtime",
           requestedTargets: ["item:41", "item:42"],
           appliedTargets: ["item:41"],
+          normalizedParameters: { tags: ["attention", "transformers"] },
         }),
       ],
       content: {},
@@ -10758,18 +10765,20 @@ describe("agent trace action summary card", function () {
     event(4, { type: "final", text: "Saved the summary.", materialRef }),
   ];
 
-  it("lists one line per effect receipt, named by the operation catalog", function () {
+  it("lists one row per target set, named by the operation catalog", function () {
     const card = summaryCard(
       buildAgentTraceDisplayItems(effectEvents, null).items,
     );
 
     assert.exists(card, "the run's effects are summarized");
     assert.deepEqual(
-      card!.entries.map((entry) => entry.text),
-      [
-        "Created note “Attention in transformers” · 1 target",
-        "Added tags · 2 targets",
-      ],
+      card!.entries.map((entry) => entry.effects.map((effect) => effect.label)),
+      [["Created note"], ["Added tags"]],
+    );
+    assert.deepEqual(
+      card!.entries.map((entry) => entry.targets.map((target) => target.label)),
+      [["Item 41"], ["Item 41", "Item 42"]],
+      "each row names the items its receipts covered",
     );
     assert.deepEqual(card!.entries[0].badges, ["Verified"]);
     assert.deepEqual(card!.entries[1].badges, [
@@ -10814,9 +10823,10 @@ describe("agent trace action summary card", function () {
       ).items,
     );
 
+    assert.equal(card?.actionCount, 1);
     assert.deepEqual(
-      card?.entries.map((entry) => entry.text),
-      ["Created note · 1 target"],
+      card?.entries.map((entry) => entry.effects.map((effect) => effect.label)),
+      [["Created note"]],
     );
   });
 
@@ -10886,9 +10896,14 @@ describe("agent trace action summary card", function () {
     );
 
     assert.deepEqual(
-      card?.entries.map((entry) => entry.text),
-      ["Ran command"],
-      "an executed effect states itself, and states no targets it re-read",
+      card?.entries.map((entry) => entry.effects.map((effect) => effect.label)),
+      [["Ran command"]],
+      "an executed effect states itself",
+    );
+    assert.deepEqual(
+      card?.entries[0].targets,
+      [],
+      "and states no targets it re-read",
     );
     assert.deepEqual(card?.entries[0].badges, ["Ran (no state proof)"]);
   });
@@ -10936,19 +10951,87 @@ describe("agent trace action summary card", function () {
 
     const card = trace.findByClass("llm-agent-action-summary-card");
     assert.exists(card);
-    const lines = card!
-      .findAllByClass("llm-agent-action-summary-text")
-      .map((node) => node.textContent);
-    assert.deepEqual(lines, [
-      "Created note “Attention in transformers” · 1 target",
-      "Added tags · 2 targets",
-    ]);
+    assert.equal(
+      card!.findByClass("llm-plan-title")!.textContent,
+      "What this turn did",
+    );
+    assert.equal(
+      card!.findByClass("llm-plan-status")!.textContent,
+      "2 actions",
+    );
+    const rows = card!.findAllByClass("llm-agent-action-summary-item");
+    assert.lengthOf(rows, 2, "one row per target set");
+    assert.exists(
+      rows[0].findByClass("llm-paper-context-chip"),
+      "the paper is the row's subject",
+    );
+    assert.exists(
+      rows[0].findByClass("llm-note-context-chip"),
+      "a note effect shows the note chip",
+    );
+    assert.isNull(
+      rows[0].findByClass("llm-context-glyph-icon"),
+      "a note effect has no glyph",
+    );
+    assert.equal(
+      rows[1].findByClass("llm-context-glyph-icon")!.textContent,
+      "+",
+      "tagging shows the + glyph",
+    );
+    assert.deepEqual(
+      rows[1]
+        .findAllByClass("llm-tag-chip-title")
+        .map((tag) => tag.textContent),
+      ["attention", "transformers"],
+    );
     assert.include(
       collectFakeText(card),
       "Authorized by connected client",
       "the connected client's authority stays visible",
     );
     assert.include(collectFakeText(card), "Attention in transformers");
+  });
+
+  it("turns the pill amber and adds a skip row when a target was rejected", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Moved.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "call-move",
+          name: "library_update",
+          ok: true,
+          content: {},
+          actionReceipts: [
+            receipt({
+              id: "move-1",
+              operation: "move_to_collection",
+              capability: "zotero.collections",
+              status: "partial",
+              verification: "verified",
+              requestedTargets: ["item:1", "item:2"],
+              appliedTargets: ["item:1"],
+              rejectedTargets: ["item:2"],
+              reasons: ["already in Reviews"],
+              normalizedParameters: { collectionName: "Reviews" },
+            }),
+          ],
+        }),
+      ],
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    assert.equal(
+      card.findByClass("llm-plan-status")!.dataset.status,
+      "partial",
+    );
+    const row = card.findByClass("llm-agent-action-summary-item")!;
+    assert.include(
+      collectFakeText(row.findByClass("llm-at-row-skip")!),
+      "Skipped Item 2 · already in Reviews",
+      "the refusal is stated under the row that owns it",
+    );
   });
 
   it("keeps the card outside the collapsed activity disclosure", function () {

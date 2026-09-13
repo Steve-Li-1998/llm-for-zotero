@@ -9095,25 +9095,179 @@ label.llm-search-results-item:hover {
 
 .llm-agent-action-summary-item {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.llm-agent-action-summary-list > li + li {
+  padding-top: 8px;
+  border-top: 1px solid
+    color-mix(in srgb, var(--stroke-secondary) 60%, transparent);
+}
+
+.llm-agent-action-targets {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  min-width: 0;
+}
+
+.llm-agent-action-targets .llm-paper-context-chip-label {
+  color: var(--fill-primary);
+}
+
+.llm-agent-action-effects {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.llm-agent-action-effect {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+
+.llm-agent-action-verb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-12);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.llm-agent-action-verb .llm-context-glyph-icon {
+  color: var(--fill-tertiary);
+  font-weight: 600;
+}
+
+.llm-agent-action-verb-word {
+  display: none;
+}
+
+.llm-agent-action-verb-destructive .llm-context-glyph-icon {
+  color: #c84b4b;
+}
+
+.llm-agent-action-effect .llm-tag-chip-label.removed .llm-tag-chip-title {
+  text-decoration: line-through;
+  color: var(--fill-tertiary);
+}
+
+.llm-agent-action-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--llm-fs-11);
 }
 
 .llm-agent-action-summary-item .llm-agent-process-chips {
+  margin-left: auto;
   padding-left: 0;
 }
 
-.llm-agent-action-summary-text {
-  color: var(--fill-primary);
-  font-size: var(--llm-fs-12);
-  overflow-wrap: anywhere;
+.llm-agent-action-summary-item .llm-at-row {
+  flex-basis: 100%;
+  padding-left: 8px;
 }
 
 .llm-agent-action-summary-source {
   margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
   color: var(--fill-secondary);
   font-size: var(--llm-fs-10);
   overflow-wrap: anywhere;
+}
+
+.llm-agent-action-link {
+  cursor: pointer;
+}
+
+.llm-agent-action-link .llm-citation-icon {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  margin-left: -2px;
+  transition: width 100ms;
+}
+
+.llm-agent-action-link:hover .llm-paper-context-chip-label,
+.llm-agent-action-link:hover .llm-collection-chip-label,
+.llm-agent-action-link:hover .llm-tag-chip-label,
+.llm-agent-action-link:hover .llm-other-ref-chip-label {
+  color: var(--color-accent);
+}
+
+.llm-agent-action-link:hover .llm-citation-icon {
+  width: 14px;
+  min-width: 14px;
+  color: var(--color-accent);
+}
+
+.llm-agent-action-link:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-radius: 8px;
+}
+
+details.llm-agent-action-row > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+details.llm-agent-action-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.llm-agent-action-row-marker {
+  flex: 0 0 auto;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-14);
+  line-height: 1;
+  transform-origin: 50% 52%;
+  transition: transform 120ms ease;
+  user-select: none;
+  margin-left: 2px;
+}
+
+details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
+  transform: rotate(90deg);
+}
+
+.llm-agent-action-row-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.llm-agent-action-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.llm-note-preview {
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--fill-quinary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .llm-agent-action-row-marker,
+  .llm-agent-action-link .llm-citation-icon {
+    transition: none;
+  }
 }
 
 .llm-note-review-description {
@@ -9374,6 +9528,11 @@ label.llm-search-results-item:hover {
 .llm-plan-status[data-status="completed"] {
   background: color-mix(in srgb, #2e9b55 14%, transparent);
   color: #2e9b55;
+}
+
+.llm-plan-status[data-status="partial"] {
+  background: color-mix(in srgb, #d58a22 16%, transparent);
+  color: #d58a22;
 }
 
 .llm-plan-status[data-status="failed"],
@@ -10660,6 +10819,18 @@ label.llm-search-results-item:hover {
 
 .llm-context-icon-file {
   color: var(--llm-context-icon-file-color);
+}
+
+.llm-context-icon-command {
+  mask-image: url("icons/action-source-code.svg");
+  -webkit-mask-image: url("icons/action-source-code.svg");
+  color: var(--llm-context-icon-file-color);
+}
+
+.llm-context-icon-trash {
+  mask-image: url("icons/action-delete.svg");
+  -webkit-mask-image: url("icons/action-delete.svg");
+  color: #c84b4b;
 }
 
 .llm-context-icon-collection,

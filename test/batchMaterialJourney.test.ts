@@ -13,6 +13,7 @@ import {
   toolResultFor,
 } from "./helpers/materialJourneys";
 import type { BatchJourneyEnvironment } from "./helpers/materialJourneys";
+import type { AgentEvent } from "../src/agent/types";
 
 /**
  * The complete durable-batch journey: write a note onto three papers, have one
@@ -26,6 +27,20 @@ import type { BatchJourneyEnvironment } from "./helpers/materialJourneys";
  * told about, the single journal action that owns every note, and the undo that
  * reverts it.
  */
+
+/** Every fact the batch call's own receipts carry, in one flat list. */
+function receiptFacts(events: readonly AgentEvent[]): string[] {
+  const result = toolResultFor(events, "note_write_batch");
+  assert.exists(result, "the batch write must produce a tool result");
+  const receipts = result!.actionReceipts || [];
+  assert.isNotEmpty(receipts, "an approved batch write mints a receipt");
+  return receipts.flatMap((receipt) => receipt.verifiedFacts || []);
+}
+
+/** Matches the one content read-back fact a written note is proved by. */
+function readBackOf(noteId: number): (fact: string) => boolean {
+  return (fact) => fact.startsWith(`native_note:${noteId}:html_sha256:`);
+}
 
 describe("batch material journey", function () {
   let environment: BatchJourneyEnvironment;
@@ -116,6 +131,32 @@ describe("batch material journey", function () {
       assert.equal(library.notes.get(noteId).stored, document!.visibleHtml);
     }
 
+    // Every note the batch physically wrote is proved on the receipt the same
+    // way a single note_write proves its own: by a native read-back of the
+    // stored note, named as one fact per note. A batch is not exempt from the
+    // rule that a write yields content evidence, and the item Zotero refused
+    // must leave no such fact behind.
+    const firstFacts = receiptFacts(first.events);
+    assert.deepEqual(
+      savedNoteIds.map(
+        (noteId) => firstFacts.filter(readBackOf(noteId)).length,
+      ),
+      [1, 1],
+      "each written note carries exactly one content read-back fact",
+    );
+    assert.lengthOf(
+      firstFacts.filter((fact) => fact.startsWith("native_note:")),
+      2,
+      "the refused item is proved by nothing: two notes landed, two facts",
+    );
+    assert.deepEqual(
+      savedNoteIds.map((noteId) =>
+        firstFacts.includes(`created_note:item:${noteId}`),
+      ),
+      [true, true],
+      "a batch that created the note names it the way one note_write does",
+    );
+
     // One action, one step per note, and the refused note is a failed step.
     const [openedAction] = await listJournalActions({ conversationKey });
     assert.exists(openedAction, "the batch opens exactly one journal action");
@@ -195,6 +236,27 @@ describe("batch material journey", function () {
       eventsOfType(second.events, "material_finalized"),
       "a resume finalizes nothing",
     );
+
+    // The resume proves the one note it wrote and nothing else. The two notes
+    // an earlier call already wrote are not re-proved here: this call did not
+    // write them, so its receipt must not speak for them.
+    const resumeFacts = receiptFacts(second.events);
+    assert.deepEqual(
+      resumeFacts.filter((fact) => fact.startsWith("native_note:")).length,
+      1,
+      "a resume proves exactly the rows it wrote",
+    );
+    assert.lengthOf(
+      resumeFacts.filter(readBackOf(recoveredNoteId)),
+      1,
+      "the recovered note carries its own content read-back",
+    );
+    for (const noteId of savedNoteIds)
+      assert.notInclude(
+        resumeFacts.join(" "),
+        `native_note:${noteId}:`,
+        "a row this call skipped is not re-proved by it",
+      );
 
     // The batch is finished, but its action still holds the first attempt's
     // failed step, so the journal records it as partially applied.

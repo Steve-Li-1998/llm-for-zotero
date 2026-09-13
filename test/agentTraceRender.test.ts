@@ -55,9 +55,13 @@ import {
   sanitizeRenderedMermaidSvgWithReason,
 } from "../src/modules/contextPanel/mermaidSvg";
 import type {
+  ActionCardEntry,
+  AgentNoteChangeResultCard,
   AgentPendingAction,
   AgentRunEventRecord,
+  AgentSavedNoteResultCard,
 } from "../src/agent/types";
+import { renderActionCardDetail } from "../src/modules/contextPanel/agentTrace/actionCardNoteDetail";
 import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import {
@@ -11069,5 +11073,137 @@ describe("agent trace action summary card", function () {
     }) as unknown as FakeElement;
 
     assert.lengthOf(next.findAllByClass("llm-agent-action-summary-card"), 1);
+  });
+});
+
+describe("action card note detail", function () {
+  /**
+   * A template whose parsed content can be walked, as chrome's parser gives it.
+   *
+   * The note preview renders the note's own sanitized HTML, so a test that
+   * asserts what the reader sees has to let that parse produce elements.
+   */
+  class ParsingTemplateElement extends FakeElement {
+    public readonly content = new FakeElement("div");
+
+    constructor() {
+      super("template");
+    }
+
+    set innerHTML(value: string) {
+      for (const [, tag, text] of value.matchAll(/<(\w+)>([^<]*)<\/\1>/g)) {
+        const node = new FakeElement(tag);
+        node.textContent = text;
+        this.content.appendChild(node);
+      }
+    }
+
+    get innerHTML(): string {
+      return "";
+    }
+  }
+
+  const noteDocument = {
+    createElement: (tagName: string) =>
+      tagName === "template"
+        ? new ParsingTemplateElement()
+        : new FakeElement(tagName),
+    createElementNS: (_namespace: string, tagName: string) =>
+      new FakeElement(tagName),
+    createTextNode: (text: string) => {
+      const node = new FakeElement("span");
+      node.textContent = text;
+      return node;
+    },
+    querySelectorAll: () => [],
+  } as unknown as Document;
+
+  const savedNote: AgentSavedNoteResultCard = {
+    kind: "saved_note",
+    actionId: "a1",
+    title: "Summary",
+    destination: "My Library › Paper",
+    bodyHtml: "<h1>Summary</h1><p>Body.</p>",
+    note: { itemId: 99, libraryID: 1, key: "N99" },
+  };
+  const entry: ActionCardEntry = {
+    targets: [{ kind: "item", itemId: 11, label: "Smith, 2021" }],
+    effects: [
+      {
+        receiptId: "n",
+        operation: "note_create",
+        verb: { word: "wrote" },
+        label: "Created note",
+        objects: [{ kind: "note", label: "Summary", noteId: 99 }],
+      },
+    ],
+    verification: "verified",
+    badges: ["Verified"],
+    rejected: [],
+    detail: { kind: "saved_note", card: savedNote },
+  };
+
+  it("renders a created note's preview and an Open note action", function () {
+    const status = noteDocument.createElement("span");
+    const detail = renderActionCardDetail(
+      noteDocument,
+      entry,
+      status,
+    ) as unknown as FakeElement;
+    assert.exists(detail.findByClass("llm-note-preview"));
+    assert.include(
+      collectFakeText(detail.findByClass("llm-note-preview")!),
+      "Body.",
+    );
+    assert.deepEqual(
+      detail.findAllByClass("llm-plan-action").map((b) => b.textContent),
+      ["Open note"],
+    );
+  });
+
+  it("renders an edited note's diff container, Open note and Undo", function () {
+    const change: AgentNoteChangeResultCard = {
+      kind: "note_change",
+      title: "Reading notes",
+      description: "The note was updated and verified in Zotero.",
+      note: { itemId: 99, libraryID: 1, key: "N99" },
+      conversationKey: 1,
+      actionId: "a2",
+      state: "applied",
+      before: { checksum: "b" } as never,
+      after: { checksum: "a" } as never,
+    };
+    const status = noteDocument.createElement("span");
+    const detail = renderActionCardDetail(
+      noteDocument,
+      { ...entry, detail: { kind: "note_change", card: change } },
+      status,
+    ) as unknown as FakeElement;
+    assert.equal(
+      detail.findByClass("llm-note-review-description")!.textContent,
+      change.description,
+    );
+    assert.deepEqual(
+      detail.findAllByClass("llm-plan-action").map((b) => b.textContent),
+      ["Open note", "Undo"],
+    );
+    assert.isFalse(
+      detail.findAllByClass("llm-plan-action")[1].disabled,
+      "an applied change keeps the control that reverses it",
+    );
+    assert.exists(
+      detail.findByClass("llm-agent-action-diff"),
+      "the diff loads asynchronously into a container the row already holds",
+    );
+  });
+
+  it("returns null for a row without a note detail", function () {
+    assert.isNull(
+      renderActionCardDetail(
+        noteDocument,
+        { ...entry, detail: undefined },
+        noteDocument.createElement("span"),
+      ),
+    );
   });
 });

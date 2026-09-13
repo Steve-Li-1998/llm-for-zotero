@@ -7,6 +7,106 @@ import { normalizeNoteSourceText } from "../../../services/notes/noteRendering";
 import { navigatePlanDocumentCitationSource } from "../planDocumentPresentation";
 import { renderDiffPreviewField } from "./diffPreviewField";
 
+/**
+ * What the change did, and what the reader can do about it.
+ *
+ * The diff is read back from the journal's recovery payloads rather than
+ * recomposed, so what is shown is the state the write actually recorded. A
+ * read that fails says so in `status`: the card and the action row both own a
+ * pill, and this body writes the outcome into whichever one it was given.
+ */
+export function renderNoteChangeDetail(
+  doc: Document,
+  result: AgentNoteChangeResultCard,
+  status: HTMLElement,
+): HTMLElement {
+  const detail = doc.createElement("div");
+  const description = doc.createElement("p");
+  description.className = "llm-note-review-description";
+  description.textContent = result.description;
+  const diff = doc.createElement("div");
+  diff.className = "llm-plan-markdown llm-agent-action-diff";
+  const actions = doc.createElement("div");
+  actions.className = "llm-agent-action-row-actions";
+  const open = doc.createElement("button");
+  open.className = "llm-plan-action";
+  open.type = "button";
+  open.textContent = "Open note";
+  const undo = doc.createElement("button");
+  undo.className = "llm-plan-action";
+  undo.type = "button";
+  undo.textContent = "Undo";
+  undo.disabled = result.state !== "applied";
+  actions.append(open, undo);
+  detail.append(description, diff, actions);
+  const failed = (error: unknown) => {
+    status.textContent = error instanceof Error ? error.message : String(error);
+    status.dataset.status = "error";
+  };
+  open.addEventListener("click", (event) => {
+    event.preventDefault();
+    void navigatePlanDocumentCitationSource({
+      libraryID: result.note.libraryID,
+      itemKey: result.note.key,
+      evidenceRefs: [],
+    })
+      .then((ok) => {
+        if (!ok) throw new Error("Note is unavailable");
+      })
+      .catch(failed);
+  });
+  undo.addEventListener("click", (event) => {
+    event.preventDefault();
+    undo.disabled = true;
+    void getAgentApi()
+      .undoNoteChange(result)
+      .then((outcome) => {
+        status.textContent =
+          outcome.effect === "partial"
+            ? "Partially undone; inspect remaining effects"
+            : "Undone";
+        status.dataset.status =
+          outcome.effect === "partial" ? "error" : "completed";
+      })
+      .catch(failed);
+  });
+  void Promise.all([
+    readRecoveryText(result.before),
+    readRecoveryText(result.after),
+    listJournalActions({
+      actionId: result.actionId,
+      conversationKey: result.conversationKey,
+      limit: 1,
+    }),
+  ])
+    .then(([before, after, journalActions]) => {
+      if (result.afterVerified === false) {
+        const unavailable = doc.createElement("p");
+        unavailable.textContent =
+          "Native after-state is unavailable. No verified diff can be shown.";
+        diff.append(unavailable);
+        return;
+      }
+      diff.append(
+        renderDiffPreviewField(doc, {
+          type: "diff_preview",
+          id: "appliedNoteChanges",
+          label: ["failed", "mismatch", "unverified"].includes(result.state)
+            ? "Recorded before and after state"
+            : "Applied changes",
+          before: normalizeNoteSourceText(before),
+          after: normalizeNoteSourceText(after),
+        }).element,
+      );
+      if (journalActions[0]?.status === "reverted") {
+        status.textContent = "Undone";
+        undo.disabled = true;
+      }
+    })
+    .catch(failed);
+  return detail;
+}
+
 export function renderNoteChangeCard(
   doc: Document,
   result: AgentNoteChangeResultCard,
@@ -33,85 +133,9 @@ export function renderNoteChangeCard(
         ? "pending"
         : "completed",
   });
-  const description = doc.createElement("p");
-  description.className = "llm-note-review-description";
-  description.textContent = result.description;
-  const open = doc.createElement("button");
-  open.className = "llm-plan-action";
-  open.type = "button";
-  open.textContent = "Open note";
-  const undo = doc.createElement("button");
-  undo.className = "llm-plan-action";
-  undo.type = "button";
-  undo.textContent = "Undo";
-  undo.disabled = result.state !== "applied";
-  layout.actions.append(open, undo);
-  card.append(layout.header, description, layout.content);
-  const failed = (error: unknown) => {
-    layout.status.textContent =
-      error instanceof Error ? error.message : String(error);
-    layout.status.dataset.status = "error";
-  };
-  open.addEventListener("click", (event) => {
-    event.preventDefault();
-    void navigatePlanDocumentCitationSource({
-      libraryID: result.note.libraryID,
-      itemKey: result.note.key,
-      evidenceRefs: [],
-    })
-      .then((ok) => {
-        if (!ok) throw new Error("Note is unavailable");
-      })
-      .catch(failed);
-  });
-  undo.addEventListener("click", (event) => {
-    event.preventDefault();
-    undo.disabled = true;
-    void getAgentApi()
-      .undoNoteChange(result)
-      .then((outcome) => {
-        layout.status.textContent =
-          outcome.effect === "partial"
-            ? "Partially undone; inspect remaining effects"
-            : "Undone";
-        layout.status.dataset.status =
-          outcome.effect === "partial" ? "error" : "completed";
-      })
-      .catch(failed);
-  });
-  void Promise.all([
-    readRecoveryText(result.before),
-    readRecoveryText(result.after),
-    listJournalActions({
-      actionId: result.actionId,
-      conversationKey: result.conversationKey,
-      limit: 1,
-    }),
-  ])
-    .then(([before, after, actions]) => {
-      if (result.afterVerified === false) {
-        const unavailable = doc.createElement("p");
-        unavailable.textContent =
-          "Native after-state is unavailable. No verified diff can be shown.";
-        layout.content.append(unavailable);
-        return;
-      }
-      layout.content.append(
-        renderDiffPreviewField(doc, {
-          type: "diff_preview",
-          id: "appliedNoteChanges",
-          label: ["failed", "mismatch", "unverified"].includes(result.state)
-            ? "Recorded before and after state"
-            : "Applied changes",
-          before: normalizeNoteSourceText(before),
-          after: normalizeNoteSourceText(after),
-        }).element,
-      );
-      if (actions[0]?.status === "reverted") {
-        layout.status.textContent = "Undone";
-        undo.disabled = true;
-      }
-    })
-    .catch(failed);
+  card.append(
+    layout.header,
+    renderNoteChangeDetail(doc, result, layout.status),
+  );
   return card;
 }

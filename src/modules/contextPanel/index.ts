@@ -1,3 +1,4 @@
+import { getSidebarLayout } from "./sidebarLayout";
 /**
  * Context Panel Module
  *
@@ -332,8 +333,8 @@ export function registerReaderContextPanel() {
         | (Element & { collapsible: boolean })
         | null;
       if (section) {
-        section.setAttribute("open", "true");
-        section.collapsible = false;
+        section.collapsible = getSidebarLayout() === "stacked";
+        if (!section.collapsible) section.setAttribute("open", "true");
       }
       setEnabled(true);
       ztoolkit.log(`LLM: panel init tabType=${tabType}`);

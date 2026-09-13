@@ -1,3 +1,4 @@
+import { syncSidebarSectionLayout } from "./sidebarLayout";
 type NativeChatSection = Element & {
   item: Zotero.Item | null;
   tabType: string;
@@ -28,6 +29,15 @@ export function installPersistentLibraryChatPane(doc: Document): () => void {
     button?.parentElement?.classList.add("llm-persistent-rail-entry");
     button?.removeAttribute("disabled");
     const empty = pane.getAttribute("view-type") !== "item";
+    const root = doc.documentElement;
+    if (
+      !empty &&
+      root.getAttribute("data-llm-sidebar-layout") === "stacked" &&
+      root.getAttribute("data-llm-pane-view") === "chat"
+    ) {
+      root.setAttribute("data-llm-pane-view", "stacked");
+      syncSidebarSectionLayout(doc);
+    }
     const chat =
       doc.documentElement.getAttribute("data-llm-pane-view") === "chat";
     if (empty && (!lastEmpty || (chat && !wasChat))) {

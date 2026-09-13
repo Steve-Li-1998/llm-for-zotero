@@ -8,6 +8,7 @@ declare namespace _ZoteroTypes {
   interface Prefs {
     PluginPrefsMap: {
       "enable": boolean;
+      "sidebarLayout": string;
       "standaloneSidebarWidth": number;
       "input": string;
       "apiBase": string;

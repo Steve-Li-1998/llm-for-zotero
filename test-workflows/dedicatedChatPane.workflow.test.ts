@@ -50,6 +50,31 @@ describe("workflow: dedicated native chat pane", function () {
     return details;
   }
 
+  async function captureWindow(target: any, filename: string) {
+    const canvas = target.document.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "canvas",
+    );
+    const scale = target.devicePixelRatio || 1;
+    canvas.width = target.innerWidth * scale;
+    canvas.height = target.innerHeight * scale;
+    const context = canvas.getContext("2d");
+    context.scale(scale, scale);
+    context.drawWindow(
+      target,
+      0,
+      0,
+      target.innerWidth,
+      target.innerHeight,
+      "#ffffff",
+    );
+    const binary = target.atob(canvas.toDataURL("image/png").split(",")[1]);
+    await win.IOUtils.write(
+      `${Zotero.DataDirectory.dir}/${filename}`,
+      Uint8Array.from(binary, (char: any) => char.charCodeAt(0)),
+    );
+  }
+
   before(async function () {
     // Native runner always launches an isolated .scaffold/test profile/data.
     assert.include(Zotero.DataDirectory.dir, ".scaffold/test/data");
@@ -146,29 +171,7 @@ describe("workflow: dedicated native chat pane", function () {
     );
     win.resizeBy(1280 - win.innerWidth, 1000 - win.innerHeight);
     await Zotero.Promise.delay(250);
-    const screenshotCanvas = win.document.createElementNS(
-      "http://www.w3.org/1999/xhtml",
-      "canvas",
-    );
-    screenshotCanvas.width = win.innerWidth * win.devicePixelRatio;
-    screenshotCanvas.height = win.innerHeight * win.devicePixelRatio;
-    const screenshotContext = screenshotCanvas.getContext("2d");
-    screenshotContext.scale(win.devicePixelRatio, win.devicePixelRatio);
-    screenshotContext.drawWindow(
-      win,
-      0,
-      0,
-      win.innerWidth,
-      win.innerHeight,
-      "#ffffff",
-    );
-    const screenshotBinary = win.atob(
-      screenshotCanvas.toDataURL("image/png").split(",")[1],
-    );
-    await win.IOUtils.write(
-      `${Zotero.DataDirectory.dir}/empty-library-sidebar.png`,
-      Uint8Array.from(screenshotBinary, (char: any) => char.charCodeAt(0)),
-    );
+    await captureWindow(win, "empty-library-sidebar.png");
     assert.isFalse(
       section.querySelector("#llm-mode-chip").disabled,
       "empty mode control is enabled",
@@ -356,6 +359,110 @@ describe("workflow: dedicated native chat pane", function () {
     );
   });
 
+  it("switches sidebar layout from Customization without replacing the chat", async function () {
+    let preferences: any;
+    const prefKey = "extensions.zotero.llmforzotero.sidebarLayout";
+    const original = Zotero.Prefs.get(prefKey, true);
+    const details = await clickPane("llm-context-panel");
+    const section = details.querySelector(".llm-dedicated-chat-pane");
+    const root = section.querySelector("#llm-main");
+    const input = section.querySelector("#llm-input");
+    input.value = "Keep this draft across layout changes";
+    const openPreferences = async () => {
+      preferences = (Zotero.Utilities.Internal as any).openPreferences(
+        "llmforzotero-preferences",
+      );
+      await until(
+        () =>
+          preferences.document.querySelector("#llmforzotero-sidebar-layout")
+            ?.dataset.preferenceBound === "true",
+        "sidebar layout setting exists",
+      );
+      preferences.document
+        .querySelector('[data-pref-tab="customization"]')
+        .click();
+      return preferences.document.querySelector("#llmforzotero-sidebar-layout");
+    };
+    const choose = (select: any, value: string) => {
+      select.value = value;
+      const event = preferences.document.createEvent("Event");
+      event.initEvent("change", true, false);
+      select.dispatchEvent(event);
+    };
+    try {
+      let select = await openPreferences();
+      assert.equal(select.value, "independent", "Independent is the default");
+      assert.isAbove(
+        select.getBoundingClientRect().height,
+        0,
+        "setting is in Customization",
+      );
+      await captureWindow(preferences, "sidebar-layout-customization.png");
+      choose(select, "stacked");
+      await until(
+        () =>
+          win.document.documentElement.getAttribute("data-llm-pane-view") ===
+          "stacked",
+        "stacked layout applies immediately",
+      );
+      assert.isAbove(
+        details.querySelector("item-pane-header").getBoundingClientRect()
+          .height,
+        0,
+        "native details return",
+      );
+      assert.equal(
+        section.querySelector(".llm-docked-title-row").getBoundingClientRect()
+          .height,
+        0,
+        "dedicated title is absent in stacked layout",
+      );
+      assert.isTrue(
+        section.querySelector("collapsible-section").collapsible,
+        "stacked section is collapsible",
+      );
+      assert.strictEqual(
+        section.querySelector("#llm-main"),
+        root,
+        "layout switch preserves the mounted chat",
+      );
+      assert.equal(input.value, "Keep this draft across layout changes");
+      preferences.close();
+      await until(() => preferences.closed, "preferences close");
+      await clickPane("llm-context-panel");
+      assert.isAbove(
+        section.getBoundingClientRect().height,
+        100,
+        "stacked chat is visible after clicking its rail icon",
+      );
+      await captureWindow(win, "stacked-sidebar.png");
+      select = await openPreferences();
+      assert.equal(select.value, "stacked", "layout choice is remembered");
+      choose(select, "independent");
+      await until(
+        () =>
+          win.document.documentElement.getAttribute("data-llm-pane-view") ===
+          "chat",
+        "independent layout returns",
+      );
+      assert.isAbove(
+        section.querySelector(".llm-docked-title-row").getBoundingClientRect()
+          .height,
+        0,
+      );
+      assert.equal(
+        details.querySelector("item-pane-header").getBoundingClientRect()
+          .height,
+        0,
+      );
+      assert.strictEqual(section.querySelector("#llm-main"), root);
+      assert.equal(input.value, "Keep this draft across layout changes");
+    } finally {
+      preferences?.close();
+      Zotero.Prefs.set(prefKey, original || "independent", true);
+    }
+  });
+
   it("follows reader tabs and preserves an explicitly selected Library chat", async function () {
     for (const fixture of fixtures) {
       const reader = await Zotero.Reader.open(fixture.pdfAttachmentId);
@@ -438,5 +545,69 @@ describe("workflow: dedicated native chat pane", function () {
           String(fixtures[1].parentItemId),
       "Paper chat resumes with the active paper",
     );
+  });
+  it("keeps stacked reader contexts and no-selection rail access working", async function () {
+    const key = "extensions.zotero.llmforzotero.sidebarLayout";
+    try {
+      Zotero.Prefs.set(key, "stacked", true);
+      await clickPane("llm-context-panel");
+      const panel = () => activeDetails().querySelector("#llm-main");
+      assert.equal(
+        win.document.documentElement.getAttribute("data-llm-pane-view"),
+        "stacked",
+      );
+      assert.isTrue(
+        activeDetails().querySelector(
+          ".llm-dedicated-chat-pane > collapsible-section",
+        ).collapsible,
+      );
+      (panel().querySelector("#llm-mode-chip") as HTMLElement).click();
+      await until(
+        () => panel().dataset.conversationKind === "global",
+        "Library chat opens in stacked reader",
+      );
+      const conversation = panel().dataset.itemId;
+      win.Zotero_Tabs.select(readers[0].tabID);
+      await until(
+        () => panel().dataset.itemId === conversation,
+        "stacked reader tabs preserve Library lock",
+      );
+      await Zotero.Promise.delay(300);
+      (panel().querySelector("#llm-mode-chip") as HTMLElement).click();
+      await until(
+        () =>
+          panel().dataset.contextOwnerItemId ===
+            String(fixtures[0].parentItemId) &&
+          panel().dataset.conversationKind === "paper",
+        "stacked Paper chat follows active reader",
+      );
+      win.Zotero_Tabs.select("zotero-pane");
+      await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
+      win.ZoteroPane.itemsView.selection.clearSelection();
+      await Zotero.Promise.delay(300);
+      await clickPane("llm-context-panel");
+      await until(
+        () => Boolean(panel().querySelector(".llm-start-page-title")),
+        "stacked preference still provides chat with no selection",
+      );
+      assert.equal(
+        win.document.documentElement.getAttribute("data-llm-pane-view"),
+        "chat",
+      );
+      assert.isAbove(
+        panel().querySelector(".llm-docked-title-row").getBoundingClientRect()
+          .height,
+        0,
+      );
+      await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
+      await until(
+        () =>
+          win.document.documentElement.getAttribute("data-llm-pane-view") ===
+          "stacked",
+        "selecting a paper restores the chosen stacked layout",
+      );
+    } finally {
+      Zotero.Prefs.set(key, "independent", true);
+    }
   });
 });

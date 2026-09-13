@@ -1,3 +1,7 @@
+import {
+  installSidebarLayoutPreference,
+  syncSidebarSectionLayout,
+} from "./sidebarLayout";
 import { installPersistentLibraryChatPane } from "./persistentLibraryChatPane";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 
@@ -31,7 +35,12 @@ export function installDedicatedChatPane(
     // a cached native render otherwise leaves another tab's old Paper chat.
     refreshTimer = win.setTimeout(() => {
       refreshTimer = undefined;
-      if (root.getAttribute("data-llm-pane-view") !== "chat") return;
+      if (
+        !["chat", "stacked"].includes(
+          root.getAttribute("data-llm-pane-view") || "",
+        )
+      )
+        return;
       const tabs = (win as Window & { Zotero_Tabs?: { selectedID?: string } })
         .Zotero_Tabs;
       const host =
@@ -48,6 +57,7 @@ export function installDedicatedChatPane(
     }, 0);
   };
   root.setAttribute("data-llm-pane-view", "details");
+  const disposeLayout = installSidebarLayoutPreference(doc);
   const disposeLibraryPane = installPersistentLibraryChatPane(doc);
   const onClick = (event: Event) => {
     if ((event as MouseEvent).button !== 0) return;
@@ -67,6 +77,17 @@ export function installDedicatedChatPane(
         ? "chat"
         : "details",
     );
+    const libraryPane = doc.getElementById("zotero-item-pane");
+    const emptyLibrary =
+      sidenav.id === "zotero-view-item-sidenav" &&
+      libraryPane?.getAttribute("view-type") !== "item";
+    if (
+      root.getAttribute("data-llm-sidebar-layout") === "stacked" &&
+      (!emptyLibrary || root.getAttribute("data-llm-pane-view") !== "chat")
+    ) {
+      root.setAttribute("data-llm-pane-view", "stacked");
+    }
+    syncSidebarSectionLayout(doc);
     refreshSelectedPane();
   };
   // Change layout before Zotero scrolls, expands, and focuses its native pane.
@@ -83,6 +104,7 @@ export function installDedicatedChatPane(
   );
   return () => {
     disposeLibraryPane();
+    disposeLayout();
     if (observerID) notifier?.unregisterObserver(observerID);
     if (refreshTimer !== undefined) win?.clearTimeout(refreshTimer);
     doc.removeEventListener("click", onClick, true);

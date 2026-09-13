@@ -1,10 +1,10 @@
 /* LLM Panel Styles */
 
-.llm-dedicated-chat-pane .llm-panel {
+:root:not([data-llm-pane-view="stacked"]) .llm-dedicated-chat-pane .llm-panel {
   padding-top: 0;
 }
 
-.llm-dedicated-chat-pane .llm-header {
+:root:not([data-llm-pane-view="stacked"]) .llm-dedicated-chat-pane .llm-header {
   padding: 0 8px 4px;
   gap: 10px;
   flex-shrink: 0;
@@ -14266,4 +14266,9 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   #zotero-item-pane-content
   > #zotero-item-details {
   visibility: visible;
+}
+
+/* Stacked mode restores the native collapsible section and classic toolbar. */
+:root[data-llm-pane-view="stacked"] .llm-docked-title-row {
+  display: none;
 }

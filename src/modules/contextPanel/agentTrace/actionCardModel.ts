@@ -422,6 +422,12 @@ function noteIdsOf(entry: ActionCardEntry): number[] {
  * without an id; when that row and one card are all that is left unmatched,
  * they are the same write and are paired anyway. Anything still unmatched is a
  * note no receipt claims, and it keeps its own card.
+ *
+ * Known limits, both of which err towards showing the reader a card rather than
+ * hiding one: a row that names two notes claims only the first card that
+ * matches it, and the second note keeps its own card below; and the pairing of
+ * last resort counts rows, not receipts, so a single row built from two
+ * note-writing receipts is one candidate for it.
  */
 export function attachNoteDetails(
   card: AgentActionSummaryResultCard,

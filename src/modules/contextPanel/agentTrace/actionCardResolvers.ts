@@ -59,7 +59,9 @@ export function createZoteroActionCardResolvers(
     noteLabel: (noteId) =>
       readLibrary(() => {
         const note = Zotero.Items.get(noteId);
-        if (!note) return undefined;
+        // A note id the library answers with something that is not a note is a
+        // stale id; the row keeps the identity rather than naming a paper.
+        if (!note || !note.isNote?.()) return undefined;
         return {
           label: note.getNoteTitle() || "Note",
           libraryID: note.libraryID,

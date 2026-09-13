@@ -56,12 +56,14 @@ import {
 } from "../src/modules/contextPanel/mermaidSvg";
 import type {
   ActionCardEntry,
+  AgentActionSummaryResultCard,
   AgentNoteChangeResultCard,
   AgentPendingAction,
   AgentRunEventRecord,
   AgentSavedNoteResultCard,
 } from "../src/agent/types";
 import { renderActionCardDetail } from "../src/modules/contextPanel/agentTrace/actionCardNoteDetail";
+import { renderActionSummaryCard } from "../src/modules/contextPanel/agentTrace/actionSummaryCard";
 import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import {
@@ -214,6 +216,48 @@ function paperReadPresentation() {
     undefined as never,
   ).presentation;
 }
+
+/**
+ * A template whose parsed content can be walked, as chrome's parser gives it.
+ *
+ * A note preview renders the note's own sanitized HTML, so a test that asserts
+ * what the reader sees of a note has to let that parse produce elements.
+ */
+class ParsingTemplateElement extends FakeElement {
+  public readonly content = new FakeElement("div");
+
+  constructor() {
+    super("template");
+  }
+
+  set innerHTML(value: string) {
+    for (const [, tag, text] of value.matchAll(/<(\w+)>([^<]*)<\/\1>/g)) {
+      const node = new FakeElement(tag);
+      node.textContent = text;
+      this.content.appendChild(node);
+    }
+  }
+
+  get innerHTML(): string {
+    return "";
+  }
+}
+
+/** The document the note surfaces are rendered into. */
+const noteDocument = {
+  createElement: (tagName: string) =>
+    tagName === "template"
+      ? new ParsingTemplateElement()
+      : new FakeElement(tagName),
+  createElementNS: (_namespace: string, tagName: string) =>
+    new FakeElement(tagName),
+  createTextNode: (text: string) => {
+    const node = new FakeElement("span");
+    node.textContent = text;
+    return node;
+  },
+  querySelectorAll: () => [],
+} as unknown as Document;
 
 const throwingTemplateDocument = {
   createElement: (tagName: string) =>
@@ -11156,47 +11200,6 @@ describe("agent trace action summary card", function () {
 });
 
 describe("end-of-turn card precedence", function () {
-  /**
-   * A template whose parsed content can be walked, as chrome's parser gives it.
-   *
-   * The note the card opens is the note's own sanitized HTML, so a test that
-   * asserts what the reader sees has to let that parse produce elements.
-   */
-  class ParsingTemplateElement extends FakeElement {
-    public readonly content = new FakeElement("div");
-
-    constructor() {
-      super("template");
-    }
-
-    set innerHTML(value: string) {
-      for (const [, tag, text] of value.matchAll(/<(\w+)>([^<]*)<\/\1>/g)) {
-        const node = new FakeElement(tag);
-        node.textContent = text;
-        this.content.appendChild(node);
-      }
-    }
-
-    get innerHTML(): string {
-      return "";
-    }
-  }
-
-  const noteDocument = {
-    createElement: (tagName: string) =>
-      tagName === "template"
-        ? new ParsingTemplateElement()
-        : new FakeElement(tagName),
-    createElementNS: (_namespace: string, tagName: string) =>
-      new FakeElement(tagName),
-    createTextNode: (text: string) => {
-      const node = new FakeElement("span");
-      node.textContent = text;
-      return node;
-    },
-    querySelectorAll: () => [],
-  } as unknown as Document;
-
   const savedNote: AgentSavedNoteResultCard = {
     kind: "saved_note",
     actionId: "note-create-1",
@@ -11463,6 +11466,59 @@ describe("end-of-turn card precedence", function () {
     disposeAgentTrace(trace as unknown as HTMLElement);
   });
 
+  it("folds in the note of a write that could not read the note back", function () {
+    // The receipt proved nothing about which note it wrote, so the row names a
+    // note without an id. One row and one card are left, and they are the same
+    // write.
+    const blindReceipt = {
+      ...(noteReceipt("note_create", 99) as unknown as Record<string, unknown>),
+      verifiedFacts: [],
+    } as unknown as TestReceipt;
+    const trace = renderTurn({
+      cards: [savedNote],
+      events: noteWriteEvents([blindReceipt]),
+      message: turnMessage("Saved."),
+    });
+    const cards = trace.findAllByClass("llm-agent-action-summary-card");
+
+    assert.lengthOf(cards, 1);
+    assert.equal(cards[0].dataset.mode, "note");
+    assert.include(
+      collectFakeText(cards[0].findByClass("llm-note-preview")),
+      "What the note says.",
+      "the note the row could not name is still the note it opens",
+    );
+    assert.lengthOf(
+      trace.findAllByClass("llm-saved-note-destination"),
+      0,
+      "the standalone saved-note card is not rendered beside it",
+    );
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("shows the last thing that happened to a note, not both", function () {
+    // The run saved the note and then edited it. Both cards name the same
+    // action, and the change is what the note ended up as.
+    const trace = renderTurn({
+      cards: [
+        { ...savedNote, actionId: "note-1" },
+        { ...noteChange, actionId: "note-1" },
+      ],
+      events: noteChangeEventsWithReceipt(),
+      message: turnMessage("Updated."),
+    });
+    const cards = trace.findAllByClass("llm-agent-action-summary-card");
+
+    assert.lengthOf(cards, 1);
+    assert.equal(
+      cards[0].findByClass("llm-plan-title")!.textContent,
+      "Changed \u2018Attention in transformers\u2019",
+    );
+    assert.lengthOf(trace.findAllByClass("llm-note-review-card"), 0);
+    assert.lengthOf(trace.findAllByClass("llm-saved-note-destination"), 0);
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
   it("keeps rendering a note card that no receipt claims", function () {
     const trace = renderTurn({
       cards: [savedNote],
@@ -11510,47 +11566,6 @@ describe("end-of-turn card precedence", function () {
 });
 
 describe("action card note detail", function () {
-  /**
-   * A template whose parsed content can be walked, as chrome's parser gives it.
-   *
-   * The note preview renders the note's own sanitized HTML, so a test that
-   * asserts what the reader sees has to let that parse produce elements.
-   */
-  class ParsingTemplateElement extends FakeElement {
-    public readonly content = new FakeElement("div");
-
-    constructor() {
-      super("template");
-    }
-
-    set innerHTML(value: string) {
-      for (const [, tag, text] of value.matchAll(/<(\w+)>([^<]*)<\/\1>/g)) {
-        const node = new FakeElement(tag);
-        node.textContent = text;
-        this.content.appendChild(node);
-      }
-    }
-
-    get innerHTML(): string {
-      return "";
-    }
-  }
-
-  const noteDocument = {
-    createElement: (tagName: string) =>
-      tagName === "template"
-        ? new ParsingTemplateElement()
-        : new FakeElement(tagName),
-    createElementNS: (_namespace: string, tagName: string) =>
-      new FakeElement(tagName),
-    createTextNode: (text: string) => {
-      const node = new FakeElement("span");
-      node.textContent = text;
-      return node;
-    },
-    querySelectorAll: () => [],
-  } as unknown as Document;
-
   const savedNote: AgentSavedNoteResultCard = {
     kind: "saved_note",
     actionId: "a1",
@@ -11638,5 +11653,123 @@ describe("action card note detail", function () {
         noteDocument.createElement("span"),
       ),
     );
+  });
+});
+
+describe("action card row detail wiring", function () {
+  const savedNote: AgentSavedNoteResultCard = {
+    kind: "saved_note",
+    actionId: "a1",
+    title: "Summary",
+    destination: "My Library › Paper",
+    bodyHtml: "<h1>Summary</h1><p>Body.</p>",
+    note: { itemId: 99, libraryID: 1, key: "N99" },
+  };
+
+  const card: AgentActionSummaryResultCard = {
+    kind: "action_summary",
+    actionCount: 1,
+    entries: [
+      {
+        targets: [{ kind: "item", itemId: 11, label: "Smith, 2021" }],
+        effects: [
+          {
+            receiptId: "n",
+            operation: "note_create",
+            verb: {},
+            label: "Created note",
+            objects: [{ kind: "note", label: "Summary", noteId: 99 }],
+          },
+        ],
+        verification: "verified",
+        badges: ["Verified"],
+        rejected: [],
+        detail: { kind: "saved_note", card: savedNote },
+      },
+    ],
+  };
+
+  /** Render the card, recording every `status` element a row detail was given. */
+  function renderWithSpy(mode: "action" | "note") {
+    const given: FakeElement[] = [];
+    const node = renderActionSummaryCard(noteDocument, card, {
+      mode,
+      ...(mode === "note"
+        ? {
+            header: {
+              title: "Summary",
+              status: "Saved",
+              statusKind: "completed",
+              extraClass: "llm-saved-note-card",
+            },
+          }
+        : {}),
+      renderDetail: (doc, _entry, status) => {
+        given.push(status as unknown as FakeElement);
+        const body = doc.createElement("div");
+        body.className = "llm-spy-detail";
+        return body;
+      },
+    }) as unknown as FakeElement;
+    return { node, given };
+  }
+
+  it("builds a folded row's body once, when the reader opens it", function () {
+    const { node, given } = renderWithSpy("action");
+    const row = node.findByClass("llm-agent-action-row")!;
+
+    assert.lengthOf(given, 0, "a folded row does no work until it is opened");
+    assert.isNull(node.findByClass("llm-spy-detail"));
+
+    row.dispatchFakeEvent("toggle");
+    assert.lengthOf(given, 0, "a toggle that closed the row builds nothing");
+
+    row.open = true;
+    row.dispatchFakeEvent("toggle");
+    assert.lengthOf(given, 1);
+    assert.exists(node.findByClass("llm-spy-detail"));
+
+    row.dispatchFakeEvent("toggle");
+    assert.lengthOf(given, 1, "the body is built once, not once per toggle");
+    assert.lengthOf(node.findAllByClass("llm-spy-detail"), 1);
+  });
+
+  it("gives a folded row a pill of its own, not the card's", function () {
+    const { node, given } = renderWithSpy("action");
+    const row = node.findByClass("llm-agent-action-row")!;
+    row.open = true;
+    row.dispatchFakeEvent("toggle");
+    const status = given[0];
+    const body = node.findByClass("llm-agent-action-row-body")!;
+    const headerPill = node
+      .findByClass("llm-plan-header")!
+      .findByClass("llm-plan-status")!;
+
+    assert.equal(status.tagName, "span");
+    assert.equal(status.className, "llm-plan-status");
+    assert.equal(status.textContent, "");
+    assert.strictEqual(
+      body.children[0],
+      status,
+      "the row's pill is the first thing in the body it belongs to",
+    );
+    assert.notStrictEqual(
+      status,
+      headerPill,
+      "a row's failure must not overwrite what the card says about the turn",
+    );
+  });
+
+  it("gives the note mode's only row the card's own pill, at once", function () {
+    const { node, given } = renderWithSpy("note");
+    const headerPill = node
+      .findByClass("llm-plan-header")!
+      .findByClass("llm-plan-status")!;
+
+    assert.lengthOf(given, 1, "the note is rendered without being asked for");
+    assert.strictEqual(given[0], headerPill);
+    assert.equal(headerPill.textContent, "Saved");
+    assert.isTrue(node.findByClass("llm-agent-action-row")!.open);
+    assert.exists(node.findByClass("llm-spy-detail"));
   });
 });

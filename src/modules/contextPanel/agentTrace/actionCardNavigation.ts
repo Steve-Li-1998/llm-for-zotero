@@ -16,13 +16,21 @@ import { navigationTargetOf, type NavigableTarget } from "./actionCardChips";
  * rendered where no pane exists simply has nothing to open.
  */
 
-/** The live library pane, as much of it as opening an object needs. */
+/**
+ * The live library pane, as much of it as opening an object needs.
+ *
+ * The selection calls take their options as an object: the boolean argument
+ * they used to take is deprecated and logs a warning on every click.
+ */
 export type NavigationPane = {
   selectItems?: (
     ids: number[],
-    inLibraryRoot?: boolean,
+    options?: { inLibraryRoot?: boolean },
   ) => Promise<boolean | undefined>;
-  selectItem?: (id: number, inLibraryRoot?: boolean) => boolean | undefined;
+  selectItem?: (
+    id: number,
+    options?: { inLibraryRoot?: boolean },
+  ) => boolean | undefined;
   collectionsView?:
     | {
         selectByID?: (id: string) => Promise<unknown> | unknown;
@@ -159,7 +167,9 @@ export function canNavigate(
  * Take the reader to what a chip names, and say whether they got there.
  *
  * A visit that landed raises the library window, because the reader clicked
- * inside the panel and the object they asked for is in Zotero's own view.
+ * inside the panel and the object they asked for is in Zotero's own view. A
+ * revealed file is the exception: it was opened in the desktop's own file
+ * window, and raising Zotero would cover the very thing the reader asked for.
  */
 export async function navigateToLibraryObject(
   target: NavigableTarget,
@@ -174,11 +184,15 @@ export async function navigateToLibraryObject(
       const pane = host.pane();
       if (!pane) return false;
       if (typeof pane.selectItems === "function") {
-        const selected = await pane.selectItems([target.itemId], true);
+        const selected = await pane.selectItems([target.itemId], {
+          inLibraryRoot: true,
+        });
         if (selected !== false) return arrived(true);
       }
       if (typeof pane.selectItem === "function")
-        return arrived(pane.selectItem(target.itemId, true) !== false);
+        return arrived(
+          pane.selectItem(target.itemId, { inLibraryRoot: true }) !== false,
+        );
       return false;
     }
     case "note": {
@@ -194,15 +208,17 @@ export async function navigateToLibraryObject(
       if (target.collectionId === undefined) return false;
       const tree = collectionTreeOf(host);
       // The collection tree is addressed by its own row ids: `C<id>` is the
-      // collection, `T<library>` the library's trash.
-      if (typeof tree?.selectByID === "function") {
-        await tree.selectByID(`C${target.collectionId}`);
-        return arrived(true);
-      }
-      if (typeof tree?.selectCollection === "function") {
-        await tree.selectCollection(target.collectionId);
-        return arrived(true);
-      }
+      // collection, `T<library>` the library's trash. The tree answers `false`
+      // for a row it no longer has, which is how a collection deleted since
+      // the turn is told apart from one the reader was taken to.
+      if (typeof tree?.selectByID === "function")
+        return arrived(
+          (await tree.selectByID(`C${target.collectionId}`)) !== false,
+        );
+      if (typeof tree?.selectCollection === "function")
+        return arrived(
+          (await tree.selectCollection(target.collectionId)) !== false,
+        );
       return false;
     }
     case "trash": {
@@ -210,8 +226,7 @@ export async function navigateToLibraryObject(
       if (typeof tree?.selectByID !== "function") return false;
       const libraryID = target.libraryID ?? defaultLibraryID();
       if (libraryID === undefined) return false;
-      await tree.selectByID(`T${libraryID}`);
-      return arrived(true);
+      return arrived((await tree.selectByID(`T${libraryID}`)) !== false);
     }
     case "tag": {
       const tagSelector = host.pane()?.tagSelector;
@@ -220,7 +235,7 @@ export async function navigateToLibraryObject(
       return arrived(true);
     }
     case "file":
-      return arrived(await host.revealFile(target.path));
+      return host.revealFile(target.path);
     case "library":
       return false;
   }

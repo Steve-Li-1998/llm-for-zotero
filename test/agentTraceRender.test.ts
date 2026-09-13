@@ -11123,6 +11123,50 @@ describe("agent trace action summary card", function () {
     assert.equal(status.dataset.status, "error");
   });
 
+  it("says so when the collection a chip names is gone from the tree", async function () {
+    const host = navigationHost(() => ({
+      selectItems: async () => true,
+      // The tree answers `false` for a row it no longer has, the way a
+      // collection deleted since the turn behaves.
+      collectionsView: { selectByID: async () => false },
+    }));
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Filed.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "call-file",
+          name: "library_update",
+          ok: true,
+          actionReceipts: [
+            receipt({
+              id: "file-1",
+              capability: "zotero.collections",
+              operation: "move_to_collection",
+              normalizedParameters: {
+                destinationCollectionId: 7,
+                collectionName: "Reviews",
+              },
+            }),
+          ],
+          content: {},
+        }),
+      ],
+      actionCardNavigation: host,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const chip = card.findByClass("llm-collection-context-chip")!;
+    assert.include(chip.className, "llm-agent-action-link");
+    await card.dispatchFakeEventAsync("click", { target: chip });
+
+    const status = card.findByClass("llm-plan-status")!;
+    assert.equal(status.textContent, "Reviews is unavailable");
+    assert.equal(status.dataset.status, "error");
+    assert.notInclude(host.calls, "focus", "the reader was taken nowhere");
+  });
+
   it("does not draw a chip as a link when there is nowhere to send the reader", function () {
     const host = navigationHost(() => ({
       selectItems: async () => true,
@@ -11143,6 +11187,10 @@ describe("agent trace action summary card", function () {
     assert.isNull(
       tag.findByClass("llm-citation-icon"),
       "a chip that opens nothing shows no jump glyph",
+    );
+    assert.isUndefined(
+      tag.dataset.llmNav,
+      "a chip that opens nothing claims no destination either",
     );
     assert.include(
       card.findByClass("llm-paper-context-chip")!.className,

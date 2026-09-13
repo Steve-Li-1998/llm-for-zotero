@@ -103,7 +103,7 @@ describe("action card navigation", function () {
     );
   });
 
-  it("reveals a file and reports a missing pane as failure", async function () {
+  it("reveals a file without raising Zotero over it, and reports a missing pane as failure", async function () {
     const h = host();
     assert.isTrue(
       await navigateToLibraryObject(
@@ -111,11 +111,77 @@ describe("action card navigation", function () {
         h,
       ),
     );
+    assert.deepEqual(
+      h.calls,
+      ["file:/x/a.md"],
+      "the desktop's file window is what the reader asked to see",
+    );
     assert.isFalse(
       await navigateToLibraryObject(
         { kind: "item", itemId: 1, label: "x" },
         host({ pane: () => null }),
       ),
+    );
+  });
+
+  it("reports a collection the tree no longer has, and takes the reader nowhere", async function () {
+    const missing = host({
+      pane: () => ({ collectionsView: { selectByID: async () => false } }),
+    });
+    assert.isFalse(
+      await navigateToLibraryObject(
+        { kind: "collection", label: "Reviews", collectionId: 7 },
+        missing,
+      ),
+    );
+    assert.isFalse(
+      await navigateToLibraryObject({ kind: "trash", libraryID: 1 }, missing),
+    );
+    assert.deepEqual(missing.calls, [], "a refused selection raises nothing");
+
+    const refusedFallback = host({
+      pane: () => ({
+        collectionsView: { selectCollection: async () => false },
+      }),
+    });
+    assert.isFalse(
+      await navigateToLibraryObject(
+        { kind: "collection", label: "Reviews", collectionId: 7 },
+        refusedFallback,
+      ),
+    );
+    assert.deepEqual(refusedFallback.calls, []);
+  });
+
+  it("asks for the selection in the form the pane still accepts", async function () {
+    const seen: unknown[] = [];
+    await navigateToLibraryObject(
+      { kind: "item", itemId: 11, label: "Smith, 2021" },
+      host({
+        pane: () => ({
+          selectItems: async (_ids: number[], options?: unknown) => {
+            seen.push(options);
+            return true;
+          },
+        }),
+      }),
+    );
+    await navigateToLibraryObject(
+      { kind: "item", itemId: 11, label: "Smith, 2021" },
+      host({
+        pane: () => ({
+          selectItem: (_id: number, options?: unknown) => {
+            seen.push(options);
+            return true;
+          },
+        }),
+      }),
+    );
+
+    assert.deepEqual(
+      seen,
+      [{ inLibraryRoot: true }, { inLibraryRoot: true }],
+      "the boolean argument the pane used to take is deprecated",
     );
   });
 

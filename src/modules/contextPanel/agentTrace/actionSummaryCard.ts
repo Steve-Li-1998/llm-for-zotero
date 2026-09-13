@@ -187,6 +187,9 @@ export function renderActionSummaryCard(
     link.classList.remove("llm-agent-action-link");
     link.removeAttribute("role");
     link.removeAttribute("tabindex");
+    // The chip no longer claims a destination, so nothing downstream reads one
+    // off it either.
+    delete link.dataset.llmNav;
     link.querySelector(".llm-citation-icon")?.remove();
   }
   attachActionCardNavigation(container, status, navigation);

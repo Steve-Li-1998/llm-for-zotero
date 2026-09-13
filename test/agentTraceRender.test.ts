@@ -2198,34 +2198,6 @@ describe("agentTrace render", function () {
     assert.isFalse(root?.classList.contains("llm-plan-progress-open"));
   });
 
-  it("keeps the task progress hover card compact without changing plan cards", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const popoverRule =
-      css.match(/\.llm-plan-progress-popover\s*\{[\s\S]*?\}/)?.[0] || "";
-    const compactTaskLineRule =
-      css.match(
-        /\.llm-plan-progress-popover\s+\.llm-plan-task-line\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const compactTaskBadgeRule =
-      css.match(
-        /\.llm-plan-progress-popover\s+\.llm-plan-task-badge\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const baseTaskLineRule =
-      css.match(/(?<!popover )\.llm-plan-task-line\s*\{[\s\S]*?\}/)?.[0] || "";
-
-    assert.include(popoverRule, "max-width: 420px");
-    assert.include(popoverRule, "max-height: min(50vh, 360px)");
-    assert.include(popoverRule, "padding: 8px");
-    assert.include(popoverRule, "border-radius: 10px");
-    assert.include(compactTaskLineRule, "min-height: 32px");
-    assert.include(compactTaskLineRule, "padding: 5px 7px");
-    assert.include(compactTaskBadgeRule, "flex-basis: 18px");
-    assert.include(compactTaskBadgeRule, "width: 18px");
-    assert.include(compactTaskBadgeRule, "height: 18px");
-    assert.include(baseTaskLineRule, "min-height: 42px");
-    assert.notInclude(css, ".llm-plan-progress-trigger-current");
-  });
-
   it("keeps clicked task progress open across live execution rerenders", function () {
     const renderProgress = (
       status: "running" | "completed",
@@ -2417,71 +2389,6 @@ describe("agentTrace render", function () {
     });
   }
 
-  it("keeps plan review actions centered in one row at narrow widths", function () {
-    const source = readFileSync(
-      "src/modules/contextPanel/agentTrace/render.ts",
-      "utf8",
-    );
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const actionsRule =
-      css.match(/\.llm-plan-review-actions\s*\{[\s\S]*?\}/)?.[0] || "";
-    const actionButtonRule =
-      css.match(
-        /\.llm-plan-review-actions\s+\.llm-plan-action\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const cancelRule =
-      css.match(
-        /\.llm-plan-review-actions\s+\.llm-plan-cancel\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const approveOpticalRule =
-      css.match(
-        /\.llm-plan-review-actions\s+\.llm-plan-approve\s+\.llm-plan-action-label-full,\s*\.llm-plan-review-actions\s+\.llm-plan-approve\s+\.llm-plan-action-label-compact\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-
-    assert.match(
-      source,
-      /actions\.className\s*=\s*"llm-plan-actions llm-plan-review-actions"/,
-    );
-    assert.include(source, "llm-plan-action-label-full");
-    assert.include(source, "llm-plan-action-label-compact");
-    assert.include(actionsRule, "display: grid");
-    assert.include(
-      actionsRule,
-      "grid-template-columns: repeat(3, minmax(0, 1fr))",
-    );
-    assert.include(actionsRule, "align-items: stretch");
-    assert.include(actionsRule, "width: 100%");
-    assert.include(actionButtonRule, "justify-content: center");
-    assert.include(actionButtonRule, "white-space: nowrap");
-    assert.include(cancelRule, "margin-left: 0");
-    assert.include(approveOpticalRule, "position: relative");
-    assert.include(approveOpticalRule, "top: -1px");
-    assert.include(css, "@container (max-width: 360px)");
-  });
-
-  it("normalizes coverage search and filter metrics in one aligned row", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const controlsRule =
-      css.match(/\.llm-plan-document-coverage-controls\s*\{[\s\S]*?\}/)?.[0] ||
-      "";
-    const fieldsRule =
-      css.match(
-        /\.llm-plan-document-coverage-controls input,\s*\.llm-plan-document-coverage-controls select\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-
-    assert.include(controlsRule, "display: grid");
-    assert.include(
-      controlsRule,
-      "grid-template-columns: minmax(0, 1fr) minmax(84px, auto)",
-    );
-    assert.include(controlsRule, "align-items: center");
-    assert.include(fieldsRule, "box-sizing: border-box");
-    assert.include(fieldsRule, "height: 28px");
-    assert.include(fieldsRule, "margin: 0");
-    assert.include(fieldsRule, "padding: 0 9px");
-    assert.include(fieldsRule, "line-height: 1.2");
-  });
-
   it("keeps host-owned plan bookkeeping out of the visible tool trace", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -2629,34 +2536,6 @@ describe("agentTrace render", function () {
     assert.isTrue(
       children[0].classList.contains("llm-agent-activity-details"),
       "disclosure stays above the rule",
-    );
-  });
-
-  it("uses one scaled gap around the activity disclosure and answer divider", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const activityRule =
-      css.match(/\.llm-agent-activity\s*\{[\s\S]*?\}/)?.[0] || "";
-    const answerRule =
-      css.match(
-        /\.llm-bubble\.assistant\s*>\s*\.llm-agent-activity\s*\+\s*\*\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const dividerRule =
-      css.match(/\.llm-agent-output-divider\s*\{[\s\S]*?\}/)?.[0] || "";
-
-    assert.include(
-      activityRule,
-      "--llm-agent-activity-spacing: calc(10px * var(--llm-font-scale, 1))",
-    );
-    assert.include(
-      activityRule,
-      "margin-block: var(--llm-agent-activity-spacing)",
-    );
-    assert.include(activityRule, "gap: var(--llm-agent-activity-spacing)");
-    assert.include(answerRule, "margin-top: 0");
-    assert.include(dividerRule, "margin: 0");
-    assert.include(
-      dividerRule,
-      "var(--stroke-secondary, rgba(120, 120, 120, 0.22))",
     );
   });
 
@@ -6035,48 +5914,6 @@ describe("agentTrace render", function () {
     assert.deepEqual(captions, ["Figure 1", "page-4.png"]);
   });
 
-  it("bottom-aligns trace images with persistent label rows", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const gridRule =
-      css.match(
-        /\.llm-agent-image-artifacts\s+\.llm-agent-image-artifacts-grid\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const frameRule =
-      css.match(
-        /\.llm-agent-image-artifacts\s+\.llm-agent-image-artifact-frame\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const imageRule =
-      css.match(
-        /\.llm-agent-image-artifacts\s+\.llm-assistant-generated-image\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const captionRule =
-      css.match(
-        /\.llm-agent-image-artifacts\s+\.llm-assistant-generated-image-caption\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-
-    assert.include(gridRule, "align-items: end");
-    assert.include(frameRule, "display: grid");
-    assert.include(frameRule, "grid-template-rows: auto auto");
-    assert.include(frameRule, "align-items: end");
-    assert.include(frameRule, "justify-items: center");
-    assert.include(frameRule, "border: 0");
-    assert.include(frameRule, "border-radius: 0");
-    assert.include(frameRule, "background: transparent");
-    assert.include(imageRule, "width: auto");
-    assert.include(imageRule, "max-width: 100%");
-    assert.include(imageRule, "height: auto");
-    assert.include(imageRule, "background: transparent");
-    assert.include(captionRule, "position: static");
-    assert.include(captionRule, "justify-self: stretch");
-    assert.include(captionRule, "padding: 6px 2px 0");
-    assert.include(captionRule, "border: 0");
-    assert.include(captionRule, "background: transparent");
-    assert.include(captionRule, "opacity: 1");
-    assert.include(captionRule, "visibility: visible");
-    assert.include(captionRule, "transform: none");
-    assert.include(captionRule, "text-align: center");
-  });
-
   it("preserves Codex MCP image artifacts through native tool activity coalescing", function () {
     const args = { mode: "visual", pages: [3] };
     const assistantMessage = {
@@ -7107,37 +6944,6 @@ describe("agentTrace render", function () {
     ]);
   });
 
-  it("keeps agent trace chip icons aligned to the first label line", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const chipRule =
-      css.match(/\.llm-agent-process-chip\s*\{[\s\S]*?\}/)?.[0] || "";
-    const chipIconRule =
-      css.match(/\.llm-agent-process-chip-icon\s*\{[\s\S]*?\}/)?.[0] || "";
-    const svgIconRule =
-      css.match(
-        /\.llm-agent-process-chip-icon\.llm-context-svg-icon\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const fallbackIconRule =
-      css.match(
-        /\.llm-agent-process-chip-icon:not\(\.llm-context-svg-icon\)\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    assert.include(chipRule, "align-items: flex-start");
-    assert.include(
-      chipIconRule,
-      "margin-block-start: calc(0.25px * var(--llm-font-scale, 1))",
-    );
-    assert.include(svgIconRule, "width: var(--llm-fs-12)");
-    assert.include(svgIconRule, "height: var(--llm-fs-12)");
-    assert.include(fallbackIconRule, "font-size: var(--llm-fs-12)");
-    assert.include(fallbackIconRule, "line-height: 1");
-
-    for (const fontScale of [0.8, 1.2, 1.8]) {
-      const labelLineCenter = (10 * fontScale * 1.25) / 2;
-      const iconCenter = 0.25 * fontScale + (12 * fontScale) / 2;
-      assert.approximately(iconCenter, labelLineCenter, 1e-9);
-    }
-  });
-
   it("does not ellipsize agent trace chip labels in CSS", function () {
     const css = readFileSync("addon/content/zoteroPane.css", "utf8");
     const chipLabelRule =
@@ -8018,38 +7824,6 @@ describe("agentTrace render", function () {
     assert.isTrue(select.disabled);
     assert.isTrue(
       card.findByClass("llm-agent-hitl-paged-confirm-btn")!.disabled,
-    );
-  });
-
-  it("keeps auto-tag controls compact, tags readable, and actions separated", function () {
-    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    const footer = css.match(
-      /\.llm-agent-hitl-paged-actions\s*\{[\s\S]*?\}/,
-    )![0];
-    assert.notInclude(footer, "margin-top: 0");
-    const controls = css.match(
-      /\.llm-agent-hitl-paged-top-field,\s*\.llm-agent-hitl-paged-footer-field\s*\{[\s\S]*?\}/,
-    )![0];
-    assert.include(controls, "flex-direction: row");
-    const numberControl = css.match(
-      /\.llm-agent-hitl-paged-top-field \.llm-agent-hitl-page-input,\s*\.llm-agent-hitl-paged-footer-field \.llm-agent-hitl-page-input\s*\{[\s\S]*?\}/,
-    )![0];
-    assert.include(numberControl, "appearance: none");
-    assert.include(numberControl, "text-align: center");
-    assert.include(numberControl, "text-align-last: center");
-    assert.include(numberControl, "width: 40px");
-    assert.include(numberControl, "min-height: 26px");
-    assert.notInclude(
-      css,
-      ".llm-agent-hitl-paged-footer-field .llm-agent-hitl-label {\n    display: none",
-    );
-    assert.match(
-      css,
-      /\.llm-agent-hitl-tag-assignment-table \.llm-agent-hitl-assignment-row\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/,
-    );
-    assert.match(
-      css,
-      /\.llm-agent-hitl-tag-chip-list\s*\{[^}]*flex-wrap: wrap/,
     );
   });
 

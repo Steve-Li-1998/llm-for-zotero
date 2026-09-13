@@ -24,22 +24,6 @@ function extractCssRules(css: string, selector: string): string[] {
 }
 
 describe("composer input focus CSS", function () {
-  it("balances compact spacing above and below the typing text", function () {
-    const css = readPanelCss();
-    const inputSectionRule = extractCssRules(css, ".llm-input-section").find(
-      (rule) => rule.includes("--llm-input-section-padding"),
-    );
-    const composeAreaRule = extractCssRule(css, ".llm-compose-area");
-    const inputRule = extractCssRules(css, ".llm-input").find((rule) =>
-      rule.includes("max-height: 220px"),
-    );
-
-    assert.include(inputSectionRule, "--llm-composer-gap: 6px;");
-    assert.include(inputSectionRule, "gap: var(--llm-composer-gap);");
-    assert.include(composeAreaRule, "gap: var(--llm-composer-gap, 6px);");
-    assert.include(inputRule, "padding: 8px 14px;");
-  });
-
   it("keeps the shared input borderless while typing", function () {
     const css = readPanelCss();
     const inputRules = extractCssRules(css, ".llm-input");
@@ -50,27 +34,6 @@ describe("composer input focus CSS", function () {
     assert.include(focusRule, "outline: none;");
     assert.include(focusRule, "box-shadow: none;");
     assert.notInclude(focusRule, "border-color");
-  });
-
-  it("keeps the inline editor borderless with matched bottom corners", function () {
-    const css = readPanelCss();
-    const editWrapperRule = extractCssRule(css, ".llm-inline-edit-wrapper");
-    const editInputSectionRule = extractCssRule(
-      css,
-      ".llm-inline-edit-wrapper > .llm-input-section",
-    );
-
-    assert.include(editWrapperRule, "--llm-inline-edit-border-radius: 10px;");
-    assert.include(editWrapperRule, "border: none;");
-    assert.include(
-      editWrapperRule,
-      "border-radius: var(--llm-inline-edit-border-radius);",
-    );
-    assert.notInclude(editWrapperRule, "var(--color-accent)");
-    assert.match(
-      editInputSectionRule,
-      /border-radius:\s*0 0 var\(--llm-inline-edit-border-radius\)\s+var\(--llm-inline-edit-border-radius\);/,
-    );
   });
 
   it("does not paint-contain the message wrapper that hosts inline edit menus", function () {

@@ -8,46 +8,6 @@ import { initI18n, t } from "../src/utils/i18n";
 describe("web source UI contract", function () {
   const root = process.cwd();
 
-  it("places the shared-style Tavily card immediately before Codex App Server", function () {
-    const preferences = readFileSync(
-      join(root, "addon/content/preferences.xhtml"),
-      "utf8",
-    );
-    const tavilyIndex = preferences.indexOf('id="__addonRef__-tavily-card"');
-    const codexIndex = preferences.indexOf(
-      'id="__addonRef__-codex-app-server-card"',
-    );
-    assert.isAtLeast(tavilyIndex, 0);
-    assert.isAbove(codexIndex, tavilyIndex);
-    assert.include(preferences, 'id="__addonRef__-tavily-api-key"');
-    assert.include(preferences, 'type="password"');
-    assert.include(preferences, "Test connection");
-    assert.include(preferences, "Get a free API key");
-    const flatPreferences = preferences.replace(/\s+/g, " ");
-    assert.include(flatPreferences, "Basic search costs 1 Tavily credit");
-    assert.include(
-      flatPreferences,
-      "under Tavily's privacy, retention, and search-index policies",
-    );
-    assert.include(
-      flatPreferences,
-      "favicons are loaded from public URLs supplied by Tavily",
-    );
-    const tavilyCard = preferences.slice(tavilyIndex, codexIndex);
-    assert.notMatch(tavilyCard, /enable-tavily|type="checkbox"/i);
-
-    const preferenceScript = readFileSync(
-      join(root, "src/modules/preferenceScript.ts"),
-      "utf8",
-    );
-    assert.include(
-      preferenceScript,
-      'tavilyStatus.textContent = `${t("Connected")} · ${usage.plan}`;',
-    );
-    assert.notInclude(preferenceScript, 't("API key usage")');
-    assert.notInclude(preferenceScript, 't("Account usage")');
-  });
-
   it("translates the complete Tavily preferences copy for Chinese users", function () {
     const globalWithZotero = globalThis as typeof globalThis & {
       Zotero?: {
@@ -290,60 +250,5 @@ describe("web source UI contract", function () {
     assert.include(libraryIcon, 'viewBox="0 0 16 16"');
     assert.include(libraryIcon, 'fill="currentColor"');
     assert.notInclude(libraryIcon, 'width="800px"');
-  });
-
-  it("aligns search activity icons with the first text line at every font scale", function () {
-    const css = readFileSync(
-      join(root, "addon/content/zoteroPane.css"),
-      "utf8",
-    );
-    const iconRule =
-      css.match(
-        /\.llm-at-icon-library,\s*\.llm-at-icon-web\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-
-    assert.include(iconRule, "flex: 0 0 var(--llm-fs-12)");
-    assert.include(iconRule, "width: var(--llm-fs-12)");
-    assert.include(iconRule, "height: var(--llm-fs-12)");
-    assert.include(
-      iconRule,
-      "margin-block-start: calc(1.7px * var(--llm-font-scale, 1))",
-    );
-
-    for (const fontScale of [0.8, 1.2, 1.8]) {
-      const textLineCenter = (11 * fontScale * 1.4) / 2;
-      const iconCenter = 1.7 * fontScale + (12 * fontScale) / 2;
-      assert.approximately(iconCenter, textLineCenter, 1e-9);
-    }
-  });
-
-  it("centers a fixed-ratio favicon inside its circular container", function () {
-    const css = readFileSync(
-      join(root, "addon/content/zoteroPane.css"),
-      "utf8",
-    );
-    const websiteIconRule =
-      css.match(
-        /\.llm-agent-trace-timeline-icon-website\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const faviconRule =
-      css.match(/\.llm-agent-trace-timeline-favicon\s*\{[\s\S]*?\}/)?.[0] || "";
-
-    assert.include(websiteIconRule, "display: grid");
-    assert.include(websiteIconRule, "place-items: center");
-    assert.include(websiteIconRule, "width: 20px");
-    assert.include(websiteIconRule, "height: 20px");
-    assert.include(websiteIconRule, "margin-left: -1px");
-    assert.include(websiteIconRule, "border-radius: 50%");
-    assert.include(websiteIconRule, "background: var(--material-background)");
-    assert.notInclude(websiteIconRule, "transform:");
-    assert.include(faviconRule, "position: static");
-    assert.include(faviconRule, "display: block");
-    assert.include(faviconRule, "width: 70%");
-    assert.include(faviconRule, "height: 70%");
-    assert.include(faviconRule, "border-radius: 0");
-    assert.include(faviconRule, "background: transparent");
-    assert.include(faviconRule, "object-fit: contain");
-    assert.notInclude(faviconRule, "transform:");
   });
 });

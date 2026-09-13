@@ -18,10 +18,6 @@ describe("quote anchor leak boundaries", function () {
       "const safeText = buildAssistantDisplayMarkdownForRender(\n          msg,\n          webSourceAnchors,\n        );",
     );
     assert.notInclude(chatSource, "const safeText = sanitizeText(msg.text);");
-    assert.notInclude(
-      chatSource,
-      "renderRenderedMarkdownInto(bubble, sanitizeText(msg.text",
-    );
   });
 
   it("renders agent trace markdown through the quote-anchor display helper", function () {

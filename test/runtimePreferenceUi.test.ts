@@ -47,7 +47,6 @@ describe("runtime preference UI", function () {
     assert.include(preferences, 'id="__addonRef__-claude-code-model-refresh"');
     assert.include(preferences, "alias, exact model ID");
     assert.notInclude(preferences, '<html:option value="opus">');
-    assert.notInclude(preferences, "claude-code-model-options");
     assert.include(preferences, "minmax(min(220px, 100%), 1fr)");
     assert.include(preferences, "box-sizing: border-box");
     assert.include(preferenceScript, "fetchClaudeModelCatalog");

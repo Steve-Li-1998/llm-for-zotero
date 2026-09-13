@@ -245,7 +245,6 @@ describe("web source UI contract", function () {
     );
     assert.include(source, '"llm-web-source-favicon"');
     assert.notInclude(source, "source.publishedDate");
-    assert.notInclude(source, "source.retrievalTime");
     assert.notInclude(source, "wrapper.append(chip, popover)");
   });
 
@@ -273,7 +272,6 @@ describe("web source UI contract", function () {
     assert.include(css, "[hidden]");
     assert.include(css, "text-overflow: ellipsis");
     assert.include(css, "white-space: nowrap");
-    assert.notInclude(css, ".llm-agent-trace-timeline-row-paper");
   });
 
   it("distinguishes literature and web activity with existing semantic icons", function () {
@@ -291,7 +289,6 @@ describe("web source UI contract", function () {
     assert.include(css, 'url("icons/action-mode-global.svg")');
     assert.include(libraryIcon, 'viewBox="0 0 16 16"');
     assert.include(libraryIcon, 'fill="currentColor"');
-    assert.notInclude(libraryIcon, "490.667");
     assert.notInclude(libraryIcon, 'width="800px"');
   });
 

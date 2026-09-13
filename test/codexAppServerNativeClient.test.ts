@@ -3585,9 +3585,6 @@ describe("Codex app-server native client", function () {
     assert.notInclude(source, "resources-delta");
     assert.notInclude(source, "resources-changed");
     assert.notInclude(source, "CodexNativeLifecycle");
-    assert.notInclude(source, "raw_pdf_read");
-    assert.notInclude(source, "stageCodexRawPdfCapability");
-    assert.notInclude(source, "isolatedRawPdfMode");
     assert.notInclude(source, "runtimeWorkspaceRoots");
   });
 

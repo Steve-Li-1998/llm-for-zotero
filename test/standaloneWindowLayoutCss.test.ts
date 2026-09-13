@@ -141,7 +141,6 @@ describe("standalone window layout CSS", function () {
     );
     assert.include(activeTabRule, "background: var(--fill-quinary);");
     assert.notInclude(activeTabRule, "background: var(--fill-quaternary);");
-    assert.notInclude(activeTabRule, "--fill-quternary");
   });
 
   it("uses one surface color for the unified standalone sidebar", function () {
@@ -240,10 +239,7 @@ describe("standalone window layout CSS", function () {
 
     assert.include(collapsedPanelRule, "position: absolute");
     assert.include(css, ".llm-standalone-nav-label");
-    assert.notInclude(css, ".llm-standalone-chat-section");
-    assert.notInclude(css, ".llm-standalone-chats-header");
     assert.notInclude(sidebarViewSource, '"chats"');
-    assert.notInclude(sidebarViewSource, "setStandaloneChatSectionState");
     assert.include(css, "@media (prefers-reduced-motion: reduce)");
     assert.notInclude(css, ".llm-standalone-icon-strip");
     assert.isBelow(

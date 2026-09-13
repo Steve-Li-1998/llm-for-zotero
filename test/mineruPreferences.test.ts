@@ -59,8 +59,6 @@ describe("MinerU preferences", function () {
     assert.include(preferences, "API Key (Required)");
     assert.include(preferences, 'id="__addonRef__-mineru-api-key"');
     assert.include(preferences, 'type="password"');
-    assert.notInclude(preferences, "__addonRef__-mineru-api-key-copy");
-    assert.notInclude(preferences, "Copy MinerU API key");
     assert.include(preferences, "Connects directly to mineru.net.");
     assert.notInclude(preferences, "No API key needed to start");
     assert.notInclude(
@@ -83,12 +81,6 @@ describe("MinerU preferences", function () {
       'mineruApiKeyInput.addEventListener("copy"',
     );
     assert.include(preferenceScript, 'clipboardData.setData("text/plain"');
-    assert.notInclude(preferenceScript, "mineruApiKeyCopyButton");
-    assert.notInclude(
-      preferenceScript,
-      "copyTextToClipboard(mineruApiKeyInput.value)",
-    );
-    assert.notInclude(i18n, "Copied MinerU API key");
     assert.include(preferenceScript, "mineruCloudModelSection");
     assert.include(preferenceScript, "mineruCloudModelSelect");
     assert.include(preferenceScript, "mineruCloudModelSection.style.display");

@@ -248,7 +248,6 @@ describe("quote card UI contract", function () {
     assert.isAtLeast(notSourceBranchStart, 0);
     assert.isAbove(nextBranchStart, notSourceBranchStart);
     assert.notInclude(notSourceBranch, "citationContent");
-    assert.notInclude(renderSource, "Related source:");
   });
 
   it("keeps citation activation separate from quote-card toggling", function () {

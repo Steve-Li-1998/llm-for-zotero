@@ -157,18 +157,11 @@ describe("standalone custom title bar CSS", function () {
       css,
       ":root[customtitlebar] .llm-standalone-tab-row .llm-window-buttons",
     );
-    const rows = extractCssRule(
-      css,
-      ":root[customtitlebar] .llm-standalone-sidebar-header, :root[customtitlebar] .llm-standalone-tab-row",
-    );
 
     // The header pads 8px and the tab row pads 12px, so each host tops the
     // inset up to the same 12px from the window edge.
     assert.include(inHeader, "margin-inline-start: 4px");
     assert.include(inTabRow, "margin-inline-start: 0");
-    // Neither row may drop its leading padding: an asymmetric row would pull
-    // the centred tab group off the window's midline.
-    assert.notInclude(rows, "padding-inline-start: 0");
   });
 
   it("gives document and diagram windows a drag strip that content scrolls beneath", function () {

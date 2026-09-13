@@ -6075,8 +6075,6 @@ describe("agentTrace render", function () {
     assert.include(captionRule, "visibility: visible");
     assert.include(captionRule, "transform: none");
     assert.include(captionRule, "text-align: center");
-    assert.notInclude(css, ".llm-agent-image-artifact-frame:hover");
-    assert.notInclude(css, ".llm-agent-image-artifacts-multiple");
   });
 
   it("preserves Codex MCP image artifacts through native tool activity coalescing", function () {

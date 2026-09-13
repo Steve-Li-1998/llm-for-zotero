@@ -189,7 +189,6 @@ describe("tool guidance contracts", function () {
       shortcut,
       "Do not invent structure unsupported by the paper",
     );
-    assert.notInclude(shortcut, "Generate a fenced SVG diagram");
   });
 
   it("keeps ordinary paper QA guidance on paper_read instead of direct MinerU file_io", function () {

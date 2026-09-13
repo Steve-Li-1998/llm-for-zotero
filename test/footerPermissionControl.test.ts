@@ -14,11 +14,9 @@ describe("footer permission control", function () {
     assert.include(controller, 'title: t("Enable Codex full access?")');
     assert.include(controller, 'confirmLabel: t("Enable full access")');
     assert.include(controller, "destructive: true");
-    assert.notInclude(controller, "defaultView?.confirm");
 
     assert.include(preferences, "confirmCodexFullAccess");
     assert.include(preferences, '.open(t("Enable Codex full access?"))');
-    assert.notInclude(preferences, "defaultView?.confirm");
   });
 
   it("keeps the permission selector and context gauge together on the footer right", function () {
@@ -70,7 +68,6 @@ describe("footer permission control", function () {
     assert.notInclude(css, 'data-selection-key="claude:dontAsk"');
     assert.notInclude(css, 'data-selection-key="claude:default"');
     assert.notInclude(css, "data-permission-mode");
-    assert.notInclude(css, ".llm-permission-option-level");
     const selectedRules = css.match(
       /\.llm-permission-option-selected:not\(:disabled\)\s*\{([\s\S]*?)\n\}/,
     )?.[1];

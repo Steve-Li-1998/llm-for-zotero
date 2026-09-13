@@ -241,8 +241,8 @@ describe("batch material journey", function () {
     // an earlier call already wrote are not re-proved here: this call did not
     // write them, so its receipt must not speak for them.
     const resumeFacts = receiptFacts(second.events);
-    assert.deepEqual(
-      resumeFacts.filter((fact) => fact.startsWith("native_note:")).length,
+    assert.lengthOf(
+      resumeFacts.filter((fact) => fact.startsWith("native_note:")),
       1,
       "a resume proves exactly the rows it wrote",
     );

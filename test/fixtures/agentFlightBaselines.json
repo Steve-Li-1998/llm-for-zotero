@@ -44,9 +44,9 @@
           "toolCallsByStage": {
             "zotero_action": 3
           },
-          "nativeWrites": 0,
+          "nativeWrites": 3,
           "nativeSaves": 3,
-          "duplicateNativeWrites": 3,
+          "duplicateNativeWrites": 0,
           "batchItems": {
             "written": 3,
             "announcedNotWritten": 2,
@@ -127,8 +127,8 @@
       "notes": {
         "source": "Measured by test/agentFlightBaselines.test.ts against the scripted adapter and the sqlite fakes: no live model, so the model-call counts measure the harness contract (how many generation steps the journey needs), not model behavior.",
         "batchMaterial.modelCallsPerBatchItem": "Four model calls over three items: only the two turns that carried batch work are charged. The undo turn's two calls are real work but not the batch's cost, and modelCallsTotal (6) still reports them.",
-        "batchMaterial.nativeWrites": "Counts only notes proved by receipt FACTS (created_note: / native_note: content read-backs). The durable note batch takes the library-mutation receipt branch: its receipt is verification \"verified\" against captured post-state, but it carries an empty verifiedFacts, and a receipt verified only against post-state counts zero here. Zero means no content read-back was recorded -- never that the writes were unverified. The three notes it wrote are visible as batchItems.written.",
-        "batchMaterial.duplicateNativeWrites": "Three physical writes that no receipt FACT accounts for -- the missing content read-backs above, not three duplicate notes. Read it together with batchItems.written.",
+        "batchMaterial.nativeWrites": "Counts only notes proved by receipt FACTS (created_note: / native_note: content read-backs), by distinct note id across the whole flight. Three: the batch takes the library-mutation receipt branch, which is verified against the captured post-state of the whole set, and beside that its receipt now names each note the call physically created with the read-back that creation forced -- two notes on the first turn, the refused one on the resume. It is a per-note count, not a per-call one: the resume proves only the row it wrote, and the two rows it skipped keep the proof the first turn already recorded.",
+        "batchMaterial.duplicateNativeWrites": "Zero: every physical write the journey made is accounted for by a receipt fact (nativeSaves 3, nativeWrites 3). A number above zero here would mean notes reached the library that no receipt proves -- duplicate writes, or writes whose content was never read back. Read it together with batchItems.written.",
         "batchMaterial.announcedNotWritten": "The resume announces all three rows it holds and names the one it wrote, so two rows are announced without being written.",
         "retrieval": "One scripted turn that reads the same paper twice with the same question and then reads a second paper, driven by test/helpers/retrievalJourney.ts. The runtime, the registry, the search_paper tool and RetrievalService are real; the two seams that would otherwise open a PDF are counting fakes. Measured when this journey was added, later than this row's commit field: that field names the measurement point of the two material journeys and is left where it was.",
         "retrieval.retrieval.cacheHitRate": "Three retrieval calls cost two candidate-ranking passes, so one call in three was answered from the evidence cache. That cache is keyed on the paper's context item and the query plan, lives on the RetrievalService instance, and never expires -- so it is process-lifetime, not per-run: a second run of the same three reads on the same instance builds nothing at all, and only clearEvidenceCache() makes it pay again.",

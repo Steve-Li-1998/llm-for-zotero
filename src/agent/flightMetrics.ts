@@ -56,9 +56,14 @@ export type AgentFlightSummary = {
    * A receipt that was verified only against captured post-state counts zero
    * here even though it is `verification: "verified"`, because it names no
    * note and proves no content. Zero therefore means "no content read-back was
-   * recorded", never "the writes were unverified": the durable note batch
-   * takes the library-mutation receipt branch and carries an empty
-   * `verifiedFacts`, so its notes are counted by `batchItems.written` instead.
+   * recorded", never "the writes were unverified".
+   *
+   * The durable note batch is counted here like any other write: it takes the
+   * library-mutation receipt branch, whose whole-set post-state proves the
+   * set, and beside that its receipt names each note the call physically
+   * created with the read-back that creation forced. It is a per-note count,
+   * so a resume proves only the row it wrote and the rows it skipped keep the
+   * proof their own call recorded.
    */
   nativeWrites: number;
   /** Physical native writes observed at the store (passed in as an extra). */
@@ -69,9 +74,9 @@ export type AgentFlightSummary = {
    *
    * A second write of the same note raises it -- and so does a write whose
    * receipt carries no note fact, which is why it must be read together with
-   * `batchItems.written` before anyone calls it a duplicate. The durable note
-   * batch mints one receipt with no note facts today, so every note it writes
-   * lands here.
+   * `batchItems.written` before anyone calls it a duplicate. Every write path
+   * mints per-note facts today, the durable note batch included, so a number
+   * above zero is a finding rather than a known gap.
    */
   duplicateNativeWrites: number;
   /**

@@ -1,38 +1,18 @@
 import { assert } from "chai";
-import { AgentRuntime } from "../src/agent/runtime";
-import { AgentToolRegistry } from "../src/agent/tools/registry";
-import { createRenamedTool } from "../src/agent/tools/facade";
-import { createWriteNotesBatchTool } from "../src/agent/tools/write/writeNotesBatch";
-import { createUndoLastActionTool } from "../src/agent/tools/write/undoLastAction";
+import { loadPlanDocument } from "../src/agent/documents/store";
+import { listJournalActions } from "../src/agent/store/changeJournal";
+import { listBatchItems } from "../src/agent/store/batchItemStore";
 import {
-  initPlanDocumentStore,
-  loadPlanDocument,
-} from "../src/agent/documents/store";
-import { clearAgentTranscriptStore } from "../src/agent/store/transcriptStore";
-import {
-  initAgentChangeJournal,
-  listJournalActions,
-} from "../src/agent/store/changeJournal";
-import {
-  initAgentBatchItemStore,
-  listBatchItems,
-} from "../src/agent/store/batchItemStore";
-import { initAgentBatchJobStore } from "../src/agent/store/batchJobStore";
-import { setOriginalAgentPermissionMode } from "../src/agent/originalAgentPermissionMode";
-import {
-  installMockDb,
-  installAgentStoreSqlite,
-} from "./helpers/agentRuntimeMockDb";
-import { installNativeNoteStore } from "./helpers/nativeNoteStore";
-import { createTestActionContractService } from "./helpers/actionContractService";
-import type { ZoteroGateway } from "../src/agent/services/zoteroGateway";
-import type {
-  AgentEvent,
-  AgentModelMessage,
-  AgentModelStep,
-  AgentRuntimeRequest,
-} from "../src/agent/types";
-import type { AgentStepParams } from "../src/agent/model/adapter";
+  BATCH_HEADER,
+  MATERIAL_HEADER,
+  beginBatchMaterialJourney,
+  eventsOfType,
+  firstEvent,
+  hostBlock,
+  installBatchJourneyEnvironment,
+  toolResultFor,
+} from "./helpers/materialJourneys";
+import type { BatchJourneyEnvironment } from "./helpers/materialJourneys";
 
 /**
  * The complete durable-batch journey: write a note onto three papers, have one
@@ -47,309 +27,25 @@ import type { AgentStepParams } from "../src/agent/model/adapter";
  * reverts it.
  */
 
-const PAPER_IDS = [1, 2, 3] as const;
-/** The paper whose note the native store refuses on the first attempt. */
-const REFUSED_PAPER_ID = 2;
-const BATCH_HEADER = "Resumable note batches:";
-const MATERIAL_HEADER = "Finalized material available (not saved as a note):";
-
-type JourneyLibrary = {
-  notes: Map<number, any>;
-  trashed: number[][];
-  refuseNoteFor: (parentId: number | undefined) => void;
-  restore: () => void;
-};
-
-/** The library the journey writes into: three papers and the notes it adds. */
-function installJourneyLibrary(): JourneyLibrary {
-  let refusedParent: number | undefined;
-  const native = installNativeNoteStore({
-    startId: 500,
-    onSave: (note: { parentID?: number }) => {
-      if (note.parentID !== undefined && note.parentID === refusedParent)
-        throw new Error("Zotero refused the note write");
-    },
-  });
-  const papers = new Map(
-    PAPER_IDS.map((id) => [
-      id,
-      {
-        id,
-        key: `PAPER${id}`,
-        libraryID: 1,
-        parentID: false,
-        deleted: false,
-        version: 1,
-        dateModified: "2026-09-11 10:00:00",
-        isRegularItem: () => true,
-        isNote: () => false,
-        isAttachment: () => false,
-        getDisplayTitle: () => `Paper ${id}`,
-        getField: () => "",
-        getTags: () => [],
-        getCollections: () => [],
-        getAttachments: () => [],
-        getNotes: () => [],
-        async reload() {},
-      },
-    ]),
-  );
-  const notes = native.notes;
-  const zotero = globalThis.Zotero as unknown as Record<string, any>;
-  zotero.Items = {
-    get: (id: number) =>
-      papers.get(id as (typeof PAPER_IDS)[number]) || notes.get(id) || null,
-    getByLibraryAndKey: (libraryID: number, key: string) =>
-      [...papers.values(), ...notes.values()].find(
-        (entry: any) => entry.libraryID === libraryID && entry.key === key,
-      ) || null,
-  };
-  zotero.Libraries = { userLibraryID: 1 };
-  return {
-    notes,
-    trashed: [],
-    refuseNoteFor: (parentId: number | undefined) => {
-      refusedParent = parentId;
-    },
-    restore: native.restore,
-  };
-}
-
-type JourneyTurn = {
-  outcome: Awaited<ReturnType<AgentRuntime["runTurn"]>>;
-  events: AgentEvent[];
-  /** The messages handed to the adapter, one entry per generation step. */
-  prompts: AgentModelMessage[][];
-  /** The request the turn actually ran with. */
-  request: AgentRuntimeRequest | undefined;
-  /** Generation steps this turn consumed. */
-  steps: number;
-};
-
-function toolCallStep(
-  callId: string,
-  name: string,
-  args: Record<string, unknown>,
-): AgentModelStep {
-  const call = { id: callId, name, arguments: args };
-  return {
-    kind: "tool_calls",
-    calls: [call],
-    assistantMessage: { role: "assistant", content: "", tool_calls: [call] },
-  };
-}
-
-function finalStep(text: string): AgentModelStep {
-  return {
-    kind: "final",
-    text,
-    assistantMessage: { role: "assistant", content: text },
-  };
-}
-
-function firstEvent<TType extends AgentEvent["type"]>(
-  events: readonly AgentEvent[],
-  type: TType,
-): Extract<AgentEvent, { type: TType }> | undefined {
-  return events.find((event) => event.type === type) as
-    | Extract<AgentEvent, { type: TType }>
-    | undefined;
-}
-
-function eventsOfType<TType extends AgentEvent["type"]>(
-  events: readonly AgentEvent[],
-  type: TType,
-): Extract<AgentEvent, { type: TType }>[] {
-  return events.filter((event) => event.type === type) as Extract<
-    AgentEvent,
-    { type: TType }
-  >[];
-}
-
-function toolResultFor(
-  events: readonly AgentEvent[],
-  name: string,
-): Extract<AgentEvent, { type: "tool_result" }> | undefined {
-  return events.find(
-    (event) => event.type === "tool_result" && event.name === name,
-  ) as Extract<AgentEvent, { type: "tool_result" }> | undefined;
-}
-
-/** A host block as the model actually received it. */
-function hostBlock(
-  prompts: AgentModelMessage[][],
-  header: string,
-): { content: string; transient: boolean; next: string } | undefined {
-  for (const messages of prompts) {
-    const index = messages.findIndex((entry) =>
-      String(entry.content).includes(header),
-    );
-    if (index < 0) continue;
-    return {
-      content: String(messages[index].content),
-      transient: Boolean(
-        (messages[index] as { transient?: boolean }).transient,
-      ),
-      next: String(messages[index + 1]?.content ?? ""),
-    };
-  }
-  return undefined;
-}
-
 describe("batch material journey", function () {
-  let restoreDb: () => void;
-  let restoreStores: () => void;
-  let library: JourneyLibrary;
-  let originalToolkit: unknown;
-
-  /** The gateway the batch and undo tools share, reading the live library. */
-  function journeyGateway(): ZoteroGateway {
-    return {
-      resolveLibraryID: () => 1,
-      getItem: (itemId: number) =>
-        (globalThis.Zotero as any).Items.get(itemId) || null,
-      getCollectionSummary: () => null,
-      formatStructuredCitations: () => ({
-        styleId: "apa",
-        styleTitle: "APA",
-        locale: "en-US",
-        clusters: [],
-        bibliographyEntries: [],
-      }),
-      trashItems: async ({ itemIds }: { itemIds: number[] }) => {
-        library.trashed.push([...itemIds]);
-        for (const itemId of itemIds) {
-          const note = library.notes.get(itemId);
-          if (note) note.deleted = true;
-        }
-        return {
-          trashedCount: itemIds.length,
-          items: itemIds.map((itemId) => ({ itemId, status: "trashed" })),
-        };
-      },
-    } as unknown as ZoteroGateway;
-  }
-
-  function createJourneyRegistry(): AgentToolRegistry {
-    const gateway = journeyGateway();
-    const registry = new AgentToolRegistry(
-      createTestActionContractService(
-        (itemId) => (globalThis.Zotero as any).Items.get(itemId) || null,
-      ),
-    );
-    registry.register(
-      createRenamedTool({
-        tool: createWriteNotesBatchTool(gateway),
-        name: "note_write_batch",
-        label: "Write Notes",
-        description:
-          "Write a note onto each of many items in one checkpointed batch operation.",
-      }),
-    );
-    registry.register(createUndoLastActionTool(gateway));
-    return registry;
-  }
-
-  /**
-   * Runs one turn against a fixed script.
-   *
-   * The script is the contract: asking for a step the script does not have
-   * fails the turn, which is what proves the journey never regenerated a note
-   * body the batch had already frozen.
-   */
-  async function runJourneyTurn(params: {
-    conversationKey: number;
-    userText: string;
-    sourceMessageTimestamp: number;
-    steps: AgentModelStep[];
-  }): Promise<JourneyTurn> {
-    const events: AgentEvent[] = [];
-    const prompts: AgentModelMessage[][] = [];
-    let resolvedRequest: AgentRuntimeRequest | undefined;
-    let index = 0;
-    const runtime = new AgentRuntime({
-      registry: createJourneyRegistry(),
-      adapterFactory: (resolved) => ({
-        getCapabilities: () => ({
-          streaming: false,
-          toolCalls: true,
-          multimodal: false,
-        }),
-        supportsTools: () => true,
-        async runStep(stepParams: AgentStepParams): Promise<AgentModelStep> {
-          resolvedRequest = resolved;
-          prompts.push(stepParams.messages);
-          const step = params.steps[index];
-          index += 1;
-          if (!step)
-            throw new Error(
-              `The journey script ends at ${params.steps.length} steps; the model was asked to generate a step ${index}.`,
-            );
-          return step;
-        },
-      }),
-    });
-    const outcome = await runtime.runTurn({
-      request: {
-        conversationKey: params.conversationKey,
-        mode: "agent",
-        userText: params.userText,
-        libraryID: 1,
-        model: "test",
-        apiKey: "test",
-        apiBase: "https://example.invalid",
-        metadata: { sourceMessageTimestamp: params.sourceMessageTimestamp },
-      },
-      onEvent: (event) => {
-        events.push(event);
-        if (event.type === "confirmation_required")
-          runtime.resolveConfirmation(event.requestId, true);
-      },
-    });
-    return { outcome, events, prompts, request: resolvedRequest, steps: index };
-  }
+  let environment: BatchJourneyEnvironment;
+  let library: BatchJourneyEnvironment["library"];
 
   beforeEach(async function () {
-    clearAgentTranscriptStore();
-    restoreDb = installMockDb();
-    restoreStores = installAgentStoreSqlite();
-    library = installJourneyLibrary();
-    originalToolkit = (globalThis as any).ztoolkit;
-    (globalThis as any).ztoolkit = { log: () => undefined };
-    setOriginalAgentPermissionMode("safe");
-    await initPlanDocumentStore();
-    await initAgentBatchJobStore();
-    await initAgentBatchItemStore();
-    await initAgentChangeJournal();
+    environment = await installBatchJourneyEnvironment();
+    library = environment.library;
   });
 
   afterEach(function () {
-    (globalThis as any).ztoolkit = originalToolkit;
-    library.restore();
-    restoreStores();
-    restoreDb();
+    environment.restore();
   });
 
   it("writes three notes, continues the one that failed, and undoes the set", async function () {
     const conversationKey = 881_101;
+    const journey = beginBatchMaterialJourney(library, conversationKey);
 
     // Turn 1: one call carries all three bodies, and Zotero refuses paper 2.
-    library.refuseNoteFor(REFUSED_PAPER_ID);
-    const first = await runJourneyTurn({
-      conversationKey,
-      userText: "Write a summary note on each of these three papers",
-      sourceMessageTimestamp: 100,
-      steps: [
-        toolCallStep("note-batch-1", "note_write_batch", {
-          notes: PAPER_IDS.map((id) => ({
-            targetItemId: id,
-            content: `# Paper ${id}\n\nSummary of paper ${id}.`,
-          })),
-        }),
-        finalStep("I wrote two of the three notes."),
-      ],
-    });
-    library.refuseNoteFor(undefined);
+    const first = await journey.writeThreeNotes();
     assert.equal(first.outcome.kind, "completed");
 
     // The user approved the exact bodies, named by the material frozen for them.
@@ -437,17 +133,7 @@ describe("batch material journey", function () {
 
     // Turn 2: the host tells the model the batch can be continued, and the
     // model continues it by name. No body is authored a second time.
-    const second = await runJourneyTurn({
-      conversationKey,
-      userText: "Finish the rest",
-      sourceMessageTimestamp: 200,
-      steps: [
-        toolCallStep("note-batch-2", "note_write_batch", {
-          resumeBatchId: batchId,
-        }),
-        finalStep("All three notes are written."),
-      ],
-    });
+    const second = await journey.finishTheRest();
     assert.equal(second.outcome.kind, "completed");
     const block = hostBlock(second.prompts, BATCH_HEADER);
     assert.exists(block, "the turn after an interrupted batch must name it");
@@ -527,15 +213,7 @@ describe("batch material journey", function () {
     );
 
     // Turn 3: one undo reverts the whole set.
-    const third = await runJourneyTurn({
-      conversationKey,
-      userText: "Undo that",
-      sourceMessageTimestamp: 300,
-      steps: [
-        toolCallStep("undo-1", "undo_last_action", {}),
-        finalStep("I removed all three notes."),
-      ],
-    });
+    const third = await journey.undoThem();
     assert.equal(third.outcome.kind, "completed");
     assert.isUndefined(
       hostBlock(third.prompts, BATCH_HEADER),

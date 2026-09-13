@@ -8,6 +8,7 @@ import {
   renderSkipRow,
   renderTargetList,
   renderVerb,
+  renderVerbWord,
 } from "./actionCardChips";
 import {
   attachActionCardNavigation,
@@ -89,9 +90,19 @@ function renderRowLine(
     const node = doc.createElement("span");
     node.className = "llm-agent-action-effect";
     node.dataset.receiptId = effect.receiptId;
-    node.appendChild(renderVerb(doc, effect.verb, effect.label));
+    // The operation's word belongs to the effect, not to its glyph: an
+    // operation drawn without one — a note write, a file write — must still
+    // say what it was to a reader who points at it.
+    node.setAttribute("title", effect.label);
+    const nameless = !effect.objects.length;
+    const verb = renderVerb(doc, effect.verb, effect.label, nameless);
+    if (verb) node.appendChild(verb);
     for (const object of effect.objects)
       node.appendChild(renderObjectChip(doc, object));
+    // An effect that named no object would otherwise be a glyph pointing at
+    // nothing, or nothing at all; its word is shown in their place.
+    if (nameless && !verb)
+      node.appendChild(renderVerbWord(doc, effect.label, true));
     effects.appendChild(node);
   }
   row.appendChild(effects);

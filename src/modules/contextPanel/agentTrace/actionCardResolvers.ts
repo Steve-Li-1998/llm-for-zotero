@@ -23,11 +23,30 @@ function citationYear(item: Zotero.Item): string | undefined {
 }
 
 /**
+ * How the reader already sees an item cited: creator and year, falling back to
+ * the creator alone and then to the title, because a paper with no date is
+ * still a paper the reader recognizes.
+ */
+function citationLabel(
+  item: Zotero.Item,
+): { label: string; libraryID: number; itemKey: string } | undefined {
+  const creator = item.firstCreator;
+  const year = citationYear(item);
+  const label =
+    creator && year ? `${creator}, ${year}` : creator || item.getDisplayTitle();
+  return label
+    ? { label, libraryID: item.libraryID, itemKey: item.key }
+    : undefined;
+}
+
+/**
  * How the panel names a native object the receipts touched.
  *
- * An item is named the way the reader already sees it cited — creator and
- * year — and falls back to its creator alone, then to its title, because a
- * paper with no date is still a paper the reader recognizes.
+ * An item is named the way the reader already sees it cited. A note is not:
+ * a note-writing receipt targets the note it wrote, and that note is already
+ * the row's own chip, so the row is given the paper the note hangs under and
+ * told which item that is. A note that hangs under nothing is named nowhere
+ * else, and the row shows it as the note chip alone.
  */
 export function createZoteroActionCardResolvers(
   materialTitle: (documentId: string) => string | undefined,
@@ -37,15 +56,14 @@ export function createZoteroActionCardResolvers(
       readLibrary(() => {
         const item = Zotero.Items.get(itemId);
         if (!item) return undefined;
-        const creator = item.firstCreator;
-        const year = citationYear(item);
-        const label =
-          creator && year
-            ? `${creator}, ${year}`
-            : creator || item.getDisplayTitle();
-        return label
-          ? { label, libraryID: item.libraryID, itemKey: item.key }
-          : undefined;
+        if (item.isNote?.()) {
+          const parentItemID = item.parentItemID;
+          if (!parentItemID) return undefined;
+          const parent = Zotero.Items.get(parentItemID);
+          const named = parent ? citationLabel(parent) : undefined;
+          return named ? { ...named, itemId: parentItemID } : undefined;
+        }
+        return citationLabel(item);
       }),
     collectionLabel: (collectionId) =>
       readLibrary(() => {

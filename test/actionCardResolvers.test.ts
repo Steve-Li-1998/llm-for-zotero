@@ -94,6 +94,75 @@ describe("action card library resolvers", function () {
       );
     });
 
+    it("names a child note's paper, and says which item that is", function () {
+      // A note-writing receipt targets the note it wrote. The note is already
+      // the row's own chip, so what the row covers is the paper it hangs under.
+      installZotero({
+        Items: {
+          get: (id: number) =>
+            id === 99
+              ? {
+                  isNote: () => true,
+                  getNoteTitle: () => "Reading notes",
+                  parentItemID: 11,
+                  libraryID: 4,
+                  key: "N99",
+                }
+              : item({
+                  firstCreator: "Smith",
+                  date: "2021-03-01",
+                  libraryID: 4,
+                  key: "ABCD1234",
+                }),
+        },
+      });
+
+      assert.deepEqual(resolvers().itemLabel(99), {
+        label: "Smith, 2021",
+        libraryID: 4,
+        itemKey: "ABCD1234",
+        itemId: 11,
+      });
+    });
+
+    it("says nothing about a standalone note, which is its own object", function () {
+      installZotero({
+        Items: {
+          get: () => ({
+            isNote: () => true,
+            getNoteTitle: () => "Reading notes",
+            parentItemID: false,
+            libraryID: 1,
+            key: "N99",
+          }),
+        },
+      });
+
+      assert.isUndefined(
+        resolvers().itemLabel(99),
+        "a note with no paper must not be drawn as a paper beside itself",
+      );
+    });
+
+    it("says nothing about a child note whose paper is gone", function () {
+      installZotero({
+        Items: {
+          get: (id: number) =>
+            id === 99
+              ? {
+                  isNote: () => true,
+                  getNoteTitle: () => "Reading notes",
+                  parentItemID: 11,
+                  libraryID: 1,
+                  key: "N99",
+                }
+              : false,
+        },
+      });
+
+      assert.isUndefined(resolvers().itemLabel(99));
+    });
+
     it("says nothing about an item the library no longer holds", function () {
       installZotero({ Items: { get: () => false } });
 

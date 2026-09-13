@@ -242,32 +242,47 @@ export function renderObjectChip(
 }
 
 /**
+ * The word the operation catalog gives an operation.
+ *
+ * Beside a glyph it is visually hidden rather than removed, so a screen reader
+ * still hears what the glyph means. Where the effect has no object chip to be
+ * read from, it is the only thing that says what happened, and is shown.
+ */
+export function renderVerbWord(
+  doc: Document,
+  label: string,
+  visible: boolean,
+): HTMLElement {
+  const word = doc.createElement("span");
+  word.className = `llm-agent-action-verb-word${visible ? " llm-agent-action-verb-word-inline" : ""}`;
+  word.textContent = label;
+  return word;
+}
+
+/**
  * How an operation is drawn between the objects it joined: its glyph, and the
  * word the operation catalog gives it.
  *
- * The word is the tooltip and stays in the DOM for a screen reader, so the
- * glyph never has to carry the meaning alone; an operation with no glyph
- * shows nothing here and is read from its object chip.
+ * An operation with no glyph draws nothing at all. A node with neither a glyph
+ * nor a visible word is a gap in the row carrying a tooltip the reader cannot
+ * point at; the row states such an operation's word on the effect itself.
  */
 export function renderVerb(
   doc: Document,
   verb: ActionCardVerb,
   label: string,
-): HTMLElement {
+  /** Whether the effect has no object chip, so the word is shown here. */
+  showWord = false,
+): HTMLElement | null {
+  if (!verb.glyph) return null;
   const node = doc.createElement("span");
   node.className = `llm-agent-action-verb${verb.destructive ? " llm-agent-action-verb-destructive" : ""}`;
   node.setAttribute("title", label);
-  if (verb.glyph) {
-    const glyph = doc.createElement("span");
-    glyph.className = "llm-context-glyph-icon";
-    glyph.setAttribute("aria-hidden", "true");
-    glyph.textContent = verb.glyph;
-    node.appendChild(glyph);
-  }
-  const word = doc.createElement("span");
-  word.className = "llm-agent-action-verb-word";
-  word.textContent = label;
-  node.appendChild(word);
+  const glyph = doc.createElement("span");
+  glyph.className = "llm-context-glyph-icon";
+  glyph.setAttribute("aria-hidden", "true");
+  glyph.textContent = verb.glyph;
+  node.append(glyph, renderVerbWord(doc, label, showWord));
   return node;
 }
 

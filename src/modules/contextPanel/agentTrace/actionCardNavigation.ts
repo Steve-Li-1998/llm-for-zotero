@@ -183,15 +183,19 @@ export async function navigateToLibraryObject(
     case "item": {
       const pane = host.pane();
       if (!pane) return false;
+      // The item is selected where the reader is already looking: asking for
+      // the library root would throw them out of the collection they had open
+      // on every chip click. Zotero falls back to the root by itself when the
+      // item is not in the current view.
       if (typeof pane.selectItems === "function") {
         const selected = await pane.selectItems([target.itemId], {
-          inLibraryRoot: true,
+          inLibraryRoot: false,
         });
         if (selected !== false) return arrived(true);
       }
       if (typeof pane.selectItem === "function")
         return arrived(
-          pane.selectItem(target.itemId, { inLibraryRoot: true }) !== false,
+          pane.selectItem(target.itemId, { inLibraryRoot: false }) !== false,
         );
       return false;
     }

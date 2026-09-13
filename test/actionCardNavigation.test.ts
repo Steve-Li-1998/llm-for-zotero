@@ -180,8 +180,10 @@ describe("action card navigation", function () {
 
     assert.deepEqual(
       seen,
-      [{ inLibraryRoot: true }, { inLibraryRoot: true }],
-      "the boolean argument the pane used to take is deprecated",
+      [{ inLibraryRoot: false }, { inLibraryRoot: false }],
+      "the boolean argument the pane used to take is deprecated, and forcing " +
+        "the library root would throw the reader out of the collection they " +
+        "are looking at",
     );
   });
 

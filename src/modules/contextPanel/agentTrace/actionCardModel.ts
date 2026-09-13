@@ -38,10 +38,15 @@ export type {
  * a name.
  */
 export type ActionCardResolvers = {
-  itemLabel: (
-    itemId: number,
-  ) =>
-    | Omit<Extract<ActionCardTarget, { kind: "item" }>, "kind" | "itemId">
+  /**
+   * What the card should call this item, and — when the library answers with
+   * a different item than the one asked about, as a note answers with the
+   * paper it hangs under — which item that is.
+   */
+  itemLabel: (itemId: number) =>
+    | (Omit<Extract<ActionCardTarget, { kind: "item" }>, "kind" | "itemId"> & {
+        itemId?: number;
+      })
     | undefined;
   collectionLabel: (
     collectionId: number,
@@ -130,19 +135,29 @@ type ActionCardItemTarget = Extract<ActionCardTarget, { kind: "item" }>;
  *
  * A target that names anything else is left out: the row states the objects it
  * can name, not a token the reader would have to decode.
+ *
+ * A note-writing receipt targets the note it wrote, and the note is already
+ * the effect's own chip. The resolver answers such a target with the paper the
+ * note hangs under, and the row covers that paper — which is also why the row
+ * an edited child note lands on is the row its paper's other effects land on.
+ * A note that hangs under nothing is answered with nothing, and the target is
+ * dropped rather than drawn as a phantom paper beside the note it already is.
+ * An id the library cannot see for any other reason keeps its identity.
  */
 function resolveTargets(
   targets: readonly string[],
   resolvers: ActionCardResolvers,
+  noteIds: ReadonlySet<number> = new Set(),
 ): ActionCardItemTarget[] {
   const out: ActionCardItemTarget[] = [];
   for (const target of targets) {
     const itemId = itemIdOf(target);
     if (itemId === undefined) continue;
     const resolved = resolvers.itemLabel(itemId);
+    if (!resolved && noteIds.has(itemId)) continue;
     out.push({
       kind: "item",
-      itemId,
+      itemId: resolved?.itemId ?? itemId,
       label: resolved?.label || `Item ${itemId}`,
       ...(resolved?.libraryID !== undefined
         ? { libraryID: resolved.libraryID }
@@ -151,6 +166,13 @@ function resolveTargets(
     });
   }
   return out;
+}
+
+/** The notes a receipt claims it wrote, which its targets may also name. */
+function noteObjectIds(receipt: AgentActionReceipt): Set<number> {
+  if (!NOTE_OPERATIONS.has(receipt.operation as string)) return new Set();
+  const noteId = noteEffectNoteId(receipt);
+  return new Set(noteId === undefined ? [] : [noteId]);
 }
 
 /**
@@ -163,6 +185,7 @@ function resolveTargets(
 function objectsOf(
   receipt: AgentActionReceipt,
   resolvers: ActionCardResolvers,
+  targets: readonly ActionCardItemTarget[],
 ): ActionCardObject[] {
   const p = receipt.normalizedParameters || {};
   const op = receipt.operation as string;
@@ -244,8 +267,17 @@ function objectsOf(
     return p.expectedText ? [{ kind: "command", label: p.expectedText }] : [];
   if (op === "update_metadata")
     return (p.metadataFields || []).map((label) => ({ kind: "field", label }));
-  if (op === "trash_items" || op === "restore_from_trash")
-    return [{ kind: "trash" }];
+  if (op === "trash_items" || op === "restore_from_trash") {
+    // The trash is per library, so the chip opens the one the items it moved
+    // actually live in; a receipt that named no library leaves the chip to
+    // fall back to the reader's own.
+    const libraryID = targets.find(
+      (target) => target.libraryID !== undefined,
+    )?.libraryID;
+    return [
+      { kind: "trash", ...(libraryID !== undefined ? { libraryID } : {}) },
+    ];
+  }
   return [];
 }
 
@@ -318,14 +350,19 @@ export function buildAgentActionSummaryCard(
   if (!receipts.length) return null;
   const rows = new Map<string, ActionCardRow>();
   for (const receipt of receipts) {
-    const targets = resolveTargets(coveredTargets(receipt), resolvers);
-    const rejected = resolveTargets(receipt.rejectedTargets || [], resolvers);
+    const noteIds = noteObjectIds(receipt);
+    const targets = resolveTargets(coveredTargets(receipt), resolvers, noteIds);
+    const rejected = resolveTargets(
+      receipt.rejectedTargets || [],
+      resolvers,
+      noteIds,
+    );
     const effect: ActionCardEffect = {
       receiptId: receipt.id,
       operation: receipt.operation,
       verb: operationVerb(receipt.operation),
       label: operationLabel(receipt.operation),
-      objects: objectsOf(receipt, resolvers),
+      objects: objectsOf(receipt, resolvers, targets),
     };
     const targetKey = [...new Set(targets.map((target) => target.itemId))]
       .sort((left, right) => left - right)

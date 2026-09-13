@@ -9172,8 +9172,26 @@ label.llm-search-results-item:hover {
   font-weight: 600;
 }
 
+/*
+ * The operation's word beside a glyph: out of the reader's way, but still in
+ * the accessibility tree, so a screen reader hears what the glyph means.
+ */
 .llm-agent-action-verb-word {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* An effect with no object chip has only its word to state itself. */
+.llm-agent-action-verb-word-inline {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
 }
 
 .llm-agent-action-verb-destructive .llm-context-glyph-icon {

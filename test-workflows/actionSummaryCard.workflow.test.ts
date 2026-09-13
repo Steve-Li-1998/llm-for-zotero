@@ -185,6 +185,25 @@ describe("workflow: one action card for a mixed turn", function () {
         note.getNoteTitle(),
         "the row names the note it wrote",
       );
+      // The note write's receipt targets the note's paper, and the tag's
+      // receipt targets the same paper, so both land on one row: the paper
+      // once, then the note it wrote and the tag it applied.
+      assert.deepEqual(
+        [
+          ...row.querySelectorAll<HTMLElement>(
+            ".llm-agent-action-summary-item .llm-selected-context",
+          ),
+        ].map((chip) =>
+          chip.classList.contains("llm-paper-context-chip")
+            ? "paper"
+            : chip.classList.contains("llm-note-context-chip")
+              ? "note"
+              : chip.classList.contains("llm-tag-context-chip")
+                ? "tag"
+                : chip.className,
+        ),
+        ["paper", "note", "tag"],
+      );
       const tagTitle = [
         ...card.querySelectorAll<HTMLElement>(".llm-tag-chip-title"),
       ].find((chip) => chip.textContent === tag)!;
@@ -240,21 +259,9 @@ describe("workflow: one action card for a mixed turn", function () {
       )!;
       assert.equal(pill.textContent, "3 actions");
 
-      const paperChip = filed.querySelector<HTMLElement>(
-        ".llm-paper-context-chip.llm-agent-action-link",
-      )!;
-      assert.exists(paperChip, "the paper the turn acted on is a way in");
-      assert.include(
-        paperChip.textContent,
-        `Mixed turn paper ${stamp}`,
-        "the chip names the paper by what the library calls it",
-      );
-      paperChip.click();
-      await waitFor(
-        () => pane.getSelectedItems().some((item) => item.id === parent.id),
-        "the items pane to select the paper the chip names",
-      );
-
+      // The collection is opened first, so the paper chip is clicked from
+      // inside a collection: the reader must be shown the paper where they are
+      // already looking, not thrown back out to My Library.
       const collectionChip = filed.querySelector<HTMLElement>(
         ".llm-collection-context-chip",
       )!;
@@ -270,7 +277,26 @@ describe("workflow: one action card for a mixed turn", function () {
         () => pane.getSelectedCollection(true) === collection.id,
         "the collection tree to select the collection the chip names",
       );
-      assert.equal(pane.getSelectedCollection(true), collection.id);
+
+      const paperChip = filed.querySelector<HTMLElement>(
+        ".llm-paper-context-chip.llm-agent-action-link",
+      )!;
+      assert.exists(paperChip, "the paper the turn acted on is a way in");
+      assert.include(
+        paperChip.textContent,
+        `Mixed turn paper ${stamp}`,
+        "the chip names the paper by what the library calls it",
+      );
+      paperChip.click();
+      await waitFor(
+        () => pane.getSelectedItems().some((item) => item.id === parent.id),
+        "the items pane to select the paper the chip names",
+      );
+      assert.equal(
+        pane.getSelectedCollection(true),
+        collection.id,
+        "opening a paper leaves the reader in the collection they were in",
+      );
       assert.notEqual(
         pill.dataset.status,
         "error",

@@ -11054,6 +11054,68 @@ describe("agent trace action summary card", function () {
     assert.include(collectFakeText(card), "Attention in transformers");
   });
 
+  it("names a glyph-less effect on the effect itself, with no empty verb node", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const note = card.findAllByClass("llm-agent-action-effect")[0];
+    assert.equal(
+      note.getAttribute("title"),
+      "Created note",
+      "the operation's word is reachable even where it has no glyph to hang on",
+    );
+    assert.isNull(
+      note.findByClass("llm-agent-action-verb"),
+      "an empty verb node is a gap in the row with a tooltip nobody can reach",
+    );
+    const tagged = card.findAllByClass("llm-agent-action-effect")[1];
+    assert.equal(tagged.getAttribute("title"), "Added tags");
+    assert.equal(
+      tagged.findByClass("llm-agent-action-verb")!.getAttribute("title"),
+      "Added tags",
+      "the glyph keeps the tooltip the reader points at",
+    );
+  });
+
+  it("states an effect that named no object in words", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Filed.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "call-file",
+          name: "library_update",
+          ok: true,
+          actionReceipts: [
+            receipt({
+              id: "file-1",
+              capability: "zotero.collections",
+              operation: "move_to_collection",
+            }),
+          ],
+          content: {},
+        }),
+      ],
+    }) as unknown as FakeElement;
+
+    const effect = trace
+      .findByClass("llm-agent-action-summary-card")!
+      .findByClass("llm-agent-action-effect")!;
+    const word = effect.findByClass("llm-agent-action-verb-word")!;
+    assert.equal(
+      word.textContent,
+      "Moved to collection",
+      "a glyph with nothing after it says nothing; the word is shown instead",
+    );
+    assert.include(word.className, "llm-agent-action-verb-word-inline");
+    assert.include(collectFakeText(effect), "Moved to collection");
+  });
+
   /** A stand-in library window, recording where the card sent the reader. */
   function navigationHost(
     pane: () => Record<string, unknown> | null,

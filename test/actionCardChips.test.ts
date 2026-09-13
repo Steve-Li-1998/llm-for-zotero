@@ -9,6 +9,7 @@ import {
   renderTargetList,
   renderObjectChip,
   renderVerb,
+  renderVerbWord,
   renderProcessChips,
   renderSkipRow,
   navigationTargetOf,
@@ -190,14 +191,17 @@ describe("action card chips", function () {
 
   it("renders a verb glyph with the operation's word as tooltip, red when destructive", function () {
     const move = el(
-      renderVerb(fakeDocument, { glyph: "→" }, "Moved to collection"),
+      renderVerb(fakeDocument, { glyph: "→" }, "Moved to collection")!,
     );
     assert.include(move.className, "llm-agent-action-verb");
     assert.equal(move.findByClass("llm-context-glyph-icon")!.textContent, "→");
     assert.equal(move.getAttribute("title"), "Moved to collection");
-    assert.equal(
-      move.findByClass("llm-agent-action-verb-word")!.textContent,
-      "Moved to collection",
+    const word = move.findByClass("llm-agent-action-verb-word")!;
+    assert.equal(word.textContent, "Moved to collection");
+    assert.notInclude(
+      word.className,
+      "llm-agent-action-verb-word-inline",
+      "the word is read out beside the glyph, not shown twice",
     );
     assert.include(
       el(
@@ -205,15 +209,29 @@ describe("action card chips", function () {
           fakeDocument,
           { glyph: "−", destructive: true },
           "Removed tags",
-        ),
+        )!,
       ).className,
       "llm-agent-action-verb-destructive",
     );
+  });
+
+  it("draws nothing for an operation with no glyph", function () {
     assert.isNull(
-      el(renderVerb(fakeDocument, {}, "Created note")).findByClass(
-        "llm-context-glyph-icon",
-      ),
+      renderVerb(fakeDocument, {}, "Created note"),
+      "an empty verb node is a gap in the row with a tooltip nobody can reach",
     );
+  });
+
+  it("shows the operation's word where the effect has no object chip", function () {
+    const shown = el(
+      renderVerb(fakeDocument, { glyph: "→" }, "Moved to collection", true)!,
+    ).findByClass("llm-agent-action-verb-word")!;
+    assert.include(shown.className, "llm-agent-action-verb-word-inline");
+    assert.equal(shown.textContent, "Moved to collection");
+    const standalone = el(renderVerbWord(fakeDocument, "Created note", true));
+    assert.include(standalone.className, "llm-agent-action-verb-word");
+    assert.include(standalone.className, "llm-agent-action-verb-word-inline");
+    assert.equal(standalone.textContent, "Created note");
   });
 
   it("renders process chips and the skip row", function () {

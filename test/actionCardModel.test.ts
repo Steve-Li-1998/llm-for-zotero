@@ -62,6 +62,24 @@ const resolvers: ActionCardResolvers = {
   materialTitle: () => undefined,
 };
 
+/**
+ * The same library, seen the way a note-writing receipt's target resolves: 77
+ * is a child note of paper 11, and 88 is a note that hangs under nothing.
+ */
+const noteResolvers: ActionCardResolvers = {
+  ...resolvers,
+  itemLabel: (id) =>
+    id === 77
+      ? { label: "Smith, 2021", libraryID: 1, itemKey: "K11", itemId: 11 }
+      : id === 88
+        ? undefined
+        : resolvers.itemLabel(id),
+  noteLabel: (id) =>
+    id === 77 || id === 88
+      ? { label: "Reading notes", libraryID: 1, itemKey: `N${id}` }
+      : resolvers.noteLabel(id),
+};
+
 describe("action card model", function () {
   it("projects a move into target, verb, collection object and verdict", function () {
     const card = buildAgentActionSummaryCard(
@@ -286,7 +304,10 @@ describe("action card model", function () {
     assert.deepEqual(byOp.update_metadata.f.objects, [
       { kind: "field", label: "DOI" },
     ]);
-    assert.deepEqual(byOp.trash_items.f.objects, [{ kind: "trash" }]);
+    assert.deepEqual(byOp.trash_items.f.objects, [
+      // The chip opens the trash of the library the item it trashed lives in.
+      { kind: "trash", libraryID: 1 },
+    ]);
     assert.equal(byOp.trash_items.e.authority, "external_runtime");
     assert.deepEqual(byOp.trash_items.e.badges, [
       "Verified",
@@ -468,6 +489,136 @@ describe("action card model", function () {
     assert.deepEqual(
       card!.entries.map((e) => e.targets.map((t) => t.label)),
       [["Item X"], ["Item X"]],
+    );
+  });
+
+  it("draws a child note's edit on its paper's row, not as a second paper", function () {
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "e",
+            operation: "note_edit",
+            capability: "zotero.notes",
+            requestedTargets: ["item:77"],
+            appliedTargets: ["item:77"],
+            verifiedFacts: ["native_note:77:html_sha256:abc"],
+          }),
+        ]),
+        toolResult(2, [
+          receipt({
+            id: "t",
+            operation: "apply_tags",
+            capability: "zotero.tags",
+            normalizedParameters: { tags: ["to-read"] },
+          }),
+        ]),
+      ],
+      noteResolvers,
+    );
+    assert.lengthOf(
+      card!.entries,
+      1,
+      "the note's paper is the same row as the tag on that paper",
+    );
+    assert.deepEqual(card!.entries[0].targets, [
+      {
+        kind: "item",
+        itemId: 11,
+        label: "Smith, 2021",
+        libraryID: 1,
+        itemKey: "K11",
+      },
+    ]);
+    assert.deepEqual(card!.entries[0].effects[0].objects, [
+      {
+        kind: "note",
+        label: "Reading notes",
+        noteId: 77,
+        libraryID: 1,
+        itemKey: "N77",
+      },
+    ]);
+    assert.deepEqual(
+      card!.entries[0].effects.map((e) => e.operation),
+      ["note_edit", "apply_tags"],
+    );
+  });
+
+  it("states a standalone note's edit as the note alone", function () {
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "e",
+            operation: "note_edit",
+            capability: "zotero.notes",
+            requestedTargets: ["item:88"],
+            appliedTargets: ["item:88"],
+            verifiedFacts: ["native_note:88:html_sha256:abc"],
+          }),
+        ]),
+      ],
+      noteResolvers,
+    );
+    assert.deepEqual(
+      card!.entries[0].targets,
+      [],
+      "a note with no paper draws no phantom paper beside itself",
+    );
+    assert.deepEqual(card!.entries[0].effects[0].objects, [
+      {
+        kind: "note",
+        label: "Reading notes",
+        noteId: 88,
+        libraryID: 1,
+        itemKey: "N88",
+      },
+    ]);
+  });
+
+  it("keeps the identity of an id the library cannot name at all", function () {
+    const blind: ActionCardResolvers = {
+      ...resolvers,
+      itemLabel: () => undefined,
+    };
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "t",
+            operation: "apply_tags",
+            capability: "zotero.tags",
+            normalizedParameters: { tags: ["to-read"] },
+          }),
+        ]),
+      ],
+      blind,
+    );
+    assert.deepEqual(card!.entries[0].targets, [
+      { kind: "item", itemId: 11, label: "Item 11" },
+    ]);
+  });
+
+  it("sends the trash chip to the library the trashed item lives in", function () {
+    const trashed = (resolvers: ActionCardResolvers) =>
+      buildAgentActionSummaryCard(
+        [
+          toolResult(1, [
+            receipt({
+              id: "x",
+              operation: "trash_items",
+              capability: "zotero.trash",
+            }),
+          ]),
+        ],
+        resolvers,
+      )!.entries[0].effects[0].objects;
+    assert.deepEqual(trashed(resolvers), [{ kind: "trash", libraryID: 1 }]);
+    assert.deepEqual(
+      trashed({ ...resolvers, itemLabel: () => ({ label: "Smith, 2021" }) }),
+      [{ kind: "trash" }],
+      "a target that named no library leaves the chip to find its own",
     );
   });
 

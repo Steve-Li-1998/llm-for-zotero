@@ -125,6 +125,25 @@ describe("workflow: completed native note change", function () {
         node.querySelector(".llm-plan-title")?.textContent,
         `Changed ‘${card.title}’`,
       );
+      // The receipt for a note edit targets the note itself. A note that hangs
+      // under no paper is one object, so the row draws one chip: the note. A
+      // second chip carrying the same title would be a paper that never existed.
+      assert.deepEqual(
+        [
+          ...node.querySelectorAll<HTMLElement>(
+            ".llm-agent-action-summary-item .llm-selected-context",
+          ),
+        ].map((chip) =>
+          chip.classList.contains("llm-note-context-chip")
+            ? "note"
+            : chip.className,
+        ),
+        ["note"],
+      );
+      assert.include(
+        node.querySelector(".llm-note-context-chip")?.textContent,
+        "Completed note change",
+      );
       assert.lengthOf(
         root!.querySelectorAll(".llm-note-review-card"),
         0,

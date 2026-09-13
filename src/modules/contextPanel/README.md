@@ -5,6 +5,8 @@ This folder implements the reader/library side-panel chat experience.
 ## Core Modules
 
 - `index.ts`: registration entrypoint (panel section, style injection, reader popup selection tracking).
+- `dedicatedChatPane.ts`: mutually exclusive chat/details presentation in the native right pane, with a native lifecycle recheck when returning to a retained reader tab.
+- `dockedPanelTitle.ts`: the plugin title row and native close control above the classic chat toolbar.
 - `buildUI.ts`: static panel DOM construction.
 - `setupHandlers.ts`: runtime orchestration and event wiring across panel features.
 - `chat.ts`: conversation load/render/send/retry/edit and streaming orchestration.
@@ -41,3 +43,12 @@ This folder implements the reader/library side-panel chat experience.
 - Keep exported signatures stable for plugin entrypoints and persistence helpers.
 - Keep DOM IDs/class names stable to preserve CSS and event behavior.
 - Keep persistence schema/pref keys stable to avoid user data regressions.
+
+## Dedicated Right Pane
+
+The plugin icon selects a full-height chat view; other native pane icons restore Zotero's details or notes view.
+The chat section stays connected to its original per-tab `item-details` host so conversation ownership, drafts, selection routing, and Paper/Library mode remain with their existing owners.
+Presentation state belongs to the main window and survives tab changes without being persisted as a conversation preference.
+Zotero namespaces registered pane IDs, so navigation identifies the registered host through its class rather than constructing an ID.
+Native tab selection can reuse a rendered section without calling plugin hooks, so the dedicated view requests `_forceRenderAll()` after the native deck selection to reconcile the active conversation through the existing lifecycle.
+The native workflow regression covers full-height geometry, returning to item details, reader tab context changes, and Library chat staying selected until the user switches to Paper chat.

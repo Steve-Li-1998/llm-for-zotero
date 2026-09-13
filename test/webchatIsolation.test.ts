@@ -26,7 +26,7 @@ describe("webchat isolation", function () {
     );
     const handlerStart = source.indexOf("// --- Mode chip handler ---");
     const webchatGuard = source.indexOf(
-      "if (!item || isNoteSession() || isWebChatMode()) return;",
+      "if (isNoteSession() || isWebChatMode()) return;",
       handlerStart,
     );
     const paperSwitch = source.indexOf(

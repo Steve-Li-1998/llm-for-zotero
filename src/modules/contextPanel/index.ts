@@ -322,7 +322,19 @@ export function registerReaderContextPanel() {
       l10nID: getLocaleID("llm-panel-sidenav-tooltip"),
       icon: `chrome://${config.addonRef}/content/icons/icon-sidebar.svg`,
     },
-    onInit: ({ setEnabled, tabType }) => {
+    onInit: ({ body, setEnabled, tabType }) => {
+      body
+        .closest("item-pane-custom-section")
+        ?.classList.add("llm-dedicated-chat-pane");
+      // The dedicated view has no accordion header and must stay open even
+      // when another Zotero section runs its "collapse other sections" action.
+      const section = body.closest("collapsible-section") as
+        | (Element & { collapsible: boolean })
+        | null;
+      if (section) {
+        section.setAttribute("open", "true");
+        section.collapsible = false;
+      }
       setEnabled(true);
       ztoolkit.log(`LLM: panel init tabType=${tabType}`);
     },
@@ -604,7 +616,9 @@ export function registerReaderContextPanel() {
       await renderShortcuts(
         body,
         resolvedItem,
-        resolveShortcutMode(resolvedItem),
+        !resolvedItem && body.closest(".llm-dedicated-chat-pane")
+          ? "paper"
+          : resolveShortcutMode(resolvedItem),
       );
       if (renderGeneration !== thisGeneration) return;
       if (isStandaloneWindowActive()) return;

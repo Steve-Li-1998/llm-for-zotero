@@ -1,3 +1,4 @@
+import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   resolveActiveNoteSession,
   resolveConversationBaseItem,
@@ -121,7 +122,9 @@ function buildLifecycleBinding(
     surface: isReader ? "reader" : "library",
     tabType: normalizedTabType,
     tabID,
-    libraryID: normalizePositiveInt(item?.libraryID),
+    libraryID:
+      normalizePositiveInt(item?.libraryID) ||
+      (!isReader && !item ? normalizePositiveInt(resolveActiveLibraryID()) : 0),
     rawItemID: normalizePositiveInt(item?.id),
     basePaperItemID: getRawBasePaperItemID(item),
     noteID: normalizePositiveInt(note?.noteId),
@@ -306,7 +309,21 @@ export function evaluatePanelOwnership(
     return "unresolved";
   }
   const mounted = resolveMountedScope(body);
-  if (!mounted) return "unresolved";
+  if (!mounted) {
+    // A deliberately empty library panel may navigate to Library chat. It
+    // cannot inherit a paper scope or authorize a candidate conversation.
+    if (
+      binding.surface === "library" &&
+      binding.libraryID &&
+      !binding.rawItemID &&
+      root &&
+      !root.dataset.itemId &&
+      !root.dataset.conversationKind &&
+      normalizePositiveInt(root.dataset.libraryId) === binding.libraryID
+    )
+      return candidateItem ? "stale-candidate" : "match";
+    return "unresolved";
+  }
   if (!scopeBelongsToHost(binding, mounted)) return "host-mismatch";
   if (!candidateItem) return "match";
   const candidate = resolveScopeForItem(
@@ -613,7 +630,11 @@ export function canLifecycleCommitPanelConversation(
     return false;
   }
   if (!targetItem) {
-    const validEmptyHost = !binding.rawItemID && !binding.libraryID;
+    const validEmptyHost =
+      !binding.rawItemID &&
+      !binding.basePaperItemID &&
+      !binding.noteID &&
+      (!binding.libraryID || binding.surface === "library");
     if (!validEmptyHost) {
       logOwnershipVerdict(body, operation, "unresolved");
     }

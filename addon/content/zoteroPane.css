@@ -1,5 +1,148 @@
 /* LLM Panel Styles */
 
+.llm-dedicated-chat-pane .llm-panel {
+  padding-top: 0;
+}
+
+.llm-dedicated-chat-pane .llm-header {
+  padding: 0 8px 4px;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.llm-docked-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  /* Match Zotero's reader toolbar, including its bottom separator. */
+  box-sizing: border-box;
+  height: 41px;
+  min-height: 41px;
+  margin-inline: -10px;
+  padding-inline: 10px;
+  border-bottom: var(--material-panedivider);
+}
+
+.llm-docked-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-12);
+  font-weight: 600;
+}
+
+.llm-docked-logo {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+}
+
+.llm-docked-close {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--fill-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.llm-docked-close::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask: url("icons/action-close.svg") center / contain no-repeat;
+}
+
+.llm-docked-close:hover {
+  color: var(--fill-primary);
+  background: var(--fill-quinary);
+}
+
+.llm-docked-close:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Chat is a dedicated view of the native right pane. Keep its per-tab host
+   connected so Zotero continues delivering item/context lifecycle events. */
+:root[data-llm-pane-view="details"]
+  item-pane-custom-section.llm-dedicated-chat-pane {
+  display: none !important;
+}
+
+:root[data-llm-pane-view="chat"] item-details .zotero-view-item-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+:root[data-llm-pane-view="chat"] item-details item-pane-header,
+:root[data-llm-pane-view="chat"]
+  item-details
+  .zotero-view-item
+  > [data-pane]:not(.llm-dedicated-chat-pane),
+:root[data-llm-pane-view="chat"]
+  item-pane-custom-section.llm-dedicated-chat-pane
+  > collapsible-section
+  > .head {
+  display: none !important;
+}
+
+:root[data-llm-pane-view="chat"] item-details .zotero-view-item {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+}
+
+/* Native scroll-to-section adds filler; a full-height chat needs none. */
+:root[data-llm-pane-view="chat"] item-details .zotero-view-item::before,
+:root[data-llm-pane-view="chat"] item-details .zotero-view-item::after {
+  display: none !important;
+}
+
+:root[data-llm-pane-view="chat"]
+  item-pane-custom-section.llm-dedicated-chat-pane,
+:root[data-llm-pane-view="chat"]
+  item-pane-custom-section.llm-dedicated-chat-pane
+  > collapsible-section,
+:root[data-llm-pane-view="chat"]
+  item-pane-custom-section.llm-dedicated-chat-pane
+  > collapsible-section
+  > [data-type="body"] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+:root[data-llm-pane-view="chat"]
+  item-pane-custom-section.llm-dedicated-chat-pane
+  .llm-chat-shell {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 80px;
+  max-height: none;
+  resize: none;
+}
+
 .llm-panel {
   /*
    * Zotero windows are chrome documents, whose used user-select value roots
@@ -14108,4 +14251,19 @@ label.llm-search-results-item:hover {
 
 :root[customtitlebar] .llm-plan-document-window-content {
   padding-top: 68px;
+}
+
+/* Keep the plugin entry usable in the library's native no-selection view. */
+item-pane-sidenav .llm-persistent-rail-entry[hidden] {
+  display: block !important;
+}
+:root[data-llm-pane-view="chat"]
+  #zotero-item-pane-content
+  > :not(#zotero-item-details) {
+  visibility: hidden;
+}
+:root[data-llm-pane-view="chat"]
+  #zotero-item-pane-content
+  > #zotero-item-details {
+  visibility: visible;
 }

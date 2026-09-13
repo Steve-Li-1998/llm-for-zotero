@@ -365,8 +365,14 @@ export function createHistoryLifecycleController(
     basePaperItem = nextItem;
     return true;
   };
-  const captureOwnedPanelOperation = (operation: string) => {
-    if (!item || !requireCurrentPanelOwnership(deps.body, item, operation)) {
+  const captureOwnedPanelOperation = (
+    operation: string,
+    allowEmpty = false,
+  ) => {
+    if (
+      (!item && !allowEmpty) ||
+      !requireCurrentPanelOwnership(deps.body, item, operation)
+    ) {
       return null;
     }
     const lease = capturePanelOperationLease(deps.body);
@@ -1669,7 +1675,11 @@ export function createHistoryLifecycleController(
 
   const refreshGlobalHistoryHeader = async () => {
     if (!historyBar || !titleStatic || !item) {
-      if (titleStatic) titleStatic.style.display = "";
+      if (titleStatic) {
+        titleStatic.style.display = body.closest(".llm-dedicated-chat-pane")
+          ? "none"
+          : "";
+      }
       if (historyBar) historyBar.style.display = "none";
       closeHistoryNewMenu();
       closeHistoryMenu();
@@ -2220,7 +2230,6 @@ export function createHistoryLifecycleController(
     nextConversationKey: number,
   ): Promise<boolean> => {
     if (
-      !item ||
       !requireCurrentPanelOwnership(body, null, "switch-global-conversation")
     ) {
       return false;
@@ -3607,8 +3616,11 @@ export function createHistoryLifecycleController(
   ): Promise<boolean> => {
     const { excludeConversationKey, forceFresh } =
       normalizeCreateConversationOptions(options);
-    if (!item || isNoteSession()) return false;
-    const ownership = captureOwnedPanelOperation("new-global-conversation");
+    if (isNoteSession()) return false;
+    const ownership = captureOwnedPanelOperation(
+      "new-global-conversation",
+      true,
+    );
     if (!ownership) return false;
     closeHistoryNewMenu();
     const libraryID = getCurrentLibraryID();
@@ -3663,7 +3675,8 @@ export function createHistoryLifecycleController(
           )
         );
       }
-      return isGlobalMode() &&
+      return item &&
+        isGlobalMode() &&
         isUpstreamGlobalConversationKey(Number(getConversationKey(item) || 0))
         ? getConversationKey(item)
         : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
@@ -4243,7 +4256,7 @@ export function createHistoryLifecycleController(
     modeChipBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!item || isNoteSession() || isWebChatMode()) return;
+      if (isNoteSession() || isWebChatMode()) return;
       if (isGlobalMode()) {
         void switchPaperConversation();
         return;

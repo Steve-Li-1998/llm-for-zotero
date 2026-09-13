@@ -144,6 +144,28 @@ describe("panel host ownership", function () {
       originalZotero;
   });
 
+  it("allows empty library navigation while rejecting delayed paper work", function () {
+    const panel = fakePanel({ conversationKey: 0 });
+    panel.root.dataset.itemId = "";
+    panel.root.dataset.conversationKind = "";
+    bindEmbeddedPanelHost(panel.body, null, "library");
+    assert.equal(evaluatePanelOwnership(panel.body), "match");
+    assert.equal(
+      evaluatePanelOwnership(panel.body, fakePaper(101)),
+      "stale-candidate",
+    );
+    assert.isFalse(
+      requireCurrentPanelOwnership(
+        panel.body,
+        fakePaper(101),
+        "delayed-render",
+      ),
+    );
+    assert.isUndefined(panel.root.dataset.ownershipBlocked);
+    panel.root.dataset.libraryId = "2";
+    assert.equal(evaluatePanelOwnership(panel.body), "unresolved");
+  });
+
   it("returns match for host A, mounted A, candidate A", function () {
     const itemA = fakePaper(101);
     const panel = fakePanel({

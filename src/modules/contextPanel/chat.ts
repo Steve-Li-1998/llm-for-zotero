@@ -10481,12 +10481,10 @@ export function refreshChat(
     resolvePaperContextDisplayRef(paperContext, paperContextDisplayCache);
 
   if (!item) {
-    chatBox.innerHTML = `
-      <div class="llm-welcome">
-        <div class="llm-welcome-icon llm-context-svg-icon llm-context-icon-paper" aria-hidden="true"></div>
-        <div class="llm-welcome-text">Select an item or open a PDF to start.</div>
-      </div>
-    `;
+    chatBox.innerHTML = getPaperChatStartPageHtml();
+    const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
+    if (panelRoot) panelRoot.dataset.startPageActive = "true";
+    chatBox.scrollTop = 0;
     const tokenUsageEl = body.querySelector(
       "#llm-token-usage",
     ) as HTMLElement | null;

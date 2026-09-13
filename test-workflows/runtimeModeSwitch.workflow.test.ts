@@ -299,34 +299,108 @@ function clickReachesPanelTarget(panelId: string, selector: string): boolean {
 }
 
 /**
- * The same reachability question without performing the switch: the toggle's
- * own handler listens for `click`, so a fenced-but-inert `mousedown` shows
- * whether pointer input aimed at the control still arrives.
+ * The same reachability question aimed at a control the fence does NOT exempt,
+ * and with an event the panel does not act on, so a pass means the fence is
+ * delivering ordinary pointer input rather than that this particular control is
+ * privileged. `#llm-history-toggle` is always rendered and is not a runtime
+ * control.
  */
+const NON_EXEMPT_PANEL_CONTROL = "#llm-history-toggle";
+
 function pointerReachesPanelTarget(panelId: string, selector: string): boolean {
   return mouseEventReachesPanelTarget(panelId, selector, "mousedown");
 }
 
-async function assertComposerAcceptsInput(panelId: string): Promise<void> {
+/**
+ * Type into the composer the way a reader does, through the event path.
+ *
+ * A synthetic `keydown` carries no default action, so this performs the one the
+ * browser would: the character is only appended when the keydown survived the
+ * capture-phase fence, and the `input` event that tells the panel about it must
+ * survive too. Assigning `input.value` directly — as this probe used to — would
+ * pass on a panel that destroys every keystroke.
+ */
+async function typeIntoComposer(
+  panelId: string,
+  text: string,
+): Promise<{
+  value: string;
+  keystrokesDelivered: number;
+  inputsDelivered: number;
+}> {
   const root = getPanelRoot(panelId);
-  const doc = root.ownerDocument;
+  const view = root.ownerDocument.defaultView as any;
   const input = root.querySelector<HTMLTextAreaElement>("#llm-input");
-  assert.isOk(input, "composer should be rendered after the switch");
-  const typed = `responsive ${Date.now()}`;
-  input!.value = typed;
-  input!.dispatchEvent(
-    new (doc.defaultView as any).Event("input", { bubbles: true }),
-  );
+  assert.isOk(input, "composer should be rendered");
+  let keystrokesDelivered = 0;
+  let inputsDelivered = 0;
+  for (const character of text) {
+    const keyEvent = new view.KeyboardEvent("keydown", {
+      key: character,
+      bubbles: true,
+      cancelable: true,
+    });
+    input!.dispatchEvent(keyEvent);
+    if (keyEvent.defaultPrevented) break;
+    keystrokesDelivered += 1;
+    // The default action the fence just allowed.
+    input!.value = `${input!.value}${character}`;
+    const inputEvent = new view.Event("input", {
+      bubbles: true,
+      cancelable: true,
+    });
+    input!.dispatchEvent(inputEvent);
+    if (inputEvent.defaultPrevented) break;
+    inputsDelivered += 1;
+  }
   await Zotero.Promise.delay(50);
+  return { value: input!.value, keystrokesDelivered, inputsDelivered };
+}
+
+async function clearComposer(panelId: string): Promise<void> {
+  const root = getPanelRoot(panelId);
+  const view = root.ownerDocument.defaultView as any;
+  const input = root.querySelector<HTMLTextAreaElement>("#llm-input");
+  if (!input) return;
+  input.value = "";
+  input.dispatchEvent(new view.Event("input", { bubbles: true }));
+  await Zotero.Promise.delay(20);
+}
+
+/**
+ * The composer must take what the reader types and the panel must see it: the
+ * text has to arrive in the panel's own diagnostics, not only in the DOM.
+ */
+async function assertComposerAcceptsInput(
+  panelId: string,
+  api: WorkflowTestApi,
+  label = "after the switch",
+): Promise<void> {
+  await clearComposer(panelId);
+  const typed = `responsive${Date.now() % 100000}`;
+  const result = await typeIntoComposer(panelId, typed);
   assert.equal(
-    input!.value,
+    result.keystrokesDelivered,
+    typed.length,
+    `${label}: every keystroke the reader types must reach the composer`,
+  );
+  assert.equal(
+    result.inputsDelivered,
+    typed.length,
+    `${label}: the panel must be told about each keystroke`,
+  );
+  assert.equal(
+    result.value,
     typed,
-    "composer must keep the text the user typed after the mode switch",
+    `${label}: the composer must hold what the reader typed`,
   );
-  input!.value = "";
-  input!.dispatchEvent(
-    new (doc.defaultView as any).Event("input", { bubbles: true }),
+  const diagnostics = await api.getDiagnostics(panelId);
+  assert.equal(
+    diagnostics.inputValue,
+    typed,
+    `${label}: the panel itself must have seen the typed text`,
   );
+  await clearComposer(panelId);
 }
 
 /**
@@ -359,7 +433,14 @@ function keydownReachesComposer(panelId: string): boolean {
   return reached > 0;
 }
 
-/** Cmd+Q typed with focus in the panel must still reach Zotero. */
+/**
+ * Cmd+Q typed with focus in the panel must still reach Zotero.
+ *
+ * This one is a *design exemption*, not evidence that the panel is healthy: the
+ * fence deliberately delivers application accelerators it does not bind, so
+ * this probe passes on a blocked panel too. It is here because "Zotero cannot
+ * even be quit" was the reported symptom, and it must never come back.
+ */
 function quitShortcutSurvivesPanel(panelId: string): boolean {
   const root = getPanelRoot(panelId);
   const input = root.querySelector<HTMLTextAreaElement>("#llm-input");
@@ -403,7 +484,11 @@ describe("workflow: runtime mode switch", function () {
 
   /**
    * What the reader must always be able to do after a runtime switch: type into
-   * the composer, press the toggle again, and quit Zotero.
+   * the composer and have the panel see it, use an ordinary panel control, and
+   * quit Zotero.
+   *
+   * Every probe here except the last is aimed at something the fence does NOT
+   * exempt, so none of them can pass on a panel that is refusing its input.
    */
   async function assertPanelStillUsable(
     panelId: string,
@@ -414,10 +499,10 @@ describe("workflow: runtime mode switch", function () {
       keydownReachesComposer(panelId),
       `${label}: a keystroke aimed at the composer must reach it`,
     );
-    await assertComposerAcceptsInput(panelId);
+    await assertComposerAcceptsInput(panelId, api, label);
     assert.isTrue(
-      pointerReachesPanelTarget(panelId, CODEX_TOGGLE_SELECTOR),
-      `${label}: pointer input aimed at the runtime toggle must reach it`,
+      pointerReachesPanelTarget(panelId, NON_EXEMPT_PANEL_CONTROL),
+      `${label}: pointer input aimed at an ordinary panel control must reach it`,
     );
     assert.isTrue(
       quitShortcutSurvivesPanel(panelId),
@@ -464,7 +549,7 @@ describe("workflow: runtime mode switch", function () {
       );
 
       await assertMainThreadResponsive("empty Codex conversation");
-      await assertComposerAcceptsInput(panel.panelId);
+      await assertComposerAcceptsInput(panel.panelId, api, "after the switch");
 
       const secondCodex = await api.clickPanelSystemToggle(
         panel.panelId,
@@ -509,7 +594,7 @@ describe("workflow: runtime mode switch", function () {
       assert.equal(back.runtimeMode, "agent");
 
       await assertMainThreadResponsive("Codex conversation with a turn");
-      await assertComposerAcceptsInput(panel.panelId);
+      await assertComposerAcceptsInput(panel.panelId, api, "after the switch");
 
       const secondCodex = await api.clickPanelSystemToggle(
         panel.panelId,
@@ -539,7 +624,7 @@ describe("workflow: runtime mode switch", function () {
       const agent = await api.clickPanelRuntimeModeToggle(panel.panelId);
       assert.equal(agent.runtimeMode, "agent");
       await assertMainThreadResponsive("agent toggle after Codex");
-      await assertComposerAcceptsInput(panel.panelId);
+      await assertComposerAcceptsInput(panel.panelId, api, "after the switch");
 
       const chat = await api.clickPanelRuntimeModeToggle(panel.panelId);
       assert.equal(chat.runtimeMode, "chat");
@@ -592,7 +677,7 @@ describe("workflow: runtime mode switch", function () {
       assert.equal(back.runtimeMode, "agent");
 
       await assertMainThreadResponsive("legacy trace after Codex");
-      await assertComposerAcceptsInput(panel.panelId);
+      await assertComposerAcceptsInput(panel.panelId, api, "after the switch");
     });
   });
 
@@ -625,7 +710,7 @@ describe("workflow: runtime mode switch", function () {
         keydownReachesComposer(panel.panelId),
         "the panel must not destroy keystrokes aimed at the composer after entering Codex",
       );
-      await assertComposerAcceptsInput(panel.panelId);
+      await assertComposerAcceptsInput(panel.panelId, api, "after the switch");
 
       // The click the reader actually makes to go back to the original Agent
       // mode, with a probe on the same element so a swallowed event is told

@@ -3,6 +3,7 @@ import {
   config,
   GLOBAL_CONVERSATION_KEY_BASE,
 } from "./constants";
+import { isConversationKeyForKind } from "../../shared/conversationKeySpace";
 import {
   activeContextPanels,
   activeContextPanelRawItems,
@@ -3412,6 +3413,24 @@ export function openStandaloneChat(options?: {
         row.click();
       });
 
+      /**
+       * The conversation on screen may belong to the runtime the window is
+       * leaving: `currentConversationSystem` flips before the key moves. Only a
+       * key from the entered runtime's own key space may be offered as that
+       * runtime's current draft, or the window would mount the new runtime on
+       * the old runtime's conversation and its declared scope would stop
+       * describing what it is showing.
+       */
+      const currentDraftCandidateForSystem = (
+        kind: "global" | "paper",
+      ): number => {
+        const key = Math.floor(Number(activeConversationKey || 0));
+        if (!Number.isFinite(key) || key <= 0) return 0;
+        return isConversationKeyForKind(currentConversationSystem, kind, key)
+          ? key
+          : 0;
+      };
+
       const resolveFreshStandaloneGlobalConversation = async (
         options: boolean | StandaloneCreateConversationOptions = false,
       ): Promise<number> => {
@@ -3423,7 +3442,7 @@ export function openStandaloneChat(options?: {
           system: currentConversationSystem,
           kind: "global",
           libraryID: currentLibraryID,
-          currentConversationKey: activeConversationKey,
+          currentConversationKey: currentDraftCandidateForSystem("global"),
           excludeConversationKey,
         });
         return result.conversationKey;
@@ -3449,7 +3468,7 @@ export function openStandaloneChat(options?: {
           kind: "paper",
           libraryID: paperLibraryID,
           paperItemID: paperId,
-          currentConversationKey: activeConversationKey,
+          currentConversationKey: currentDraftCandidateForSystem("paper"),
           excludeConversationKey,
         });
         return {

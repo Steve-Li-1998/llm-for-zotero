@@ -5355,10 +5355,15 @@ function buildAgentTraceDisplayItemsCanonical(
   // What the run did, stated once at the end for the reader: the answer bubble
   // no longer carries the model-facing action-status block, and the card
   // renders wherever the trace does, interleaved text included.
-  const actionSummary = buildAgentActionSummaryCard(
-    compactedEvents,
-    (documentId) => adapterContext.finalizedMaterials.get(documentId)?.title,
-  );
+  const actionSummary = buildAgentActionSummaryCard(compactedEvents, {
+    // The library-backed resolvers are the card renderer's own task; until
+    // then a native object is named by its identity, never by a guess.
+    itemLabel: () => undefined,
+    collectionLabel: () => undefined,
+    noteLabel: () => undefined,
+    materialTitle: (documentId) =>
+      adapterContext.finalizedMaterials.get(documentId)?.title,
+  });
   if (actionSummary) items.push({ type: "card_list", cards: [actionSummary] });
 
   const finalText = getFinalTraceText(compactedEvents);

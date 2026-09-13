@@ -1413,22 +1413,18 @@ export type AgentNoteChangeResultCard = {
 /**
  * What one turn did, as the reader is told at the end of its trace.
  *
- * Every line comes from a receipt: the operation the receipt states, the
- * targets it covered, and what its verification proved. Nothing here is read
- * from a tool name, and nothing is added that no receipt claims.
+ * Every row comes from receipts: the objects they covered, the operations they
+ * state, the objects those acted on, and what their verification proved.
+ * Nothing here is read from a tool name, and nothing is added that no receipt
+ * claims. The row shape lives beside the projection that builds it.
  */
 export type AgentActionSummaryResultCard = {
   kind: "action_summary";
   /** Title of the material the visible answer was rendered from, if any. */
   answerMaterial?: string;
-  entries: readonly {
-    /** The receipt this line reports, so one effect is listed once. */
-    receiptId: string;
-    /** Operation label, targets, and the material the effect landed. */
-    text: string;
-    /** Verification wording, and the authority the effect ran under. */
-    badges: readonly string[];
-  }[];
+  /** Receipt count, for the pill. */
+  actionCount: number;
+  entries: readonly import("../modules/contextPanel/agentTrace/actionCardModel").ActionCardEntry[];
 };
 
 export type AgentToolResultCard =

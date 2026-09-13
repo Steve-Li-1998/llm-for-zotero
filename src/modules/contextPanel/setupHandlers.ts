@@ -208,6 +208,7 @@ import {
   bindTestPanelHost,
   canCommitPanelConversation,
   capturePanelOperationLease,
+  evaluatePanelOwnership,
   getPanelHostBinding,
   isPanelHostCompatibleWithPaper,
   isPanelOperationLeaseCurrent,
@@ -849,9 +850,10 @@ export function setupHandlers(
     if (target !== body && target && !panelRoot.contains(target)) return;
     // The decision itself lives in panelHostOwnership.ts: a panel that refuses
     // its own input must still be escapable, so events aimed at the runtime
-    // toggles and application accelerators are delivered, while everything else
-    // stays fenced. Without that, any scope bug degrades into a dead,
-    // apparently unquittable UI.
+    // toggles (which re-resolve the panel's scope before switching) and
+    // application accelerators the panel does not bind are delivered, while
+    // everything else stays fenced. Without that, any scope bug degrades into a
+    // dead, apparently unquittable UI.
     if (!shouldOwnershipFenceSwallowEvent(body, item, event)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -5031,6 +5033,28 @@ export function setupHandlers(
     historyLifecycleController.forkConversationFromTurn;
   resetHistorySearchState = historyLifecycleController.resetHistorySearchState;
 
+  /**
+   * The runtime toggle is the reader's way out of a panel whose declared scope
+   * has drifted from the conversation it is showing. Delivering the click is
+   * only half of that: `switchConversationSystem` gates on the same ownership
+   * verdict, so without this the click would arrive and then be refused. A
+   * `stale-candidate` verdict means the panel's own item is sound and only its
+   * declaration is wrong, so re-derive the declaration from the item and carry
+   * on. Any other verdict is a genuine host problem and is left to the gate.
+   */
+  const recoverDriftedPanelScopeForRuntimeToggle = () => {
+    if (!item) return;
+    if (evaluatePanelOwnership(body, item) !== "stale-candidate") return;
+    ztoolkit.log(
+      "LLM: re-resolving a drifted panel scope for the runtime toggle",
+      {
+        conversationKey: getConversationKey(item),
+        declaredSystem: panelRoot.dataset.conversationSystem,
+      },
+    );
+    syncConversationIdentity();
+  };
+
   const switchRuntimeSystemFromControl = async (
     clickedSystem: RuntimeConversationSystem,
   ) => {
@@ -5043,6 +5067,7 @@ export function setupHandlers(
     ) {
       return;
     }
+    recoverDriftedPanelScopeForRuntimeToggle();
     runtimeSystemSwitchInFlight = true;
     updateRuntimeSystemToggles();
     try {
@@ -7661,6 +7686,10 @@ export function setupHandlers(
     runtimeModeBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      // Same contract as the runtime-system toggles: the fence delivers this
+      // click even on a drifted panel, so the handler repairs the drift instead
+      // of refusing the only control that can end it.
+      recoverDriftedPanelScopeForRuntimeToggle();
       if (
         !item ||
         !requireCurrentPanelOwnership(body, item, "switch-runtime-mode")

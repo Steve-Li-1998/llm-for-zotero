@@ -891,4 +891,61 @@ describe("workflow: runtime mode switch", function () {
       }
     });
   });
+
+  /**
+   * The escape hatch itself, tested on the exact state the old bug produced: a
+   * panel whose declared runtime no longer matches the conversation it is
+   * showing. The toggle must not merely receive the click — it must repair the
+   * drift and switch, or the reader is still trapped.
+   */
+  it("recovers a panel whose declared runtime has drifted when the toggle is pressed", async function () {
+    await withPrefs(AGENT_AND_CODEX_PREFS, async () => {
+      const paper = await createPaper("Mode Switch Drift Recovery");
+      const panel = await api.renderPanelForItem(paper.parentItemId);
+      const global = await api.togglePanelConversationMode(panel.panelId);
+      assert.equal(global.conversationKind, "global");
+      assert.equal(global.conversationSystem, "upstream");
+
+      // Force the drift by hand, exactly as the old switch order produced it:
+      // the panel declares Codex while its conversation is still the upstream
+      // library chat.
+      const main = getPanelRoot(panel.panelId).querySelector<HTMLElement>(
+        "#llm-main",
+      );
+      assert.isOk(main, "the panel root should be rendered");
+      main!.dataset.conversationSystem = "codex";
+
+      assert.isFalse(
+        keydownReachesComposer(panel.panelId),
+        "a drifted panel is expected to refuse ordinary input; the test is worthless otherwise",
+      );
+      assert.isTrue(
+        quitShortcutSurvivesPanel(panel.panelId),
+        "even while refusing, the panel must never eat Cmd+Q",
+      );
+
+      // The reader's way out.
+      assert.isTrue(
+        clickReachesPanelTarget(panel.panelId, CODEX_TOGGLE_SELECTOR),
+        "the click that ends the blocked state must reach the toggle",
+      );
+      const recovered = await waitForConversationSystem(panel.panelId, "codex");
+      assert.isTrue(
+        isConversationKeyForKind(
+          "codex",
+          "global",
+          recovered.conversationKey || 0,
+        ),
+        `recovery must land on a real Codex conversation, got ${recovered.conversationKey}`,
+      );
+      await assertPanelStillUsable(panel.panelId, "after drift recovery");
+
+      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      assert.equal(back.conversationSystem, "upstream");
+      await assertPanelStillUsable(
+        panel.panelId,
+        "back in Agent after recovery",
+      );
+    });
+  });
 });

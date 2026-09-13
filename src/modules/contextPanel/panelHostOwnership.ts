@@ -448,30 +448,35 @@ export function renderPanelOwnershipBlocked(
 }
 
 /**
- * Controls that take the user out of a panel that has lost ownership of its own
- * conversation. The runtime-system toggles and the Agent/Chat toggle are how a
- * panel is put back on a conversation it owns, so a fence that swallowed them
- * would leave the reader with no way out of the blocked state.
+ * The controls that take the reader out of a panel which has lost ownership of
+ * its own conversation. Pressing one re-resolves the panel's declared scope from
+ * the conversation it is showing and then switches, so the fence must deliver
+ * the event instead of destroying it — otherwise the reader has no way out.
+ *
+ * Both surfaces that render these controls give every button the shared
+ * `llm-runtime-system-toggle` class on top of their own
+ * (`llm-panel-runtime-system-toggle`, `llm-standalone-runtime-system-toggle`),
+ * so the shared class is what this matches.
  */
 const OWNERSHIP_FENCE_EXEMPT_SELECTOR =
   "#llm-runtime-mode-toggle, .llm-runtime-system-toggle";
 
-function isRuntimeModeControlTarget(target: unknown): boolean {
+function matchesWithin(target: unknown, selector: string): boolean {
   const element = target as {
     closest?: (selector: string) => unknown;
   } | null;
   if (!element || typeof element.closest !== "function") return false;
   try {
-    return Boolean(element.closest(OWNERSHIP_FENCE_EXEMPT_SELECTOR));
+    return Boolean(element.closest(selector));
   } catch (_error) {
     return false;
   }
 }
 
 /**
- * Key combinations the application owns rather than the panel: Cmd+Q, Ctrl+W,
- * and every other menu accelerator. A panel must never be able to stop Zotero
- * from being quit or a window from being closed.
+ * Key combinations the application owns rather than the panel: Cmd+Q, Ctrl+W
+ * and the other menu accelerators. A panel must never be able to stop Zotero
+ * from being quit or a window from being closed, wherever focus happens to sit.
  */
 function isApplicationCommandKeyEvent(event: Event): boolean {
   if (event?.type !== "keydown") return false;
@@ -486,8 +491,23 @@ function isApplicationCommandKeyEvent(event: Event): boolean {
  */
 export function isOwnershipFenceExemptEvent(event: Event): boolean {
   if (!event) return false;
-  if (isApplicationCommandKeyEvent(event)) return true;
-  return isRuntimeModeControlTarget(event.target);
+  if (matchesWithin(event.target, OWNERSHIP_FENCE_EXEMPT_SELECTOR)) return true;
+  return isApplicationCommandKeyEvent(event);
+}
+
+/**
+ * The panel ownership fence's whole decision, owned here so the fence in
+ * `setupHandlers.ts` is a two-line adapter over it and the rule can be tested
+ * as the fence actually runs it.
+ */
+export function shouldOwnershipFenceSwallowEvent(
+  body: Element,
+  item: Zotero.Item | null | undefined,
+  event: Event,
+): boolean {
+  if (!item || !event) return false;
+  if (isOwnershipFenceExemptEvent(event)) return false;
+  return !requireCurrentPanelOwnership(body, item, `panel-${event.type}`);
 }
 
 export function requireCurrentPanelOwnership(

@@ -7,11 +7,12 @@ import {
   bindStandalonePanelHost,
   clearPanelHostBinding,
   evaluatePanelOwnership,
-  isOwnershipFenceExemptEvent,
   isPanelHostCompatibleWithPaper,
   getConversationScopeIdentityForTests,
   requireCurrentPanelOwnership,
+  shouldOwnershipFenceSwallowEvent,
 } from "../src/modules/contextPanel/panelHostOwnership";
+import { createRuntimeSystemControls } from "../src/modules/contextPanel/runtimeSystemControls";
 import { createGlobalPortalItem } from "../src/modules/contextPanel/portalScope";
 import {
   activeContextPanels,
@@ -320,7 +321,124 @@ describe("panel host ownership", function () {
   });
 });
 
-describe("panel ownership fence exemptions", function () {
+/**
+ * A DOM fake that evaluates the selector strings production actually ships.
+ *
+ * `matches` understands `#id` and `.class` simple selectors and comma lists of
+ * them, and throws on anything else, so a selector the fence relies on can
+ * never silently "match" here. The elements under test are built by the
+ * production factory (`createRuntimeSystemControls`), so if the fence's
+ * selector and the class names the panel or the standalone window render ever
+ * drift apart, these tests fail.
+ */
+class SelectorElement {
+  readonly nodeType = 1;
+  id = "";
+  className = "";
+  title = "";
+  type = "";
+  readonly dataset: Record<string, string> = {};
+  readonly style: Record<string, string> = {};
+  readonly children: SelectorElement[] = [];
+  parentElement: SelectorElement | null = null;
+  private readonly attributes = new Map<string, string>();
+
+  append(...children: SelectorElement[]): void {
+    for (const child of children) {
+      child.parentElement = this;
+      this.children.push(child);
+    }
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  matches(selector: string): boolean {
+    return selector
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .some((simple) => {
+        if (simple.startsWith("#")) return this.id === simple.slice(1);
+        if (simple.startsWith(".")) {
+          return this.className.split(/\s+/).includes(simple.slice(1));
+        }
+        throw new Error(
+          `SelectorElement cannot evaluate the selector "${simple}"`,
+        );
+      });
+  }
+
+  closest(selector: string): SelectorElement | null {
+    let node: SelectorElement | null = this;
+    while (node) {
+      if (node.matches(selector)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+}
+
+const selectorDocument = {
+  createElementNS: () => new SelectorElement(),
+} as unknown as Document;
+
+function buildProductionRuntimeToggles(surface: "panel" | "standalone") {
+  // The exact options the two surfaces pass in buildUI.ts and
+  // standaloneWindow.ts.
+  const controls =
+    surface === "panel"
+      ? createRuntimeSystemControls(selectorDocument, {
+          groupId: "llm-runtime-system-controls",
+          groupClassName: "llm-panel-runtime-system-controls",
+          buttonClassName: "llm-panel-runtime-system-toggle",
+          buttonIds: {
+            codex: "llm-codex-system-toggle",
+            claude_code: "llm-claude-system-toggle",
+          },
+        })
+      : createRuntimeSystemControls(selectorDocument, {
+          groupClassName: "llm-standalone-runtime-system-controls",
+          buttonClassName: "llm-standalone-runtime-system-toggle",
+        });
+  const button = controls.buttons.codex as unknown as SelectorElement;
+  return { button, icon: button.children[0] };
+}
+
+/** The composer, with a plain wrapper so nothing about it is a runtime control. */
+function buildComposer(): SelectorElement {
+  const section = new SelectorElement();
+  section.className = "llm-input-section";
+  const input = new SelectorElement();
+  input.id = "llm-input";
+  section.append(input);
+  return input;
+}
+
+function fenceEvent(params: {
+  type: string;
+  target: unknown;
+  key?: string;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
+}): Event {
+  return {
+    type: params.type,
+    target: params.target,
+    key: params.key,
+    metaKey: params.metaKey === true,
+    ctrlKey: params.ctrlKey === true,
+    shiftKey: params.shiftKey === true,
+  } as unknown as Event;
+}
+
+describe("panel ownership fence", function () {
   const originalZotero = globalThis.Zotero;
 
   beforeEach(function () {
@@ -339,104 +457,130 @@ describe("panel ownership fence exemptions", function () {
       originalZotero;
   });
 
-  /** The decision the capture-phase fence in setupHandlers.ts makes. */
-  function fenceWouldSwallow(
-    body: Element,
-    item: Zotero.Item,
-    event: Event,
-  ): boolean {
-    if (isOwnershipFenceExemptEvent(event)) return false;
-    return !requireCurrentPanelOwnership(body, item, `panel-${event.type}`);
-  }
-
-  function fakeEvent(params: {
-    type: string;
-    matches?: string[];
-    metaKey?: boolean;
-    ctrlKey?: boolean;
-  }): Event {
-    const target = {
-      closest: (selector: string) =>
-        (params.matches || []).some((candidate) => selector.includes(candidate))
-          ? target
-          : null,
-    };
-    return {
-      type: params.type,
-      target,
-      metaKey: params.metaKey === true,
-      ctrlKey: params.ctrlKey === true,
-    } as unknown as Event;
-  }
-
-  it("keeps swallowing ordinary input while the verdict is stale-candidate", function () {
-    const itemA = fakePaper(101);
-    const itemB = fakePaper(202);
+  /**
+   * A panel whose verdict for `staleItem` is `stale-candidate`: the state in
+   * which the fence refuses the panel's input.
+   */
+  function buildRefusingPanel() {
+    const mountedItem = fakePaper(202);
+    const staleItem = fakePaper(101);
     const panel = fakePanel({
       conversationKey: 202,
       paperItemID: 202,
       tabID: "reader-a",
     });
-    bindEmbeddedPanelHost(panel.body, itemB, "reader");
-    activeContextPanels.set(panel.body, () => itemB);
-
-    assert.equal(evaluatePanelOwnership(panel.body, itemA), "stale-candidate");
-    assert.isTrue(
-      fenceWouldSwallow(panel.body, itemA, fakeEvent({ type: "keydown" })),
+    bindEmbeddedPanelHost(panel.body, mountedItem, "reader");
+    activeContextPanels.set(panel.body, () => mountedItem);
+    assert.equal(
+      evaluatePanelOwnership(panel.body, staleItem),
+      "stale-candidate",
+      "the fixture must be in the state where the fence refuses",
     );
-    assert.isTrue(
-      fenceWouldSwallow(panel.body, itemA, fakeEvent({ type: "click" })),
+    return { panel, staleItem, mountedItem };
+  }
+
+  it("swallows the panel's ordinary input while it does not own its conversation", function () {
+    const { panel, staleItem } = buildRefusingPanel();
+    const composer = buildComposer();
+
+    for (const event of [
+      fenceEvent({ type: "keydown", target: composer, key: "a" }),
+      fenceEvent({ type: "input", target: composer }),
+      fenceEvent({ type: "paste", target: composer }),
+      fenceEvent({ type: "click", target: composer }),
+    ]) {
+      assert.isTrue(
+        shouldOwnershipFenceSwallowEvent(panel.body, staleItem, event),
+        `${event.type} must stay fenced`,
+      );
+    }
+    clearPanelHostBinding(panel.body);
+  });
+
+  it("delivers the runtime controls both surfaces render", function () {
+    const { panel, staleItem } = buildRefusingPanel();
+    const sidebar = buildProductionRuntimeToggles("panel");
+    const standalone = buildProductionRuntimeToggles("standalone");
+    const modeToggle = new SelectorElement();
+    modeToggle.id = "llm-runtime-mode-toggle";
+
+    for (const target of [
+      sidebar.button,
+      // The click usually lands on the icon inside the button.
+      sidebar.icon,
+      standalone.button,
+      standalone.icon,
+      modeToggle,
+    ]) {
+      assert.isFalse(
+        shouldOwnershipFenceSwallowEvent(
+          panel.body,
+          staleItem,
+          fenceEvent({ type: "click", target }),
+        ),
+        "the controls that end the blocked state must be delivered",
+      );
+    }
+    clearPanelHostBinding(panel.body);
+  });
+
+  it("delivers the application accelerators the panel does not own", function () {
+    const { panel, staleItem } = buildRefusingPanel();
+    const composer = buildComposer();
+
+    // The reported symptom: Cmd+Q with focus in the composer must reach Zotero.
+    assert.isFalse(
+      shouldOwnershipFenceSwallowEvent(
+        panel.body,
+        staleItem,
+        fenceEvent({
+          type: "keydown",
+          target: composer,
+          key: "q",
+          metaKey: true,
+        }),
+      ),
+      "Cmd+Q typed in the composer must leave the panel",
+    );
+    assert.isFalse(
+      shouldOwnershipFenceSwallowEvent(
+        panel.body,
+        staleItem,
+        fenceEvent({
+          type: "keydown",
+          target: composer,
+          key: "w",
+          ctrlKey: true,
+        }),
+      ),
+      "Ctrl+W must leave the panel",
+    );
+    // Today every accelerator is exempt, Cmd+Enter included. The next commit
+    // narrows this; the case is here so that change is visible as a change.
+    assert.isFalse(
+      shouldOwnershipFenceSwallowEvent(
+        panel.body,
+        staleItem,
+        fenceEvent({
+          type: "keydown",
+          target: composer,
+          key: "Enter",
+          metaKey: true,
+        }),
+      ),
     );
     clearPanelHostBinding(panel.body);
   });
 
-  it("lets the runtime toggles and application commands through a stale-candidate verdict", function () {
-    const itemA = fakePaper(101);
-    const itemB = fakePaper(202);
-    const panel = fakePanel({
-      conversationKey: 202,
-      paperItemID: 202,
-      tabID: "reader-a",
-    });
-    bindEmbeddedPanelHost(panel.body, itemB, "reader");
-    activeContextPanels.set(panel.body, () => itemB);
+  it("swallows nothing once the panel owns its conversation again", function () {
+    const { panel, mountedItem } = buildRefusingPanel();
+    const composer = buildComposer();
 
-    assert.equal(evaluatePanelOwnership(panel.body, itemA), "stale-candidate");
-    // The click that returns the reader to the runtime they came from.
     assert.isFalse(
-      fenceWouldSwallow(
+      shouldOwnershipFenceSwallowEvent(
         panel.body,
-        itemA,
-        fakeEvent({
-          type: "click",
-          matches: [".llm-runtime-system-toggle"],
-        }),
-      ),
-    );
-    // The Agent/Chat toggle.
-    assert.isFalse(
-      fenceWouldSwallow(
-        panel.body,
-        itemA,
-        fakeEvent({
-          type: "click",
-          matches: ["#llm-runtime-mode-toggle"],
-        }),
-      ),
-    );
-    // Cmd+Q with focus inside the panel, and its Windows/Linux equivalent.
-    assert.isFalse(
-      fenceWouldSwallow(
-        panel.body,
-        itemA,
-        fakeEvent({ type: "keydown", metaKey: true }),
-      ),
-    );
-    assert.isFalse(
-      fenceWouldSwallow(
-        panel.body,
-        itemA,
-        fakeEvent({ type: "keydown", ctrlKey: true }),
+        mountedItem,
+        fenceEvent({ type: "keydown", target: composer, key: "a" }),
       ),
     );
     clearPanelHostBinding(panel.body);

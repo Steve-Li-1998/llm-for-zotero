@@ -209,10 +209,10 @@ import {
   canCommitPanelConversation,
   capturePanelOperationLease,
   getPanelHostBinding,
-  isOwnershipFenceExemptEvent,
   isPanelHostCompatibleWithPaper,
   isPanelOperationLeaseCurrent,
   requireCurrentPanelOwnership,
+  shouldOwnershipFenceSwallowEvent,
 } from "./panelHostOwnership";
 import {
   getActiveContextAttachmentFromTabs,
@@ -847,14 +847,12 @@ export function setupHandlers(
     if (!item) return;
     const target = event.target as Node | null;
     if (target !== body && target && !panelRoot.contains(target)) return;
-    // A panel that refuses its own input must still be escapable: the runtime
-    // toggles are how the reader puts it back on a conversation it owns, and
-    // Cmd+Q belongs to Zotero, not to this panel. Without this, any scope bug
-    // degrades into a dead, apparently unquittable UI.
-    if (isOwnershipFenceExemptEvent(event)) return;
-    if (requireCurrentPanelOwnership(body, item, `panel-${event.type}`)) {
-      return;
-    }
+    // The decision itself lives in panelHostOwnership.ts: a panel that refuses
+    // its own input must still be escapable, so events aimed at the runtime
+    // toggles and application accelerators are delivered, while everything else
+    // stays fenced. Without that, any scope bug degrades into a dead,
+    // apparently unquittable UI.
+    if (!shouldOwnershipFenceSwallowEvent(body, item, event)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };

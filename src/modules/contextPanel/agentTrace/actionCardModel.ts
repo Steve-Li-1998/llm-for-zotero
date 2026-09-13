@@ -4,7 +4,9 @@ import type {
   ActionCardObject,
   ActionCardTarget,
   AgentActionSummaryResultCard,
+  AgentNoteChangeResultCard,
   AgentRunEventRecord,
+  AgentSavedNoteResultCard,
 } from "../../../agent/types";
 import type { AgentActionReceipt } from "../../../agent/contracts/types";
 import { receiptReportsEffect } from "../../../agent/contracts/actionEvaluation";
@@ -15,6 +17,7 @@ import {
 } from "../../../agent/contracts/actionVerificationLabels";
 import { operationLabel } from "../../../agent/contracts/operationCatalog";
 import { operationVerb } from "./actionCardVocabulary";
+import { noteChangeCardHeader } from "./noteChangeCard";
 
 // The card's row shapes are declared beside the card type in `agent/types`, so
 // the runtime layer can state what a turn did without depending on the panel.
@@ -354,6 +357,13 @@ export function buildAgentActionSummaryCard(
     const authority = row.receipts.some(
       (receipt) => receipt.executionAuthority === "external_runtime",
     );
+    // A partial receipt landed some of what it asked for and not the rest,
+    // whether or not it named the targets it left out. The row says so even
+    // when it has no rejection to list, so the pill is never read as "all of
+    // this happened".
+    const partial = row.receipts.some(
+      (receipt) => receipt.status === "partial",
+    );
     return {
       targets: row.targets,
       effects: row.effects,
@@ -362,6 +372,7 @@ export function buildAgentActionSummaryCard(
       ...(authority ? { authority: "external_runtime" as const } : {}),
       rejected: row.rejected,
       ...(row.rejectedReason ? { rejectedReason: row.rejectedReason } : {}),
+      ...(partial ? { partial: true as const } : {}),
     };
   });
   return {
@@ -370,4 +381,104 @@ export function buildAgentActionSummaryCard(
     actionCount: receipts.length,
     entries,
   };
+}
+
+/** A note card the turn produced, whichever of the two kinds it is. */
+type NoteResultCard = AgentSavedNoteResultCard | AgentNoteChangeResultCard;
+
+/** The detail a row opens for the note card that matched it. */
+function noteDetail(
+  card: NoteResultCard,
+): NonNullable<ActionCardEntry["detail"]> {
+  return card.kind === "note_change"
+    ? { kind: "note_change", card }
+    : { kind: "saved_note", card };
+}
+
+/** Whether a row's effects wrote a note at all. */
+function writesNote(entry: ActionCardEntry): boolean {
+  return entry.effects.some((effect) =>
+    effect.objects.some((object) => object.kind === "note"),
+  );
+}
+
+/** The notes a row's effects claim they landed on, in the row's own order. */
+function noteIdsOf(entry: ActionCardEntry): number[] {
+  return entry.effects.flatMap((effect) =>
+    effect.objects.flatMap((object) =>
+      object.kind === "note" && object.noteId !== undefined
+        ? [object.noteId]
+        : [],
+    ),
+  );
+}
+
+/**
+ * Give each row the note card that belongs to it, and say which cards are left.
+ *
+ * A note card and an action row are two statements about the same write, so the
+ * reader must be shown one of them, not both. The receipt's own note id is what
+ * pairs them. A note write that could not read the note back leaves the row
+ * without an id; when that row and one card are all that is left unmatched,
+ * they are the same write and are paired anyway. Anything still unmatched is a
+ * note no receipt claims, and it keeps its own card.
+ */
+export function attachNoteDetails(
+  card: AgentActionSummaryResultCard,
+  noteCards: readonly NoteResultCard[],
+): { card: AgentActionSummaryResultCard; unmatched: NoteResultCard[] } {
+  const unmatched = [...noteCards];
+  const claim = (noteId: number): NoteResultCard | undefined => {
+    const index = unmatched.findIndex(
+      (candidate) => candidate.note.itemId === noteId,
+    );
+    return index < 0 ? undefined : unmatched.splice(index, 1)[0];
+  };
+  const entries = card.entries.map((entry) => {
+    for (const noteId of noteIdsOf(entry)) {
+      const matched = claim(noteId);
+      if (matched) return { ...entry, detail: noteDetail(matched) };
+    }
+    return entry;
+  });
+  const orphanRows = entries.flatMap((entry, index) =>
+    !entry.detail && writesNote(entry) ? [index] : [],
+  );
+  if (orphanRows.length === 1 && unmatched.length === 1) {
+    const index = orphanRows[0];
+    entries[index] = { ...entries[index], detail: noteDetail(unmatched[0]) };
+    unmatched.length = 0;
+  }
+  return { card: { ...card, entries }, unmatched };
+}
+
+/**
+ * The header a card wears when the note is the whole turn, or null when it is
+ * not.
+ *
+ * One receipt that wrote one note is the note card the reader used to get; it
+ * is now the same card, so it says what that card said and opens its row.
+ */
+export function actionCardNoteMode(card: AgentActionSummaryResultCard): {
+  title: string;
+  status: string;
+  statusKind: string;
+  extraClass: string;
+} | null {
+  const detail =
+    card.actionCount === 1 && card.entries.length === 1
+      ? card.entries[0].detail
+      : undefined;
+  if (!detail) return null;
+  return detail.kind === "note_change"
+    ? {
+        ...noteChangeCardHeader(detail.card),
+        extraClass: "llm-note-change-card",
+      }
+    : {
+        title: detail.card.title,
+        status: "Saved",
+        statusKind: "completed",
+        extraClass: "llm-saved-note-card",
+      };
 }

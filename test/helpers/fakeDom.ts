@@ -55,6 +55,8 @@ export class FakeElement {
   public type = "";
   public title = "";
   public disabled = false;
+  /** `HTMLDetailsElement.open`: a disclosure the render code opens or folds. */
+  public open = false;
   public attributes: Record<string, string> = {};
   public style = new FakeStyleDeclaration();
   public offsetHeight = 0;

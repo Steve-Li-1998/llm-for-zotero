@@ -9250,6 +9250,17 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   gap: 8px;
 }
 
+/* A folded row owns a pill the way the card owns one: its note controls write
+   their outcome into it. It exists only for that, so it takes no room and no
+   width until one of them has something to say. */
+.llm-agent-action-row-body > .llm-plan-status {
+  align-self: flex-start;
+}
+
+.llm-agent-action-row-body > .llm-plan-status:empty {
+  display: none;
+}
+
 .llm-agent-action-row-actions {
   display: flex;
   gap: 6px;

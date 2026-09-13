@@ -1482,6 +1482,8 @@ export type ActionCardEntry = {
   authority?: "external_runtime";
   rejected: ActionCardTarget[];
   rejectedReason?: string;
+  /** Set when a receipt in this row landed only part of what it asked for. */
+  partial?: true;
   /** Set by render.ts when a note card matches a note effect in this row. */
   detail?:
     | { kind: "saved_note"; card: AgentSavedNoteResultCard }

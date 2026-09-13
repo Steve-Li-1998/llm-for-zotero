@@ -107,16 +107,19 @@ export function renderNoteChangeDetail(
   return detail;
 }
 
-export function renderNoteChangeCard(
-  doc: Document,
-  result: AgentNoteChangeResultCard,
-): HTMLElement {
-  const card = doc.createElement("section");
-  card.className =
-    "llm-plan-container llm-note-review-card llm-note-change-card";
-  card.dataset.noteId = String(result.note.itemId);
-  card.dataset.actionId = result.actionId;
-  const layout = createDocumentCardLayout(doc, {
+/**
+ * What the header says about a note change: what happened to which note, and
+ * how sure the panel is that it did.
+ *
+ * The card and the action card's note mode are the same statement on two
+ * surfaces, so the wording is written once here.
+ */
+export function noteChangeCardHeader(result: AgentNoteChangeResultCard): {
+  title: string;
+  status: string;
+  statusKind: string;
+} {
+  return {
     title: `${result.state === "unverified" ? "Verification unavailable for" : result.state === "mismatch" ? "Unexpected change to" : result.state === "failed" ? "Change not applied to" : result.state === "proposed" ? "Proposed change to" : result.state === "no_op" ? "No changes to" : "Changed"} ‘${result.title}’`,
     status: {
       proposed: "Awaiting review",
@@ -132,7 +135,19 @@ export function renderNoteChangeCard(
       : result.state === "proposed"
         ? "pending"
         : "completed",
-  });
+  };
+}
+
+export function renderNoteChangeCard(
+  doc: Document,
+  result: AgentNoteChangeResultCard,
+): HTMLElement {
+  const card = doc.createElement("section");
+  card.className =
+    "llm-plan-container llm-note-review-card llm-note-change-card";
+  card.dataset.noteId = String(result.note.itemId);
+  card.dataset.actionId = result.actionId;
+  const layout = createDocumentCardLayout(doc, noteChangeCardHeader(result));
   card.append(
     layout.header,
     renderNoteChangeDetail(doc, result, layout.status),

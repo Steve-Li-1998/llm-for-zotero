@@ -10331,13 +10331,20 @@ describe("agent trace stage grouping", function () {
         0,
         "the deliverable belongs below the disclosure, not inside it",
       );
-      assert.equal(cards[0].dataset.noteId, "77");
+      // The write journaled a receipt, so the note is the action card's note
+      // mode rather than a second card beside it.
+      assert.equal(cards[0].dataset.mode, "note");
+      assert.equal(
+        cards[0].findByClass("llm-plan-title")!.textContent,
+        "Representational drift",
+      );
       assert.include(
         cards[0]
-          .findAllByClass("llm-saved-note-destination")
-          .map((link) => link.textContent)
+          .findAllByClass("llm-plan-action")
+          .map((button) => button.textContent)
           .join(" "),
-        "Open note in Zotero",
+        "Open note",
+        "the reader must keep the way into the note that was saved",
       );
       disposeAgentTrace(root as unknown as HTMLElement);
     });
@@ -10358,7 +10365,13 @@ describe("agent trace stage grouping", function () {
         0,
         "the deliverable belongs below the disclosure, not inside it",
       );
-      assert.equal(cards[0].dataset.actionId, "note-edit-1");
+      // The write journaled a receipt, so the change is the action card's note
+      // mode rather than a second card beside it.
+      assert.equal(cards[0].dataset.mode, "note");
+      assert.equal(
+        cards[0].findByClass("llm-plan-title")!.textContent,
+        "Changed ‘Representational drift’",
+      );
       assert.include(
         cards[0]
           .findAllByTag("button")
@@ -11073,6 +11086,426 @@ describe("agent trace action summary card", function () {
     }) as unknown as FakeElement;
 
     assert.lengthOf(next.findAllByClass("llm-agent-action-summary-card"), 1);
+  });
+  it("marks a row partial when a receipt landed only part of what it asked", function () {
+    const card = summaryCard(
+      buildAgentTraceDisplayItems(
+        [
+          event(1, {
+            type: "tool_result",
+            callId: "call-tags",
+            name: "library_update",
+            ok: true,
+            actionReceipts: [
+              receipt({
+                id: "tags-partial",
+                capability: "zotero.tags",
+                operation: "apply_tags",
+                status: "partial",
+                requestedTargets: ["item:41", "item:42"],
+                appliedTargets: ["item:41"],
+                normalizedParameters: { tags: ["attention"] },
+              }),
+            ],
+            content: {},
+          }),
+        ],
+        null,
+      ).items,
+    );
+
+    assert.isTrue(
+      card?.entries[0].partial,
+      "a partial receipt states the row did less than it asked, with nothing refused",
+    );
+  });
+
+  it("turns the pill amber when a receipt landed only part of what it asked", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Tagged.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "call-tags",
+          name: "library_update",
+          ok: true,
+          actionReceipts: [
+            receipt({
+              id: "tags-partial",
+              capability: "zotero.tags",
+              operation: "apply_tags",
+              status: "partial",
+              requestedTargets: ["item:41", "item:42"],
+              appliedTargets: ["item:41"],
+              normalizedParameters: { tags: ["attention"] },
+            }),
+          ],
+          content: {},
+        }),
+      ],
+    }) as unknown as FakeElement;
+
+    assert.equal(
+      trace
+        .findByClass("llm-agent-action-summary-card")!
+        .findByClass("llm-plan-status")!.dataset.status,
+      "partial",
+    );
+  });
+});
+
+describe("end-of-turn card precedence", function () {
+  /**
+   * A template whose parsed content can be walked, as chrome's parser gives it.
+   *
+   * The note the card opens is the note's own sanitized HTML, so a test that
+   * asserts what the reader sees has to let that parse produce elements.
+   */
+  class ParsingTemplateElement extends FakeElement {
+    public readonly content = new FakeElement("div");
+
+    constructor() {
+      super("template");
+    }
+
+    set innerHTML(value: string) {
+      for (const [, tag, text] of value.matchAll(/<(\w+)>([^<]*)<\/\1>/g)) {
+        const node = new FakeElement(tag);
+        node.textContent = text;
+        this.content.appendChild(node);
+      }
+    }
+
+    get innerHTML(): string {
+      return "";
+    }
+  }
+
+  const noteDocument = {
+    createElement: (tagName: string) =>
+      tagName === "template"
+        ? new ParsingTemplateElement()
+        : new FakeElement(tagName),
+    createElementNS: (_namespace: string, tagName: string) =>
+      new FakeElement(tagName),
+    createTextNode: (text: string) => {
+      const node = new FakeElement("span");
+      node.textContent = text;
+      return node;
+    },
+    querySelectorAll: () => [],
+  } as unknown as Document;
+
+  const savedNote: AgentSavedNoteResultCard = {
+    kind: "saved_note",
+    actionId: "note-create-1",
+    title: "Attention in transformers",
+    destination: "Zotero",
+    bodyHtml: "<h1>Attention in transformers</h1><p>What the note says.</p>",
+    note: { itemId: 99, libraryID: 1, key: "N99" },
+  };
+
+  const noteChange: AgentNoteChangeResultCard = {
+    kind: "note_change",
+    actionId: "note-edit-1",
+    title: "Attention in transformers",
+    description: "Rewrote the discussion section.",
+    note: { itemId: 99, libraryID: 1, key: "N99" },
+    conversationKey: 5,
+    state: "applied",
+    afterVerified: true,
+    before: { checksum: "sha256:before", recoveryId: "before" } as never,
+    after: { checksum: "sha256:after", recoveryId: "after" } as never,
+  };
+
+  function event(
+    seq: number,
+    payload: AgentRunEventRecord["payload"],
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-precedence",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq,
+    };
+  }
+
+  type TestReceipt = Extract<
+    AgentRunEventRecord["payload"],
+    { type: "tool_result" }
+  >["actionReceipts"][number];
+
+  /** What a note write journals: the note the read-back proved it landed on. */
+  function noteReceipt(operation: string, noteId: number): TestReceipt {
+    return {
+      version: 2,
+      id: `${operation}:${noteId}`,
+      proposalId: `${operation}:${noteId}`,
+      proofDomain: "zotero_state",
+      capability: "zotero.notes",
+      operation,
+      verification: "verified",
+      status: "applied",
+      requestedTargets: ["item:41"],
+      appliedTargets: ["item:41"],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [`native_note:${noteId}:text_match`],
+    } as unknown as TestReceipt;
+  }
+
+  /** The note write, with the receipt that claims the note it wrote. */
+  function noteWriteEvents(receipts: TestReceipt[]): AgentRunEventRecord[] {
+    return [
+      event(1, {
+        type: "tool_call",
+        callId: "w1",
+        name: "note_write",
+        args: { noteId: 99 },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+      event(2, {
+        type: "tool_result",
+        callId: "w1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: receipts,
+        content: { noteId: 99 },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+    ];
+  }
+
+  const savedNoteEventsWithReceipt = () =>
+    noteWriteEvents([noteReceipt("note_create", 99)]);
+  const noteChangeEventsWithReceipt = () =>
+    noteWriteEvents([noteReceipt("note_edit", 99)]);
+  const savedNoteEventsWithoutReceipt = () => noteWriteEvents([]);
+
+  /** A second effect, on another paper, so the turn did more than the note. */
+  function tagReceiptEvent(itemId: number): AgentRunEventRecord {
+    return event(3, {
+      type: "tool_result",
+      callId: "t1",
+      name: "library_update",
+      ok: true,
+      actionReceipts: [
+        {
+          version: 2,
+          id: "tags-1",
+          proposalId: "tags-1",
+          proofDomain: "zotero_state",
+          capability: "zotero.tags",
+          operation: "apply_tags",
+          verification: "verified",
+          status: "applied",
+          requestedTargets: [`item:${itemId}`],
+          appliedTargets: [`item:${itemId}`],
+          alreadySatisfiedTargets: [],
+          rejectedTargets: [],
+          reasons: [],
+          verifiedFacts: [],
+          normalizedParameters: { tags: ["attention"] },
+        } as unknown as TestReceipt,
+      ],
+      content: {},
+    });
+  }
+
+  /** The turn that finalized a document the trace offers to open. */
+  const planDocumentEvents = (): AgentRunEventRecord[] => [
+    event(1, {
+      type: "material_finalized",
+      callId: "submit-1",
+      materialRef: {
+        documentId: "run-precedence:document:1",
+        documentVersion: 1,
+        contentHash: "sha256:material",
+      },
+      materialKind: "guide",
+      materialTitle: "Attention in transformers",
+    }),
+  ];
+
+  /** The assistant turn the trace belongs to, as the panel holds it. */
+  const turnMessage = (text: string) => ({
+    role: "assistant" as const,
+    text,
+    timestamp: 1,
+    runMode: "agent" as const,
+    agentRunId: "run-precedence",
+    streaming: false,
+  });
+
+  function renderTurn(params: {
+    cards: (AgentSavedNoteResultCard | AgentNoteChangeResultCard)[];
+    events: AgentRunEventRecord[];
+    message: ReturnType<typeof turnMessage>;
+    previous?: FakeElement;
+  }): FakeElement {
+    const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
+    const originalZotero = globalScope.Zotero;
+    globalScope.Zotero = {
+      ...((originalZotero as Record<string, unknown>) || {}),
+      Libraries: { userLibraryID: 1, get: () => undefined },
+    };
+    try {
+      return withToolPresentationsReturning(
+        {
+          note_write: {
+            label: "Note Write",
+            summaries: { onSuccess: "Note saved" },
+            buildResultCards: () => params.cards,
+          },
+        },
+        () =>
+          renderAgentTrace({
+            doc: noteDocument,
+            message: params.message,
+            events: params.events,
+            previous: params.previous as unknown as HTMLElement | undefined,
+          }) as unknown as FakeElement,
+      );
+    } finally {
+      globalScope.Zotero = originalZotero;
+    }
+  }
+
+  it("shows a lone new note as the note mode of the action card, once", function () {
+    const trace = renderTurn({
+      cards: [savedNote],
+      events: savedNoteEventsWithReceipt(),
+      message: turnMessage("Saved."),
+    });
+    const cards = trace.findAllByClass("llm-agent-action-summary-card");
+
+    assert.lengthOf(cards, 1);
+    assert.equal(cards[0].dataset.mode, "note");
+    assert.include(cards[0].className, "llm-saved-note-card");
+    assert.equal(
+      cards[0].findByClass("llm-plan-title")!.textContent,
+      "Attention in transformers",
+    );
+    assert.equal(cards[0].findByClass("llm-plan-status")!.textContent, "Saved");
+    assert.isTrue(
+      cards[0].findByClass("llm-agent-action-row")!.open,
+      "the note the reader came for is open",
+    );
+    assert.include(
+      collectFakeText(cards[0].findByClass("llm-note-preview")),
+      "What the note says.",
+    );
+    assert.lengthOf(
+      trace.findAllByClass("llm-saved-note-destination"),
+      0,
+      "the standalone saved-note card is not rendered again",
+    );
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("shows a lone note edit as note mode with the diff and Undo", function () {
+    const trace = renderTurn({
+      cards: [noteChange],
+      events: noteChangeEventsWithReceipt(),
+      message: turnMessage("Updated."),
+    });
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+
+    assert.equal(card.dataset.mode, "note");
+    assert.include(card.className, "llm-note-change-card");
+    assert.equal(
+      card.findByClass("llm-plan-title")!.textContent,
+      "Changed ‘Attention in transformers’",
+    );
+    assert.equal(card.findByClass("llm-plan-status")!.textContent, "Applied");
+    assert.deepEqual(
+      card.findAllByClass("llm-plan-action").map((b) => b.textContent),
+      ["Open note", "Undo"],
+    );
+    assert.lengthOf(
+      trace.findAllByClass("llm-note-review-card"),
+      0,
+      "the standalone note-change card is not rendered again",
+    );
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("folds a note into the action card when other receipts exist", function () {
+    const trace = renderTurn({
+      cards: [noteChange],
+      events: [...noteChangeEventsWithReceipt(), tagReceiptEvent(5)],
+      message: turnMessage("Done."),
+    });
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+
+    assert.equal(card.dataset.mode, "action");
+    assert.equal(card.findByClass("llm-plan-status")!.textContent, "2 actions");
+    const row = card.findByClass("llm-agent-action-row")!;
+    assert.isFalse(row.open, "the note row starts collapsed");
+    assert.lengthOf(
+      collectFakeText(row).match(/Undo/g) || [],
+      0,
+      "a collapsed row does no work until the reader opens it",
+    );
+    assert.lengthOf(trace.findAllByClass("llm-note-review-card"), 0);
+    row.open = true;
+    row.dispatchFakeEvent("toggle");
+    assert.deepEqual(
+      row.findAllByClass("llm-plan-action").map((b) => b.textContent),
+      ["Open note", "Undo"],
+      "opening the row renders the note it wrote",
+    );
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("keeps rendering a note card that no receipt claims", function () {
+    const trace = renderTurn({
+      cards: [savedNote],
+      events: savedNoteEventsWithoutReceipt(),
+      message: turnMessage("Saved."),
+    });
+
+    assert.lengthOf(trace.findAllByClass("llm-saved-note-card"), 1);
+    assert.lengthOf(trace.findAllByClass("llm-saved-note-destination"), 1);
+    assert.isNull(trace.findByClass("llm-agent-action-summary-card"));
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("places the action card after the plan and document cards", function () {
+    const message = turnMessage("Done.");
+    const events = [...planDocumentEvents(), tagReceiptEvent(5)];
+    const cardOrder = (trace: FakeElement) => {
+      const order = trace.children.map((child) => child.className);
+      return {
+        document: order.findIndex((name) =>
+          name.includes("llm-plan-document-card"),
+        ),
+        action: order.findIndex((name) =>
+          name.includes("llm-agent-action-summary-card"),
+        ),
+      };
+    };
+    const trace = renderTurn({ cards: [], events, message });
+    const first = cardOrder(trace);
+
+    assert.isAtLeast(first.document, 0, "the document card is rendered");
+    assert.isAtLeast(first.action, 0, "the action card is rendered");
+    assert.isBelow(first.document, first.action);
+
+    // A re-render keeps the document card and rebuilds the action card, so the
+    // reader must not end up with two of them, or with them the other way up.
+    const again = renderTurn({ cards: [], events, message, previous: trace });
+    const second = cardOrder(again);
+
+    assert.lengthOf(again.findAllByClass("llm-agent-action-summary-card"), 1);
+    assert.lengthOf(again.findAllByClass("llm-plan-document-card"), 1);
+    assert.isBelow(second.document, second.action);
+    disposeAgentTrace(again as unknown as HTMLElement);
   });
 });
 

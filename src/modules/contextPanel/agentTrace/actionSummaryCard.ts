@@ -17,10 +17,10 @@ export { buildAgentActionSummaryCard } from "./actionCardModel";
 /**
  * How the card is drawn beyond its rows.
  *
- * `mode` is the surface it is drawn for: the turn's own card, or the note
- * review the same rows are reused in. `header` overrides the card's title and
- * pill for that other surface, and `renderDetail` gives a row a body to open —
- * both are the note surface's, and the turn's card passes neither.
+ * `mode` is the surface it is drawn for: the turn's own card, or the note the
+ * same rows are reused for when the note is all the turn did. `header`
+ * overrides the card's title and pill for that other surface, and
+ * `renderDetail` gives a row that carries a detail the body it opens.
  */
 export type ActionCardRenderOptions = {
   mode?: "action" | "note";
@@ -41,14 +41,18 @@ export type ActionCardRenderOptions = {
  * What the pill says about the turn as a whole.
  *
  * A turn is only "completed" when every row landed everything it named and
- * proved it. A target the run refused, or an effect no read-back confirmed,
- * makes it partial: the reader is told the turn did less than it claims.
+ * proved it. A target the run refused, an effect that landed only part of what
+ * it asked for, or an effect no read-back confirmed, makes it partial: the
+ * reader is told the turn did less than it claims.
  */
 function cardStatus(
   card: AgentActionSummaryResultCard,
 ): "completed" | "partial" {
   const partial = card.entries.some(
-    (entry) => entry.rejected.length || entry.verification === "unverified",
+    (entry) =>
+      entry.rejected.length ||
+      entry.partial ||
+      entry.verification === "unverified",
   );
   return partial ? "partial" : "completed";
 }
@@ -120,24 +124,44 @@ export function renderActionSummaryCard(
   list.className = "llm-agent-action-summary-list";
   for (const entry of card.entries) {
     const item = doc.createElement("li");
-    const detail = options.renderDetail?.(doc, entry, status) || null;
-    if (!detail) {
+    const renderDetail = entry.detail ? options.renderDetail : undefined;
+    if (!renderDetail) {
       item.appendChild(renderRowLine(doc, entry, false));
-    } else {
-      // A row with a body is a disclosure: its line is the summary the reader
-      // clicks, and the body opens under it. The note surface shows that body
-      // straight away, because the note is what the reader came for.
-      const details = doc.createElement("details") as HTMLDetailsElement;
-      details.className = "llm-agent-action-row";
-      if (options.mode === "note") details.open = true;
-      const summary = doc.createElement("summary");
-      summary.appendChild(renderRowLine(doc, entry, true));
-      const body = doc.createElement("div");
-      body.className = "llm-agent-process-stage-body llm-agent-action-row-body";
-      body.appendChild(detail);
-      details.append(summary, body);
-      item.appendChild(details);
+      list.appendChild(item);
+      continue;
     }
+    // A row with a body is a disclosure: its line is the summary the reader
+    // clicks, and the body opens under it.
+    const details = doc.createElement("details") as HTMLDetailsElement;
+    details.className = "llm-agent-action-row";
+    const summary = doc.createElement("summary");
+    summary.appendChild(renderRowLine(doc, entry, true));
+    const body = doc.createElement("div");
+    body.className = "llm-agent-process-stage-body llm-agent-action-row-body";
+    details.append(summary, body);
+    if (options.mode === "note") {
+      // The note surface shows the body straight away, because the note is
+      // what the reader came for, and its outcome goes to the card's own pill.
+      details.open = true;
+      const detail = renderDetail(doc, entry, status);
+      if (detail) body.appendChild(detail);
+    } else {
+      // A folded row builds its body the first time it is opened. The note
+      // body reads the note and its journal back from disk, and a card of rows
+      // must not start those reads for every row on every render. Its outcome
+      // has no card pill to go to, so the row is given one of its own.
+      const rowStatus = doc.createElement("span");
+      rowStatus.className = "llm-plan-status";
+      body.appendChild(rowStatus);
+      let built = false;
+      details.addEventListener("toggle", () => {
+        if (built || !details.open) return;
+        built = true;
+        const detail = renderDetail(doc, entry, rowStatus);
+        if (detail) body.appendChild(detail);
+      });
+    }
+    item.appendChild(details);
     list.appendChild(item);
   }
   container.appendChild(list);

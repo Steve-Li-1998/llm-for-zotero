@@ -11,6 +11,20 @@ function source(path: string): string {
 }
 
 describe("runtime preference UI", function () {
+  it("keeps long notes-directory summaries on one line with an ellipsis", function () {
+    const css = source("addon/content/preferences.xhtml").replace(/\s+/g, " ");
+    const rule =
+      css.match(/\[data-llm-row-summary="notes"\] \{([^}]*)\}/)?.[1] || "";
+    for (const declaration of [
+      "min-width: 0",
+      "white-space: nowrap",
+      "overflow: hidden",
+      "text-overflow: ellipsis",
+    ]) {
+      assert.include(rule, declaration);
+    }
+  });
+
   it("wraps multi-sentence Codex and Zotero MCP connection errors", function () {
     const preferences = source("addon/content/preferences.xhtml");
     for (const id of [

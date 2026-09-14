@@ -94,11 +94,13 @@
     .llm-pref-panel .llm-pref-row-dot[data-on="true"] { background:
     var(--accent-green, #3aa76d); } .llm-pref-panel .llm-pref-row-summary {
     font-size: 10.5px; line-height: 1.35; color: var(--fill-secondary, #888);
-    overflow-wrap: anywhere; } .llm-pref-panel .llm-pref-row-tag { font-size:
-    10.5px; color: var(--fill-secondary, #888); white-space: nowrap; }
-    .llm-pref-panel .llm-pref-row-chevron { font-size: 12px; line-height: 1;
-    color: var(--fill-secondary, #888); justify-self: center; transition:
-    transform 0.15s ease; } .llm-pref-panel .llm-pref-row[data-open="true"]
+    overflow-wrap: anywhere; } .llm-pref-panel [data-llm-row-summary="notes"] {
+    min-width: 0; white-space: nowrap; overflow: hidden; text-overflow:
+    ellipsis; } .llm-pref-panel .llm-pref-row-tag { font-size: 10.5px; color:
+    var(--fill-secondary, #888); white-space: nowrap; } .llm-pref-panel
+    .llm-pref-row-chevron { font-size: 12px; line-height: 1; color:
+    var(--fill-secondary, #888); justify-self: center; transition: transform
+    0.15s ease; } .llm-pref-panel .llm-pref-row[data-open="true"]
     .llm-pref-row-chevron { transform: rotate(90deg); } .llm-pref-panel
     .llm-pref-row-body { display: flex; flex-direction: column; gap: 12px;
     padding: 12px; border-top: 1px solid var(--llm-pref-stroke); }

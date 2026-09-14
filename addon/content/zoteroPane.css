@@ -3003,7 +3003,7 @@
 
 /* Conversation turn navigator */
 .llm-chat-shell.llm-turn-navigator-visible .llm-messages {
-  padding-left: 24px;
+  padding-left: 25px;
 }
 
 .llm-turn-navigator {

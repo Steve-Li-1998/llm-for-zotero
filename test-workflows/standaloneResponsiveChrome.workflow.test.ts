@@ -31,11 +31,16 @@ describe("workflow: standalone responsive chrome", function () {
     const doc = win.document;
     const panel = doc.createElement("div");
     panel.className = "llm-panel";
+    // The native XUL window has no HTML body. Keep this fixture independent
+    // of the window's flex layout so each requested width is measured exactly.
+    panel.style.position = "fixed";
+    panel.style.left = "0";
+    panel.style.top = "0";
     const header = doc
       .querySelector(".llm-header")!
       .cloneNode(true) as HTMLElement;
     panel.appendChild(header);
-    doc.body.appendChild(panel);
+    (doc.body || doc.documentElement).appendChild(panel);
     try {
       const runtime = panel.querySelector(
         ".llm-runtime-system-controls",

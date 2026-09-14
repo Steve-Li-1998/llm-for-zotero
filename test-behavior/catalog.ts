@@ -27,6 +27,13 @@ const contract = (
 
 export const catalog: Contract[] = [
   contract(
+    "conversation.delivery",
+    "conversation",
+    "auto",
+    false,
+    "A paper summary is saved as one verified child note, the exact final chat answer and completed run survive storage reload, and the visible action card and stopped Working indicator precede the Ready composer.",
+  ),
+  contract(
     "conversation.retention",
     "conversation",
     "auto",

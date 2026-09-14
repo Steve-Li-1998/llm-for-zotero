@@ -344,7 +344,6 @@ export async function exerciseStreamingReplay(
     setStatusSafely: helpers.setStatusSafely,
     pushTraceEvent: push,
     scheduleQueueDrain: () => {},
-    uiRelease: { releaseReady: () => {} },
   });
   let expected = initial;
   try {

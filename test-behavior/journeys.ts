@@ -19,6 +19,7 @@ import {
 } from "./native";
 import { researchJourney } from "./research";
 import { retentionJourney } from "./retention";
+import { deliveryJourney } from "./delivery";
 import {
   assertConversationSummary,
   assertHumanCitationLabels,
@@ -100,7 +101,9 @@ export async function executeJourneyStep(
   ) => driver.turn(id, prompt, spec.mode, request, expected);
   let outcome: StepOutcome | void = undefined;
   try {
-    if (id === "conversation.retention") {
+    if (id === "conversation.delivery") {
+      await deliveryJourney(ctx);
+    } else if (id === "conversation.retention") {
       await retentionJourney(ctx);
     } else if (id === "semantic.create-file") {
       await createdDestinationWorkflow(ctx);

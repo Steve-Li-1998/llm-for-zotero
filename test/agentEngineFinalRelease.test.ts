@@ -397,7 +397,7 @@ describe("agent engine final UI release", function () {
     ]);
   });
 
-  it("releases the request UI when a final event arrives before runtime bookkeeping settles", async function () {
+  it("keeps the request owned until final outcome persistence settles", async function () {
     const conversationKey = 123;
     const pendingWrites: Array<[number, number]> = [];
     const idleRestores: Array<[number, number]> = [];
@@ -425,14 +425,142 @@ describe("agent engine final UI release", function () {
 
     await finalHandled;
 
-    assert.deepInclude(pendingWrites, [conversationKey, 0]);
-    assert.deepInclude(idleRestores, [conversationKey, 77]);
-    assert.include(statuses, "Ready");
+    assert.notDeepInclude(pendingWrites, [conversationKey, 0]);
+    assert.isEmpty(idleRestores);
+    assert.notInclude(statuses, "Ready");
     assert.include(statuses, "Working");
     assert.isFalse(
       statuses.some((text) => /Continuing agent|Checkpointed agent/.test(text)),
     );
   });
+
+  it("preserves and persists the final answer when completion fails after the final event", async function () {
+    const statuses: string[] = [];
+    const stored: any[] = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: any) => {
+        await params.onStart?.("run-delivery-failure");
+        await params.onEvent?.({
+          type: "final",
+          text: "The complete final answer.",
+        });
+        throw new Error("Final delivery failed");
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses,
+    });
+    deps.persistConversationMessage = async (_key, message) => {
+      stored.push({ ...message });
+    };
+    deps.chatHistory.set(123, []);
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(123),
+        question: "Summarize and save.",
+      },
+      deps,
+    );
+    const assistant = stored.find((message) => message.role === "assistant");
+    assert.equal(assistant?.text, "The complete final answer.");
+    assert.isTrue(
+      statuses.some((text) => text.includes("Final delivery failed")),
+    );
+    assert.isFalse(deps.chatHistory.get(123)?.at(-1)?.streaming);
+  });
+
+  for (const failFinalRefresh of [false, true]) {
+    it(`waits for chat persistence before releasing Send${failFinalRefresh ? " and preserves the saved answer if the final refresh fails" : ""}`, async function () {
+      const statuses: string[] = [];
+      const idleRestores: Array<[number, number]> = [];
+      let startPersist!: () => void;
+      const persistenceStarted = new Promise<void>((resolve) => {
+        startPersist = resolve;
+      });
+      let finishPersist!: () => void;
+      const persistence = new Promise<void>((resolve) => {
+        finishPersist = resolve;
+      });
+      const stored: any[] = [];
+      const runtime = {
+        getCapabilities: () => ({
+          streaming: true,
+          toolCalls: true,
+          multimodal: false,
+        }),
+        runTurn: async (params: any) => {
+          await params.onStart?.("run-persistence-gate");
+          await params.onEvent?.({
+            type: "final",
+            text: "The saved final answer.",
+          });
+          return {
+            kind: "completed",
+            runId: "run-persistence-gate",
+            text: "The saved final answer.",
+            usedFallback: false,
+          };
+        },
+      } as unknown as AgentRuntime;
+      const deps = createDeps({
+        runtime,
+        pendingWrites: [],
+        idleRestores,
+        statuses,
+      });
+      deps.chatHistory.set(123, []);
+      deps.persistConversationMessage = async (_key, message) => {
+        if (message.role === "assistant") {
+          startPersist();
+          await persistence;
+          stored.push({ ...message });
+        }
+      };
+      const createHelpers = deps.createPanelUpdateHelpers;
+      let refreshFailed = false;
+      deps.createPanelUpdateHelpers = (...args) => ({
+        ...createHelpers(...args),
+        refreshChatSafely: () => {
+          if (failFinalRefresh && stored.length && !refreshFailed) {
+            refreshFailed = true;
+            throw new Error("Final chat refresh failed");
+          }
+        },
+      });
+      const sent = sendAgentTurn(
+        {
+          body: {} as Element,
+          item: fakeItem(123),
+          question: "Summarize and save.",
+        },
+        deps,
+      );
+      await persistenceStarted;
+      assert.isEmpty(idleRestores);
+      assert.notInclude(statuses, "Ready");
+      finishPersist();
+      await sent;
+      assert.lengthOf(stored, 1);
+      assert.equal(stored[0].text, "The saved final answer.");
+      assert.equal(deps.chatHistory.get(123)?.at(-1)?.text, stored[0].text);
+      assert.isFalse(deps.chatHistory.get(123)?.at(-1)?.streaming);
+      assert.lengthOf(idleRestores, 1);
+      assert.equal(refreshFailed, failFinalRefresh);
+      assert.include(
+        statuses,
+        failFinalRefresh ? "Error: Final chat refresh failed" : "Ready",
+      );
+    });
+  }
 
   it("forwards note-edit selected text contexts into the runtime request", async function () {
     const conversationKey = 3703;

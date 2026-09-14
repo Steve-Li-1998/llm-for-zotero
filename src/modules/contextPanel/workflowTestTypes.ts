@@ -499,6 +499,12 @@ export type WorkflowTestApi = {
       ReturnType<typeof import("./planHistoryReplay").exercisePlanHistoryReplay>
     >
   >;
+  exerciseAgentDeliveryReplay: (input: {
+    panelId: string;
+    failFinalRefresh?: boolean;
+  }) => ReturnType<
+    typeof import("./agentDeliveryReplay").exerciseAgentDeliveryReplay
+  >;
   exerciseStreamingReplay: (input: {
     panelId: string;
     historyTurns: number;

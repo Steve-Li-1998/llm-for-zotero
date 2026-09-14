@@ -6,6 +6,7 @@ import {
 import { exercisePlanHistoryReplay } from "./planHistoryReplay";
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import { exerciseStreamingReplay } from "./streamingReplay";
+import { exerciseAgentDeliveryReplay } from "./agentDeliveryReplay";
 import { buildUI } from "./buildUI";
 import { getAgentRuntime } from "../../agent";
 import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
@@ -5315,6 +5316,11 @@ export function installWorkflowTestHarness(targetAddon: {
       exercisePlanHistoryReplay(getPanel(input.panelId), input),
     exerciseStreamingReplay: (input) =>
       exerciseStreamingReplay(getPanel(input.panelId), input),
+    exerciseAgentDeliveryReplay: (input) =>
+      exerciseAgentDeliveryReplay(
+        getPanel(input.panelId),
+        input.failFinalRefresh,
+      ),
     renderStartupPanelForItem,
     startNewPanelConversation,
     togglePanelConversationMode,

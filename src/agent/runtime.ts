@@ -1238,24 +1238,6 @@ export class AgentRuntime {
         const finalMaterialRef = options.documentId
           ? finalizedMaterialRefs.get(options.documentId)
           : undefined;
-        if (options.emitFinalEvent !== false) {
-          await emit({
-            type: "final",
-            text: redactedFinalText,
-            ...(options.documentId ? { documentId: options.documentId } : {}),
-            ...(finalMaterialRef ? { materialRef: finalMaterialRef } : {}),
-            ...(options.webAttribution?.status === "valid" &&
-            options.webAttribution.anchors.length
-              ? {
-                  webSourceAnchors: options.webAttribution.anchors,
-                }
-              : {}),
-          });
-        }
-        await persistIfLive(() =>
-          finishAgentRun(runId, status, redactedFinalText),
-        );
-        runTerminalized = true;
         // The transcript and the read/coverage ledgers record what this run
         // DID. Gating them on a clean finish meant a run that exhausted its
         // rounds -- or was failed by three cancellations -- threw away its own
@@ -1284,7 +1266,7 @@ export class AgentRuntime {
               content: redactedFinalText,
               messageId: `${runId}:answer`,
             });
-          await persistTranscriptCheckpoint();
+          await persistTranscriptCheckpoint({ requireAccepted: true });
           if (status === "completed" && redactedFinalText) {
             await persistIfLive(() =>
               recordAgentTurn(
@@ -1295,6 +1277,26 @@ export class AgentRuntime {
               ),
             );
           }
+        }
+        await persistIfLive(() =>
+          finishAgentRun(runId, status, redactedFinalText),
+        );
+        runTerminalized = true;
+        // A final event publishes a durable outcome. A UI observer may fail;
+        // it must not leave an already completed answer only on screen.
+        if (options.emitFinalEvent !== false) {
+          await emit({
+            type: "final",
+            text: redactedFinalText,
+            ...(options.documentId ? { documentId: options.documentId } : {}),
+            ...(finalMaterialRef ? { materialRef: finalMaterialRef } : {}),
+            ...(options.webAttribution?.status === "valid" &&
+            options.webAttribution.anchors.length
+              ? {
+                  webSourceAnchors: options.webAttribution.anchors,
+                }
+              : {}),
+          });
         }
         return {
           kind: "completed",
@@ -1338,7 +1340,7 @@ export class AgentRuntime {
             currentAnswerText = finalText;
           }
         }
-        return completeRun(finalText, "completed", { webAttribution });
+        return await completeRun(finalText, "completed", { webAttribution });
       };
       const providerTerminalOutcomes: ToolWorkflowOutcome[] = [];
       const runModelStep = async (
@@ -1735,7 +1737,7 @@ export class AgentRuntime {
           { suppressModelDelivery: true },
         );
         if (!clarification.toolResult.ok)
-          return completeRun(
+          return await completeRun(
             readToolError(clarification.toolResult) ||
               "The requested action is still awaiting your input.",
             "failed",
@@ -1745,7 +1747,7 @@ export class AgentRuntime {
             request.actionPreparation as import("./contracts/actionPreparation").ActionPreparation
           ).state !== "ready"
         )
-          return completeRun(
+          return await completeRun(
             request.actionPreparation.issues.join("\n") ||
               "The requested references remain unresolved.",
             "failed",
@@ -1799,7 +1801,7 @@ export class AgentRuntime {
               activePlanSession.activeWorkflowObligationIds(),
             );
             if (next.kind === "blocked")
-              return completeRun(next.reason, "failed");
+              return await completeRun(next.reason, "failed");
             if (next.kind === "model") return null;
             if (next.kind === "complete") {
               if (!workflowSummaries.length) return null;
@@ -1814,7 +1816,7 @@ export class AgentRuntime {
                 canCorrect: false,
               });
               if (decision.kind !== "accept")
-                return completeRun(
+                return await completeRun(
                   decision.kind === "fail"
                     ? decision.failure
                     : decision.correction,
@@ -1832,7 +1834,7 @@ export class AgentRuntime {
                 role: "assistant",
                 content: finalizedMaterial?.finalText || text,
               });
-              return completeRun(text);
+              return await completeRun(text);
             }
             const prepared = next.prepared;
             await emit({
@@ -1848,7 +1850,7 @@ export class AgentRuntime {
               },
             );
             if (result.failed)
-              return completeRun(
+              return await completeRun(
                 result.finalText || "The action failed.",
                 "failed",
               );
@@ -1954,14 +1956,14 @@ export class AgentRuntime {
             );
           } catch (err) {
             if (err instanceof AgentPromptBudgetError) {
-              return completeRun(err.message, "failed");
+              return await completeRun(err.message, "failed");
             }
             throw err;
           }
           const { step, stepStreamedText } = stepResult;
           const terminalOutcome = providerTerminalOutcomes.shift();
           if (terminalOutcome) {
-            return completeRun(
+            return await completeRun(
               terminalOutcome.finalText || currentAnswerText,
               terminalOutcome.failed ? "failed" : "completed",
               { documentId: terminalOutcome.documentId },
@@ -2000,7 +2002,7 @@ export class AgentRuntime {
                   customLimit?.mode === "custom"
                     ? `\n\n[This answer was cut short by the custom per-response output limit (${customLimit.tokens} tokens) ${answerContinuations + 1} times. Raise the limit in Advanced settings, or ask to continue.]`
                     : `\n\n[This answer was cut short by the provider's output limit ${answerContinuations + 1} times. Ask to continue if it is incomplete.]`;
-                return completeRun(
+                return await completeRun(
                   `${turnPathRedactor.redactTerminalText(keptAnswerModelText)}${note}`,
                   "completed",
                 );
@@ -2035,7 +2037,7 @@ export class AgentRuntime {
             if (step.reason === "stream_interrupted") {
               if (streamRecoveryUsed) {
                 await rollbackCommittedStreamedText(stepStreamedText);
-                return completeRun(
+                return await completeRun(
                   "The response stream failed again after one automatic retry. Durable Plan progress was preserved; continue when the connection is available.",
                   "failed",
                 );
@@ -2067,7 +2069,7 @@ export class AgentRuntime {
                     : customLimit?.mode === "custom"
                       ? `The custom per-response output limit (${customLimit.tokens} tokens) repeatedly prevented the model from completing the required structured step. Raise the limit in Advanced settings, then continue; durable Plan progress was preserved.`
                       : "The provider repeatedly reached its output limit before completing the required structured step. Durable Plan progress was preserved; continue the plan to resume from the pending work unit.";
-              return completeRun(exhaustionMessage, "failed");
+              return await completeRun(exhaustionMessage, "failed");
             }
             const assistantMessage: AgentAssistantMessage =
               step.assistantMessage || {
@@ -2145,12 +2147,12 @@ export class AgentRuntime {
                   finalDecision.actionContractRejection,
                 );
               }
-              return completeRun(finalDecision.userMessage, "failed");
+              return await completeRun(finalDecision.userMessage, "failed");
             }
             const answerPrefix = keptAnswerVisibleText;
             keptAnswerVisibleText = "";
             keptAnswerModelText = "";
-            return emitFinalStep(
+            return await emitFinalStep(
               step,
               `${answerPrefix}${stepStreamedText}`,
               finalDecision.webAttribution,
@@ -2168,7 +2170,7 @@ export class AgentRuntime {
           if (step.calls.length > maxToolCallsPerRound) {
             const overflowMessage = `The model returned ${step.calls.length} tool calls in one step, exceeding the safe limit of ${maxToolCallsPerRound}. None of those calls were executed.`;
             if (toolCallOverflowCorrectionUsed || segmentRound >= maxRounds) {
-              return completeRun(
+              return await completeRun(
                 `${overflowMessage} Please narrow the request and try again.`,
                 "failed",
               );
@@ -2263,7 +2265,7 @@ export class AgentRuntime {
                 });
               }
               await persistTranscriptCheckpoint();
-              return completeRun(
+              return await completeRun(
                 stopFinalText,
                 outcome.failed ? "failed" : "completed",
                 {
@@ -2293,7 +2295,7 @@ export class AgentRuntime {
               (consecutiveInputRejectionRounds >= 6
                 ? "Agent stopped after repeated invalid tool inputs. Please adjust the request and try again."
                 : "Agent stopped after repeated tool errors. Please adjust the request and try again.");
-            return completeRun(finalText, "failed");
+            return await completeRun(finalText, "failed");
           }
           if (continuationCheckpoint) {
             await restartFromSemanticCheckpoint({
@@ -2328,7 +2330,7 @@ export class AgentRuntime {
           const finalText =
             currentAnswerText ||
             `Agent stopped after segment ${segment} produced no new successful tool result. The completed transcript was saved; narrow or redirect the request before continuing.`;
-          return completeRun(finalText, "failed");
+          return await completeRun(finalText, "failed");
         }
         for (const fingerprint of newFingerprints) {
           seenProgressFingerprints.add(fingerprint);
@@ -2344,13 +2346,14 @@ export class AgentRuntime {
         segment += 1;
       }
     } catch (error) {
-      await planSession
-        ?.interrupt(
-          params.signal?.aborted
-            ? "The user stopped the approved plan execution"
-            : "The provider or runtime failed before the approved plan completed",
-        )
-        .catch(() => undefined);
+      if (!runTerminalized)
+        await planSession
+          ?.interrupt(
+            params.signal?.aborted
+              ? "The user stopped the approved plan execution"
+              : "The provider or runtime failed before the approved plan completed",
+          )
+          .catch(() => undefined);
       if (webSourceRunId && !runTerminalized) {
         const message = redactRunTerminalText(
           error instanceof Error ? error.message : String(error),

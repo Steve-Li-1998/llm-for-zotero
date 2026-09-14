@@ -253,7 +253,6 @@ type AgentTurnEventContext = {
   setStatusSafely: (text: string, kind: StatusKind) => void;
   pushTraceEvent: (runId: string, event: AgentEvent) => void;
   scheduleQueueDrain: () => void;
-  uiRelease: { releaseReady: () => void };
 };
 
 /**
@@ -284,7 +283,6 @@ export function createAgentTurnEventHandler(
     setStatusSafely,
     pushTraceEvent,
     scheduleQueueDrain,
-    uiRelease,
   } = ctx;
   const executionRequestId = getPendingRequestId(conversationKey);
   return async (event: AgentEvent): Promise<void> => {
@@ -569,10 +567,11 @@ export function createAgentTurnEventHandler(
             : deps.sanitizeText(event.text)) ||
           assistantMessage.pendingFinalText ||
           assistantMessage.text;
-        assistantMessage.pendingFinalText = undefined;
+        // Keep the exact final text recoverable until the outcome owner has
+        // persisted the chat row and completed its presentation.
+        assistantMessage.pendingFinalText = assistantMessage.text;
         assistantMessage.waitingAnimationStartedAt = undefined;
         assistantMessage.streaming = false;
-        uiRelease.releaseReady();
         break;
       default:
         break;
@@ -597,10 +596,9 @@ async function finalizeAgentTurnOutcome(ctx: {
   pairedUserMessage: Message;
   runtimeRequest: AgentRuntimeRequest;
   refreshChatSafely: () => void;
-  setStatusSafely: (text: string, kind: StatusKind) => void;
   markCancelled: () => Promise<void>;
   persistAssistantOnce: () => Promise<void>;
-  uiRelease: { isReleased: () => boolean };
+  uiRelease: RequestUiReleaseController;
   /** Send skips the assistant persist when a /compact turn already handled it. */
   skipAssistantPersist: boolean;
 }): Promise<void> {
@@ -614,7 +612,6 @@ async function finalizeAgentTurnOutcome(ctx: {
     pairedUserMessage,
     runtimeRequest,
     refreshChatSafely,
-    setStatusSafely,
     markCancelled,
     persistAssistantOnce,
     uiRelease,
@@ -653,13 +650,13 @@ async function finalizeAgentTurnOutcome(ctx: {
     pairedUserMessage,
     runtimeRequest,
   );
+  if (!skipAssistantPersist) {
+    await persistAssistantOnce();
+  }
   assistantMessage.pendingFinalText = undefined;
   assistantMessage.waitingAnimationStartedAt = undefined;
   assistantMessage.streaming = false;
   refreshChatSafely();
-  if (!skipAssistantPersist) {
-    await persistAssistantOnce();
-  }
   if (deps.getConversationSystem?.() === "claude_code") {
     const conversationKind = resolveDisplayConversationKind(item);
     const baseItem = resolveConversationBaseItem(item);
@@ -680,9 +677,7 @@ async function finalizeAgentTurnOutcome(ctx: {
       runtimeRequest.conversationGeneration,
     ).catch(() => null);
   }
-  if (!uiRelease.isReleased()) {
-    setStatusSafely("Ready", "ready");
-  }
+  uiRelease.releaseReady();
 }
 
 /**
@@ -704,7 +699,6 @@ async function handleAgentTurnFailure(ctx: {
   setStatusSafely: (text: string, kind: StatusKind) => void;
   markCancelled: () => Promise<void>;
   persistAssistantOnce: () => Promise<void>;
-  uiRelease: { isReleased: () => boolean };
   /**
    * Retry passes this to restore the pre-retry assistant message when the
    * failed attempt streamed nothing — a preserved interrupted partial (or the
@@ -731,13 +725,9 @@ async function handleAgentTurnFailure(ctx: {
     setStatusSafely,
     markCancelled,
     persistAssistantOnce,
-    uiRelease,
     restorePreviousAssistant,
     restorePairedUser,
   } = ctx;
-  if (uiRelease.isReleased()) {
-    return;
-  }
   const isCancelled =
     deps.cancelledRequestId(conversationKey) >= thisRequestId ||
     Boolean(deps.currentAbortController(conversationKey)?.signal.aborted) ||
@@ -758,12 +748,17 @@ async function handleAgentTurnFailure(ctx: {
   // so text the model retracted between tool rounds is not resurrected.
   messageDeltaCoalescer.flushNow("cancel");
   const partialText = assistantMessage.pendingFinalText || "";
+  const finalText =
+    assistantMessage.streaming === false ? assistantMessage.text : "";
   messageDeltaCoalescer.cancel();
-  const outcome = resolveStreamInterruptionOutcome({
-    partialText,
-    errorMessage: userFacingError,
-  });
-  if (!outcome.interrupted && restorePreviousAssistant) {
+  // A delivery error after the final event does not make the answer partial.
+  const outcome = finalText
+    ? { text: finalText, interrupted: false }
+    : resolveStreamInterruptionOutcome({
+        partialText,
+        errorMessage: userFacingError,
+      });
+  if (!finalText && !outcome.interrupted && restorePreviousAssistant) {
     restorePreviousAssistant();
     await restorePairedUser?.();
     refreshChatSafely();
@@ -776,9 +771,12 @@ async function handleAgentTurnFailure(ctx: {
   // this turn's partial onto its own deltas.
   assistantMessage.pendingFinalText = undefined;
   assistantMessage.streaming = false;
-  refreshChatSafely();
-  await persistAssistantOnce();
-  setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
+  try {
+    await persistAssistantOnce();
+    refreshChatSafely();
+  } finally {
+    setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
+  }
 }
 
 export function mergeAgentToolResultQuoteCitations(
@@ -1738,7 +1736,6 @@ export async function sendAgentTurn(
   let assistantPersisted = false;
   const persistAssistantOnce = async () => {
     if (assistantPersisted) return;
-    assistantPersisted = true;
     const persistedTimestamp = refreshAssistantMessageTimestampForPersistence(
       assistantMessage,
       userMessage,
@@ -1760,6 +1757,7 @@ export async function sendAgentTurn(
       contextWindow: snapshot?.contextWindow,
       quoteCitations: assistantMessage.quoteCitations,
     });
+    assistantPersisted = true;
   };
   const markCancelled = async () => {
     flushMessageDeltas("cancel");
@@ -1822,7 +1820,6 @@ export async function sendAgentTurn(
         setStatusSafely,
         pushTraceEvent,
         scheduleQueueDrain,
-        uiRelease,
       }),
     });
 
@@ -1836,7 +1833,6 @@ export async function sendAgentTurn(
       pairedUserMessage: userMessage,
       runtimeRequest,
       refreshChatSafely,
-      setStatusSafely,
       markCancelled,
       persistAssistantOnce,
       uiRelease,
@@ -1854,7 +1850,6 @@ export async function sendAgentTurn(
       setStatusSafely,
       markCancelled,
       persistAssistantOnce,
-      uiRelease,
     });
   } finally {
     if (!uiRelease.isReleased()) {
@@ -2273,7 +2268,6 @@ export async function retryAgentTurn(
   let assistantPersisted = false;
   const persistAssistantOnce = async () => {
     if (assistantPersisted) return;
-    assistantPersisted = true;
     const persistedTimestamp = refreshAssistantMessageTimestampForPersistence(
       assistantMessage,
       retryPair.userMessage,
@@ -2294,6 +2288,7 @@ export async function retryAgentTurn(
       contextWindow: snapshot?.contextWindow,
       quoteCitations: assistantMessage.quoteCitations,
     });
+    assistantPersisted = true;
   };
   const markCancelled = async () => {
     flushMessageDeltas("cancel");
@@ -2351,7 +2346,6 @@ export async function retryAgentTurn(
         setStatusSafely,
         pushTraceEvent,
         scheduleQueueDrain,
-        uiRelease,
       }),
     });
 
@@ -2365,7 +2359,6 @@ export async function retryAgentTurn(
       pairedUserMessage: retryPair.userMessage,
       runtimeRequest,
       refreshChatSafely,
-      setStatusSafely,
       markCancelled,
       persistAssistantOnce,
       uiRelease,
@@ -2383,7 +2376,6 @@ export async function retryAgentTurn(
       setStatusSafely,
       markCancelled,
       persistAssistantOnce,
-      uiRelease,
       restorePreviousAssistant,
       restorePairedUser,
     });

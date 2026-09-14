@@ -92,7 +92,7 @@ const SOURCE_SPAN_LEADING_BOUNDARY_CHARS = "\"'“‘([";
 const SOURCE_SPAN_TRAILING_BOUNDARY_PATTERN = /[.,;:!?"'”’)\]}。！？、，；：]/;
 const TERMINAL_SENTENCE_PUNCTUATION_PATTERN = /[.!?。！？]/u;
 const PDF_ITEM_SEPARATED_TERMINAL_PUNCTUATION_PATTERN =
-  /^(?=[\s\u0003]*\u0003)[\s\u0003]*[.!?。！？]+["'”’]?(?=$|[\s\u0003]|["'“‘([\p{Lu}])/u;
+  /^[\s\u0003]+[.!?。！？]+["'”’]?(?=$|[\s\u0003]|["'“‘([\p{Lu}])/u;
 const OMITTED_TRAILING_SOURCE_LOCATOR_PATTERN =
   /^[\s\u0003]*(\((?:(?:supplementary|supp\.?)\s+)?(?:fig(?:ure)?|table|eq(?:uation)?|appendix)\b[^()\n]{0,120}\))[.!?。！？]+["'”’]?/iu;
 const OMITTED_TRAILING_CITATION_SUFFIX_PATTERN =
@@ -1207,7 +1207,7 @@ function isInsideInlineMathRange(
   );
 }
 
-function normalizeAcademicMathContent(value: string): string {
+export function normalizeAcademicMathContent(value: string): string {
   let normalized = Array.from(value)
     .map((character) => UNICODE_SUPERSCRIPT_TO_ASCII[character] || character)
     .join("")

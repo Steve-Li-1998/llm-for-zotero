@@ -26,6 +26,10 @@ import {
 } from "./quoteTextNormalization";
 import { stripLeadingCitationSeparators } from "./citationText";
 import {
+  assessAnchoredQuotePassage,
+  assessQuoteMathCompatibility,
+} from "./quotePassageEvidence";
+import {
   isCanonicalSourceCitationLabel,
   isNonSourceCitationLabel,
   normalizeCitationLabelForMatch,
@@ -1743,6 +1747,11 @@ export function resolveExactDisplayedQuoteCitation(params: {
         stripLikelyLayoutNumberArtifacts(span.text),
       );
       if (!sourceQuoteText) continue;
+      if (
+        assessQuoteMathCompatibility(sourceQuoteText, displayed.quoteText) ===
+        "conflict"
+      )
+        continue;
       const alignment = assessAcademicQuoteAlignment(
         sourceQuoteText,
         displayed.quoteText,
@@ -2572,31 +2581,46 @@ function resolveUniqueDisplayedQuoteAnchorCitation(params: {
     quoteText: displayedQuoteText,
     requireUnique: true,
   });
+  if (!resolved) return undefined;
+  const sourceMatchText = normalizeMultilineText(resolved.match.query);
+  if (!sourceMatchText) return undefined;
+  const passageEvidence =
+    resolved.match.confidence === "high" &&
+    resolved.match.matchedTokenCount >= MIN_NEAR_COMPLETE_QUOTE_ANCHOR_TOKENS
+      ? assessAnchoredQuotePassage({
+          sourceText: resolved.source.sourceText,
+          quoteText: displayedQuoteText,
+          anchorText: resolved.match.query,
+        })
+      : "incomplete";
+  if (passageEvidence === "conflict" || passageEvidence === "unmatched")
+    return undefined;
+  const anchoredPassageSupported = passageEvidence === "supported";
   if (
-    !resolved ||
+    !anchoredPassageSupported &&
     !hasCompleteDisplayedQuoteSupport(resolved.match, displayedQuoteText)
   ) {
     return undefined;
   }
-  const sourceMatchText = normalizeMultilineText(resolved.match.query);
-  if (!sourceMatchText) return undefined;
-  const alignment = assessAcademicQuoteAlignment(
-    sourceMatchText,
-    displayedQuoteText,
-  );
-  const fullSourceAlignment = assessAcademicQuoteAlignment(
-    resolved.source.sourceText,
-    displayedQuoteText,
-  );
-  if (
-    !fullSourceAlignment.allMeaningfulTokensSupported ||
-    (alignment.hasUnexplainedSemanticHardDifference &&
-      fullSourceAlignment.hasUnexplainedSemanticHardDifference) ||
-    alignment.displayedTokens.some(
-      (token) => token.kind === "operator" && !token.supported,
-    )
-  ) {
-    return undefined;
+  if (!anchoredPassageSupported) {
+    const alignment = assessAcademicQuoteAlignment(
+      sourceMatchText,
+      displayedQuoteText,
+    );
+    const fullSourceAlignment = assessAcademicQuoteAlignment(
+      resolved.source.sourceText,
+      displayedQuoteText,
+    );
+    if (
+      !fullSourceAlignment.allMeaningfulTokensSupported ||
+      (alignment.hasUnexplainedSemanticHardDifference &&
+        fullSourceAlignment.hasUnexplainedSemanticHardDifference) ||
+      alignment.displayedTokens.some(
+        (token) => token.kind === "operator" && !token.supported,
+      )
+    ) {
+      return undefined;
+    }
   }
   return buildQuoteCitation({
     id: params.preferredId,
@@ -3030,7 +3054,36 @@ function hasUniqueAffirmativeHardMismatch(params: {
   );
   if (identities.size !== 1) return false;
   const quoteText = stripOuterQuoteDelimiters(params.quoteText);
-  return params.sourceIndex.sources.some((source) => {
+  const resolved = findDisplayedQuoteAnchorMatch({
+    quoteText,
+    sourceIndex: params.sourceIndex,
+    requireUnique: true,
+  });
+  // Different occurrences on different pages cannot establish which local
+  // expression contradicts the displayed quote. Unpaged extraction of the
+  // same attachment remains available to corroborate a located PDF passage.
+  const pages = new Set(
+    params.sourceIndex.sources
+      .map((source) => source.pageHintIndex)
+      .filter((page) => page !== undefined),
+  );
+  if (!resolved && pages.size > 1) return false;
+  if (resolved) {
+    const passage = assessAnchoredQuotePassage({
+      sourceText: resolved.source.sourceText,
+      quoteText,
+      anchorText: resolved.match.query,
+    });
+    if (passage === "supported") return false;
+    if (passage === "conflict") return true;
+  }
+  const sources = resolved
+    ? params.sourceIndex.sources.filter(
+        (source) =>
+          source === resolved.source || source.pageHintIndex === undefined,
+      )
+    : params.sourceIndex.sources;
+  return sources.some((source) => {
     const assessment = assessAcademicQuoteAlignment(
       source.sourceText,
       quoteText,
@@ -3539,6 +3592,7 @@ function quoteCitationSharesSourceIdentity(
 
 function resolveAdjacentManualQuoteAnchor(params: {
   quoteText: string;
+  isImmediateSourceMarker: boolean;
   quoteCitationId: string;
   quoteCitations: QuoteCitation[];
   sourceIndex: QuoteSourceIndex;
@@ -3561,12 +3615,16 @@ function resolveAdjacentManualQuoteAnchor(params: {
   if (
     !displayedQuote ||
     !anchoredQuote ||
-    (findCanonicalTextMatchStart(displayedQuote, anchoredQuote) < 0 &&
+    (!params.isImmediateSourceMarker &&
+      findCanonicalTextMatchStart(displayedQuote, anchoredQuote) < 0 &&
       !bindQuoteCitationToDisplayedText(existingCitation, params.quoteText))
-  ) {
+  )
     return [];
-  }
 
+  // A bare marker immediately after a blockquote is its source attribution.
+  // A marker quoted itself or separated by a paragraph can be another quote;
+  // those retain the existing requirement for overlapping displayed text.
+  // Independently match any replacement within the same stable source identity.
   const resolutionParams = {
     quoteText: params.quoteText,
     citationLabel: existingCitation.citationLabel,
@@ -3920,6 +3978,9 @@ function* finalizeAssistantQuoteCitationSteps(
       ? resolveAdjacentManualQuoteAnchor({
           quoteText: candidate.trailingCitation?.quoteText || quoteText,
           quoteCitationId: adjacentQuoteCitation.quoteCitationId,
+          isImmediateSourceMarker:
+            adjacentQuoteCitation.lineIndex === index &&
+            !/^[ \t]*>/.test(lines[index]),
           quoteCitations,
           sourceIndex: finalizedSourceIndex,
         })

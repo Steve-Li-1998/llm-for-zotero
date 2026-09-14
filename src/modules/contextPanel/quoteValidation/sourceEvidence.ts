@@ -7,7 +7,10 @@
  * reading of the caches.
  */
 import type { AgentRuntimeRequestInput as AgentRuntimeRequest } from "../../../agent/types";
-import { getActiveReaderForSelectedTab } from "../../../services/pdf/zoteroReaderTabs";
+import {
+  getActiveReaderForSelectedTab,
+  getAllOpenReaders,
+} from "../../../services/pdf/zoteroReaderTabs";
 import { pdfTextCache } from "../../../services/paperContent/contextCache";
 import { formatPaperSourceLabel } from "../../../services/paperContent/paperAttribution";
 import {
@@ -282,8 +285,17 @@ export async function warmQuoteSourceCachesForPaperContexts(
         await warmPageTextCacheForAttachment(contextItemId, {
           yieldToMain: options?.yieldToMain,
           shouldContinue: options?.shouldContinue,
+          // Opening chat from the library may leave its source PDF in an
+          // inactive tab. Reuse that reader under the existing fallback and
+          // work budget; tab selection does not change the source identity.
           reader:
-            activeReaderItemId === contextItemId ? activeReader : undefined,
+            activeReaderItemId === contextItemId
+              ? activeReader
+              : getAllOpenReaders().find(
+                  (reader) =>
+                    Number(reader?._item?.id || reader?.itemID) ===
+                    contextItemId,
+                ),
         });
       } catch (error) {
         ztoolkit.log("LLM: PDF page quote source text cache warm failed", {

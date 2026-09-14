@@ -76,9 +76,51 @@ describe("Agent tool artifact delivery", function () {
 
     assert.isTrue(result.success);
     assert.deepEqual(result.contentItems, [
-      { type: "inputText", text: '{\n  "page": 3\n}' },
+      { type: "inputText", text: '{"page":3}' },
       { type: "inputText", text: "Use this page." },
       { type: "inputImage", imageUrl: "data:image/png;base64,AA" },
+    ]);
+  });
+
+  it("compacts structured results without changing evidence, receipts, or whitespace inside text", function () {
+    const content = {
+      text: "Paragraph one.\n\n  Indented code: a = 1\n\treturn a;",
+      papers: [
+        { quoteId: "Q1", offsets: [0, 42], source: { itemId: 17, page: 3 } },
+      ],
+      actionReceipts: [{ id: "receipt-1", verified: true, noteId: 500 }],
+      missing: null,
+    };
+    for (const delivery of [
+      undefined,
+      { callId: "call-1", name: "paper_read", content, followupMessages: [] },
+    ]) {
+      const result = buildAdapterToolCallResult({
+        toolResult: { callId: "call-1", name: "paper_read", ok: true, content },
+        ...(delivery ? { delivery } : {}),
+      });
+      const text = result.contentItems[0];
+      assert.equal(text.type, "inputText");
+      if (text.type !== "inputText") continue;
+      assert.deepEqual(JSON.parse(text.text), content);
+      assert.notInclude(text.text, "\n");
+      assert.isBelow(text.text.length, JSON.stringify(content, null, 2).length);
+    }
+  });
+
+  it("preserves already textual tool results verbatim", function () {
+    const content =
+      '{\n  "example": "keep this formatting"\n}\n\n```python\n  print(1)\n```';
+    const result = buildAdapterToolCallResult({
+      toolResult: {
+        callId: "call-1",
+        name: "tool_result_read",
+        ok: true,
+        content,
+      },
+    });
+    assert.deepEqual(result.contentItems, [
+      { type: "inputText", text: content },
     ]);
   });
 });

@@ -968,11 +968,16 @@ export class AgentRuntime {
           contentInputs: resolveCapabilitiesContentInputs(adapterCapabilities),
         },
       );
+      const initialTranscriptMessages = promptTranscriptMessages();
       const messages = composeAgentModelInput(renderedPrompt.envelope, {
-        transcriptMessages: promptTranscriptMessages(),
+        transcriptMessages: initialTranscriptMessages,
       });
       const instructionInventory = captureInstructionInventory
-        ? buildAgentPromptInstructionInventory(renderedPrompt, messages)
+        ? buildAgentPromptInstructionInventory(
+            renderedPrompt,
+            messages,
+            initialTranscriptMessages,
+          )
         : undefined;
       if (captureInstructionInventory && instructionInventory) {
         await emit({
@@ -1613,11 +1618,7 @@ export class AgentRuntime {
                       call.arguments,
                     )
                   : undefined,
-                content: JSON.stringify(
-                  outcome.delivery.content ?? {},
-                  null,
-                  2,
-                ),
+                content: JSON.stringify(outcome.delivery.content ?? {}),
               });
               newTranscriptMessages.push(...outcome.delivery.followupMessages);
             }
@@ -2244,11 +2245,7 @@ export class AgentRuntime {
                       call.arguments,
                     )
                   : undefined,
-                content: JSON.stringify(
-                  outcome.delivery.content ?? {},
-                  null,
-                  2,
-                ),
+                content: JSON.stringify(outcome.delivery.content ?? {}),
               };
               roundToolMessages.push(toolMessage);
               for (const followupMessage of outcome.delivery.followupMessages) {

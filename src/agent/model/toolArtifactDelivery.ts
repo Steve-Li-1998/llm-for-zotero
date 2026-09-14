@@ -320,7 +320,7 @@ function stringifyToolDeliveryContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (content === null || content === undefined) return "";
   try {
-    return JSON.stringify(content, null, 2);
+    return JSON.stringify(content);
   } catch {
     return String(content);
   }

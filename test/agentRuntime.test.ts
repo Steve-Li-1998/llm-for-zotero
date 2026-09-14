@@ -42,6 +42,7 @@ import {
   updateJournalAction,
 } from "../src/agent/store/changeJournal";
 import { clearAgentTranscriptStore } from "../src/agent/store/transcriptStore";
+import { clearAgentMemory } from "../src/agent/store/conversationMemory";
 import {
   clearAgentToolResultHandleStore,
   createAgentToolResultHandleRecord,
@@ -221,6 +222,149 @@ describe("AgentRuntime", function () {
     clearAgentTranscriptStore();
     clearAgentToolResultHandleStore();
   });
+
+  for (const nativeCallback of [false, true]) {
+    it(`preserves compact tool results and exact answers on follow-up (${nativeCallback ? "native callback" : "ordinary tool loop"})`, async function () {
+      const restore = installMockDb();
+      const conversationKey = nativeCallback ? 810003 : 810002;
+      const content = {
+        results: [
+          {
+            itemId: 17,
+            title: "Working memory",
+            text: "Source passage.\n\n  Preserve indentation.",
+          },
+        ],
+        totalCount: 1,
+      };
+      const answer = `A summary based on the source. ${"Evidence detail. ".repeat(30)}Final sentence must remain available.`;
+      const call = { id: "read-compact", name: "query_library", arguments: {} };
+      function checkToolText(text: string) {
+        assert.notInclude(
+          text,
+          "\n",
+          "only JSON formatting whitespace is removed",
+        );
+        assert.deepEqual(JSON.parse(text), { ...content, actionReceipts: [] });
+      }
+      try {
+        await clearAgentMemory(conversationKey);
+        const registry = new AgentToolRegistry();
+        registry.register({
+          spec: {
+            name: "query_library",
+            description: "Read library",
+            inputSchema: { type: "object" },
+            executionClass: "read",
+            requiresConfirmation: false,
+          },
+          validate: () => ({ ok: true, value: {} }),
+          execute: async () => content,
+        });
+        let step = 0;
+        let followup = false;
+        const runtime = new AgentRuntime({
+          registry,
+          adapterFactory: () => ({
+            getCapabilities: () => ({
+              streaming: false,
+              toolCalls: true,
+              multimodal: false,
+            }),
+            supportsTools: () => true,
+            async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+              step++;
+              if (followup) {
+                assert.equal(
+                  params.messages.findLast(
+                    (message) =>
+                      message.role === "assistant" &&
+                      !message.tool_calls?.length,
+                  )?.content,
+                  answer,
+                );
+                const turn = params.messages.findLast(
+                  (message) => message.role === "user",
+                );
+                assert.notInclude(
+                  String(turn?.content),
+                  "Conversation continuity notes",
+                );
+                const tool = params.messages.find(
+                  (message) =>
+                    message.role === "user" &&
+                    message.retainedTool?.callId === call.id,
+                );
+                assert.exists(
+                  tool,
+                  "the prior tool result is retained on follow-up",
+                );
+                if (tool?.role !== "user" || !tool.retainedTool?.handle)
+                  throw new Error("Missing retained tool handle");
+                const stored = await getAgentToolResultHandle({
+                  conversationKey,
+                  handle: tool.retainedTool.handle,
+                });
+                assert.deepEqual(stored?.content, {
+                  ...content,
+                  actionReceipts: [],
+                });
+              } else if (step === 1) {
+                if (!nativeCallback)
+                  return {
+                    kind: "tool_calls",
+                    calls: [call],
+                    assistantMessage: {
+                      role: "assistant",
+                      content: "",
+                      tool_calls: [call],
+                    },
+                  };
+                const result = await params.onToolCall!(call);
+                const text = result.contentItems.find(
+                  (item) => item.type === "inputText",
+                );
+                assert.equal(text?.type, "inputText");
+                if (text?.type === "inputText") checkToolText(text.text);
+              } else {
+                const tool = params.messages.find(
+                  (message) => message.role === "tool",
+                );
+                checkToolText(String(tool?.content));
+              }
+              return {
+                kind: "final",
+                text: answer,
+                assistantMessage: { role: "assistant", content: answer },
+              };
+            },
+          }),
+        });
+        const request: AgentRuntimeRequest = {
+          classifiedIntent: classifiedFixture(),
+          conversationKey,
+          mode: "agent",
+          userText: "Summarize the library result",
+          model: "test",
+          apiKey: "test",
+        };
+        assert.equal((await runtime.runTurn({ request })).kind, "completed");
+        followup = true;
+        assert.equal(
+          (
+            await runtime.runTurn({
+              request: { ...request, userText: "Explain that summary" },
+            })
+          ).kind,
+          "completed",
+        );
+        assert.equal(step, nativeCallback ? 2 : 3);
+      } finally {
+        await clearAgentMemory(conversationKey);
+        restore();
+      }
+    });
+  }
 
   it("reaches the main model without a preliminary semantic model call", async function () {
     const restore = installMockDb();

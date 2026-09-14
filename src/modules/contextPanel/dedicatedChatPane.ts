@@ -64,19 +64,31 @@ export function installDedicatedChatPane(
     const target = event.target as Element | null;
     const button = target?.closest?.("[data-pane]");
     const sidenav = button?.closest("item-pane-sidenav") as
-      | (Element & { container?: { getPane: (id: string) => Element | null } })
+      | (Element & {
+          _collapsed: boolean;
+          container?: { getPane: (id: string) => Element | null };
+        })
       | null;
     if (!sidenav) return;
     const pane = button?.getAttribute("data-pane");
     if (!pane) return;
-    root.setAttribute(
-      "data-llm-pane-view",
-      sidenav.container
-        ?.getPane(pane)
-        ?.classList.contains("llm-dedicated-chat-pane")
-        ? "chat"
-        : "details",
-    );
+    const chatPane = sidenav.container
+      ?.getPane(pane)
+      ?.classList.contains("llm-dedicated-chat-pane");
+    if (
+      chatPane &&
+      root.getAttribute("data-llm-pane-view") === "chat" &&
+      !sidenav._collapsed
+    ) {
+      // Native pane navigation always expands after scrolling. Intercept the
+      // close click before it can reopen the retained conversation host.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      root.setAttribute("data-llm-pane-view", "details");
+      sidenav._collapsed = true;
+      return;
+    }
+    root.setAttribute("data-llm-pane-view", chatPane ? "chat" : "details");
     const libraryPane = doc.getElementById("zotero-item-pane");
     const emptyLibrary =
       sidenav.id === "zotero-view-item-sidenav" &&

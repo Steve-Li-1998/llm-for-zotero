@@ -47,7 +47,16 @@ function harness() {
       subscribed = false;
     },
   });
+  const nav = {
+    _collapsed: true,
+    container: {
+      getPane: (id: string) => ({
+        classList: { contains: () => id === "plugin-namespaced-chat" },
+      }),
+    },
+  };
   return {
+    nav,
     attributes,
     listeners,
     dispose,
@@ -61,13 +70,6 @@ function harness() {
       for (const callback of pending) callback();
     },
     click(pane: string, options: { button?: number; nav?: boolean } = {}) {
-      const nav = {
-        container: {
-          getPane: (id: string) => ({
-            classList: { contains: () => id === "plugin-namespaced-chat" },
-          }),
-        },
-      };
       const target = {
         getAttribute: () => pane,
         closest: (selector: string) =>
@@ -77,22 +79,53 @@ function harness() {
               : nav
             : target,
       };
+      let stopped = false;
       listeners.get("click")?.({
         target,
         button: options.button || 0,
+        preventDefault() {},
+        stopImmediatePropagation() {
+          stopped = true;
+        },
       } as unknown as Event);
+      // Native navigation expands the pane unless capture intercepted the click.
+      if (!stopped && options.nav !== false && !options.button)
+        nav._collapsed = false;
     },
   };
 }
 
 describe("dedicated chat pane navigation", function () {
-  it("starts with Zotero details and opens chat through its icon", function () {
+  it("toggles chat open, closed, and open again through its icon", function () {
     const h = harness();
     assert.equal(h.attributes.get("data-llm-pane-view"), "details");
     h.click("plugin-namespaced-chat");
     assert.equal(h.attributes.get("data-llm-pane-view"), "chat");
+    assert.isFalse(h.nav._collapsed);
     h.click("plugin-namespaced-chat");
+    assert.isTrue(h.nav._collapsed);
+    h.click("plugin-namespaced-chat");
+    assert.isFalse(h.nav._collapsed);
     assert.equal(h.attributes.get("data-llm-pane-view"), "chat");
+  });
+
+  it("reopens chat after the native pane toggle collapsed it", function () {
+    const h = harness();
+    h.click("plugin-namespaced-chat");
+    h.nav._collapsed = true;
+    h.click("plugin-namespaced-chat");
+    assert.isFalse(h.nav._collapsed);
+    assert.equal(h.attributes.get("data-llm-pane-view"), "chat");
+  });
+
+  it("preserves native navigation in the stacked layout", function () {
+    const h = harness();
+    h.attributes.set("data-llm-sidebar-layout", "stacked");
+    h.attributes.set("data-llm-pane-view", "stacked");
+    h.click("plugin-namespaced-chat");
+    h.click("plugin-namespaced-chat");
+    assert.isFalse(h.nav._collapsed);
+    assert.equal(h.attributes.get("data-llm-pane-view"), "stacked");
   });
 
   it("returns to details or reader notes through their native icons", function () {

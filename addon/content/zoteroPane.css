@@ -9109,6 +9109,17 @@ label.llm-search-results-item:hover {
   font-size: var(--llm-fs-12);
 }
 
+.llm-agent-action-summary-card[data-mode="action"] {
+  /* Scale shared row labels together, without changing note-content cards. */
+  --llm-fs-12: var(--llm-fs-11);
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.llm-agent-action-summary-card[data-mode="action"] .llm-plan-header {
+  min-height: 20px;
+}
+
 .llm-agent-action-summary-card[data-mode="action"] .llm-plan-heading {
   align-items: center;
 }
@@ -9119,6 +9130,51 @@ label.llm-search-results-item:hover {
   gap: 6px;
 }
 
+.llm-agent-action-summary-card[data-mode="action"] .llm-plan-status {
+  padding: 1px 6px;
+}
+
+.llm-agent-action-summary-card[data-mode="action"]
+  .llm-agent-action-summary-list {
+  margin-top: 6px;
+  gap: 6px;
+}
+
+.llm-agent-action-summary-card[data-mode="action"]
+  .llm-agent-action-summary-list
+  > li
+  + li {
+  padding-top: 6px;
+}
+
+.llm-agent-action-summary-card[data-mode="action"]
+  :is(
+    .llm-paper-context-chip,
+    .llm-collection-context-chip,
+    .llm-tag-context-chip
+  ) {
+  --llm-context-chip-icon-size: 1.25em;
+}
+
+.llm-agent-action-summary-card[data-mode="action"]
+  :is(
+    .llm-paper-context-chip-label,
+    .llm-collection-chip-label,
+    .llm-tag-chip-label
+  ) {
+  padding: 2px 4px;
+  gap: 4px;
+}
+
+.llm-agent-action-summary-card[data-mode="action"] .llm-agent-process-chip {
+  padding: 2px 6px;
+}
+
+.llm-agent-action-summary-card[data-mode="action"]
+  .llm-agent-action-row-marker {
+  font-size: 1.15em;
+}
+
 .llm-agent-action-summary-icon {
   flex: 0 0 auto;
   width: 1.25em;
@@ -9127,7 +9183,7 @@ label.llm-search-results-item:hover {
   mask: url("icons/action-turn-summary.svg") center / contain no-repeat;
 }
 
-/* Outcome text follows the conversation's size, including its font scale. */
+/* Shared labels follow the card's local text size and the user's font scale. */
 .llm-agent-action-summary-card
   :is(
     .llm-plan-title,
@@ -9152,7 +9208,7 @@ label.llm-search-results-item:hover {
 
 .llm-agent-action-row-body > .llm-agent-action-command {
   margin: 0;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid var(--llm-codeblock-border);
   border-radius: 8px;
   background: var(--llm-codeblock-bg);

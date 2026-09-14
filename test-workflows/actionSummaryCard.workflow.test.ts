@@ -115,6 +115,33 @@ describe("workflow: one action card for a mixed turn", function () {
       const win = (Zotero as any).LLMForZotero.data.standaloneWindow as Window;
       // Rebuild from serialized trace events as history rendering does.
       for (const recorded of [events, JSON.parse(JSON.stringify(events))]) {
+        for (const pendingEvents of [recorded.slice(0, -1), recorded]) {
+          await workflow.seedStandaloneConversation([
+            { role: "user", text: "Run the command" },
+            {
+              role: "assistant",
+              text: "The answer is still arriving.",
+              runMode: "agent",
+              streaming: true,
+              pendingAgentTraceEvents: pendingEvents,
+            },
+          ]);
+          assert.isNull(
+            win.document.querySelector(".llm-agent-action-summary-card"),
+            "receipts and an early final event never interrupt streaming",
+          );
+          assert.include(
+            win.document.querySelector(".llm-assistant-answer")!.textContent!,
+            "The answer is still arriving.",
+          );
+          assert.equal(
+            win.document
+              .querySelector(".llm-assistant-actions")!
+              .getBoundingClientRect().height,
+            0,
+            "the hidden outcome reserves no space while streaming",
+          );
+        }
         await workflow.seedStandaloneConversation([
           { role: "user", text: "Run the command" },
           {
@@ -178,14 +205,27 @@ describe("workflow: one action card for a mixed turn", function () {
         try {
           for (const scale of ["1", "1.3"]) {
             panel.style.setProperty("--llm-font-scale", scale);
-            const answerSize = win.getComputedStyle(answer).fontSize;
+            const answerSize = parseFloat(
+              win.getComputedStyle(answer).fontSize,
+            );
+            const cardSize = parseFloat(win.getComputedStyle(card).fontSize);
+            assert.isBelow(
+              cardSize,
+              answerSize,
+              "the outcome is smaller than the answer",
+            );
+            assert.isAtLeast(
+              cardSize,
+              answerSize * 0.85,
+              "compact text remains readable",
+            );
             for (const label of card.querySelectorAll<HTMLElement>(
               ".llm-plan-title, .llm-plan-status, .llm-agent-action-verb-word-inline, .llm-agent-process-chip-label, .llm-paper-context-chip-text, .llm-tag-chip-title",
             )) {
               assert.equal(
                 win.getComputedStyle(label).fontSize,
-                answerSize,
-                `${label.className} matches conversation text at scale ${scale}`,
+                `${cardSize}px`,
+                `${label.className} matches the compact card at scale ${scale}`,
               );
             }
           }
@@ -213,7 +253,7 @@ describe("workflow: one action card for a mixed turn", function () {
         assert.equal(win.getComputedStyle(pre).borderTopWidth, "1px");
         assert.equal(
           win.getComputedStyle(pre.querySelector("code")!).fontSize,
-          win.getComputedStyle(answer).fontSize,
+          win.getComputedStyle(card).fontSize,
         );
         const expandedHeight = row.getBoundingClientRect().height;
         row.querySelector("summary")!.click();

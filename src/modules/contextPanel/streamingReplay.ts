@@ -35,6 +35,8 @@ export type StreamingReplayResult = {
   progressUpdatePreserved: boolean;
   finalAnswerVisible: boolean;
   answerVisibleBeforeFinal: boolean;
+  actionCardHiddenWhileStreaming: boolean;
+  actionCardAfterFinalAnswer: boolean;
   streamingQuoteVisible: boolean;
   streamingQuoteMarkersAbsent: boolean;
   refreshedQuoteVisible: boolean;
@@ -151,6 +153,32 @@ export async function exerciseStreamingReplay(
       createdAt: Date.now(),
     });
   push(runId, { type: "plan_execution_updated", ledger });
+  // Recorded command evidence exercises the outcome card without running a command.
+  push(runId, {
+    type: "tool_result",
+    callId: "recorded-command",
+    name: "run_command",
+    ok: true,
+    content: { command: "printf 'Recorded action'", exitCode: 0 },
+    actionReceipts: [
+      {
+        version: 2,
+        id: "recorded-command",
+        proposalId: "recorded-command",
+        operation: "command_execute",
+        capability: "command.execute",
+        proofDomain: "execution",
+        verification: "execution_only",
+        status: "observed",
+        requestedTargets: [],
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: [],
+        reasons: [],
+        verifiedFacts: [],
+      },
+    ],
+  });
   for (let n = 0; n < Math.min(input.historyTurns, 55); n++) {
     push(runId, {
       type: "tool_call",
@@ -217,6 +245,10 @@ export async function exerciseStreamingReplay(
     progressUpdatePreserved: false,
     finalAnswerVisible: false,
     answerVisibleBeforeFinal: false,
+    actionCardHiddenWhileStreaming: !findWrapper().querySelector(
+      ".llm-agent-action-summary-card",
+    ),
+    actionCardAfterFinalAnswer: false,
     streamingQuoteVisible: false,
     streamingQuoteMarkersAbsent: false,
     refreshedQuoteVisible: false,
@@ -276,6 +308,10 @@ export async function exerciseStreamingReplay(
   const refresh = () => {
     const start = win.performance.now();
     helpers.refreshAssistantMessageSafely(message);
+    if (message.streaming)
+      result.actionCardHiddenWhileStreaming &&= !findWrapper().querySelector(
+        ".llm-agent-action-summary-card",
+      );
     if (measuring) result.renderMs.push(win.performance.now() - start);
   };
   const coalescer = createBlockStreamCoalescer({
@@ -472,6 +508,18 @@ export async function exerciseStreamingReplay(
       "[[quote-occurrence:",
     );
     await handle({ type: "final", text: answer });
+    const finalAnswer = findWrapper().querySelector(".llm-assistant-answer");
+    const actionCard = findWrapper().querySelector(
+      ".llm-assistant-actions .llm-agent-action-summary-card",
+    );
+    result.actionCardAfterFinalAnswer = Boolean(
+      !message.streaming &&
+      finalAnswer &&
+      actionCard &&
+      finalAnswer.textContent?.includes("The explanation continues.") &&
+      finalAnswer.compareDocumentPosition(actionCard) & 4 &&
+      actionCard.getBoundingClientRect().height > 0,
+    );
     message.quoteDisplayOverride = {
       markdown: `Final replay answer with **evidence**.\n\n> Revalidated quotation stays readable.\n>\n> Not a source quote`,
       quoteCitations: [],

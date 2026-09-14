@@ -4620,11 +4620,8 @@ describe("AgentRuntime", function () {
             }
             const serialized = JSON.stringify(persisted);
             assert.include(serialized, "checkpoint-call");
-            assert.include(
-              serialized,
-              "Agent semantic continuation checkpoint",
-            );
-            assert.notInclude(serialized, "durable result");
+            assert.include(serialized, "Historical tool result");
+            assert.include(serialized, "durable result");
             const handle = serialized.match(/handle=(trh_[a-z0-9]+)/i)?.[1];
             assert.match(handle || "", /^trh_/);
             const storedResult = await getAgentToolResultHandle({
@@ -4875,10 +4872,13 @@ describe("AgentRuntime", function () {
           typeof message.content === "string" &&
           message.content.includes("Agent semantic continuation checkpoint"),
       );
-      assert.lengthOf(priorSemanticCheckpoints, 1, serialized);
-      assert.notInclude(
-        secondMessages.map((message) => message.role),
-        "assistant",
+      assert.lengthOf(priorSemanticCheckpoints, 0);
+      assert.isTrue(
+        secondMessages.some(
+          (message) =>
+            message.role === "assistant" &&
+            message.content === "Alpha is preserved.",
+        ),
       );
       assert.include(serialized, "remember alpha");
       assert.include(serialized, "Alpha is preserved.");
@@ -5182,7 +5182,8 @@ describe("AgentRuntime", function () {
         const message = JSON.parse(
           String(installed.transcripts[index].messageJson),
         ) as AgentModelMessage;
-        if (message.role !== "user") installed.transcripts.splice(index, 1);
+        if (message.role !== "user" || message.retainedTool)
+          installed.transcripts.splice(index, 1);
       }
       await initAgentTraceStore();
       clearAgentTranscriptStore();
@@ -5229,7 +5230,7 @@ describe("AgentRuntime", function () {
       const serialized = JSON.stringify(continuedMessages);
       assert.include(
         serialized,
-        "Prior goal: run the recovery command to preserve this original goal",
+        "run the recovery command to preserve this original goal",
       );
       assert.include(serialized, `actionId=${actionId}`);
       assert.include(serialized, "status=partially_applied");
@@ -5243,7 +5244,7 @@ describe("AgentRuntime", function () {
     }
   });
 
-  it("treats a durable semantic transaction checkpoint as already compacted", async function () {
+  it("compacts the prompt on request without erasing durable conversation content", async function () {
     const restoreDb = installMockDb();
     try {
       const request: AgentRuntimeRequest = {
@@ -5387,8 +5388,8 @@ describe("AgentRuntime", function () {
 
       assert.equal(compactOutcome.kind, "completed");
       if (compactOutcome.kind !== "completed") return;
-      assert.equal(compactOutcome.text, "Nothing to compact yet");
-      assert.isFalse(
+      assert.equal(compactOutcome.text, "Conversation compacted");
+      assert.isTrue(
         compactEvents.some(
           (event) =>
             event.type === "context_compacted" && event.automatic === false,
@@ -5430,7 +5431,7 @@ describe("AgentRuntime", function () {
 
       assert.include(
         JSON.stringify(followupMessages),
-        "Agent semantic continuation checkpoint",
+        "Agent transcript compact checkpoint",
       );
       assert.match(JSON.stringify(followupMessages), /trh_[a-z0-9]+/i);
     } finally {
@@ -7339,12 +7340,8 @@ describe("web attribution runtime guard", function () {
       );
       assert.notInclude(outcome.text, "llm-web-source");
       const transcript = readPersistedTranscript(restoreDb, 921);
-      assert.lengthOf(transcript, 1);
-      assert.equal(transcript[0]?.role, "user");
-      assert.include(
-        String(transcript[0]?.content || ""),
-        "A supported current claim.",
-      );
+      assert.equal(transcript.at(-1)?.role, "assistant");
+      assert.equal(transcript.at(-1)?.content, "A supported current claim.");
       assert.notInclude(JSON.stringify(transcript), "llm-web-source");
     } finally {
       restoreDb();

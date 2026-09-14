@@ -3,18 +3,17 @@ import type {
   AgentToolDefinition,
   AgentToolInputValidation,
 } from "../../types";
-import {
-  estimateTextTokens,
-  sliceTextToTokenBudget,
-} from "../../../utils/modelInputCap";
+import { estimateTextTokens } from "../../../utils/modelInputCap";
 import { getAgentToolResultHandle } from "../../store/toolResultHandles";
 import { fail, ok } from "../shared";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
+import { readTextChunk } from "./textChunk";
 
 type ToolResultReadInput = {
   handle: string;
   path?: string;
   offset: number;
+  textOffset: number;
   limit: number;
   maxTokens: number;
   allowStale: boolean;
@@ -65,6 +64,11 @@ function validateToolResultReadInput(
     handle,
     path,
     offset: normalizePositiveInt(record.offset, 0, Number.MAX_SAFE_INTEGER),
+    textOffset: normalizePositiveInt(
+      record.textOffset,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    ),
     limit: Math.max(
       1,
       normalizePositiveInt(record.limit, DEFAULT_LIMIT, MAX_LIMIT),
@@ -88,25 +92,6 @@ function stableStringify(value: unknown): string {
   } catch (_error) {
     return String(value);
   }
-}
-
-function truncateToTokenBudget(
-  value: unknown,
-  maxTokens: number,
-): {
-  value?: unknown;
-  excerpt?: string;
-  truncated?: boolean;
-} {
-  const text = stableStringify(value);
-  if (estimateTextTokens(text) <= maxTokens) {
-    return { value };
-  }
-  const excerptBody = sliceTextToTokenBudget(text, Math.max(64, maxTokens));
-  return {
-    excerpt: `${excerptBody.trimEnd()}\n\n[Section truncated to fit maxTokens.]`,
-    truncated: true,
-  };
 }
 
 function contentRecord(value: unknown): Record<string, unknown> {
@@ -151,6 +136,7 @@ function buildArraySlice(params: {
   base: Record<string, unknown>;
   items: unknown[];
   offset: number;
+  textOffset: number;
   limit: number;
   maxTokens: number;
 }): Record<string, unknown> {
@@ -175,6 +161,28 @@ function buildArraySlice(params: {
     }
   }
   const returnedCount = (next.items as unknown[]).length;
+  if (!returnedCount && offset < params.items.length) {
+    const itemChunk = {
+      format: typeof params.items[offset] === "string" ? "text" : "json",
+      ...readTextChunk(
+        stableStringify(params.items[offset]),
+        params.textOffset,
+        Math.max(
+          64,
+          params.maxTokens - estimateTextTokens(stableStringify(next)) - 120,
+        ),
+      ),
+    };
+    const nextOffset =
+      itemChunk.nextTextOffset === undefined ? offset + 1 : offset;
+    return {
+      ...next,
+      returnedCount: 0,
+      itemChunk,
+      omittedCount: params.items.length - nextOffset,
+      ...(nextOffset < params.items.length ? { nextOffset } : {}),
+    };
+  }
   const nextOffset = offset + returnedCount;
   next.returnedCount = returnedCount;
   next.omittedCount = Math.max(0, params.items.length - nextOffset);
@@ -257,6 +265,7 @@ async function executeToolResultRead(
       },
       items: section,
       offset: input.offset,
+      textOffset: input.textOffset,
       limit: input.limit,
       maxTokens: input.maxTokens,
     });
@@ -264,7 +273,17 @@ async function executeToolResultRead(
   return {
     ...base,
     path: input.path,
-    ...truncateToTokenBudget(section, input.maxTokens),
+    ...(input.textOffset ||
+    estimateTextTokens(stableStringify(section)) > input.maxTokens - 256
+      ? {
+          format: typeof section === "string" ? "text" : "json",
+          ...readTextChunk(
+            stableStringify(section),
+            input.textOffset,
+            input.maxTokens - 256,
+          ),
+        }
+      : { value: section }),
   };
 }
 
@@ -276,7 +295,7 @@ export function createToolResultReadTool(): AgentToolDefinition<
     spec: {
       name: "tool_result_read",
       description:
-        "Read a bounded section from a prior Agent tool result preserved behind a handle. Use when a semantic/context checkpoint provides handle=trh_... or a compacted tool message provides toolResultHandle, and omitted rows or snippets are needed for the current answer.",
+        "Read stored tool results by handle. Omit path for metadata; set path (e.g. results) for content. Follow nextOffset for rows. Oversized rows return itemChunk: keep offset and pass its nextTextOffset as textOffset until complete. Text sections also use nextTextOffset. Chunks concatenate exactly, including JSON source anchors.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -296,6 +315,7 @@ export function createToolResultReadTool(): AgentToolDefinition<
             minimum: 0,
             description: "Zero-based offset for array sections.",
           },
+          textOffset: { type: "integer", minimum: 0 },
           limit: {
             type: "integer",
             minimum: 1,

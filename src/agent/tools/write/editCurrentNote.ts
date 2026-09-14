@@ -47,6 +47,7 @@ import {
   resolveVerifiedNoteEditCompletion,
 } from "./noteChangePresentation";
 import { buildSavedNoteResultCards } from "./noteResultPresentation";
+import { readAgentConversationAnswer } from "../../store/transcriptStore";
 
 type NotePatch = {
   find: string;
@@ -83,6 +84,7 @@ function sanitizeNoteHtml(html: string): string {
 
 type EditCurrentNoteInput = {
   documentId?: string;
+  sourceMessageId?: string;
   /** The exact material this proposal is frozen to, resolved once in preparation. */
   _documentMaterialRef?: MaterialRef;
   _documentHasAssets?: boolean;
@@ -518,6 +520,11 @@ export function createEditCurrentNoteTool(
             description:
               "For mode 'create' only: copy this existing note's complete native content and embedded images. Use instead of content when making a standalone/child copy, preserving formatting and provenance without generating a second header.",
           },
+          sourceMessageId: {
+            type: "string",
+            description:
+              "Save this exact prior assistant answer without reauthoring it. Use instead of content, patches, documentId or sourceNoteId.",
+          },
           patches: {
             type: "array",
             items: {
@@ -668,6 +675,22 @@ export function createEditCurrentNoteTool(
       const hasContent =
         typeof args.content === "string" && args.content.trim();
       const sourceNoteId = normalizePositiveInt(args.sourceNoteId);
+      const sourceMessageId =
+        typeof args.sourceMessageId === "string"
+          ? args.sourceMessageId.trim()
+          : undefined;
+      if (
+        args.sourceMessageId !== undefined &&
+        (!sourceMessageId ||
+          args.content !== undefined ||
+          args.patches !== undefined ||
+          args.documentId !== undefined ||
+          args.sourceNoteId !== undefined ||
+          selection !== undefined)
+      )
+        return fail(
+          "sourceMessageId requires one exact assistant answer without content, patches, documentId, sourceNoteId or selection",
+        );
       const documentId =
         typeof args.documentId === "string"
           ? args.documentId.trim()
@@ -697,12 +720,18 @@ export function createEditCurrentNoteTool(
       }
 
       if (mode === "create" || mode === "append") {
-        if (!hasContent && !sourceNoteId && !documentId) {
+        if (!hasContent && !sourceNoteId && !documentId && !sourceMessageId) {
           return fail(
             `content is required for mode '${mode}': provide the note body as a string`,
           );
         }
-      } else if (!hasContent && !hasPatches && !documentId && !selection) {
+      } else if (
+        !hasContent &&
+        !hasPatches &&
+        !documentId &&
+        !selection &&
+        !sourceMessageId
+      ) {
         return fail(
           "Either 'content' (full note text) or 'patches' (find-and-replace pairs) is required for mode 'edit'",
         );
@@ -756,6 +785,7 @@ export function createEditCurrentNoteTool(
       return ok<EditCurrentNoteInput>({
         mode,
         documentId,
+        sourceMessageId,
         content,
         sourceNoteId,
         _rawHtmlContent: contentHasHtml ? rawContent.trim() : undefined,
@@ -943,6 +973,11 @@ export function createEditCurrentNoteTool(
       });
     },
     async planInvocation(input, context) {
+      if (input.sourceMessageId && !input.content)
+        input.content = await readAgentConversationAnswer(
+          context.request.conversationKey,
+          input.sourceMessageId,
+        );
       await prepareWorkflowDocumentNote(input, context);
       prepareNoteWriteInput(zoteroGateway, input, context);
       const hasLocalImages =

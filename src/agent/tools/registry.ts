@@ -129,8 +129,10 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   library_update:
     "Change tags, metadata, memberships, parents, or Related links. Move removes its named source.",
   collection_update: "Create or delete Zotero collections.",
+  conversation_read:
+    "Read exact chat history. Omit messageId to list; set it to read. Continue with offset or textOffset=nextTextOffset.",
   note_write:
-    "Create, append, or edit one Zotero note. documentId reuses finalized material.",
+    "Write a Zotero note. sourceMessageId reuses an exact answer; documentId reuses finalized material.",
   note_write_batch:
     "Write notes to explicitly identified items as one checkpointed batch; resumeBatchId continues an interrupted one.",
   saved_search_update: "Create, replace, or delete a Zotero saved search.",

@@ -44,6 +44,49 @@ async function executeRead(
 }
 
 describe("agent tool-result handles", function () {
+  it("advances within an oversized row and reconstructs every character and anchor", async function () {
+    const row = {
+      itemId: 41,
+      pageLabel: "p. 7",
+      quoteCitationId: "Q_tail",
+      text: "α beta\n".repeat(5000) + "EXACT_END",
+    };
+    const record = createAgentToolResultHandleRecord({
+      conversationKey: 814,
+      toolName: "paper_read",
+      toolCallId: "oversized",
+      content: { results: [row] },
+    });
+    await upsertAgentToolResultHandles([record!]);
+    let textOffset = 0;
+    let recovered = "";
+    for (let page = 0; page < 100; page++) {
+      const output = await executeRead(
+        {
+          handle: record!.handle,
+          path: "results",
+          offset: 0,
+          textOffset,
+          maxTokens: 512,
+        },
+        context({ conversationKey: 814 }),
+      );
+      const chunk = output.itemChunk as {
+        text: string;
+        nextTextOffset?: number;
+      };
+      assert.exists(
+        chunk,
+        "a row larger than the budget must yield readable content instead of an empty page",
+      );
+      recovered += chunk.text;
+      if (chunk.nextTextOffset === undefined) break;
+      assert.isAbove(chunk.nextTextOffset, textOffset);
+      textOffset = chunk.nextTextOffset;
+    }
+    assert.deepEqual(JSON.parse(recovered), row);
+  });
+
   beforeEach(function () {
     clearAgentToolResultHandleStore();
   });

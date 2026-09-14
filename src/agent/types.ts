@@ -786,6 +786,15 @@ export type AgentSystemMessage = {
 export type AgentUserMessage = {
   role: "user";
   content: string | AgentModelContentPart[];
+  messageId?: string;
+  /** Historical execution data, never current authorization or host state. */
+  retainedTool?: {
+    name: string;
+    callId: string;
+    handle?: string;
+    category?: AgentWorkCategory;
+    workingDirectory?: string;
+  };
   /**
    * Host state the model should see this turn and never again.
    *
@@ -801,6 +810,7 @@ export type AgentUserMessage = {
 export type AgentAssistantMessage = {
   role: "assistant";
   content: string | AgentModelContentPart[];
+  messageId?: string;
   tool_calls?: AgentToolCall[];
 };
 
@@ -809,6 +819,7 @@ export type AgentToolMessage = {
   content: string;
   tool_call_id: string;
   name: string;
+  workCategory?: AgentWorkCategory;
 };
 
 export type AgentModelMessage =
@@ -924,6 +935,8 @@ export type AgentExecutionContext = Readonly<{
 }>;
 
 export type AgentRuntimeRequestInput = AgentRequest & {
+  /** Last successfully used explicit command directory; never filesystem authority. */
+  workingDirectory?: string;
   /** Set by the host entry point, never by model tool arguments. */
   actionEntryPoint?: "action_ui" | "conversation";
   /** Generation captured when this turn started; Clear advances it. */

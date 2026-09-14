@@ -40,6 +40,10 @@ import {
 } from "./context/resourceContextPlan";
 import {
   buildAgentSemanticCheckpoint,
+  buildPortableAgentTranscript,
+  buildConversationReferenceMessage,
+  buildRetainedActionMessage,
+  readRetainedWorkingDirectory,
   compactAgentTranscript,
 } from "./context/transcriptCompactor";
 import { AgentRunContinuationSession } from "./continuation/runContinuationSession";
@@ -104,12 +108,13 @@ import {
 } from "./store/traceStore";
 import {
   appendAgentTranscriptMessages,
-  buildAgentTranscriptCompatibilityKey,
+  PORTABLE_TRANSCRIPT_KEY,
   loadAgentTranscriptSegment,
   loadLatestAgentTranscriptSegment,
   replaceAgentTranscriptSegment,
   type AgentTranscriptWriteResult,
 } from "./store/transcriptStore";
+import { resolveAgentToolCallWorkCategory } from "./workCategory";
 import { AgentToolRegistry } from "./tools/registry";
 import { latestExecutionCheckpoint } from "./execution/checkpoint";
 import { createAgentExecutionContext } from "./execution/context";
@@ -629,20 +634,65 @@ export class AgentRuntime {
         planExecuting: request.planContext?.phase === "executing",
       });
       const preservedTurnHandleRecords: AgentToolResultHandleRecord[] = [];
-      const transcriptCompatibilityKey = buildAgentTranscriptCompatibilityKey({
-        request,
-        resourceSignature: resourceContextPlan.resourceSignature,
-        stableContextBlock: resourceContextPlan.stableContextBlock,
-        tools: toolSpecs,
-      });
+      const transcriptCompatibilityKey = PORTABLE_TRANSCRIPT_KEY;
       let transcriptSegment = await loadAgentTranscriptSegment({
         conversationKey: request.conversationKey,
         compatibilityKey: transcriptCompatibilityKey,
       });
+      if (!transcriptSegment.messages.length) {
+        const legacy = await loadLatestAgentTranscriptSegment(
+          request.conversationKey,
+        );
+        if (legacy)
+          transcriptSegment = {
+            ...legacy,
+            compatibilityKey: transcriptCompatibilityKey,
+          };
+      }
+      const history = normalizeHistoryMessages(request);
+      const legacyCheckpoint = transcriptSegment.messages.some(
+        (message) =>
+          message.role === "user" &&
+          typeof message.content === "string" &&
+          message.content.startsWith("Agent semantic continuation checkpoint:"),
+      );
+      const portable = buildPortableAgentTranscript({
+        messages:
+          legacyCheckpoint && history.length
+            ? [
+                ...transcriptSegment.messages.map((message) =>
+                  message.role === "user" &&
+                  typeof message.content === "string" &&
+                  message.content.startsWith(
+                    "Agent semantic continuation checkpoint:",
+                  )
+                    ? {
+                        ...message,
+                        content: message.content.replace(
+                          "Agent semantic continuation checkpoint:",
+                          "Legacy conversation summary (earlier exact text may be unavailable):",
+                        ),
+                      }
+                    : message,
+                ),
+                ...history,
+              ]
+            : transcriptSegment.messages.length
+              ? transcriptSegment.messages
+              : history,
+        conversationKey: request.conversationKey,
+        resourceSignature: resourceContextPlan.resourceSignature,
+      });
+      await persistToolResultHandles(portable.handleRecords);
+      transcriptSegment = { ...transcriptSegment, messages: portable.messages };
+      request.workingDirectory ||= readRetainedWorkingDirectory(
+        portable.messages,
+      );
       const hadCompatibleTranscript = transcriptSegment.messages.length > 0;
-      let transcriptMessagesForPrompt = transcriptSegment.messages.length
-        ? transcriptSegment.messages
-        : normalizeHistoryMessages(request);
+      let transcriptMessagesForPrompt = [...transcriptSegment.messages];
+      await persistIfLive(() =>
+        replaceAgentTranscriptSegment(transcriptSegment),
+      );
       // Material the conversation finalized outlives the run that made it.
       // Every turn -- not only the one after an interruption -- has to know
       // what is still unwritten, or it regenerates what already exists.
@@ -713,49 +763,23 @@ export class AgentRuntime {
             materialOutcomes: request.materialOutcomes,
             resumableBatches,
           });
-      const promptTranscriptMessages = (): AgentModelMessage[] =>
-        materialRecoveryMessage
-          ? [...transcriptMessagesForPrompt, materialRecoveryMessage]
-          : [...transcriptMessagesForPrompt];
-
-      if (
-        transcriptMessagesForPrompt.some(
-          (message) => message.role === "assistant" || message.role === "tool",
-        )
-      ) {
-        const legacyBudget = buildAgentContextBudgetState({
-          messages: transcriptMessagesForPrompt,
-          model: request.model,
-          inputTokenCap: request.advanced?.inputTokenCap,
-          apiBase: request.apiBase,
-          providerProtocol: request.providerProtocol,
-          authMode: request.authMode,
-          profileOverride: request.advanced?.profileOverride,
-          recentlyCompacted: false,
-        });
-        const semantic = buildAgentSemanticCheckpoint({
-          messages: transcriptMessagesForPrompt,
-          summaryTokens: legacyBudget.summaryTokens,
-          conversationKey: request.conversationKey,
-          resourceSignature: resourceContextPlan.resourceSignature,
-        });
-        const checkpoint: AgentUserMessage = {
-          ...semantic.checkpoint,
-          content: turnPathRedactor.redactTerminalText(
-            semantic.checkpoint.content,
-          ),
-        };
-        await persistToolResultHandles(semantic.handleRecords);
-        transcriptMessagesForPrompt = [checkpoint];
-        transcriptSegment = {
-          ...transcriptSegment,
-          messages: [checkpoint],
-          compactedAt: this.now(),
-        };
-        await persistIfLive(() =>
-          replaceAgentTranscriptSegment(transcriptSegment),
+      const conversationReferenceMessage = buildConversationReferenceMessage(
+        transcriptSegment.messages,
+      );
+      const promptTranscriptMessages = (): AgentModelMessage[] => {
+        const retainedActionMessage = buildRetainedActionMessage(
+          transcriptSegment.messages,
+          transcriptMessagesForPrompt,
         );
-      }
+        return [
+          ...transcriptMessagesForPrompt,
+          ...(conversationReferenceMessage
+            ? [conversationReferenceMessage]
+            : []),
+          ...(retainedActionMessage ? [retainedActionMessage] : []),
+          ...(materialRecoveryMessage ? [materialRecoveryMessage] : []),
+        ];
+      };
 
       if (isManualCompactRequest(request)) {
         const policy = resolveAgentContextBudgetPolicy();
@@ -783,7 +807,6 @@ export class AgentRuntime {
         if (compacted.compacted) {
           transcriptSegment = {
             ...transcriptSegment,
-            messages: compacted.messages,
             compactedAt: this.now(),
           };
           await persistToolResultHandles(compacted.handleRecords);
@@ -984,11 +1007,15 @@ export class AgentRuntime {
         profileOverride: request.advanced?.profileOverride,
         outputTokenLimit: request.advanced?.outputTokenLimit,
       }).softLimitTokens;
-      if (budgetState.shouldCompact && transcriptMessagesForPrompt.length) {
+      if (
+        (budgetState.shouldCompact || transcriptSegment.compactedAt) &&
+        transcriptMessagesForPrompt.length
+      ) {
         await emit({ type: "status", text: "Compacting context…" });
         const compacted = compactAgentTranscript({
           messages: transcriptMessagesForPrompt,
           budget: budgetState,
+          force: Boolean(transcriptSegment.compactedAt),
           conversationKey: request.conversationKey,
           resourceSignature: resourceContextPlan.resourceSignature,
         });
@@ -996,14 +1023,6 @@ export class AgentRuntime {
           transcriptMessagesForPrompt = compacted.messages;
           transcriptSegment = {
             ...transcriptSegment,
-            messages:
-              !hadCompatibleTranscript &&
-              isCurrentTurnUserTranscriptMessage(
-                compacted.messages[compacted.messages.length - 1],
-                request,
-              )
-                ? compacted.messages
-                : [...compacted.messages, currentUserTranscriptMessage],
             compactedAt: this.now(),
           };
           await persistToolResultHandles(compacted.handleRecords);
@@ -1058,7 +1077,6 @@ export class AgentRuntime {
         await persistToolResultHandles(semantic.handleRecords);
         const nextSegment = {
           ...transcriptSegment,
-          messages: [checkpoint],
           compactedAt: this.now(),
         };
         const writeResult = await persistIfLive(() =>
@@ -1092,12 +1110,26 @@ export class AgentRuntime {
         } = {},
       ): Promise<AgentTranscriptWriteResult | undefined> => {
         if (!newTranscriptMessages.length) return "skipped";
-        const committed = await commitSemanticCheckpoint({
-          sourceMessages: [
-            ...transcriptSegment.messages,
-            ...newTranscriptMessages,
-          ],
+        const portable = buildPortableAgentTranscript({
+          messages: [...transcriptSegment.messages, ...newTranscriptMessages],
+          conversationKey: request.conversationKey,
+          resourceSignature: resourceContextPlan.resourceSignature,
         });
+        await persistToolResultHandles(portable.handleRecords);
+        const nextSegment = {
+          ...transcriptSegment,
+          messages: portable.messages,
+        };
+        const committed = {
+          writeResult: await persistIfLive(() =>
+            replaceAgentTranscriptSegment(nextSegment),
+          ),
+        };
+        if (
+          committed.writeResult === "persisted" ||
+          committed.writeResult === "memory_only"
+        )
+          transcriptSegment = nextSegment;
         if (options.requireAccepted) {
           requireAcceptedCheckpointWrite(committed.writeResult);
         }
@@ -1115,6 +1147,8 @@ export class AgentRuntime {
         handleRecords?: AgentToolResultHandleRecord[];
         retryInstruction?: string;
       }): Promise<void> => {
+        if (newTranscriptMessages.length)
+          await persistTranscriptCheckpoint({ requireAccepted: true });
         const committed = await commitSemanticCheckpoint({
           sourceMessages: params.sourceMessages,
           preservedHandleRecords: params.handleRecords,
@@ -1129,7 +1163,15 @@ export class AgentRuntime {
           renderedPrompt.envelope,
           {
             transcriptMessages: [],
-            postTurnMessages: [committed.checkpoint],
+            postTurnMessages: [
+              committed.checkpoint,
+              ...[
+                conversationReferenceMessage,
+                buildRetainedActionMessage(transcriptSegment.messages),
+              ].filter((message): message is AgentUserMessage =>
+                Boolean(message),
+              ),
+            ],
           },
         );
         continuationSession.restartWithMessages(restartMessages);
@@ -1236,6 +1278,12 @@ export class AgentRuntime {
               activities: pendingReadActivities,
             }),
           );
+          if (redactedFinalText)
+            newTranscriptMessages.push({
+              role: "assistant",
+              content: redactedFinalText,
+              messageId: `${runId}:answer`,
+            });
           await persistTranscriptCheckpoint();
           if (status === "completed" && redactedFinalText) {
             await persistIfLive(() =>
@@ -1290,16 +1338,6 @@ export class AgentRuntime {
             currentAnswerText = finalText;
           }
         }
-        const transcriptText =
-          options.transcriptPrefix &&
-          finalText.startsWith(options.transcriptPrefix)
-            ? finalText.slice(options.transcriptPrefix.length)
-            : finalText;
-        newTranscriptMessages.push(
-          step.assistantMessage
-            ? { ...step.assistantMessage, content: transcriptText }
-            : { role: "assistant", content: transcriptText },
-        );
         return completeRun(finalText, "completed", { webAttribution });
       };
       const providerTerminalOutcomes: ToolWorkflowOutcome[] = [];
@@ -1567,6 +1605,12 @@ export class AgentRuntime {
                 role: "tool",
                 tool_call_id: outcome.delivery.callId,
                 name: outcome.delivery.name,
+                workCategory: this.registry.getTool(call.name)
+                  ? resolveAgentToolCallWorkCategory(
+                      this.registry.getTool(call.name)!,
+                      call.arguments,
+                    )
+                  : undefined,
                 content: JSON.stringify(
                   outcome.delivery.content ?? {},
                   null,
@@ -2080,12 +2124,10 @@ export class AgentRuntime {
                   role: "user",
                   content: finalDecision.correction,
                 };
-                newTranscriptMessages.push(
-                  ...continuationSession.appendFinalCorrection({
-                    assistantMessage: assistantCorrectionMessage,
-                    correctionMessage: userCorrectionMessage,
-                  }),
-                );
+                continuationSession.appendFinalCorrection({
+                  assistantMessage: assistantCorrectionMessage,
+                  correctionMessage: userCorrectionMessage,
+                });
                 await persistTranscriptCheckpoint({
                   requireAccepted: Boolean(
                     finalDecision.actionContractRejection,
@@ -2194,6 +2236,12 @@ export class AgentRuntime {
                 role: "tool",
                 tool_call_id: outcome.delivery.callId,
                 name: outcome.delivery.name,
+                workCategory: this.registry.getTool(call.name)
+                  ? resolveAgentToolCallWorkCategory(
+                      this.registry.getTool(call.name)!,
+                      call.arguments,
+                    )
+                  : undefined,
                 content: JSON.stringify(
                   outcome.delivery.content ?? {},
                   null,

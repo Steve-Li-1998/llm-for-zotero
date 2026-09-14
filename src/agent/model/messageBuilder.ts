@@ -677,6 +677,9 @@ export async function renderAgentPromptEnvelope(
   ].filter(Boolean);
   const dynamicGuidanceInstructions = [
     autoReadInstruction,
+    request.workingDirectory
+      ? `Command working directory retained from this conversation: ${request.workingDirectory}. run_command uses it when cwd is omitted; pass cwd explicitly to change it. This directory does not confer filesystem permission.`
+      : "",
     ...workflowParityInstructions,
     ...collectToolGuidanceInstructions(request, tools, matchedSkillIds),
   ];

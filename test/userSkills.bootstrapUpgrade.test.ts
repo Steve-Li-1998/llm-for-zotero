@@ -381,8 +381,9 @@ describe("user skill bootstrap upgrades", function () {
       canonicalWriteNote,
       "Path pattern: `{papertitle}/{papertitle}.md`",
     );
-    // Version 12 binds file exports to the exact finalized document identity.
-    assert.equal(parseSkill(canonicalWriteNote).version, 12);
+    // Version 13 distinguishes saving existing content from authoring a note.
+    assert.equal(parseSkill(canonicalWriteNote).version, 13);
+    assert.include(canonicalWriteNote, "`sourceMessageId`");
     assert.include(canonicalWriteNote, "returned `documentId`");
   });
 

@@ -264,6 +264,7 @@ describe("semantic tool surface", function () {
       "annotate_pdf",
       "attachment_update",
       "collection_update",
+      "conversation_read",
       "file_io",
       "library_cite",
       "library_delete",

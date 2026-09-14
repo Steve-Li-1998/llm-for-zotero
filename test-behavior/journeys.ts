@@ -18,6 +18,7 @@ import {
   type NativeState,
 } from "./native";
 import { researchJourney } from "./research";
+import { retentionJourney } from "./retention";
 import {
   assertConversationSummary,
   assertHumanCitationLabels,
@@ -99,7 +100,9 @@ export async function executeJourneyStep(
   ) => driver.turn(id, prompt, spec.mode, request, expected);
   let outcome: StepOutcome | void = undefined;
   try {
-    if (id === "semantic.create-file") {
+    if (id === "conversation.retention") {
+      await retentionJourney(ctx);
+    } else if (id === "semantic.create-file") {
       await createdDestinationWorkflow(ctx);
     } else if (id === "semantic.action-cases") {
       await directActionCases(ctx);

@@ -412,6 +412,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
     },
 
     async planInvocation(input, context) {
+      input.cwd ||= context.request.workingDirectory;
       if (getNoteWriteBypassRefusal(input, context)) {
         return prohibitedInvocationPlan({
           mechanism: "shell",
@@ -482,6 +483,8 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
         effect: AgentToolEffect,
         actionEvidence?: AgentActionEvidence[],
       ) => {
+        if (commandResult.exitCode === 0 && input.cwd)
+          context.request.workingDirectory = input.cwd;
         const maxLen = 8000;
         const stdout =
           commandResult.stdout.length > maxLen
@@ -499,6 +502,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
             stdout,
             stderr,
             command: input.command,
+            ...(input.cwd ? { cwd: input.cwd } : {}),
             outcome: commandResult.outcome,
           },
           effect,

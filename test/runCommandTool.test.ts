@@ -12,6 +12,27 @@ import { createTestActionContractService } from "./helpers/actionContractService
  * these are the characterizations those changes must not break silently.
  */
 describe("run_command effect path", function () {
+  it("binds the retained working directory before authorization and preserves explicit overrides", async function () {
+    const tool = createRunCommandTool();
+    const context = {
+      request: {
+        workingDirectory: "/tmp/research-task",
+        userText: "List the files",
+        mode: "agent",
+      },
+      item: null,
+    } as never;
+    for (const cwd of [undefined, "/tmp/explicit-task"]) {
+      const validated = tool.validate({
+        command: "ls",
+        ...(cwd ? { cwd } : {}),
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      await tool.planInvocation!(validated.value, context);
+      assert.equal(validated.value.cwd, cwd || "/tmp/research-task");
+    }
+  });
   const tool = createRunCommandTool();
   const service = createTestActionContractService();
 

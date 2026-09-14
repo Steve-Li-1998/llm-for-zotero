@@ -27,6 +27,13 @@ const contract = (
 
 export const catalog: Contract[] = [
   contract(
+    "conversation.retention",
+    "conversation",
+    "auto",
+    false,
+    "A long answer survives fresh provider sessions and memory reload, supports an explanation without retrieval, and saves unchanged by message identity into one native standalone note with measured tool rounds and provider usage.",
+  ),
+  contract(
     "semantic.create-file",
     "semantic",
     "auto",

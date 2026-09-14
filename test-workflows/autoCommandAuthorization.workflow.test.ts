@@ -102,6 +102,18 @@ describe("workflow: automatic command permission", function () {
     return Zotero.isWin ? `"${path}"` : `'${path.replace(/'/g, "'\\''")}'`;
   }
 
+  it("uses the retained working directory in the native subprocess", async function () {
+    context.request.workingDirectory = directory;
+    const output = await run(Zotero.isWin ? "cd" : "pwd");
+    assert.equal(output.exitCode, 0);
+    // macOS can canonicalize /var to /private/var when the shell starts.
+    assert.equal(
+      output.stdout.trim().replace(/^\/private(?=\/var\/)/, ""),
+      directory.replace(/^\/private(?=\/var\/)/, ""),
+    );
+    assert.equal(reviewCount, 0);
+  });
+
   it("executes the reported directory-listing form through native Subprocess without review", async function () {
     const exports = PathUtils.join(directory, "Exports");
     await IOUtils.makeDirectory(exports);

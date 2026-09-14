@@ -22,6 +22,7 @@ import {
 } from "./read/searchLiteratureOnline";
 import { createSearchPaperTool } from "./read/searchPaper";
 import { createToolResultReadTool } from "./read/toolResultRead";
+import { createConversationReadTool } from "./read/conversationRead";
 import { createViewPdfPagesTool } from "./read/viewPdfPages";
 import { createWebReadTool } from "./read/webRead";
 import { createWebSearchTool } from "./read/webSearch";
@@ -734,6 +735,7 @@ export function createBuiltInToolRegistry(
   registry.register(markToolTier(runCommand, "advanced"));
   registry.register(markToolTier(zoteroScript, "advanced"));
   registry.register(createToolResultReadTool());
+  registry.register(createConversationReadTool());
   registry.register(createLoadSkillTool());
   registry.register(createUpdatePlanTool(deps.zoteroGateway));
   registry.register(createPreparePlanExecutionTool(deps.zoteroGateway));

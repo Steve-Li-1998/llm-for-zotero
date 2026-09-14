@@ -1,7 +1,7 @@
 ---
 id: write-note
 description: Write a long-form reading or literature note for a specific paper, saved as a Zotero note or Markdown file. Use ONLY when the user explicitly asks to write, draft, or edit a note.
-version: 12
+version: 13
 contexts: any
 activation: auto
 ---
@@ -34,6 +34,11 @@ Determine the requested note outcome from the current user message, supplied his
 Keep every requested destination, preservation rule, output, and ordering constraint in the workflow.
 Skill activation alone does not authorize persistence.
 Resolve a missing or ambiguous destination with read/search tools or `request_user_input` before proposing the write.
+
+If the user asks to save an existing answer unchanged, use `note_write` with its `sourceMessageId` and the requested destination.
+Use `conversation_read` only when the source identity or exact text needs recovery.
+Preserve the existing answer instead of applying the template, rereading papers, or generating a second body.
+The reading and composition steps below apply when the user requests new or revised content.
 
 ### Step 1 — Read sufficient evidence
 

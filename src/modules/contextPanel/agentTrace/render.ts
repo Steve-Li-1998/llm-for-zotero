@@ -6347,6 +6347,7 @@ type TraceView = {
     caption: HTMLElement;
   };
   allowPlanRecovery?: boolean;
+  streaming?: boolean;
   eventCount?: number;
   lastEvent?: AgentRunEventRecord;
   quoteCitations?: Message["quoteCitations"];
@@ -6434,6 +6435,7 @@ export function renderAgentTrace({
   view.quoteOverride = message.quoteDisplayOverride;
   const textOnly =
     view.allowPlanRecovery === allowPlanRecovery &&
+    view.streaming === message.streaming &&
     message.streaming !== false &&
     !formattingChanged &&
     added &&
@@ -6443,6 +6445,7 @@ export function renderAgentTrace({
         entry.payload.type === "message_delta",
     );
   view.allowPlanRecovery = allowPlanRecovery;
+  view.streaming = message.streaming;
   view.eventCount = events.length;
   view.lastEvent = events[events.length - 1];
 
@@ -6859,13 +6862,17 @@ export function renderAgentTrace({
   if (actionSummaryCard) {
     const attached = attachNoteDetails(actionSummaryCard, standaloneNoteCards);
     standaloneNoteCards = attached.unmatched;
-    const noteMode = actionCardNoteMode(attached.card);
-    actionCardNode = renderActionSummaryCard(doc, attached.card, {
-      mode: noteMode ? "note" : "action",
-      ...(noteMode ? { header: noteMode } : {}),
-      renderDetail: renderActionCardDetail,
-      ...(actionCardNavigation ? { navigation: actionCardNavigation } : {}),
-    });
+    // Receipts can arrive before the answer starts. Reveal their outcome only
+    // after streaming finishes, even if a final trace event has arrived sooner.
+    if (message.streaming !== true) {
+      const noteMode = actionCardNoteMode(attached.card);
+      actionCardNode = renderActionSummaryCard(doc, attached.card, {
+        mode: noteMode ? "note" : "action",
+        ...(noteMode ? { header: noteMode } : {}),
+        renderDetail: renderActionCardDetail,
+        ...(actionCardNavigation ? { navigation: actionCardNavigation } : {}),
+      });
+    }
   }
 
   for (const card of standaloneNoteCards)

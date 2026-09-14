@@ -11095,6 +11095,56 @@ describe("agent trace action summary card", function () {
     );
   });
 
+  for (const useFooter of [true, false]) {
+    it(`reveals the action card only after streaming ends (${useFooter ? "conversation footer" : "trace surface"})`, function () {
+      const footer = useFooter ? new FakeElement("div") : undefined;
+      const message = {
+        role: "assistant" as const,
+        text: "The answer is still arriving.",
+        timestamp: 1,
+        streaming: true,
+      };
+      const events = [...effectEvents];
+      let trace: FakeElement | undefined;
+      const refresh = () => {
+        trace = renderAgentTrace({
+          doc: fakeDocument,
+          message,
+          events,
+          previous: trace as unknown as HTMLElement,
+          actionSummaryHost: footer as unknown as HTMLElement,
+        }) as unknown as FakeElement;
+        return (footer || trace).findAllByClass(
+          "llm-agent-action-summary-card",
+        );
+      };
+      assert.isEmpty(
+        refresh(),
+        "completed actions do not interrupt the answer",
+      );
+      events.push(event(events.length + 1, { type: "final", text: "Done." }));
+      assert.isEmpty(
+        refresh(),
+        "a final event cannot reveal a still-streaming answer's card",
+      );
+      message.text = "Done.";
+      message.streaming = false;
+      assert.lengthOf(refresh(), 1, "completion reveals exactly one card");
+      message.streaming = true;
+      events.push(
+        event(events.length + 1, { type: "message_delta", text: "More." }),
+      );
+      assert.isEmpty(refresh(), "resumed streaming clears a retained card");
+      events.push(
+        event(events.length + 1, { type: "message_delta", text: " text." }),
+      );
+      assert.isEmpty(
+        refresh(),
+        "incremental text refreshes keep the card hidden",
+      );
+    });
+  }
+
   it("opens the exact executed command as literal code and can fold it again", function () {
     const command = "printf '%s\\n' '<script> & ```'\n  printf 'second line'";
     const trace = renderAgentTrace({

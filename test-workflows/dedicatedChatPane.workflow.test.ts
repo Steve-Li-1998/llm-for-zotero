@@ -16,7 +16,7 @@ describe("workflow: dedicated native chat pane", function () {
     while (!check() && Date.now() < deadline) await Zotero.Promise.delay(50);
     assert.isTrue(
       check(),
-      `${message}; selected=${win.Zotero_Tabs.selectedID}; panels=${JSON.stringify(Array.from(win.document.querySelectorAll("#llm-main")).map((node: any) => ({ ...node.dataset })))}`,
+      `${message}; selected=${win.Zotero_Tabs.selectedID}; view=${win.document.documentElement.getAttribute("data-llm-pane-view")}; collapsed=${activeDetails()?.sidenav?._collapsed}; panels=${JSON.stringify(Array.from(win.document.querySelectorAll("#llm-main")).map((node: any) => ({ ...node.dataset, height: node.getBoundingClientRect().height })))}`,
     );
   }
 
@@ -47,6 +47,28 @@ describe("workflow: dedicated native chat pane", function () {
       new win.MouseEvent("click", { bubbles: true, detail: 1, button: 0 }),
     );
     await Zotero.Promise.delay(300);
+    return details;
+  }
+
+  async function openChatPane() {
+    const details = activeDetails();
+    assert.isOk(details, "native item details is visible");
+    // An open independent chat closes on a second rail click. Setup must
+    // preserve that state; clickPane remains a literal click for toggle tests.
+    if (
+      win.document.documentElement.getAttribute("data-llm-pane-view") !==
+        "chat" ||
+      details.sidenav._collapsed
+    )
+      await clickPane("llm-context-panel");
+    await until(
+      () =>
+        !details.sidenav._collapsed &&
+        details
+          .querySelector(".llm-dedicated-chat-pane #llm-main")
+          ?.getBoundingClientRect().height > 0,
+      "chat is open and visible",
+    );
     return details;
   }
 
@@ -114,9 +136,7 @@ describe("workflow: dedicated native chat pane", function () {
       icon.hasAttribute("disabled"),
       "plugin icon remains enabled",
     );
-    icon.dispatchEvent(
-      new win.MouseEvent("click", { bubbles: true, detail: 1, button: 0 }),
-    );
+    await openChatPane();
     await until(
       () =>
         Boolean(
@@ -212,8 +232,60 @@ describe("workflow: dedicated native chat pane", function () {
     );
   });
 
+  it("toggles chat closed and open through its rail icon without losing the draft", async function () {
+    const details = await openChatPane();
+    const section = details.querySelector(".llm-dedicated-chat-pane");
+    const root = section.querySelector("#llm-main");
+    const conversationKey = root.dataset.itemId;
+    const input = section.querySelector("#llm-input") as HTMLTextAreaElement;
+    const previousDraft = input.value;
+    const draft = "Keep this draft when toggling the chat rail";
+    input.value = draft;
+    input.dispatchEvent(new win.Event("input", { bubbles: true }));
+    try {
+      await clickPane("llm-context-panel");
+      assert.isTrue(
+        details.sidenav._collapsed,
+        "clicking the active chat icon closes the native pane",
+      );
+      assert.equal(
+        win.document.documentElement.getAttribute("data-llm-pane-view"),
+        "details",
+      );
+      assert.strictEqual(section.querySelector("#llm-main"), root);
+      assert.equal(input.value, draft, "closing retains the draft");
+
+      await clickPane("llm-context-panel");
+      await until(
+        () =>
+          !details.sidenav._collapsed &&
+          section.querySelector("#llm-main")?.getBoundingClientRect().height >
+            0,
+        "the next rail click reopens chat",
+      );
+      assert.equal(
+        win.document.documentElement.getAttribute("data-llm-pane-view"),
+        "chat",
+      );
+      assert.equal(
+        section.querySelector("#llm-main").dataset.itemId,
+        conversationKey,
+        "reopening preserves the conversation",
+      );
+      assert.equal(
+        section.querySelector("#llm-input").value,
+        draft,
+        "reopening preserves the draft",
+      );
+    } finally {
+      const currentInput = section.querySelector("#llm-input");
+      currentInput.value = previousDraft;
+      currentInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+    }
+  });
+
   it("uses the whole native pane and restores details through their icon", async function () {
-    const details = await clickPane("llm-context-panel");
+    const details = await openChatPane();
     const section = details.querySelector(
       "item-pane-custom-section.llm-dedicated-chat-pane",
     );
@@ -363,7 +435,7 @@ describe("workflow: dedicated native chat pane", function () {
     let preferences: any;
     const prefKey = "extensions.zotero.llmforzotero.sidebarLayout";
     const original = Zotero.Prefs.get(prefKey, true);
-    const details = await clickPane("llm-context-panel");
+    const details = await openChatPane();
     const section = details.querySelector(".llm-dedicated-chat-pane");
     const root = section.querySelector("#llm-main");
     const input = section.querySelector("#llm-input");
@@ -470,7 +542,7 @@ describe("workflow: dedicated native chat pane", function () {
       await reader._initPromise;
       await reader._waitForReader();
     }
-    await clickPane("llm-context-panel");
+    await openChatPane();
     const title = activeDetails().querySelector(".llm-docked-title-row");
     const titleBounds = title.getBoundingClientRect();
     const dividerBounds = activeDetails()
@@ -585,7 +657,7 @@ describe("workflow: dedicated native chat pane", function () {
       await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
       win.ZoteroPane.itemsView.selection.clearSelection();
       await Zotero.Promise.delay(300);
-      await clickPane("llm-context-panel");
+      await openChatPane();
       await until(
         () => Boolean(panel().querySelector(".llm-start-page-title")),
         "stacked preference still provides chat with no selection",

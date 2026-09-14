@@ -104,6 +104,29 @@ export async function dispatchZoteroItemsAsContext(
   return { dispatched: false, openedStandalone: true };
 }
 
+/** Dispatch to the native host that received the drop, never another window or tab. */
+export async function dispatchZoteroItemsToSidebar(
+  container: Element,
+  items: Zotero.Item[],
+): Promise<boolean> {
+  const findTarget = () =>
+    Array.from(activeContextSurfaceTargets.entries()).find(
+      ([body, target]) =>
+        body.isConnected &&
+        container.contains(body) &&
+        target.surfaceKind === "embedded",
+    )?.[1];
+  const target = findTarget();
+  if (!target || !items.length) return false;
+  if ((await target.prepareItemsAsDefaultContextTarget?.()) === false)
+    return false;
+  const prepared = findTarget();
+  if (!prepared) return false;
+  const result = await prepared.addItemsAsDefaultContext(items);
+  await prepared.afterItemsAsDefaultContextAdded?.(result, items);
+  return result.changed;
+}
+
 export function registerZoteroItemContextMenu(deps: RegisterMenuDeps): void {
   deps.ztoolkit.Menu?.register?.("item", {
     tag: "menuseparator",

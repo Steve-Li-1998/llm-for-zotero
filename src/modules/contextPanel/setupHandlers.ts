@@ -8036,7 +8036,19 @@ export function setupHandlers(
       },
       prepareItemsAsDefaultContextTarget: isStandalonePanel
         ? hooks?.prepareItemsAsDefaultContextTarget
-        : undefined,
+        : async () => {
+            if (isNoteSession() || isWebChatMode()) return false;
+            const lease = capturePanelOperationLease(body);
+            const libraryID = getCurrentLibraryID();
+            if (!lease || !libraryID) return false;
+            const summary = await conversationRepository.createCatalogEntry({
+              system: getConversationSystem(),
+              kind: "global",
+              libraryID,
+            });
+            if (!summary || !isPanelOperationLeaseCurrent(lease)) return false;
+            return switchGlobalConversation(summary.conversationKey);
+          },
     },
   );
 

@@ -69,9 +69,14 @@ function harness() {
       timers.clear();
       for (const callback of pending) callback();
     },
-    click(pane: string, options: { button?: number; nav?: boolean } = {}) {
+    click(
+      pane: string,
+      options: { button?: number; nav?: boolean; disabled?: boolean } = {},
+    ) {
       const target = {
         getAttribute: () => pane,
+        hasAttribute: (name: string) =>
+          name === "disabled" && Boolean(options.disabled),
         closest: (selector: string) =>
           selector === "item-pane-sidenav"
             ? options.nav === false
@@ -130,6 +135,14 @@ describe("dedicated chat pane navigation", function () {
     h.click("plugin-namespaced-chat");
     assert.isFalse(h.nav._collapsed);
     assert.equal(h.attributes.get("data-llm-pane-view"), "chat");
+  });
+
+  it("leaves the pane closed when a disabled rail tab is activated", function () {
+    const h = harness();
+    h.click("plugin-namespaced-chat", { disabled: true });
+    assert.equal(h.attributes.get("data-llm-pane-view"), "details");
+    assert.isTrue(h.nav._collapsed);
+    assert.equal(h.pendingTimers(), 0);
   });
 
   it("reopens chat after the native pane toggle collapsed it", function () {

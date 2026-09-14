@@ -49,6 +49,10 @@ describe("workflow: dedicated native chat pane", function () {
       new win.MouseEvent("click", { bubbles: true, detail: 1, button: 0 }),
     );
     await Zotero.Promise.delay(300);
+    await until(
+      () => !details._disableScrollHandler,
+      "native pane navigation settles",
+    );
     return details;
   }
 
@@ -123,120 +127,188 @@ describe("workflow: dedicated native chat pane", function () {
     else Zotero.Prefs.set(layoutPref, originalLayout as string, true);
   });
 
-  it("opens from the rail without a selection and keeps Library chat locked", async function () {
-    win.ZoteroPane.itemsView.selection.clearSelection();
-    await Zotero.Promise.delay(400);
+  function libraryIcon() {
     const details = win.document.getElementById("zotero-item-details");
-    const section = details.querySelector(".llm-dedicated-chat-pane");
-    const paneID = section?.dataset.pane;
-    const icon = Array.from(
-      details.sidenav.querySelectorAll("[data-pane]"),
-    ).find((node: any) => node.dataset.pane === paneID) as any;
-    assert.isOk(icon, "plugin icon exists before selecting a paper");
-    assert.isAbove(
-      icon.getBoundingClientRect().height,
-      0,
-      "plugin icon is visible with no selection",
-    );
-    assert.isFalse(
-      icon.hasAttribute("disabled"),
-      "plugin icon remains enabled",
-    );
-    await openChatPane();
-    await until(
-      () =>
-        Boolean(
-          section.querySelector("#llm-main")?.dataset.handlersInitialized,
-        ),
-      "empty chat opens",
-    );
-    assert.isAbove(section.getBoundingClientRect().height, 100);
-    assert.isNull(section.item, "empty chat has no stale selected paper");
-    const emptyTitle = section.querySelector(".llm-docked-title-row");
-    assert.isOk(
-      emptyTitle,
-      "empty sidebar preserves the approved branded title row",
-    );
-    assert.isBelow(
-      emptyTitle.getBoundingClientRect().bottom,
-      section.querySelector(".llm-header-top").getBoundingClientRect().top,
-      "classic toolbar remains in its own second row",
-    );
+    const paneID = details.querySelector(".llm-dedicated-chat-pane")?.dataset
+      .pane;
+    return Array.from(details.sidenav.querySelectorAll("[data-pane]")).find(
+      (node: any) => node.getAttribute("data-pane") === paneID,
+    ) as any;
+  }
 
-    await Zotero.Promise.delay(500);
-    assert.equal(
-      section.querySelector("#llm-title-static").getBoundingClientRect().height,
-      0,
-      "no duplicate title appears in the empty chat toolbar after history refresh",
-    );
-
-    assert.isOk(
-      section.querySelector(".llm-start-page-title"),
-      "no-selection view preserves the branded starter page",
-    );
-    assert.include(
-      section.querySelector(".llm-start-page-title").textContent,
-      "LLM-for-Zotero",
-    );
-    assert.isOk(section.querySelector(".llm-start-page-subtitle"));
-    assert.isOk(section.querySelector(".llm-start-page-desc"));
-    assert.isNull(
-      section.querySelector(".llm-welcome"),
-      "legacy placeholder is absent",
-    );
-    assert.isAtLeast(
-      section.querySelector("#llm-shortcuts").children.length,
-      5,
-      "classic starter shortcuts remain present without a paper",
-    );
-    assert.isAtLeast(
-      section.querySelector(".llm-start-page-title").getBoundingClientRect()
-        .top,
-      section.querySelector("#llm-chat-box").getBoundingClientRect().top,
-      "starter title is visible from the top rather than inheriting the old bottom position",
-    );
-    win.resizeBy(1280 - win.innerWidth, 1000 - win.innerHeight);
-    await Zotero.Promise.delay(250);
-    await captureWindow(win, "empty-library-sidebar.png");
-    assert.isFalse(
-      section.querySelector("#llm-mode-chip").disabled,
-      "empty mode control is enabled",
-    );
-    (section.querySelector("#llm-mode-chip") as HTMLElement).click();
-    await until(
-      () =>
-        section.querySelector("#llm-main")?.dataset.conversationKind ===
-        "global",
-      "Library chat is available without a paper",
-    );
-    const key = section.querySelector("#llm-main").dataset.itemId;
-    await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
-    await until(
-      () => section.querySelector("#llm-main")?.dataset.itemId === key,
-      "selection preserves Library chat",
-    );
+  it("greys out the library rail with no selection and blocks activation", async function () {
     win.ZoteroPane.itemsView.selection.clearSelection();
-    await Zotero.Promise.delay(400);
     await until(
-      () => section.querySelector("#llm-main")?.dataset.itemId === key,
-      "clearing selection preserves Library chat",
+      () => Boolean(libraryIcon()?.hasAttribute("disabled")),
+      "empty rail is disabled",
     );
-    (section.querySelector(".llm-docked-close") as HTMLElement).click();
+    const icon = libraryIcon();
     assert.isAbove(
       icon.getBoundingClientRect().height,
       0,
-      "icon stays visible after closing",
+      "disabled icon stays visible",
     );
+    const nativeIcon = win.document.querySelector(
+      '#zotero-view-item-sidenav [data-pane="info"]',
+    );
+    assert.equal(
+      win.getComputedStyle(icon).opacity,
+      win.getComputedStyle(nativeIcon).opacity,
+      "disabled appearance matches native tabs",
+    );
+    icon.dispatchEvent(
+      new win.MouseEvent("click", { bubbles: true, button: 0 }),
+    );
+    assert.notEqual(
+      win.document.documentElement.getAttribute("data-llm-pane-view"),
+      "chat",
+    );
+    await captureWindow(win, "empty-library-sidebar.png");
     await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
-    await clickPane("llm-context-panel");
-    (section.querySelector("#llm-mode-chip") as HTMLElement).click();
     await until(
-      () =>
-        section.querySelector("#llm-main")?.dataset.conversationKind !==
-        "global",
-      "return to Paper chat",
+      () => !libraryIcon().hasAttribute("disabled"),
+      "selection enables rail",
     );
   });
+
+  for (const layout of ["independent", "stacked"]) {
+    it(`drops multiple papers into a fresh sidebar Library chat in ${layout} layout`, async function () {
+      Zotero.Prefs.set(layoutPref, layout, true);
+      await until(
+        () =>
+          win.document.documentElement.getAttribute(
+            "data-llm-sidebar-layout",
+          ) === layout,
+        "requested layout applies",
+      );
+      await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
+      await openChatPane();
+      const details = win.document.getElementById("zotero-item-details");
+      const section = details.querySelector(".llm-dedicated-chat-pane");
+      const panel = () => section.querySelector("#llm-main");
+      const previousKey = panel().dataset.itemId;
+      const input = panel().querySelector("#llm-input");
+      input.value = "Preserve the previous draft";
+      input.dispatchEvent(new win.Event("input", { bubbles: true }));
+      await win.ZoteroPane.selectItems(fixtures.map((f) => f.parentItemId));
+      await until(
+        () => !libraryIcon().hasAttribute("disabled"),
+        "multiple selection enables rail",
+      );
+      await openChatPane();
+      const transfer = new win.DataTransfer();
+      transfer.setData(
+        "zotero/item",
+        fixtures.map((f) => f.parentItemId).join(","),
+      );
+      // Cover both the body shown in the request and the existing composer target.
+      const dropInput = panel().querySelector("#llm-input");
+      if (dropInput.disabled) {
+        assert.equal(
+          win.getComputedStyle(dropInput).pointerEvents,
+          "none",
+          "disabled textarea lets native drops reach the composer surface",
+        );
+      }
+      const inputRect = dropInput.getBoundingClientRect();
+      const dropTarget =
+        layout === "independent"
+          ? section
+          : win.document.elementFromPoint(
+              inputRect.left + inputRect.width / 2,
+              inputRect.top + inputRect.height / 2,
+            );
+      for (const type of ["dragenter", "dragover"]) {
+        dropTarget.dispatchEvent(
+          new win.DragEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer,
+          }),
+        );
+      }
+      assert.isOk(panel().querySelector(".llm-input-drop-active"));
+      dropTarget.dispatchEvent(
+        new win.DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer,
+        }),
+      );
+      await until(
+        () =>
+          panel().dataset.conversationKind === "global" &&
+          panel().querySelectorAll("[data-paper-context-item-id]").length === 2,
+        "drop prepares a library chat and renders both context chips",
+      );
+      const key = panel().dataset.itemId;
+      assert.isNull(
+        panel().querySelector(".llm-input-drop-active"),
+        "drop feedback clears",
+      );
+      const persisted = await api.getWorkflowConversationPersistenceSnapshot(
+        "upstream",
+        Number(key),
+      );
+      assert.equal(
+        persisted.catalogRows,
+        1,
+        "new chat has a native catalog row",
+      );
+      assert.equal(persisted.messageRows, 0, "drop does not send a question");
+      assert.notEqual(key, previousKey, "drop creates its own conversation");
+      assert.sameMembers(
+        Array.from(
+          panel().querySelectorAll("[data-paper-context-item-id]"),
+        ).map((chip: any) => Number(chip.dataset.paperContextItemId)),
+        fixtures.map((f) => f.pdfAttachmentId),
+      );
+      assert.equal(panel().querySelector("#llm-input").value, "");
+      assert.isFalse(panel().querySelector("#llm-input").disabled);
+      assert.strictEqual(
+        win.document.activeElement,
+        panel().querySelector("#llm-input"),
+      );
+      await captureWindow(win, `multi-paper-sidebar-${layout}.png`);
+      win.ZoteroPane.itemsView.selection.clearSelection();
+      await until(
+        () => Boolean(libraryIcon()?.hasAttribute("disabled")),
+        "clearing selection disables rail",
+      );
+      await win.ZoteroPane.selectItem(fixtures[1].parentItemId);
+      await openChatPane();
+      await until(
+        () => panel().dataset.itemId === key,
+        "prepared library chat survives selection changes",
+      );
+      assert.lengthOf(
+        panel().querySelectorAll("[data-paper-context-item-id]"),
+        2,
+      );
+      panel().querySelector("#llm-mode-chip").click();
+      await until(
+        () => panel().dataset.conversationKind === "paper",
+        "paper mode remains available",
+      );
+      await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
+      await until(
+        () => panel().dataset.itemId === previousKey,
+        "return to the original paper chat",
+      );
+      assert.equal(
+        panel().querySelector("#llm-input").value,
+        "Preserve the previous draft",
+      );
+      Zotero.Prefs.set(layoutPref, "independent", true);
+      await until(
+        () =>
+          win.document.documentElement.getAttribute(
+            "data-llm-sidebar-layout",
+          ) === "independent",
+        "independent layout is restored",
+      );
+    });
+  }
 
   it("toggles chat closed and open through its rail icon without losing the draft", async function () {
     const details = await openChatPane();
@@ -632,7 +704,7 @@ describe("workflow: dedicated native chat pane", function () {
       "Paper chat resumes with the active paper",
     );
   });
-  it("keeps stacked reader contexts and no-selection rail access working", async function () {
+  it("keeps stacked reader contexts and disables the empty library rail", async function () {
     const key = "extensions.zotero.llmforzotero.sidebarLayout";
     try {
       Zotero.Prefs.set(key, "stacked", true);
@@ -671,19 +743,13 @@ describe("workflow: dedicated native chat pane", function () {
       await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
       win.ZoteroPane.itemsView.selection.clearSelection();
       await Zotero.Promise.delay(300);
-      await openChatPane();
       await until(
-        () => Boolean(panel().querySelector(".llm-start-page-title")),
-        "stacked preference still provides chat with no selection",
+        () => Boolean(libraryIcon()?.hasAttribute("disabled")),
+        "stacked empty rail is disabled",
       );
       assert.equal(
         win.document.documentElement.getAttribute("data-llm-pane-view"),
-        "chat",
-      );
-      assert.isAbove(
-        panel().querySelector(".llm-docked-title-row").getBoundingClientRect()
-          .height,
-        0,
+        "stacked",
       );
       await win.ZoteroPane.selectItem(fixtures[0].parentItemId);
       await until(

@@ -35,6 +35,7 @@ export function installDedicatedChatPane(
     // a cached native render otherwise leaves another tab's old Paper chat.
     refreshTimer = win.setTimeout(() => {
       refreshTimer = undefined;
+      libraryPane.refresh();
       if (
         !["chat", "stacked"].includes(
           root.getAttribute("data-llm-pane-view") || "",
@@ -58,7 +59,7 @@ export function installDedicatedChatPane(
   };
   root.setAttribute("data-llm-pane-view", "details");
   const disposeLayout = installSidebarLayoutPreference(doc);
-  const disposeLibraryPane = installPersistentLibraryChatPane(doc);
+  const libraryPane = installPersistentLibraryChatPane(doc);
   const onClick = (event: Event) => {
     if ((event as MouseEvent).button !== 0) return;
     const target = event.target as Element | null;
@@ -70,6 +71,11 @@ export function installDedicatedChatPane(
         })
       | null;
     if (!sidenav) return;
+    if (button?.hasAttribute("disabled")) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     const pane = button?.getAttribute("data-pane");
     if (!pane) return;
     const chatPane = sidenav.container
@@ -115,7 +121,7 @@ export function installDedicatedChatPane(
     "llm-dedicated-chat-pane",
   );
   return () => {
-    disposeLibraryPane();
+    libraryPane.dispose();
     disposeLayout();
     if (observerID) notifier?.unregisterObserver(observerID);
     if (refreshTimer !== undefined) win?.clearTimeout(refreshTimer);

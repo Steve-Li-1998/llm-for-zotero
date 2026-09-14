@@ -3,6 +3,7 @@ import { afterEach, describe, it } from "mocha";
 import {
   clearContextSurfaceActionTargetsForTests,
   dispatchZoteroItemsAsContext,
+  dispatchZoteroItemsToSidebar,
   drainPendingStandaloneContextItemsForTests,
   registerContextSurfaceActionTarget,
   registerZoteroItemContextMenu,
@@ -21,6 +22,66 @@ function makeItem(id: number): Zotero.Item {
 describe("Zotero item context menu dispatch", function () {
   afterEach(function () {
     clearContextSurfaceActionTargetsForTests();
+  });
+
+  it("prepares and targets only the dropped-on sidebar, even with another surface open", async function () {
+    const body = { isConnected: true } as Element;
+    const unrelated = { isConnected: true } as Element;
+    const container = {
+      contains: (element: Element) => element === body,
+    } as Element;
+    const received: number[][] = [];
+    registerContextSurfaceActionTarget(body, {
+      surfaceKind: "embedded",
+      prepareItemsAsDefaultContextTarget: async () => {
+        registerContextSurfaceActionTarget(body, {
+          surfaceKind: "embedded",
+          addItemsAsDefaultContext: async (items) => {
+            received.push(items.map((item) => item.id));
+            return { changed: true };
+          },
+        });
+        return true;
+      },
+      addItemsAsDefaultContext: async () => {
+        throw new Error("stale target");
+      },
+    });
+    registerContextSurfaceActionTarget(unrelated, {
+      surfaceKind: "standalone",
+      addItemsAsDefaultContext: async () => {
+        throw new Error("wrong surface");
+      },
+    });
+    assert.isTrue(
+      await dispatchZoteroItemsToSidebar(container, [makeItem(1), makeItem(2)]),
+    );
+    assert.deepEqual(received, [[1, 2]]);
+  });
+
+  it("abandons sidebar drops when preparation is refused or the target is removed", async function () {
+    for (const disconnect of [false, true]) {
+      const body = { isConnected: true } as Element;
+      const container = {
+        contains: (element: Element) => element === body,
+      } as Element;
+      registerContextSurfaceActionTarget(body, {
+        surfaceKind: "embedded",
+        prepareItemsAsDefaultContextTarget: async () => {
+          if (disconnect) (body as any).isConnected = false;
+          return disconnect;
+        },
+        addItemsAsDefaultContext: async () => {
+          throw new Error("must not add");
+        },
+      });
+      assert.isFalse(
+        await dispatchZoteroItemsToSidebar(container, [
+          makeItem(1),
+          makeItem(2),
+        ]),
+      );
+    }
   });
 
   it("registers the Zotero item-tree command between separators", function () {

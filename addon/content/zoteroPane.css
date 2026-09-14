@@ -14648,7 +14648,12 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   padding-top: 68px;
 }
 
-/* Keep the plugin entry usable in the library's native no-selection view. */
+/* A disabled textarea must let library-item drops reach its composer surface. */
+#zotero-item-pane .llm-dedicated-chat-pane .llm-input:disabled {
+  pointer-events: none;
+}
+
+/* Keep the disabled plugin entry visible alongside Zotero's native tabs. */
 item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   display: block !important;
 }

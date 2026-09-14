@@ -1,4 +1,5 @@
 import { syncSidebarSectionLayout } from "./sidebarLayout";
+import { installLibraryPaperDrop } from "./libraryPaperDrop";
 type NativeChatSection = Element & {
   item: Zotero.Item | null;
   tabType: string;
@@ -6,15 +7,21 @@ type NativeChatSection = Element & {
   _forceRenderAll: () => Promise<void>;
 };
 
-/** Extend the library rail to no-selection views without changing its deck mode. */
-export function installPersistentLibraryChatPane(doc: Document): () => void {
+/** Keep the library rail available for selected items, including multi-paper drops. */
+export function installPersistentLibraryChatPane(doc: Document) {
   const win = doc.defaultView;
-  const pane = doc.getElementById("zotero-item-pane");
+  const pane = doc.getElementById("zotero-item-pane") as
+    | (Element & { data?: Zotero.Item[] })
+    | null;
   const details = doc.getElementById("zotero-item-details") as
     | (Element & { renderCustomSections: () => void; item: Zotero.Item | null })
     | null;
   const nav = doc.getElementById("zotero-view-item-sidenav") as Element | null;
-  if (!win || !pane || !details || !nav) return () => {};
+  if (!win || !pane || !details || !nav)
+    return { refresh: () => {}, dispose: () => {} };
+  const isLibraryTab = () =>
+    (win as Window & { Zotero_Tabs?: { selectedID?: string } }).Zotero_Tabs
+      ?.selectedID === "zotero-pane";
   let section: NativeChatSection | null = null;
   let lastEmpty = false;
   let wasChat = false;
@@ -27,7 +34,32 @@ export function installPersistentLibraryChatPane(doc: Document): () => void {
       nav.querySelectorAll("[data-pane]") as NodeListOf<Element>,
     ).find((node) => node.getAttribute("data-pane") === paneID);
     button?.parentElement?.classList.add("llm-persistent-rail-entry");
-    button?.removeAttribute("disabled");
+    const available = Boolean(
+      pane.data?.some(
+        (item) =>
+          item.isRegularItem?.() || item.isAttachment?.() || item.isNote?.(),
+      ),
+    );
+    if (button && button.hasAttribute("disabled") === available) {
+      if (available) button.removeAttribute("disabled");
+      else button.setAttribute("disabled", "true");
+    }
+    if (!isLibraryTab()) return;
+    if (!available) {
+      if (doc.documentElement.getAttribute("data-llm-pane-view") === "chat") {
+        doc.documentElement.setAttribute(
+          "data-llm-pane-view",
+          doc.documentElement.getAttribute("data-llm-sidebar-layout") ===
+            "stacked"
+            ? "stacked"
+            : "details",
+        );
+        syncSidebarSectionLayout(doc);
+      }
+      lastEmpty = true;
+      wasChat = false;
+      return;
+    }
     const empty = pane.getAttribute("view-type") !== "item";
     const root = doc.documentElement;
     if (
@@ -57,6 +89,10 @@ export function installPersistentLibraryChatPane(doc: Document): () => void {
     lastEmpty = empty;
     wasChat = chat;
   };
+  const disposeDrop = installLibraryPaperDrop(pane, {
+    getSection: () => section,
+    isLibraryTab,
+  });
   const Observer = (
     win as Window & { MutationObserver: typeof MutationObserver }
   ).MutationObserver;
@@ -73,10 +109,14 @@ export function installPersistentLibraryChatPane(doc: Document): () => void {
     attributeFilter: ["data-llm-pane-view"],
   });
   reconcile();
-  return () => {
-    observer.disconnect();
-    nav
-      .querySelectorAll(".llm-persistent-rail-entry")
-      .forEach((node) => node.classList.remove("llm-persistent-rail-entry"));
+  return {
+    refresh: reconcile,
+    dispose: () => {
+      disposeDrop();
+      observer.disconnect();
+      nav
+        .querySelectorAll(".llm-persistent-rail-entry")
+        .forEach((node) => node.classList.remove("llm-persistent-rail-entry"));
+    },
   };
 }

@@ -188,6 +188,43 @@ describe("citations, export and settings", function () {
       assert.isTrue(tool.validate({ action: "bibliography", itemIds: [1] }).ok);
     });
 
+    /**
+     * Zotero loads its citation style registry seconds after the app is
+     * usable. The formatter is synchronous and throws "Styles not yet loaded"
+     * in that window, so the tool has to await the registry first.
+     */
+    it("waits for the citation style registry before formatting", async function () {
+      install();
+      let registryLoaded = false;
+      let releaseRegistry = () => undefined as void;
+      (globalThis as Record<string, any>).Zotero.Styles.init = () =>
+        new Promise<void>((resolve) => {
+          releaseRegistry = () => {
+            registryLoaded = true;
+            resolve();
+          };
+        });
+      let formatted = 0;
+      const stubGateway = {
+        formatBibliography: () => {
+          if (!registryLoaded) throw new Error("Styles not yet loaded");
+          formatted += 1;
+          return { output: "Smith, J. (2024).", styleId: "apa-style-id" };
+        },
+      } as unknown as ZoteroGateway;
+      const tool = createCiteExportTool(stubGateway);
+      const pending = tool.execute(
+        { action: "bibliography", itemIds: [1], format: "text" },
+        {} as never,
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(formatted, 0, "must not format before the registry loads");
+      releaseRegistry();
+      const result = (await pending) as { output: string };
+      assert.equal(formatted, 1);
+      assert.equal(result.output, "Smith, J. (2024).");
+    });
+
     it("falls back from a note-style Quick Copy preference to concise author-date citations", function () {
       install({
         Styles: {

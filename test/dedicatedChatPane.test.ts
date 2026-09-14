@@ -96,6 +96,29 @@ function harness() {
 }
 
 describe("dedicated chat pane navigation", function () {
+  const globals = globalThis as any;
+  let originalZotero: any;
+
+  beforeEach(function () {
+    originalZotero = globals.Zotero;
+    globals.Zotero = { Prefs: { get: () => "independent" } };
+  });
+
+  afterEach(function () {
+    globals.Zotero = originalZotero;
+  });
+
+  it("starts with stacked native navigation without a saved preference", function () {
+    globals.Zotero.Prefs.get = () => undefined;
+    const h = harness();
+    assert.equal(h.attributes.get("data-llm-sidebar-layout"), "stacked");
+    assert.equal(h.attributes.get("data-llm-pane-view"), "stacked");
+    h.click("plugin-namespaced-chat");
+    assert.equal(h.attributes.get("data-llm-pane-view"), "stacked");
+    assert.isFalse(h.nav._collapsed);
+    h.dispose();
+  });
+
   it("toggles chat open, closed, and open again through its icon", function () {
     const h = harness();
     assert.equal(h.attributes.get("data-llm-pane-view"), "details");

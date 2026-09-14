@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { updateHeaderSpacing } from "../src/modules/contextPanel/setupHandlers/controllers/headerSpacing";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
 
 describe("workflow: standalone responsive chrome", function () {
@@ -24,6 +25,109 @@ describe("workflow: standalone responsive chrome", function () {
     await api.closeStandalone();
     if (fixture) await api.cleanupFixture(fixture);
     await api.reset();
+  });
+
+  it("keeps embedded header controls on one line at every font size", async function () {
+    const doc = win.document;
+    const panel = doc.createElement("div");
+    panel.className = "llm-panel";
+    const header = doc
+      .querySelector(".llm-header")!
+      .cloneNode(true) as HTMLElement;
+    panel.appendChild(header);
+    doc.body.appendChild(panel);
+    try {
+      const runtime = panel.querySelector(
+        ".llm-runtime-system-controls",
+      ) as HTMLElement;
+      runtime.dataset.visibleCount = "2";
+      runtime.style.display = "inline-flex";
+      for (const child of Array.from(runtime.children) as HTMLElement[])
+        child.style.display = "inline-flex";
+      const chip = panel.querySelector(".llm-mode-chip") as HTMLElement;
+      for (const label of ["Library chat", "Paper chat", "Note chat"]) {
+        chip.textContent = label;
+        for (const scale of [0.8, 1.2, 1.8]) {
+          panel.style.setProperty("--llm-font-scale", String(scale));
+          for (const width of [320, 340, 380, 500]) {
+            panel.style.width = `${width}px`;
+            await new Promise<void>((resolve) =>
+              win.requestAnimationFrame(() => resolve()),
+            );
+            updateHeaderSpacing(header.querySelector(".llm-header-top"));
+            if (width >= 380) {
+              assert.equal(
+                header
+                  .querySelector<HTMLElement>(".llm-header-top")!
+                  .style.getPropertyValue("--llm-runtime-compression"),
+                "0",
+                "Ample room must restore the original runtime spacing",
+              );
+            }
+            const bounds = header.getBoundingClientRect();
+            const buttons = Array.from(header.querySelectorAll("button"))
+              .map((button) => button.getBoundingClientRect())
+              .filter((rect) => rect.width > 0 && rect.height > 0);
+            const context = `${label}, ${width}px, scale ${scale}`;
+            for (const button of Array.from(
+              header.querySelectorAll(".llm-header-actions button"),
+            )) {
+              assert.closeTo(
+                button.getBoundingClientRect().width,
+                bounds.width <= 380 ? 24 : 28,
+                0.5,
+                `Action-button padding must be preserved: ${context}`,
+              );
+            }
+            for (const button of Array.from(
+              header.querySelectorAll(".llm-history-new, .llm-history-toggle"),
+            )) {
+              assert.closeTo(button.getBoundingClientRect().width, 20, 0.5);
+            }
+            const runtimeGlyphs = Array.from(
+              runtime.querySelectorAll(".llm-runtime-system-toggle-icon"),
+            ).map((icon) => icon.getBoundingClientRect());
+            assert.lengthOf(runtimeGlyphs, 2);
+            for (const glyph of runtimeGlyphs) {
+              assert.closeTo(glyph.width, 16, 0.5);
+              assert.closeTo(glyph.height, 16, 0.5);
+            }
+            assert.isAtLeast(
+              runtimeGlyphs[1].left - runtimeGlyphs[0].right,
+              1.5,
+              `Runtime glyphs need visible separation: ${context}`,
+            );
+            assert.lengthOf(
+              buttons,
+              9,
+              `All header controls visible: ${context}`,
+            );
+            for (const [index, rect] of buttons.entries()) {
+              assert.closeTo(
+                (rect.top + rect.bottom) / 2,
+                (buttons[0].top + buttons[0].bottom) / 2,
+                0.5,
+                `Header must stay on one line: ${context}`,
+              );
+              assert.isAtLeast(rect.left, bounds.left - 0.5, context);
+              assert.isAtMost(rect.right, bounds.right + 0.5, context);
+              for (const other of buttons.slice(index + 1)) {
+                const overlaps =
+                  Math.min(rect.right, other.right) -
+                    Math.max(rect.left, other.left) >
+                    0.5 &&
+                  Math.min(rect.bottom, other.bottom) -
+                    Math.max(rect.top, other.top) >
+                    0.5;
+                assert.isFalse(overlaps, `Header buttons overlap: ${context}`);
+              }
+            }
+          }
+        }
+      }
+    } finally {
+      panel.remove();
+    }
   });
 
   it("animates the occupied sidebar width to zero when narrowing the window", async function () {

@@ -1074,6 +1074,32 @@
   pointer-events: none;
 }
 
+/* Runtime spacing stays unchanged until the header actually runs out of room. */
+.llm-header-runtime-controls {
+  gap: calc(4px * (1 - var(--llm-runtime-compression, 0)));
+}
+
+.llm-header .llm-runtime-system-controls {
+  --llm-runtime-gap: calc(2px * (1 - var(--llm-runtime-compression, 0)));
+  --llm-runtime-button-width: calc(
+    24px - 6px * var(--llm-runtime-compression, 0)
+  );
+  width: var(--llm-runtime-button-width);
+  min-width: var(--llm-runtime-button-width);
+  gap: var(--llm-runtime-gap);
+}
+
+.llm-header .llm-runtime-system-controls[data-visible-count="2"] {
+  width: calc(2 * var(--llm-runtime-button-width) + var(--llm-runtime-gap));
+  min-width: calc(2 * var(--llm-runtime-button-width) + var(--llm-runtime-gap));
+}
+
+.llm-header .llm-runtime-system-toggle {
+  width: var(--llm-runtime-button-width);
+  min-width: var(--llm-runtime-button-width);
+  flex-basis: var(--llm-runtime-button-width);
+}
+
 @container (max-width: 380px) {
   .llm-header-actions {
     gap: 0;

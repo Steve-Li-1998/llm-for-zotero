@@ -464,6 +464,7 @@ import {
 } from "./setupHandlers/controllers/historyLifecycleController";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
+import { updateHeaderSpacing } from "./setupHandlers/controllers/headerSpacing";
 import { attachComposeCaptureController } from "./setupHandlers/controllers/composeCaptureController";
 import { attachFloatingMenuInteractionController } from "./setupHandlers/controllers/floatingMenuInteractionController";
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
@@ -2319,6 +2320,7 @@ export function setupHandlers(
       const panelWidth = getRoundedPanelWidth();
       withScrollGuard(chatBox, conversationKey, () => {
         applyResponsiveActionButtonsLayout();
+        updateHeaderSpacing(headerTop);
         if (
           panelWidth <= 0 ||
           panelWidth !== lastUserContextAlignmentPanelWidth
@@ -6433,6 +6435,12 @@ export function setupHandlers(
     if (actionsRow) ro.observe(actionsRow);
     if (actionsLeft) ro.observe(actionsLeft);
     if (headerTop) ro.observe(headerTop);
+    for (const element of Array.from(
+      headerTop?.querySelectorAll(
+        ".llm-mode-chip, .llm-runtime-system-controls",
+      ) || [],
+    ))
+      ro.observe(element as Element);
     // Store observers on body so they can be disconnected on next
     // setupHandlers call (prevents accumulation across tab switches).
     (body as any).__llmResizeObservers = newObservers;

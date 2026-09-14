@@ -86,6 +86,38 @@ export type AuthorizationDecision =
   | { kind: "confirm"; reason: string }
   | { kind: "block"; reason: string };
 
+/** Only the shared authorization service resolves this intermediate decision. */
+export type AuthorizationAssessment =
+  | AuthorizationDecision
+  | { kind: "model_review"; reason: string };
+
+export type ActionReviewInput = Readonly<{
+  proposal: ActionProposal;
+  input: unknown;
+  userRequest: string;
+  clarifications: unknown;
+  conversation: ReadonlyArray<{ role: "user" | "assistant"; text: string }>;
+  userInstructions?: string;
+  workspace: unknown;
+  constraints: readonly ActionConstraint[];
+}>;
+
+export type ActionReviewVerdict = Readonly<{
+  decision: "execute" | "confirm";
+  reason: string;
+  unavailable?: boolean;
+}>;
+
+export type ActionReviewer = (
+  input: ActionReviewInput,
+  signal?: AbortSignal,
+) => Promise<ActionReviewVerdict>;
+
+export type ActionReviewRecord = ActionReviewVerdict & {
+  proposalDigest: string;
+  elapsedMs: number;
+};
+
 export type ActionInteraction = Readonly<{
   entryPoint: "action_ui" | "conversation";
   reviewPreference: "default" | "review" | "direct";

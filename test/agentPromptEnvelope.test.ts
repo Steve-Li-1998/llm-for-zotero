@@ -489,7 +489,10 @@ describe("agent prompt envelope", function () {
     it("tells the agent the current mode and how much to ask", async function () {
       const yolo = await promptText("yolo", ["Assumed append."]);
       assert.include(yolo, "Permission mode: yolo");
-      assert.include(yolo, "Do not ask for confirmation or clarification");
+      assert.include(
+        yolo,
+        "The host does not run an approval model or ask for permission",
+      );
       // The guidance must not read as unlimited authority: the rails that
       // still block in yolo belong in the same sentence.
       assert.include(yolo, "chat-only memory");
@@ -500,7 +503,10 @@ describe("agent prompt envelope", function () {
       assert.notInclude(yolo, "Interpretation assumptions");
       const auto = await promptText("auto");
       assert.include(auto, "Permission mode: auto");
-      assert.include(auto, "only for genuine ambiguity");
+      assert.include(
+        auto,
+        "The host makes a bounded model review for other actions",
+      );
       const safe = await promptText("safe");
       assert.include(safe, "Permission mode: safe");
       assert.include(safe, "Call the concrete tool");

@@ -85,7 +85,7 @@ describe("bridge settings UI behavior", function () {
       )!;
       assert.equal(
         t(yolo.description),
-        "原生 Agent 会自行判断，并可能执行超出字面请求的操作。配置的访问范围、受保护目标、数据库完整性、计划完整性、仅限对话的记忆、导入已发现论文前的论文选择卡片，以及更改日志仍会强制执行。Claude Code、Codex 和外部 MCP 调用方保留各自的权限控制。",
+        "原生 Agent 执行操作时不会请求权限确认或调用审批模型，包括有歧义或危险的操作。明确限制、用户要求的审核流程、执行完整性及必要的论文选择仍然有效。Claude Code、Codex 和外部 MCP 调用方保留各自的权限控制。",
       );
     } finally {
       if (previousZotero) {

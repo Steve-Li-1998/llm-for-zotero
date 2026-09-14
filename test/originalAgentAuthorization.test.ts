@@ -157,7 +157,7 @@ describe("central authorization from concrete proposals", function () {
           constraints: [restriction],
           hasMatchingActionIntent: true,
         }).kind,
-        mode === "yolo" ? "execute" : "confirm",
+        mode === "safe" ? "confirm" : "execute",
       );
       assert.equal(
         authorizeOriginalAction(
@@ -259,7 +259,11 @@ describe("central authorization from concrete proposals", function () {
           }),
           { mode },
         ).kind,
-        mode === "yolo" ? "execute" : "confirm",
+        mode === "safe"
+          ? "confirm"
+          : mode === "auto"
+            ? "model_review"
+            : "execute",
       );
     });
     it(`${mode}: judgment never bypasses hard rails`, function () {
@@ -288,7 +292,7 @@ describe("central authorization from concrete proposals", function () {
     });
   }
 
-  it("auto reviews cross-library, destructive, ambiguous, and out-of-root proposals", function () {
+  it("auto permits ordinary writes and full recovery across library and directory boundaries", function () {
     const executionContext = {
       version: 1 as const,
       executionId: "run-1",
@@ -321,7 +325,7 @@ describe("central authorization from concrete proposals", function () {
           executionContext,
         },
       ).kind,
-      "confirm",
+      "execute",
     );
     for (const mode of ["safe", "auto", "yolo"] as const) {
       assert.equal(
@@ -339,14 +343,14 @@ describe("central authorization from concrete proposals", function () {
       authorizeOriginalAction(action("trash_items", { effect: "delete" }), {
         mode: "auto",
       }).kind,
-      "confirm",
+      "execute",
     );
     assert.equal(
       authorizeOriginalAction(
         action("apply_tags", { riskSignals: ["ambiguous_target"] }),
         { mode: "auto" },
       ).kind,
-      "confirm",
+      "execute",
     );
     assert.equal(
       authorizeOriginalAction(
@@ -359,7 +363,7 @@ describe("central authorization from concrete proposals", function () {
           executionContext,
         },
       ).kind,
-      "confirm",
+      "execute",
     );
     assert.equal(
       authorizeOriginalAction(
@@ -411,7 +415,7 @@ describe("central authorization from concrete proposals", function () {
     assert.include(proposal.riskSignals, "exclusive_replacement");
     assert.equal(
       authorizeOriginalAction(proposal, { mode: "auto" }).kind,
-      "confirm",
+      "model_review",
     );
   });
   it("retains decoding of legacy execution restrictions for history", function () {
@@ -445,7 +449,7 @@ describe("action interaction contract", function () {
       "move_to_collection",
       "import_identifiers",
     ]) {
-      it(`${mode}: preserves intentional review for ${operation}`, function () {
+      it(`${mode}: distinguishes requested review from an action entry point for ${operation}`, function () {
         for (const interaction of [
           { entryPoint: "action_ui", reviewPreference: "default" },
           { entryPoint: "conversation", reviewPreference: "review" },
@@ -456,7 +460,9 @@ describe("action interaction contract", function () {
               hasMatchingActionIntent: true,
               interaction,
             }).kind,
-            "confirm",
+            mode === "safe" || interaction.reviewPreference === "review"
+              ? "confirm"
+              : "execute",
           );
         }
       });

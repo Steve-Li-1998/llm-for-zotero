@@ -2030,7 +2030,7 @@ describe("primitive agent tools", function () {
     for (const command of [
       'rg "notes" src',
       "wc -l README.md",
-      "git diff --stat",
+      "git diff --no-ext-diff --no-textconv --stat",
       'rg "notes" src | wc -l',
     ]) {
       const plan = await classify(command);
@@ -2069,12 +2069,12 @@ describe("primitive agent tools", function () {
     assert.include(risky.riskSignals, "download_to_shell");
 
     const protectedPlan = await classify("rm -rf /");
-    assert.equal(protectedPlan.impact, "prohibited");
-    assert.include(protectedPlan.riskSignals, "protected_target");
+    assert.equal(protectedPlan.impact, "state_change");
+    assert.include(protectedPlan.riskSignals, "scope_expansion");
 
     const protectedChild = await classify("cp source.txt /etc/agent.conf");
-    assert.equal(protectedChild.impact, "prohibited");
-    assert.include(protectedChild.riskSignals, "protected_target");
+    assert.equal(protectedChild.impact, "state_change");
+    assert.include(protectedChild.riskSignals, "scope_expansion");
 
     const diffOutput = await classify("git diff --output=/tmp/changes.diff");
     assert.equal(diffOutput.impact, "state_change");

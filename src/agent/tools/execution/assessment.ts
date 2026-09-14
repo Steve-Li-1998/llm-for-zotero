@@ -1,14 +1,14 @@
+import { ActionAuthorizationService } from "../../authorization/service";
+import { createActionReviewer } from "../../model/actionReview";
 import { resolveActionInteraction } from "../../authorization/interaction";
 import { defaultInvocationPlan } from "../../authorization/invocationPlan";
-import {
-  authorizeOriginalAction,
-  authorizeExternalAction,
-} from "../../authorization/policy";
+import { authorizeExternalAction } from "../../authorization/policy";
 import { buildActionProposal } from "../../authorization/proposal";
 import type {
   ActionInteraction,
   ActionProposal,
   AuthorizationDecision,
+  ActionReviewRecord,
 } from "../../authorization/types";
 import {
   ActionContractService,
@@ -36,6 +36,7 @@ export type AssessedInvocation = {
   scopeFailure: ScopeValidationFailure | null;
   interaction: ActionInteraction;
   authorization: AuthorizationDecision;
+  review?: ActionReviewRecord;
   /** Active v5 effect IDs matched by the host; never model-authored authority. */
   planEffectIds: readonly string[];
 };
@@ -110,12 +111,18 @@ function nativeTargetLibraryIDs(
 
 /** Exact invocation assessment is shared by preparation, edited review and execution. */
 export class InvocationAssessor {
+  private readonly authorizationService: ActionAuthorizationService;
+
   constructor(
     readonly tool: AgentToolDefinition<any, any>,
     readonly context: AgentToolContext,
     readonly options: PreparedToolExecutionOptions,
     readonly contracts?: ActionContractService,
-  ) {}
+  ) {
+    this.authorizationService = new ActionAuthorizationService(
+      context.reviewAction || createActionReviewer(context.request),
+    );
+  }
 
   async assess(
     input: unknown,
@@ -200,7 +207,7 @@ export class InvocationAssessor {
           ? `Approved Plan execution blocked ${tool.spec.name}: the frozen effect specification is unavailable.`
           : undefined;
     const hostAccess =
-      request.executionContext && !directAgent
+      request.executionContext && delegated
         ? await evaluateHostAccess({
             toolName: tool.spec.name,
             plan,
@@ -289,7 +296,9 @@ export class InvocationAssessor {
     const baseInteraction = resolveActionInteraction(
       request,
       preparedAction?.proposals || [],
-      Boolean(options.forceConfirmation),
+      // Native action pages are explicitly requested editing/review workflows.
+      // A model's generic review hint cannot override Auto or YOLO permissions.
+      Boolean(options.forceConfirmation && options.callerKind === "action"),
     );
     const interaction =
       approvedEffectMatch?.kind === "matched"
@@ -299,37 +308,64 @@ export class InvocationAssessor {
           }
         : baseInteraction;
     if (delegated) proposal.runtime = "external";
-    const authorization: AuthorizationDecision = approvedEffectFailure
-      ? { kind: "block", reason: approvedEffectFailure }
+    const directDecision = approvedEffectFailure
+      ? { kind: "block" as const, reason: approvedEffectFailure }
       : hostAccessAuthorization
         ? hostAccessAuthorization
         : delegated
           ? authorizeExternalAction(proposal)
-          : authorizeOriginalAction(proposal, {
-              mode: getOriginalAgentPermissionMode(),
-              interaction,
-              executionContext: request.executionContext,
-              hasApprovedPlanAuthority: Boolean(
-                approvedPlan &&
-                ((scopeValidated && !scopeFailure) || approvedEffectAuthorized),
+          : null;
+    const decision = directDecision
+      ? { authorization: directDecision }
+      : await this.authorizationService.assess(
+          proposal,
+          {
+            mode: getOriginalAgentPermissionMode(),
+            interaction,
+            executionContext: request.executionContext,
+            hasApprovedPlanAuthority: Boolean(
+              approvedPlan &&
+              ((scopeValidated && !scopeFailure) || approvedEffectAuthorized),
+            ),
+            constraints:
+              approvedEffectMatch?.kind === "matched"
+                ? approvedEffectMatch.constraints
+                : request.actionContract?.intent?.semantic?.constraints || [],
+            semantic: request.executionContext
+              ? undefined
+              : request.classifiedIntent?.semantic ||
+                request.actionContract?.intent?.semantic,
+            hasMatchingActionIntent:
+              hostAction ||
+              Boolean(
+                scopeValidated &&
+                !scopeFailure &&
+                preparedAction?.proposals.length &&
+                request.actionContract?.obligations.length,
               ),
-              constraints:
-                approvedEffectMatch?.kind === "matched"
-                  ? approvedEffectMatch.constraints
-                  : request.actionContract?.intent?.semantic?.constraints || [],
-              semantic: request.executionContext
-                ? undefined
-                : request.classifiedIntent?.semantic ||
-                  request.actionContract?.intent?.semantic,
-              hasMatchingActionIntent:
-                hostAction ||
-                Boolean(
-                  scopeValidated &&
-                  !scopeFailure &&
-                  preparedAction?.proposals.length &&
-                  request.actionContract?.obligations.length,
-                ),
-            });
+          },
+          {
+            input,
+            userRequest: request.userText,
+            clarifications: request.clarificationHistory || [],
+            conversation: (request.history || [])
+              .filter(
+                (message) =>
+                  (message.role === "user" || message.role === "assistant") &&
+                  typeof message.content === "string",
+              )
+              .slice(-6)
+              .map((message) => ({
+                role: message.role as "user" | "assistant",
+                text: String(message.content),
+              })),
+            userInstructions: request.customInstructions,
+            workspace: request.executionContext?.workspaceSnapshot || null,
+            constraints:
+              request.actionContract?.intent?.semantic?.constraints || [],
+          },
+          context.signal,
+        );
     return {
       input,
       plan,
@@ -337,7 +373,7 @@ export class InvocationAssessor {
       proposal,
       scopeFailure,
       interaction,
-      authorization,
+      ...decision,
       planEffectIds:
         approvedEffectMatch?.kind === "matched"
           ? approvedEffectMatch.effectIds

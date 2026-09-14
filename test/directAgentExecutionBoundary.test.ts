@@ -326,7 +326,7 @@ describe("direct-agent execution boundary", function () {
     assert.equal(writes, 0);
   });
 
-  it("lets a model request stricter per-call review without passing authority", async function () {
+  it("does not let model-supplied review flags override Auto policy", async function () {
     const db = new ChangeJournalTestDb();
     globalThis.Zotero = {
       DB: db,
@@ -388,7 +388,7 @@ describe("direct-agent execution boundary", function () {
     const modelSchema = registry.listTools()[0].inputSchema as {
       properties?: Record<string, { type?: string }>;
     };
-    assert.equal(modelSchema.properties?.review?.type, "boolean");
+    assert.isUndefined(modelSchema.properties?.review);
     const prepared = await registry.prepareExecution(
       {
         id: "call-review",
@@ -398,8 +398,8 @@ describe("direct-agent execution boundary", function () {
       directContext(),
     );
 
-    assert.equal(prepared.kind, "confirmation");
-    assert.equal(writes, 0);
+    assert.equal(prepared.kind, "result");
+    assert.equal(writes, 1);
   });
 
   for (const scenario of [

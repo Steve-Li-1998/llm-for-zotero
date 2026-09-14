@@ -175,20 +175,10 @@ function modelToolSpec(spec: ToolSpec): ToolSpec {
     string,
     unknown
   >;
-  const inputSchema =
-    spec.executionClass === "external_effect"
-      ? {
-          ...compactSchema,
-          properties: {
-            ...((compactSchema.properties as Record<string, unknown>) || {}),
-            review: { type: "boolean" },
-          },
-        }
-      : compactSchema;
   return {
     ...spec,
     description: MODEL_TOOL_DESCRIPTIONS[spec.name] || spec.description,
-    inputSchema,
+    inputSchema: compactSchema,
   };
 }
 
@@ -367,7 +357,6 @@ export class AgentToolRegistry {
       !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>)
         : undefined;
-    const requestedReview = suppliedArguments?.review === true;
     const toolArguments = suppliedArguments
       ? Object.fromEntries(
           Object.entries(suppliedArguments).filter(([key]) => key !== "review"),
@@ -405,10 +394,7 @@ export class AgentToolRegistry {
       { ...call, arguments: toolArguments },
       tool,
       context,
-      {
-        ...options,
-        forceConfirmation: options.forceConfirmation || requestedReview,
-      },
+      options,
       this.actionContracts,
       this.planAmendments,
     ).prepare(validation.value);

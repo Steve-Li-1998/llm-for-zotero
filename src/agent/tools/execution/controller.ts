@@ -389,12 +389,9 @@ export class InvocationController {
         this.tool.spec.requiresConfirmation);
     const needsReview =
       assessed.authorization.kind === "confirm" ||
-      scopeDecision?.kind === "confirm" ||
-      toolReview ||
-      (this.context.authorization?.kind !== "external_runtime" &&
-        this.options.forceConfirmation &&
-        this.options.callerKind !== "mcp" &&
-        Boolean(this.tool.createPendingAction));
+      (scopeDecision?.kind === "confirm" &&
+        getOriginalAgentPermissionMode() !== "yolo") ||
+      toolReview;
     if (needsReview) {
       const action = assessed.scopeFailure
         ? createProposalConfirmationAction({
@@ -428,6 +425,16 @@ export class InvocationController {
     const material = pendingActionMaterial(assessed.preparedAction?.proposals);
     const action = {
       ...displayedAction,
+      ...(assessed.authorization.kind === "confirm"
+        ? {
+            description: [
+              displayedAction.description,
+              assessed.authorization.reason,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          }
+        : {}),
       ...(material ? { material } : {}),
       ...(this.tool.spec.interaction === "user_input"
         ? { interaction: "user_input" as const }
@@ -606,6 +613,7 @@ export class InvocationController {
       toolName: this.call.name,
       authority,
       planEffectIds: assessed.planEffectIds,
+      ...(assessed.review ? { review: assessed.review } : {}),
       status: "staged" as "staged" | "executed" | "failed",
       createdAt: Date.now(),
     };

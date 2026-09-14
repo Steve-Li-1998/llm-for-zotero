@@ -1263,6 +1263,8 @@ export type AgentJournalActionScope = {
 };
 
 export type AgentToolContext = {
+  /** Host-injected Auto reviewer, shared by normal and nested operation assessment. */
+  reviewAction?: import("./authorization/types").ActionReviewer;
   /** Host-owned authority; never decoded from model or MCP tool arguments. */
   authorization?: { kind: "external_runtime"; standalone: boolean };
   /** Retain native-verified child results when a prepared workflow coordinates tools. */

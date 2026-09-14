@@ -396,10 +396,10 @@ const zhCN: Record<string, string> = {
   yolo: "全自动",
   "Every external write, including new-note creation, is shown for review before it runs. Reads do not require review.":
     "所有外部写入（包括创建新笔记）在执行前都会显示以供审核。读取操作无需审核。",
-  "Routine reversible changes in this chat's library and exports inside configured directories run without review. Cross-library, destructive, ambiguous, and out-of-scope effects are shown for review.":
-    "当前对话文库中的常规可撤销更改，以及配置目录内的导出，无需审核即可执行。跨文库、破坏性、有歧义或超出范围的操作会显示以供审核。",
-  "The Original Agent acts on its own judgment and may take actions beyond the literal request. Configured access, protected targets, database integrity, Plan integrity, chat-only memory, the paper selection card before importing discovered papers, and the change journal remain enforced. Claude Code, Codex, and external MCP callers keep their own permission controls.":
-    "原生 Agent 会自行判断，并可能执行超出字面请求的操作。配置的访问范围、受保护目标、数据库完整性、计划完整性、仅限对话的记忆、导入已发现论文前的论文选择卡片，以及更改日志仍会强制执行。Claude Code、Codex 和外部 MCP 调用方保留各自的权限控制。",
+  "Reads, ordinary writes and recoverable changes run automatically. Other actions receive model review; confirmation is requested only for unclear intent, excessive risk, or unavailable review.":
+    "读取、常规写入和可恢复更改会自动执行。其他操作由模型审核；仅在意图不明确、风险过高或审核不可用时请求确认。",
+  "The Original Agent acts without permission prompts or approval-model calls, including ambiguous or dangerous actions. Explicit restrictions, requested review workflows, execution integrity and required paper selection remain enforced. Claude Code, Codex, and external MCP callers keep their own permission controls.":
+    "原生 Agent 执行操作时不会请求权限确认或调用审批模型，包括有歧义或危险的操作。明确限制、用户要求的审核流程、执行完整性及必要的论文选择仍然有效。Claude Code、Codex 和外部 MCP 调用方保留各自的权限控制。",
   "This setting controls every Original Agent action, including Zotero changes, local files, commands, scripts, and network tools. Claude Code and Codex keep their own independent native permission profiles. Reversible Original Agent changes are recorded and can be reverted from Agent history.":
     "此设置控制原生 Agent 的所有操作，包括 Zotero 更改、本地文件、命令、脚本和网络工具。Claude Code 和 Codex 保留各自独立的原生权限配置。原生 Agent 的可撤销更改会被记录，并可从 Agent 历史记录中撤销。",
   "Tavily Web Search": "Tavily 网页搜索",

@@ -5,6 +5,7 @@ import type {
   ActionMechanism,
   ActionProposal,
   AuthorizationDecision,
+  AuthorizationAssessment,
   OriginalAuthorizationContext,
 } from "./types";
 
@@ -99,7 +100,7 @@ export function normalizeStoredActionConstraints(
 export function authorizeOriginalAction(
   proposal: ActionProposal,
   context: OriginalAuthorizationContext,
-): AuthorizationDecision {
+): AuthorizationAssessment {
   const violation = proposalViolatesConstraints(
     proposal,
     context.constraints || [],
@@ -154,14 +155,16 @@ export function authorizeOriginalAction(
         "The chat library is unresolved. Resolve and freeze its native identity before changing Zotero state.",
     };
   }
-  if (
-    context.interaction?.entryPoint === "action_ui" ||
-    context.interaction?.reviewPreference === "review"
-  ) {
+  // A user-requested review is a workflow requirement, not an automatic permission gate.
+  if (context.interaction?.reviewPreference === "review") {
     return {
       kind: "confirm",
       reason: "Review the prepared changes before applying them, as requested.",
     };
+  }
+  // YOLO delegates permission decisions, including risk and filesystem/library expansion.
+  if (context.mode === "yolo") {
+    return { kind: "execute", authority: "yolo_judgment" };
   }
   if (context.hasApprovedPlanAuthority) {
     return { kind: "execute", authority: "plan_approval" };
@@ -172,101 +175,29 @@ export function authorizeOriginalAction(
       reason: "Safe mode reviews every external write before it runs.",
     };
   }
-  const crossesChatLibrary = Boolean(
-    chatLibraryID &&
-    (proposal.targetLibraryIDs || []).some(
-      (libraryID) => libraryID !== chatLibraryID,
-    ),
+  const plan = proposal.invocationPlan;
+  const known = plan.impact === "state_change" && plan.assurance !== "unknown";
+  const localEffects = proposal.effects.every((effect) =>
+    ["read", "create", "modify", "delete"].includes(effect),
   );
-  const writesOutsideConfiguredRoots =
-    proposal.domains.includes("filesystem") &&
-    proposal.effects.some((effect) => effect !== "read") &&
-    !proposal.targets.every((target) =>
-      isWithinConfiguredRoot(
-        target,
-        context.executionContext?.configuredAccess.outputDirectories || [],
-      ),
-    );
-  const exceptionalDanger = proposal.riskSignals.some((signal) =>
-    [
-      "ambiguous_target",
-      "scope_expansion",
-      "exclusive_replacement",
-      "sensitive_egress",
-      "broad_delete",
-      "privilege_escalation",
-      "package_system_modification",
-      "download_to_shell",
-    ].includes(signal),
-  );
-  const destructive = proposal.effects.includes("delete");
-  const uncertain =
-    proposal.invocationPlan.impact === "ambiguous" ||
-    proposal.invocationPlan.assurance === "unknown";
-  if (context.mode === "yolo") {
-    if (crossesChatLibrary || writesOutsideConfiguredRoots) {
-      return {
-        kind: "confirm",
-        reason:
-          "The proposal crosses the configured library or filesystem boundary and requires review.",
-      };
-    }
-    return {
-      kind: "execute",
-      authority: "yolo_judgment",
-    };
+  const reversible = known && localEffects && proposal.reversibility === "full";
+  const routineWrite =
+    known &&
+    !proposal.riskSignals.length &&
+    proposal.effects.every((effect) =>
+      ["read", "create", "modify"].includes(effect),
+    ) &&
+    (plan.assurance === "runtime_enforced" ||
+      (proposal.effects.includes("create") &&
+        !proposal.effects.includes("modify")));
+  if (reversible || routineWrite) {
+    return { kind: "execute", authority: "auto_policy" };
   }
-  if (
-    exceptionalDanger ||
-    destructive ||
-    uncertain ||
-    crossesChatLibrary ||
-    writesOutsideConfiguredRoots
-  ) {
-    return {
-      kind: "confirm",
-      reason:
-        "Auto mode found genuine ambiguity or exceptional danger in the exact action.",
-    };
-  }
-  return { kind: "execute", authority: "auto_policy" };
-}
-
-function normalizedPathSegments(value: string): string[] | null {
-  const normalized = value.trim().replace(/\\/g, "/");
-  if (
-    !normalized ||
-    (!normalized.startsWith("/") && !/^[a-z]:\//i.test(normalized))
-  )
-    return null;
-  const prefix = /^[a-z]:\//i.test(normalized)
-    ? normalized.slice(0, 2).toLowerCase()
-    : "/";
-  const segments: string[] = [prefix];
-  for (const part of normalized.replace(/^[a-z]:|^\//i, "").split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (segments.length === 1) return null;
-      segments.pop();
-    } else segments.push(part);
-  }
-  return segments;
-}
-
-function isWithinConfiguredRoot(
-  target: string,
-  roots: readonly string[],
-): boolean {
-  const targetSegments = normalizedPathSegments(target);
-  if (!targetSegments) return false;
-  return roots.some((root) => {
-    const rootSegments = normalizedPathSegments(root);
-    return Boolean(
-      rootSegments &&
-      rootSegments.length <= targetSegments.length &&
-      rootSegments.every((part, index) => part === targetSegments[index]),
-    );
-  });
+  return {
+    kind: "model_review",
+    reason:
+      "Assess this action against the user's intention and its concrete effects.",
+  };
 }
 
 /** Execution integrity applies independently of which agent owns permission. */

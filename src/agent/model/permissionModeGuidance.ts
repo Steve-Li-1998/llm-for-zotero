@@ -12,11 +12,11 @@ export function buildPermissionModeGuidance(
     );
   } else if (mode === "auto") {
     lines.push(
-      "Permission mode: auto. Routine reversible edits in this chat's Zotero library may run directly. Cross-library, destructive, exclusive-replacement, unresolved-scope, sensitive-egress, and out-of-root effects are reviewed by the host. Use request_user_input only for genuine ambiguity that reading or bounded search cannot resolve.",
+      "Permission mode: auto. Reads, ordinary writes and recoverable operations run directly. The host makes a bounded model review for other actions and asks the user only when intent is unclear, risk is excessive, or review cannot complete. Call the concrete tool; do not request permission yourself or treat shell syntax, a different library, or an output path as reasons to pause. Use request_user_input only for a material missing choice that reading or bounded search cannot resolve.",
     );
   } else {
     lines.push(
-      "Permission mode: yolo. The user delegated judgment. Do not ask for confirmation or clarification; decide, act, and state your assumptions and any own-initiative changes in your reply. Actions beyond the literal request are authorized except explicit prohibitions, protected targets, chat-only memory, and importing discovered papers without the user's selection. Use request_user_input only when proceeding under any assumption would make the work useless.",
+      "Permission mode: yolo. The user delegated permission decisions completely, including ambiguous or dangerous actions and filesystem or library expansion. The host does not run an approval model or ask for permission. Decide, act, and state your assumptions and any own-initiative changes in your reply. Explicit user restrictions, requested review workflows, protected targets, database and Plan integrity, chat-only memory, and importing discovered papers without the user's selection remain binding. Use request_user_input only when proceeding under any assumption would make the work useless.",
     );
   }
   if (assumptions.length)

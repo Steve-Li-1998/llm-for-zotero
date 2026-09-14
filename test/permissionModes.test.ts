@@ -609,16 +609,19 @@ describe("provider permission modes", function () {
     assert.include(byKey["original:safe"], "including new-note creation");
     assert.include(byKey["original:safe"], "shown for review");
     assert.notInclude(byKey["original:safe"], "filesystem reads");
-    assert.include(byKey["original:auto"], "this chat's library");
-    assert.include(byKey["original:auto"], "shown for review");
-    assert.include(byKey["original:yolo"], "own judgment");
-    assert.include(byKey["original:yolo"], "beyond the literal request");
-    assert.include(byKey["original:yolo"], "Claude Code, Codex");
-    assert.include(byKey["original:yolo"], "Configured access");
     assert.include(
-      byKey["original:yolo"],
-      "paper selection card before importing discovered papers",
+      byKey["original:auto"],
+      "ordinary writes and recoverable changes",
     );
+    assert.include(
+      byKey["original:auto"],
+      "Other actions receive model review",
+    );
+    assert.include(byKey["original:yolo"], "without permission prompts");
+    assert.include(byKey["original:yolo"], "ambiguous or dangerous actions");
+    assert.include(byKey["original:yolo"], "Claude Code, Codex");
+    assert.include(byKey["original:yolo"], "requested review workflows");
+    assert.include(byKey["original:yolo"], "required paper selection");
     assert.notInclude(byKey["original:yolo"], "require review");
     assert.notInclude(byKey["original:yolo"], "Only explicit prohibitions");
   });

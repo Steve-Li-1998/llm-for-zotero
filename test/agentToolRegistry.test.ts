@@ -131,12 +131,7 @@ describe("AgentToolRegistry", function () {
             },
             { ...baseContext, request },
           );
-          const expected =
-            entryPoint === "action_ui" ||
-            preference === "review" ||
-            mode === "safe"
-              ? 1
-              : 0;
+          const expected = preference === "review" || mode === "safe" ? 1 : 0;
           if (prepared.kind === "confirmation") {
             confirmations++;
             assert.equal(writes, 0);
@@ -1998,7 +1993,7 @@ describe("AgentToolRegistry", function () {
     assert.isEmpty(request.actionProgress.authorizationGrants || []);
   });
 
-  it("yolo executes a reviewed judgment write after the user approves it", async function () {
+  it("yolo executes a judgment write without honoring a generic forced permission prompt", async function () {
     globalThis.Zotero = {
       DB: new ChangeJournalTestDb(),
       Prefs: { get: () => "yolo" },
@@ -2027,9 +2022,7 @@ describe("AgentToolRegistry", function () {
       },
       { forceConfirmation: true },
     );
-    assert.equal(prepared.kind, "confirmation");
-    if (prepared.kind !== "confirmation") return;
-    const executed = await prepared.execute({ approved: true });
+    const executed = prepared;
     assert.equal(executed.kind, "result");
     if (executed.kind !== "result") return;
     assert.isTrue(
@@ -2044,13 +2037,10 @@ describe("AgentToolRegistry", function () {
           grant.status,
         ],
       ),
-      [["safe_confirmation", "executed"]],
-      "user approval takes precedence over the agent's judgment",
+      [["yolo_judgment", "executed"]],
+      "the exact action records delegated judgment",
     );
-    assert.isUndefined(
-      executed.execution.result.authority,
-      "a write the user reviewed is not labelled as the agent's own call",
-    );
+    assert.equal(executed.execution.result.authority, "yolo_judgment");
   });
 
   it("yolo ledgers an off-plan judgment write as yolo_judgment inside an executing plan", async function () {
@@ -2389,6 +2379,7 @@ describe("AgentToolRegistry", function () {
         }),
         execute: async () => ({ content: { ok: true }, effect: "applied" }),
       } as never);
+      (globalThis.Zotero.Prefs as any).get = () => "safe";
       const approval = await registry.prepareExecution(
         { id: "confirm-1", name: "confirm_something", arguments: {} },
         JSON.parse(JSON.stringify(baseContext)),

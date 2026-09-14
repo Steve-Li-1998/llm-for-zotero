@@ -37,7 +37,7 @@ const ORIGINAL_OPTIONS: Record<OriginalAgentPermissionMode, PermissionOption> =
       fullLabel: "Auto",
       compactLabel: "auto",
       description:
-        "Routine reversible changes in this chat's library and exports inside configured directories run without review. Cross-library, destructive, ambiguous, and out-of-scope effects are shown for review.",
+        "Reads, ordinary writes and recoverable changes run automatically. Other actions receive model review; confirmation is requested only for unclear intent, excessive risk, or unavailable review.",
       available: true,
     },
     yolo: {
@@ -46,7 +46,7 @@ const ORIGINAL_OPTIONS: Record<OriginalAgentPermissionMode, PermissionOption> =
       fullLabel: "Yolo",
       compactLabel: "yolo",
       description:
-        "The Original Agent acts on its own judgment and may take actions beyond the literal request. Configured access, protected targets, database integrity, Plan integrity, chat-only memory, the paper selection card before importing discovered papers, and the change journal remain enforced. Claude Code, Codex, and external MCP callers keep their own permission controls.",
+        "The Original Agent acts without permission prompts or approval-model calls, including ambiguous or dangerous actions. Explicit restrictions, requested review workflows, execution integrity and required paper selection remain enforced. Claude Code, Codex, and external MCP callers keep their own permission controls.",
       available: true,
     },
   };

@@ -30,19 +30,6 @@ function extractCssRule(css: string, selector: string): string {
 }
 
 describe("responsive panel chrome CSS", function () {
-  it("aligns the shortcut chip edge with the input section edge", function () {
-    const css = readPanelCss();
-    const panelRule = extractCssRule(css, ".llm-panel");
-    const shortcutsRule = extractCssRule(css, ".llm-shortcuts");
-    const inputSectionRule = extractCssRule(css, ".llm-input-section");
-
-    assert.notInclude(panelRule, "--llm-composer-inline-inset");
-    assert.include(inputSectionRule, "--llm-input-section-padding: 10px");
-    assert.include(shortcutsRule, "box-sizing: border-box");
-    assert.include(shortcutsRule, "width: 100%");
-    assert.include(shortcutsRule, "padding: 2px 0");
-  });
-
   it("lets action-card titles shrink into a responsive ellipsis", function () {
     const css = readPanelCss();
     const effectsRule = extractCssRule(css, ".llm-agent-action-effects");

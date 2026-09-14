@@ -550,28 +550,23 @@ export function createConversationTurnNavigator(params: {
 
   const applyEligibility = () => {
     const previousVisible = visible;
-    withScrollGuard(
-      chatBox,
-      conversationKey,
-      () => {
-        chatShell.classList.remove("llm-turn-navigator-visible");
-        nav.hidden = true;
-        void chatBox.offsetWidth;
-        const shellWidth =
-          chatShell.getBoundingClientRect().width || chatShell.clientWidth || 0;
-        const eligible = isConversationTurnNavigatorEligible({
-          shellWidth,
-          scrollHeight: chatBox.scrollHeight,
-          clientHeight: chatBox.clientHeight,
-          turnCount: entries.length,
-          minimumWidthPx,
-        });
-        visible = eligible;
-        nav.hidden = !eligible;
-        chatShell.classList.toggle("llm-turn-navigator-visible", eligible);
-      },
-      "anchor",
-    );
+    withScrollGuard(chatBox, conversationKey, () => {
+      chatShell.classList.remove("llm-turn-navigator-visible");
+      nav.hidden = true;
+      void chatBox.offsetWidth;
+      const shellWidth =
+        chatShell.getBoundingClientRect().width || chatShell.clientWidth || 0;
+      const eligible = isConversationTurnNavigatorEligible({
+        shellWidth,
+        scrollHeight: chatBox.scrollHeight,
+        clientHeight: chatBox.clientHeight,
+        turnCount: entries.length,
+        minimumWidthPx,
+      });
+      visible = eligible;
+      nav.hidden = !eligible;
+      chatShell.classList.toggle("llm-turn-navigator-visible", eligible);
+    });
     if (!visible) hidePreview();
     if (visible !== previousVisible) {
       dirty.geometry = true;

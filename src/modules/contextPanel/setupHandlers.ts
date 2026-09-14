@@ -31,7 +31,6 @@ import {
 import {
   buildDefaultUpstreamGlobalConversationKey,
   config,
-  AUTO_SCROLL_BOTTOM_THRESHOLD,
   MAX_FULL_TEXT_PAPER_CONTEXTS,
   MAX_SELECTED_IMAGES,
   MAX_SELECTED_PAPER_CONTEXTS,
@@ -43,11 +42,7 @@ import {
   isUpstreamGlobalConversationKey,
   PREFERENCES_PANE_ID,
 } from "./constants";
-import {
-  isAtAutoFollowBottom,
-  resolveStreamingScrollFollowAction,
-} from "./scrollFollowPolicy";
-import { isChatNavigationActive } from "./chatScrollSnapshots";
+import { bindChatScrollLifecycle } from "./chatScrollLifecycle";
 import {
   createConversationTurnNavigator,
   disposeConversationTurnNavigator,
@@ -179,9 +174,6 @@ import {
   ensureConversationLoaded,
   persistChatScrollSnapshot,
   disposeChatRendering,
-  isScrollUpdateSuspended,
-  requestChatScrollFollowBottom,
-  cancelChatScrollFollowBottomRequest,
   withScrollGuard,
   copyTextToClipboard,
   refreshConversationPanels,
@@ -2069,154 +2061,13 @@ export function setupHandlers(
     return box.clientHeight > 0 && box.getClientRects().length > 0;
   };
 
-  type ChatBoxViewportState = {
-    width: number;
-    height: number;
-    maxScrollTop: number;
-    scrollTop: number;
-    nearBottom: boolean;
-  };
-  const buildChatBoxViewportState = (): ChatBoxViewportState | null => {
-    if (!chatBox) return null;
-    if (!isChatViewportVisible(chatBox)) return null;
-    const width = Math.max(0, Math.round(chatBox.clientWidth));
-    const height = Math.max(0, Math.round(chatBox.clientHeight));
-    const maxScrollTop = Math.max(
-      0,
-      chatBox.scrollHeight - chatBox.clientHeight,
-    );
-    const scrollTop = Math.max(0, Math.min(maxScrollTop, chatBox.scrollTop));
-    const nearBottom = maxScrollTop - scrollTop <= AUTO_SCROLL_BOTTOM_THRESHOLD;
-    return {
-      width,
-      height,
-      maxScrollTop,
-      scrollTop,
-      nearBottom,
-    };
-  };
-  let chatBoxViewportState = buildChatBoxViewportState();
-  const captureChatBoxViewportState = () => {
-    chatBoxViewportState = buildChatBoxViewportState();
-  };
-  const isCurrentConversationStreaming = (): boolean => {
-    if (!item) return false;
-    const conversationKey = getConversationKey(item);
-    return (chatHistory.get(conversationKey) || []).some((msg) =>
-      Boolean(msg.streaming),
-    );
-  };
-  const requestStreamingFollowBottom = () => {
-    if (!item || !chatBox) return;
-    if (!isCurrentConversationStreaming()) return;
-    requestChatScrollFollowBottom(body, item, chatBox);
-    captureChatBoxViewportState();
-  };
-
-  let cleanupStreamingScrollListeners = () => {};
-  if (item && chatBox) {
-    const handleStreamingFollowWheel = (event: WheelEvent) => {
-      noteQuoteValidationUserActivity();
-      if (!item || !chatBox) return;
-      if (!isCurrentConversationStreaming()) return;
-      if (event.deltaY < 0) {
-        cancelChatScrollFollowBottomRequest(item, chatBox || undefined);
-        return;
-      }
-      if (event.deltaY <= 0) return;
-
-      const checkAfterNativeScroll = () => {
-        const current = buildChatBoxViewportState();
-        if (!current) return;
-        const distanceFromBottom = current.maxScrollTop - current.scrollTop;
-        if (isAtAutoFollowBottom(distanceFromBottom)) {
-          requestStreamingFollowBottom();
-        }
-      };
-      const win = body.ownerDocument?.defaultView;
-      if (win) {
-        win.setTimeout(checkAfterNativeScroll, 0);
-      } else {
-        checkAfterNativeScroll();
-      }
-    };
-    const persistScroll = () => {
-      if (!item) return;
-      if (!chatBox.childElementCount) return;
-      if (!isChatViewportVisible(chatBox)) return;
-      const currentWidth = Math.max(0, Math.round(chatBox.clientWidth));
-      const currentHeight = Math.max(0, Math.round(chatBox.clientHeight));
-      const previousViewport = chatBoxViewportState;
-      let viewportResized = false;
-      if (previousViewport) {
-        viewportResized =
-          currentWidth !== previousViewport.width ||
-          currentHeight !== previousViewport.height;
-      }
-      // Ignore resize-induced scroll events so the last pre-resize viewport
-      // state remains available for relative-position restoration.
-      if (viewportResized) return;
-      // Skip persistence when scroll was caused by our own programmatic
-      // scrollTop writes or by layout mutations (e.g. button relayout
-      // changing the flex-sized chat area).
-      if (isScrollUpdateSuspended(chatBox || undefined)) {
-        captureChatBoxViewportState();
-        return;
-      }
-      if (isChatNavigationActive(chatBox)) {
-        captureChatBoxViewportState();
-        return;
-      }
-      const currentViewport = buildChatBoxViewportState();
-      if (previousViewport && currentViewport) {
-        const scrollDelta =
-          currentViewport.scrollTop - previousViewport.scrollTop;
-        const distanceFromBottom =
-          currentViewport.maxScrollTop - currentViewport.scrollTop;
-        const followAction = resolveStreamingScrollFollowAction({
-          scrollDelta,
-          distanceFromBottom,
-          isStreaming: isCurrentConversationStreaming(),
-        });
-        if (followAction === "cancel") {
-          cancelChatScrollFollowBottomRequest(item, chatBox || undefined);
-        } else if (followAction === "follow") {
-          requestChatScrollFollowBottom(body, item, chatBox);
-          captureChatBoxViewportState();
-          return;
-        }
-      }
-      persistChatScrollSnapshot(item, chatBox);
-      captureChatBoxViewportState();
-    };
-    chatBox.addEventListener("wheel", handleStreamingFollowWheel, {
-      passive: true,
-    });
-    chatBox.addEventListener("scroll", persistScroll, { passive: true });
-    const handleStreamingScrollKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("input, textarea, [contenteditable=true]")) return;
-      if (
-        ["ArrowUp", "PageUp", "Home"].includes(event.key) ||
-        (event.key === " " && event.shiftKey)
-      ) {
-        if (item) cancelChatScrollFollowBottomRequest(item, chatBox);
-      }
-    };
-    const handleStreamingTouch = () => {
-      if (item) cancelChatScrollFollowBottomRequest(item, chatBox);
-    };
-    chatBox.addEventListener("keydown", handleStreamingScrollKey);
-    chatBox.addEventListener("touchstart", handleStreamingTouch, {
-      passive: true,
-    });
-    cleanupStreamingScrollListeners = () => {
-      chatBox.removeEventListener("wheel", handleStreamingFollowWheel);
-      chatBox.removeEventListener("scroll", persistScroll);
-      chatBox.removeEventListener("keydown", handleStreamingScrollKey);
-      chatBox.removeEventListener("touchstart", handleStreamingTouch);
-    };
-  }
+  const cleanupChatScroll = chatBox
+    ? bindChatScrollLifecycle(
+        chatBox,
+        () => (item ? getConversationKey(item) : null),
+        noteQuoteValidationUserActivity,
+      )
+    : () => {};
 
   // Capture scroll before click/focus interactions that may trigger a panel
   // re-render, so restore uses the most recent user position.
@@ -2466,23 +2317,18 @@ export function setupHandlers(
     getWindow: () => body.ownerDocument?.defaultView || null,
     run: () => {
       const panelWidth = getRoundedPanelWidth();
-      withScrollGuard(
-        chatBox,
-        conversationKey,
-        () => {
-          applyResponsiveActionButtonsLayout();
-          if (
-            panelWidth <= 0 ||
-            panelWidth !== lastUserContextAlignmentPanelWidth
-          ) {
-            syncUserContextAlignmentWidths(body);
-            if (panelWidth > 0) {
-              lastUserContextAlignmentPanelWidth = panelWidth;
-            }
+      withScrollGuard(chatBox, conversationKey, () => {
+        applyResponsiveActionButtonsLayout();
+        if (
+          panelWidth <= 0 ||
+          panelWidth !== lastUserContextAlignmentPanelWidth
+        ) {
+          syncUserContextAlignmentWidths(body);
+          if (panelWidth > 0) {
+            lastUserContextAlignmentPanelWidth = panelWidth;
           }
-        },
-        "relative",
-      );
+        }
+      });
     },
   });
   const scheduleResponsiveLayoutSync = () => {
@@ -2491,64 +2337,6 @@ export function setupHandlers(
   const flushResponsiveLayoutSyncNow = () => {
     responsiveLayoutScheduler.flush();
   };
-  let pendingChatBoxResizePreviousState: ChatBoxViewportState | null = null;
-  const chatBoxViewportResizeScheduler = createCoalescedFrameScheduler({
-    getWindow: () => body.ownerDocument?.defaultView || null,
-    run: () => {
-      const previous =
-        pendingChatBoxResizePreviousState || chatBoxViewportState;
-      pendingChatBoxResizePreviousState = null;
-      if (!chatBox) return;
-      if (!isChatViewportVisible(chatBox)) return;
-      const current = buildChatBoxViewportState();
-      if (!current) return;
-      const viewportChanged = Boolean(
-        previous &&
-        (current.width !== previous.width ||
-          current.height !== previous.height),
-      );
-      if (!item && panelRoot.dataset.startPageActive === "true") {
-        chatBox.scrollTop = 0;
-        captureChatBoxViewportState();
-        return;
-      }
-      if (viewportChanged && previous && previous.nearBottom) {
-        const targetBottom = Math.max(
-          0,
-          chatBox.scrollHeight - chatBox.clientHeight,
-        );
-        if (Math.abs(chatBox.scrollTop - targetBottom) > 1) {
-          chatBox.scrollTop = chatBox.scrollHeight;
-        }
-        captureChatBoxViewportState();
-        if (item && chatBox.childElementCount) {
-          persistChatScrollSnapshot(item, chatBox);
-        }
-        return;
-      }
-      if (
-        viewportChanged &&
-        previous &&
-        !previous.nearBottom &&
-        previous.maxScrollTop > 0
-      ) {
-        const progress = Math.max(
-          0,
-          Math.min(1, previous.scrollTop / previous.maxScrollTop),
-        );
-        const targetScrollTop = Math.round(current.maxScrollTop * progress);
-        if (Math.abs(chatBox.scrollTop - targetScrollTop) > 1) {
-          chatBox.scrollTop = targetScrollTop;
-        }
-        captureChatBoxViewportState();
-        if (item && chatBox.childElementCount) {
-          persistChatScrollSnapshot(item, chatBox);
-        }
-        return;
-      }
-      chatBoxViewportState = current;
-    },
-  });
 
   const clearSelectedImageState = (itemId: number) =>
     clearSelectedImageState_(pinnedImageKeys, itemId);
@@ -6645,25 +6433,10 @@ export function setupHandlers(
     if (actionsRow) ro.observe(actionsRow);
     if (actionsLeft) ro.observe(actionsLeft);
     if (headerTop) ro.observe(headerTop);
-    if (chatBox) {
-      const chatBoxResizeObserver = new ResizeObserverCtor(() => {
-        if (!chatBox) return;
-        if (!isChatViewportVisible(chatBox)) return;
-        if (!pendingChatBoxResizePreviousState) {
-          pendingChatBoxResizePreviousState = chatBoxViewportState;
-        }
-        chatBoxViewportResizeScheduler.schedule();
-      });
-      newObservers.push(chatBoxResizeObserver);
-      chatBoxResizeObserver.observe(chatBox);
-    }
     // Store observers on body so they can be disconnected on next
     // setupHandlers call (prevents accumulation across tab switches).
     (body as any).__llmResizeObservers = newObservers;
-    (body as any).__llmResizeSchedulers = [
-      responsiveLayoutScheduler,
-      chatBoxViewportResizeScheduler,
-    ];
+    (body as any).__llmResizeSchedulers = [responsiveLayoutScheduler];
   }
 
   function getSelectedProfile() {
@@ -8395,7 +8168,7 @@ export function setupHandlers(
     disposeHistoryActivity?.();
     disposeConversationTurnNavigator(body);
     disposeChatRendering(body);
-    cleanupStreamingScrollListeners();
+    cleanupChatScroll();
     body.removeEventListener(PLAN_APPROVED_EVENT, handlePlanApproved);
     body.removeEventListener(PLAN_REVISE_EVENT, handlePlanRevise);
     body.removeEventListener(PLAN_CANCEL_EVENT, handlePlanCancel);

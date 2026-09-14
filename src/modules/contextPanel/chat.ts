@@ -135,19 +135,15 @@ import {
   formatPaperCountLabel,
 } from "./constants";
 import {
-  applyChatScrollSnapshot,
-  buildAnchoredChatScrollSnapshot,
-  buildChatScrollSnapshot,
-  buildFollowBottomScrollSnapshot,
-  cancelFollowBottomCatchup,
-  consumePendingChatScrollRestore,
-  getActiveChatNavigationSnapshot,
-  getChatScrollSnapshot,
-  hasActiveFollowBottomCatchupRequest,
+  initializeChatScrollViewport,
+  captureChatScrollForRender,
+  restoreChatScrollAfterRender,
+  disposeChatScrollViewport,
+  scheduleChatScrollReconciliation,
+  scheduleChatContentScroll,
+  writeChatScrollTop,
   persistChatScrollSnapshotForConversationKey,
-  requestFollowBottomCatchup,
   setFollowBottomChatScrollSnapshot,
-  settleFollowBottomIntent,
   withScrollGuard,
 } from "./chatScrollSnapshots";
 import {
@@ -159,10 +155,7 @@ import {
   updateStreamingTurnNavigator,
 } from "./conversationTurnNavigator";
 import { resizeTextareaToContent } from "./textareaSizing";
-export {
-  isScrollUpdateSuspended,
-  withScrollGuard,
-} from "./chatScrollSnapshots";
+export { withScrollGuard } from "./chatScrollSnapshots";
 
 import { type BlockStreamFlushReason } from "./blockStreamCoalescer";
 import { createStreamingResponse } from "./streamingResponse";
@@ -1473,8 +1466,6 @@ export function syncUserContextAlignmentWidths(body: Element): void {
   }
 }
 
-const followBottomStabilizers = new WeakMap<HTMLElement, number>();
-
 /** Legacy cumulative API token usage per conversation key for this UI session. */
 const sessionTokenTotals = new Map<number, number>();
 export type ContextUsageSnapshot = {
@@ -1638,86 +1629,14 @@ export function persistChatScrollSnapshot(
   );
 }
 
-function stickChatBoxToBottomIfFollowing(
-  conversationKey: number,
-  chatBox: HTMLDivElement,
-): boolean {
-  const snapshot = settleFollowBottomIntent(conversationKey, chatBox, {
-    streaming: conversationHasStreamingMessage(conversationKey),
-  });
-  if (
-    snapshot
-      ? snapshot.mode !== "followBottom"
-      : !hasActiveFollowBottomCatchupRequest(conversationKey)
-  ) {
-    return false;
-  }
-  if (!chatBox.isConnected) return false;
-  const bottom = Math.max(0, chatBox.scrollHeight - chatBox.clientHeight);
-  if (Math.abs(chatBox.scrollTop - bottom) > 1) chatBox.scrollTop = bottom;
-  persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
-  return true;
-}
-
 export function requestChatScrollFollowBottom(
   body: Element,
   item: Zotero.Item,
   chatBox: HTMLDivElement,
 ): void {
   const conversationKey = getConversationKey(item);
-  requestFollowBottomCatchup(conversationKey);
   setFollowBottomChatScrollSnapshot(conversationKey, chatBox);
-  stabilizeFollowBottomAfterAsyncChatContent(body, conversationKey, chatBox);
-}
-
-export function cancelChatScrollFollowBottomRequest(
-  item: Zotero.Item,
-  chatBox?: HTMLDivElement,
-): void {
-  cancelFollowBottomCatchup(getConversationKey(item), chatBox);
-  if (chatBox) {
-    const handle = followBottomStabilizers.get(chatBox);
-    if (handle !== undefined)
-      chatBox.ownerDocument.defaultView?.cancelAnimationFrame(handle);
-    followBottomStabilizers.delete(chatBox);
-  }
-}
-
-function scheduleFollowBottomStabilization(
-  body: Element,
-  conversationKey: number,
-  chatBox: HTMLDivElement,
-): void {
-  const win = body.ownerDocument?.defaultView;
-  if (!win || followBottomStabilizers.has(chatBox)) return;
-  const handle = win.requestAnimationFrame(() => {
-    followBottomStabilizers.delete(chatBox);
-    const activeItem = activeContextPanels.get(body)?.();
-    if (activeItem && getConversationKey(activeItem) !== conversationKey)
-      return;
-    stickChatBoxToBottomIfFollowing(conversationKey, chatBox);
-  });
-  followBottomStabilizers.set(chatBox, handle);
-}
-
-function stabilizeFollowBottomAfterAsyncChatContent(
-  body: Element,
-  conversationKey: number,
-  chatBox: HTMLDivElement,
-): void {
-  scheduleFollowBottomStabilization(body, conversationKey, chatBox);
-}
-
-function applyChatScrollPolicy(
-  item: Zotero.Item,
-  chatBox: HTMLDivElement,
-): void {
-  const conversationKey = getConversationKey(item);
-  const snapshot =
-    getChatScrollSnapshot(conversationKey, chatBox) ||
-    buildChatScrollSnapshot(chatBox);
-  applyChatScrollSnapshot(chatBox, snapshot);
-  persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
+  scheduleChatScrollReconciliation(conversationKey, chatBox);
 }
 
 async function loadStoredConversationByKey(
@@ -2997,24 +2916,6 @@ function findNativeMcpActionCard(
   return cards.find((card) => card.dataset.requestId === requestId) || null;
 }
 
-function scrollNativeMcpActionCardIntoView(
-  chatBox: HTMLElement,
-  card: HTMLElement,
-): void {
-  const scroll = () => {
-    try {
-      card.scrollIntoView({ block: "end" });
-    } catch {
-      // Older Zotero runtimes can be picky about scrollIntoView options.
-    }
-    chatBox.scrollTop = chatBox.scrollHeight;
-  };
-  scroll();
-  const view = chatBox.ownerDocument?.defaultView;
-  view?.requestAnimationFrame?.(scroll);
-  view?.setTimeout(scroll, 80);
-}
-
 let codexNativeApprovalRequestCounter = 0;
 
 function closeNativeMcpActionCard(body: Element, requestId?: string): void {
@@ -3104,7 +3005,7 @@ function showNativeMcpActionCard(
     if (traceOwnsCard) return;
     const renderedCard = findNativeMcpActionCard(ui.chatBox, requestId);
     if (renderedCard) {
-      scrollNativeMcpActionCardIntoView(ui.chatBox, renderedCard);
+      scheduleChatContentScroll(ui.chatBox);
       syncInlineActionCardAttr(body);
       ztoolkit.log("Codex app-server native confirmation rendered", {
         requestId,
@@ -3122,7 +3023,7 @@ function showNativeMcpActionCard(
       renderPendingActionCard(ownerDoc, { requestId, action }),
     );
     ui.chatBox.appendChild(wrapper);
-    scrollNativeMcpActionCardIntoView(ui.chatBox, wrapper);
+    scheduleChatContentScroll(ui.chatBox);
     syncInlineActionCardAttr(body);
     ztoolkit.log("Codex app-server native confirmation rendered", {
       requestId,
@@ -4875,10 +4776,7 @@ export function disposeChatRendering(body: Element): void {
   queuedPanelRefreshes.delete(body);
   const box = body.querySelector<HTMLDivElement>("#llm-chat-box");
   if (!box) return;
-  const frame = followBottomStabilizers.get(box);
-  if (frame !== undefined)
-    body.ownerDocument?.defaultView?.cancelAnimationFrame(frame);
-  followBottomStabilizers.delete(box);
+  disposeChatScrollViewport(box);
   for (const view of mountedAssistantViews.get(box)?.values() || []) {
     disposeAgentTrace(view.trace);
     if (view.answer) disposeStreamingMarkdown(view.answer);
@@ -10476,11 +10374,7 @@ function updateMountedAssistantViews(
         webSourceAnchors: getWebSourceAnchorsFromTrace(events),
         incremental: true,
         onContentRendered: () =>
-          stabilizeFollowBottomAfterAsyncChatContent(
-            body,
-            getConversationKey(item),
-            box,
-          ),
+          scheduleChatScrollReconciliation(getConversationKey(item), box),
       });
       restoreExpandedQuoteCards(view.answer, expandedQuoteCards);
       view.text = message.text;
@@ -10492,7 +10386,7 @@ function updateMountedAssistantViews(
     if (view.answer) view.answer.hidden = interleaved;
   }
   syncFloatingPlanProgress(box, getConversationKey(item));
-  scheduleFollowBottomStabilization(body, getConversationKey(item), box);
+  scheduleChatScrollReconciliation(getConversationKey(item), box);
   return true;
 }
 
@@ -10508,24 +10402,20 @@ export function refreshChat(
   if (item && !isPanelConversationCurrent(body, item)) return;
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
+  if (item) initializeChatScrollViewport(getConversationKey(item), chatBox);
   if (item && options.rerenderAssistantMessages) {
     const rerenderConversationKey = getConversationKey(item);
     let updatedInPlace = false;
     // The reader's view is anchored across the in-place update: a message
     // changing height above the viewport must not move what they are reading.
-    withScrollGuard(
-      chatBox,
-      rerenderConversationKey,
-      () => {
-        updatedInPlace = updateMountedAssistantViews(
-          body,
-          item,
-          chatBox,
-          options.rerenderAssistantMessages!,
-        );
-      },
-      "anchor",
-    );
+    withScrollGuard(chatBox, rerenderConversationKey, () => {
+      updatedInPlace = updateMountedAssistantViews(
+        body,
+        item,
+        chatBox,
+        options.rerenderAssistantMessages!,
+      );
+    });
     if (updatedInPlace) return;
   }
   const doc = body.ownerDocument!;
@@ -10540,7 +10430,7 @@ export function refreshChat(
     chatBox.innerHTML = getPaperChatStartPageHtml();
     const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
     if (panelRoot) panelRoot.dataset.startPageActive = "true";
-    chatBox.scrollTop = 0;
+    writeChatScrollTop(chatBox, 0);
     const tokenUsageEl = body.querySelector(
       "#llm-token-usage",
     ) as HTMLElement | null;
@@ -10561,37 +10451,11 @@ export function refreshChat(
   const mutateChatWithScrollGuard = (fn: () => void) => {
     withScrollGuard(chatBox, conversationKey, fn);
   };
-  const pendingRestoreSnapshot = consumePendingChatScrollRestore(
+  const baselineSnapshot = captureChatScrollForRender(
     conversationKey,
+    chatBox,
     body,
   );
-  const activeNavigationSnapshot = getActiveChatNavigationSnapshot(chatBox);
-  // A targeted re-render keeps the current DOM, so the reader's live position
-  // is the truth: settle a stale follow-bottom intent and anchor the view that
-  // is actually on screen rather than the last persisted geometry.
-  const targetedRerenderRequested = Boolean(
-    options.rerenderAssistantMessages?.size,
-  );
-  const cachedSnapshot = targetedRerenderRequested
-    ? settleFollowBottomIntent(conversationKey, chatBox, {
-        streaming: conversationHasStreamingMessage(conversationKey),
-      })
-    : getChatScrollSnapshot(conversationKey, chatBox);
-  const liveAnchoredSnapshot =
-    targetedRerenderRequested && cachedSnapshot?.mode === "manual"
-      ? buildAnchoredChatScrollSnapshot(chatBox)
-      : undefined;
-  const baselineSnapshot = activeNavigationSnapshot
-    ? activeNavigationSnapshot
-    : hasActiveFollowBottomCatchupRequest(conversationKey)
-      ? buildFollowBottomScrollSnapshot(chatBox)
-      : pendingRestoreSnapshot
-        ? pendingRestoreSnapshot
-        : liveAnchoredSnapshot
-          ? liveAnchoredSnapshot
-          : cachedSnapshot
-            ? cachedSnapshot
-            : buildChatScrollSnapshot(chatBox);
   const rawHistory = chatHistory.get(conversationKey) || [];
   // Turns queued for deletion stay in memory and DB until the undo window
   // closes; they are only hidden from the render.
@@ -11631,11 +11495,7 @@ export function refreshChat(
               pairedUserMessage: previousUserMessage,
               webSourceAnchors,
               onContentRendered: () => {
-                stabilizeFollowBottomAfterAsyncChatContent(
-                  body,
-                  conversationKey,
-                  chatBox,
-                );
+                scheduleChatScrollReconciliation(conversationKey, chatBox);
               },
             });
           } catch (err) {
@@ -11800,11 +11660,7 @@ export function refreshChat(
         if (!agentTraceReplacesAssistantTurn) {
           renderAssistantGeneratedImagesInto(bubble, generatedImages, doc, {
             onImageLoaded: () => {
-              stabilizeFollowBottomAfterAsyncChatContent(
-                body,
-                conversationKey,
-                chatBox,
-              );
+              scheduleChatScrollReconciliation(conversationKey, chatBox);
             },
             onImageActionStatus: (message, level) => {
               const status = body.querySelector(
@@ -12205,18 +12061,7 @@ export function refreshChat(
     targetedMessages: useTargetedRerender ? requestedRerenders : undefined,
   });
 
-  applyChatScrollSnapshot(chatBox, baselineSnapshot);
-  persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
-  if (baselineSnapshot.mode === "followBottom") {
-    scheduleFollowBottomStabilization(body, conversationKey, chatBox);
-  } else {
-    const win = body.ownerDocument?.defaultView;
-    const active = followBottomStabilizers.get(chatBox);
-    if (active !== undefined && win) {
-      win.cancelAnimationFrame(active);
-      followBottomStabilizers.delete(chatBox);
-    }
-  }
+  restoreChatScrollAfterRender(conversationKey, chatBox, baselineSnapshot);
 }
 
 export function refreshConversationPanels(

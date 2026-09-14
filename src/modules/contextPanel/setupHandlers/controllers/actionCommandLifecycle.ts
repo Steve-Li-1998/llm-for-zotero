@@ -1,3 +1,4 @@
+import { scheduleChatContentScroll } from "../../chatScrollSnapshots";
 import { getAgentApi } from "../../../../agent";
 import type {
   AgentConfirmationResolution,
@@ -235,7 +236,7 @@ export function createActionCommandLifecycle(params: {
     }
     wrapper.innerHTML = "";
     wrapper.appendChild(renderActionTransitionCard(ownerDoc, actionId));
-    chatBox.scrollTop = chatBox.scrollHeight;
+    scheduleChatContentScroll(chatBox);
     syncHasActionCardAttr();
   };
 
@@ -265,7 +266,7 @@ export function createActionCommandLifecycle(params: {
         renderPendingActionCard(ownerDoc, { requestId, action }),
       );
       chatBox.appendChild(wrapper);
-      chatBox.scrollTop = chatBox.scrollHeight;
+      scheduleChatContentScroll(chatBox);
       syncHasActionCardAttr();
     });
 
@@ -284,7 +285,7 @@ export function createActionCommandLifecycle(params: {
     const card = renderActionCompletionCard(ownerDoc, feedback, totalMs / 1000);
     wrapper.appendChild(card);
     chatBox.appendChild(wrapper);
-    chatBox.scrollTop = chatBox.scrollHeight;
+    scheduleChatContentScroll(chatBox);
     syncHasActionCardAttr();
 
     const countdownEl = wrapper.querySelector(
@@ -348,7 +349,7 @@ export function createActionCommandLifecycle(params: {
       summaryText.textContent = "";
       wrapper.appendChild(summaryText);
       chatBox.appendChild(wrapper);
-      chatBox.scrollTop = chatBox.scrollHeight;
+      scheduleChatContentScroll(chatBox);
       element = wrapper;
       syncHasActionCardAttr();
     };

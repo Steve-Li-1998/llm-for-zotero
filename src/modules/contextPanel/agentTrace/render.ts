@@ -1,4 +1,5 @@
 import type {
+  AgentActionSummaryResultCard,
   AgentNoteChangeResultCard,
   AgentSavedNoteResultCard,
 } from "../../../agent/types";
@@ -95,6 +96,10 @@ import {
   buildAgentActionSummaryCard,
   renderActionSummaryCard,
 } from "./actionSummaryCard";
+import type { NavigationHost } from "./actionCardNavigation";
+import { actionCardNoteMode, attachNoteDetails } from "./actionCardModel";
+import { renderActionCardDetail } from "./actionCardNoteDetail";
+import { createZoteroActionCardResolvers } from "./actionCardResolvers";
 import { renderDiffPreviewField } from "./diffPreviewField";
 import { getDiscoveryCardProjection } from "./discoveryCardProjection";
 import { renderNoteChangeCard } from "./noteChangeCard";
@@ -225,6 +230,8 @@ type RenderAgentTraceParams = {
   allowPlanRecovery?: boolean;
   onTraceMissing?: () => void;
   onInterleavedText?: () => void;
+  /** Where the action card's chips take the reader; the running Zotero by default. */
+  actionCardNavigation?: NavigationHost;
 };
 
 export function formatAgentActivityDuration(durationMs: number): string {
@@ -5357,7 +5364,9 @@ function buildAgentTraceDisplayItemsCanonical(
   // renders wherever the trace does, interleaved text included.
   const actionSummary = buildAgentActionSummaryCard(
     compactedEvents,
-    (documentId) => adapterContext.finalizedMaterials.get(documentId)?.title,
+    createZoteroActionCardResolvers(
+      (documentId) => adapterContext.finalizedMaterials.get(documentId)?.title,
+    ),
   );
   if (actionSummary) items.push({ type: "card_list", cards: [actionSummary] });
 
@@ -6377,6 +6386,7 @@ export function renderAgentTrace({
   onInterleavedText,
   previous,
   allowPlanRecovery = false,
+  actionCardNavigation,
 }: RenderAgentTraceParams): HTMLElement | null {
   const runId = message.agentRunId?.trim() || "pending";
   // Temporary native events remain visible until the durable run is loaded.
@@ -6805,10 +6815,9 @@ export function renderAgentTrace({
   });
 
   let hasSavedNote = false;
-  const shownNoteActions = new Map<
-    string,
-    AgentNoteChangeResultCard | AgentSavedNoteResultCard
-  >();
+  let actionSummaryCard: AgentActionSummaryResultCard | undefined;
+  const noteCards: (AgentNoteChangeResultCard | AgentSavedNoteResultCard)[] =
+    [];
   // These cards are the turn's outcome, not a step, so they are collected from
   // the whole item tree: a card list an action produced is grouped into the
   // stage that produced it, and the in-stage renderer drops these kinds
@@ -6816,30 +6825,49 @@ export function renderAgentTrace({
   forEachAgentTraceDisplayItem(processItems, (item) => {
     if (item.type !== "card_list") return;
     for (const card of item.cards) {
-      if (card.kind === "note_change") {
-        shownNoteActions.set(card.actionId, card);
-      }
-      if (card.kind === "saved_note") {
-        hasSavedNote = true;
-        if (card.actionId) shownNoteActions.set(card.actionId, card);
-        else wrap.appendChild(renderSavedNoteCard(doc, card));
-      }
+      if (card.kind === "note_change" || card.kind === "saved_note") {
+        if (card.kind === "saved_note") hasSavedNote = true;
+        noteCards.push(card);
+      } else if (card.kind === "action_summary") actionSummaryCard = card;
     }
   });
 
-  for (const card of shownNoteActions.values())
+  // One card per action: a note the run created and then edited is one note,
+  // and the change is the last thing that happened to it. A card that names no
+  // action shares its identity with nothing and stands on its own.
+  const noteCardsByAction = new Map<string, (typeof noteCards)[number]>();
+  const anonymousNoteCards: typeof noteCards = [];
+  for (const card of noteCards) {
+    if (card.actionId) noteCardsByAction.set(card.actionId, card);
+    else anonymousNoteCards.push(card);
+  }
+  let standaloneNoteCards = [
+    ...noteCardsByAction.values(),
+    ...anonymousNoteCards,
+  ];
+
+  // A note card and an action row are two statements about the same write. The
+  // row takes the note over, so the reader is shown it once; a note no receipt
+  // claims keeps the card it has always had.
+  let actionCardNode: HTMLElement | undefined;
+  if (actionSummaryCard) {
+    const attached = attachNoteDetails(actionSummaryCard, standaloneNoteCards);
+    standaloneNoteCards = attached.unmatched;
+    const noteMode = actionCardNoteMode(attached.card);
+    actionCardNode = renderActionSummaryCard(doc, attached.card, {
+      mode: noteMode ? "note" : "action",
+      ...(noteMode ? { header: noteMode } : {}),
+      renderDetail: renderActionCardDetail,
+      ...(actionCardNavigation ? { navigation: actionCardNavigation } : {}),
+    });
+  }
+
+  for (const card of standaloneNoteCards)
     wrap.appendChild(
       card.kind === "note_change"
         ? renderNoteChangeCard(doc, card)
         : renderSavedNoteCard(doc, card),
     );
-
-  forEachAgentTraceDisplayItem(processItems, (item) => {
-    if (item.type !== "card_list") return;
-    for (const card of item.cards)
-      if (card.kind === "action_summary")
-        wrap.appendChild(renderActionSummaryCard(doc, card));
-  });
 
   const planProjection = getPlanProjection(events);
   const visiblePlanProjection =
@@ -6960,6 +6988,12 @@ export function renderAgentTrace({
     view.document.caption.remove();
     view.document = undefined;
   }
+
+  // What the turn did closes the turn: the plan it worked from and the document
+  // it produced are what the reader came for, and the receipts are read after
+  // them. The plan and the document are the only children a re-render keeps, so
+  // this card is rebuilt below them every time.
+  if (actionCardNode) wrap.appendChild(actionCardNode);
 
   // The rule separates the activity trace from the answer, so visible answer
   // text is authoritative even when a restored row retained a stale streaming

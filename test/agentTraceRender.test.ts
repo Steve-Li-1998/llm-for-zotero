@@ -55,9 +55,16 @@ import {
   sanitizeRenderedMermaidSvgWithReason,
 } from "../src/modules/contextPanel/mermaidSvg";
 import type {
+  ActionCardEntry,
+  AgentActionSummaryResultCard,
+  AgentNoteChangeResultCard,
   AgentPendingAction,
   AgentRunEventRecord,
+  AgentSavedNoteResultCard,
 } from "../src/agent/types";
+import { renderActionCardDetail } from "../src/modules/contextPanel/agentTrace/actionCardNoteDetail";
+import { renderActionSummaryCard } from "../src/modules/contextPanel/agentTrace/actionSummaryCard";
+import type { NavigationHost } from "../src/modules/contextPanel/agentTrace/actionCardNavigation";
 import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import {
@@ -68,6 +75,12 @@ import {
   getStableAnimationDelay,
   STABLE_ANIMATION_DELAY_PROPERTY,
 } from "../src/modules/contextPanel/stableAnimationPhase";
+import {
+  collectFakeText,
+  fakeDocument,
+  FakeElement,
+  ThrowingTemplateElement,
+} from "./helpers/fakeDom";
 
 /** The result shape a failed note write journals, as the note tool writes it. */
 function failedNoteChangeContent(): Record<string, unknown> {
@@ -84,310 +97,6 @@ function failedNoteChangeContent(): Record<string, unknown> {
       description: "Zotero refused the note save.",
     },
   };
-}
-
-class FakeClassList {
-  private readonly classes = new Set<string>();
-
-  add(...classes: string[]) {
-    for (const cls of classes) {
-      if (cls) this.classes.add(cls);
-    }
-  }
-
-  contains(cls: string): boolean {
-    return this.classes.has(cls);
-  }
-
-  remove(...classes: string[]) {
-    for (const cls of classes) this.classes.delete(cls);
-  }
-
-  toggle(cls: string, force?: boolean): boolean {
-    const enabled = force === undefined ? !this.classes.has(cls) : force;
-    if (enabled) this.classes.add(cls);
-    else this.classes.delete(cls);
-    return enabled;
-  }
-
-  toString(): string {
-    return Array.from(this.classes).join(" ");
-  }
-}
-
-class FakeStyleDeclaration {
-  [key: string]: string | ((name: string, value: string) => void);
-
-  setProperty(name: string, value: string): void {
-    this[name] = value;
-  }
-}
-
-class FakeElement {
-  public readonly classList = new FakeClassList();
-  public readonly dataset: Record<string, string | undefined> = {};
-  public readonly children: FakeElement[] = [];
-  public id = "";
-  public textContent = "";
-  public type = "";
-  public title = "";
-  public disabled = false;
-  public attributes: Record<string, string> = {};
-  public style = new FakeStyleDeclaration();
-  public offsetHeight = 0;
-  public scrollHeight = 0;
-  public offsetTop = 0;
-  public offsetWidth = 0;
-  private copyableChildren: FakeElement[] = [];
-  private html = "";
-  private listeners = new Map<string, Array<(event: any) => void>>();
-
-  public parentElement: FakeElement | null = null;
-  get childNodes() {
-    return this.children;
-  }
-  get nodeType() {
-    return 1;
-  }
-  get nodeName() {
-    return this.tagName.toUpperCase();
-  }
-  get nextSibling(): FakeElement | null {
-    const siblings = this.parentElement?.children || [];
-    return siblings[siblings.indexOf(this) + 1] || null;
-  }
-  get isConnected() {
-    return false;
-  }
-  remove() {
-    this.parentElement?.removeChild(this);
-  }
-  removeChild(child: FakeElement) {
-    const index = this.children.indexOf(child);
-    if (index >= 0) this.children.splice(index, 1);
-    child.parentElement = null;
-    return child;
-  }
-  getAttribute(name: string) {
-    return this.attributes[name] ?? null;
-  }
-  hasAttribute(name: string) {
-    return name in this.attributes;
-  }
-  removeAttribute(name: string) {
-    delete this.attributes[name];
-  }
-  constructor(public readonly tagName = "div") {
-    const attributes = this.attributes;
-    Object.defineProperty(attributes, Symbol.iterator, {
-      value: function* () {
-        for (const [name, value] of Object.entries(attributes))
-          yield { name, value };
-      },
-    });
-  }
-
-  set className(value: string) {
-    this.classList.add(...value.split(/\s+/).filter(Boolean));
-  }
-
-  get className(): string {
-    return this.classList.toString();
-  }
-
-  set innerHTML(value: string) {
-    this.html = value;
-    this.copyableChildren = value.includes("llm-copyable")
-      ? [new FakeCopyableElement()]
-      : [];
-  }
-
-  get innerHTML(): string {
-    return this.html;
-  }
-
-  get firstChild(): FakeElement | null {
-    return this.children[0] || null;
-  }
-
-  querySelectorAll(selector: string): FakeElement[] {
-    if (selector === ".llm-copyable[data-llm-copy-source]") {
-      return [
-        ...this.copyableChildren,
-        ...this.findAllByClass("llm-copyable").filter(
-          (element) => element.dataset.llmCopySource !== undefined,
-        ),
-      ];
-    }
-    if (selector === ".llm-codeblock-shell") {
-      return this.findAllByClass("llm-codeblock-shell");
-    }
-    return [];
-  }
-
-  querySelector(selector: string): FakeElement | null {
-    if (selector === ":scope > .llm-render-copy-btn") {
-      return (
-        this.children.find((child) =>
-          child.classList.contains("llm-render-copy-btn"),
-        ) || null
-      );
-    }
-    if (selector === ":scope .llm-codeblock-shell") {
-      return this.findByClass("llm-codeblock-shell");
-    }
-    if (selector.startsWith(".")) return this.findByClass(selector.slice(1));
-    if (selector === "summary") return this.findAllByTag("summary")[0] || null;
-    return null;
-  }
-
-  removeEventListener(type: string, listener: (event: any) => void): void {
-    this.listeners.set(
-      type,
-      (this.listeners.get(type) || []).filter((fn) => fn !== listener),
-    );
-  }
-
-  addEventListener(type: string, listener: (event: any) => void): void {
-    const existing = this.listeners.get(type) || [];
-    existing.push(listener);
-    this.listeners.set(type, existing);
-  }
-
-  dispatchFakeEvent(type: string): {
-    defaultPrevented: boolean;
-    propagationStopped: boolean;
-    immediatePropagationStopped: boolean;
-  } {
-    const event = {
-      defaultPrevented: false,
-      propagationStopped: false,
-      immediatePropagationStopped: false,
-      preventDefault() {
-        this.defaultPrevented = true;
-      },
-      stopPropagation() {
-        this.propagationStopped = true;
-      },
-      stopImmediatePropagation() {
-        this.immediatePropagationStopped = true;
-      },
-    };
-    for (const listener of this.listeners.get(type) || []) {
-      listener(event);
-    }
-    return event;
-  }
-
-  async dispatchFakeEventAsync(type: string): Promise<{
-    defaultPrevented: boolean;
-    propagationStopped: boolean;
-    immediatePropagationStopped: boolean;
-  }> {
-    const event = {
-      defaultPrevented: false,
-      propagationStopped: false,
-      immediatePropagationStopped: false,
-      preventDefault() {
-        this.defaultPrevented = true;
-      },
-      stopPropagation() {
-        this.propagationStopped = true;
-      },
-      stopImmediatePropagation() {
-        this.immediatePropagationStopped = true;
-      },
-    };
-    await Promise.all(
-      (this.listeners.get(type) || []).map((listener) => listener(event)),
-    );
-    return event;
-  }
-
-  contains(node: unknown): boolean {
-    return this.children.includes(node as FakeElement);
-  }
-
-  insertBefore(child: FakeElement, before: FakeElement | null): FakeElement {
-    if (child === before) return child;
-    child.remove();
-    const index = before ? this.children.indexOf(before) : -1;
-    if (index < 0) this.children.push(child);
-    else this.children.splice(index, 0, child);
-    child.parentElement = this;
-    return child;
-  }
-
-  setAttribute(name: string, value: string): void {
-    this.attributes[name] = value;
-  }
-
-  append(...children: FakeElement[]): void {
-    for (const child of children) this.appendChild(child);
-  }
-
-  appendChild(child: FakeElement): FakeElement {
-    return this.insertBefore(child, null);
-  }
-
-  replaceChildren(...children: FakeElement[]): void {
-    for (const child of [...this.children]) this.removeChild(child);
-    this.append(...children);
-  }
-
-  focus(): void {}
-
-  findByClass(className: string): FakeElement | null {
-    if (this.classList.contains(className)) return this;
-    for (const child of this.children) {
-      const match = child.findByClass(className);
-      if (match) return match;
-    }
-    return null;
-  }
-
-  findAllByClass(className: string): FakeElement[] {
-    const matches = this.classList.contains(className) ? [this] : [];
-    for (const child of this.children) {
-      matches.push(...child.findAllByClass(className));
-    }
-    return matches;
-  }
-
-  findAllByTag(tagName: string): FakeElement[] {
-    const normalized = tagName.toLowerCase();
-    const matches = this.tagName.toLowerCase() === normalized ? [this] : [];
-    for (const child of this.children) {
-      matches.push(...child.findAllByTag(normalized));
-    }
-    return matches;
-  }
-
-  getCopyableChildren(): FakeElement[] {
-    return this.copyableChildren;
-  }
-}
-
-class FakeCopyableElement extends FakeElement {
-  constructor() {
-    super("span");
-    this.className = "llm-copyable llm-copyable-math";
-    this.dataset.llmCopySource = "$$r(x)=g(Vx)$$";
-  }
-}
-
-class ThrowingTemplateElement extends FakeElement {
-  public readonly content = {
-    querySelectorAll: () => [],
-  };
-
-  set innerHTML(_value: string) {
-    throw new Error("template parser unavailable");
-  }
-
-  get innerHTML(): string {
-    return "";
-  }
 }
 
 class OneShotInnerHtmlFailureElement extends FakeElement {
@@ -509,10 +218,45 @@ function paperReadPresentation() {
   ).presentation;
 }
 
-const fakeDocument = {
-  createElement: (tagName: string) => new FakeElement(tagName),
+/**
+ * A template whose parsed content can be walked, as chrome's parser gives it.
+ *
+ * A note preview renders the note's own sanitized HTML, so a test that asserts
+ * what the reader sees of a note has to let that parse produce elements.
+ */
+class ParsingTemplateElement extends FakeElement {
+  public readonly content = new FakeElement("div");
+
+  constructor() {
+    super("template");
+  }
+
+  set innerHTML(value: string) {
+    for (const [, tag, text] of value.matchAll(/<(\w+)>([^<]*)<\/\1>/g)) {
+      const node = new FakeElement(tag);
+      node.textContent = text;
+      this.content.appendChild(node);
+    }
+  }
+
+  get innerHTML(): string {
+    return "";
+  }
+}
+
+/** The document the note surfaces are rendered into. */
+const noteDocument = {
+  createElement: (tagName: string) =>
+    tagName === "template"
+      ? new ParsingTemplateElement()
+      : new FakeElement(tagName),
   createElementNS: (_namespace: string, tagName: string) =>
     new FakeElement(tagName),
+  createTextNode: (text: string) => {
+    const node = new FakeElement("span");
+    node.textContent = text;
+    return node;
+  },
   querySelectorAll: () => [],
 } as unknown as Document;
 
@@ -598,13 +342,6 @@ function createFakeCodeBlockShell(options?: {
   root.appendChild(shell);
 
   return { root, shell, header, body };
-}
-
-function collectFakeText(element: FakeElement | null | undefined): string {
-  if (!element) return "";
-  return [element.textContent, ...element.children.map(collectFakeText)].join(
-    "",
-  );
 }
 
 function createSanitizerElement(
@@ -10639,13 +10376,20 @@ describe("agent trace stage grouping", function () {
         0,
         "the deliverable belongs below the disclosure, not inside it",
       );
-      assert.equal(cards[0].dataset.noteId, "77");
+      // The write journaled a receipt, so the note is the action card's note
+      // mode rather than a second card beside it.
+      assert.equal(cards[0].dataset.mode, "note");
+      assert.equal(
+        cards[0].findByClass("llm-plan-title")!.textContent,
+        "Representational drift",
+      );
       assert.include(
         cards[0]
-          .findAllByClass("llm-saved-note-destination")
-          .map((link) => link.textContent)
+          .findAllByClass("llm-plan-action")
+          .map((button) => button.textContent)
           .join(" "),
-        "Open note in Zotero",
+        "Open note",
+        "the reader must keep the way into the note that was saved",
       );
       disposeAgentTrace(root as unknown as HTMLElement);
     });
@@ -10666,7 +10410,13 @@ describe("agent trace stage grouping", function () {
         0,
         "the deliverable belongs below the disclosure, not inside it",
       );
-      assert.equal(cards[0].dataset.actionId, "note-edit-1");
+      // The write journaled a receipt, so the change is the action card's note
+      // mode rather than a second card beside it.
+      assert.equal(cards[0].dataset.mode, "note");
+      assert.equal(
+        cards[0].findByClass("llm-plan-title")!.textContent,
+        "Changed ‘Representational drift’",
+      );
       assert.include(
         cards[0]
           .findAllByTag("button")
@@ -11045,7 +10795,13 @@ describe("agent trace action summary card", function () {
       callId: "call-note",
       name: "note_write",
       ok: true,
-      actionReceipts: [receipt({ id: "note-1", materialRef })],
+      actionReceipts: [
+        receipt({
+          id: "note-1",
+          materialRef,
+          verifiedFacts: ["native_note:77:text_match"],
+        }),
+      ],
       content: { noteId: 77 },
     }),
     event(3, {
@@ -11063,6 +10819,7 @@ describe("agent trace action summary card", function () {
           executionAuthority: "external_runtime",
           requestedTargets: ["item:41", "item:42"],
           appliedTargets: ["item:41"],
+          normalizedParameters: { tags: ["attention", "transformers"] },
         }),
       ],
       content: {},
@@ -11070,18 +10827,20 @@ describe("agent trace action summary card", function () {
     event(4, { type: "final", text: "Saved the summary.", materialRef }),
   ];
 
-  it("lists one line per effect receipt, named by the operation catalog", function () {
+  it("lists one row per target set, named by the operation catalog", function () {
     const card = summaryCard(
       buildAgentTraceDisplayItems(effectEvents, null).items,
     );
 
     assert.exists(card, "the run's effects are summarized");
     assert.deepEqual(
-      card!.entries.map((entry) => entry.text),
-      [
-        "Created note “Attention in transformers” · 1 target",
-        "Added tags · 2 targets",
-      ],
+      card!.entries.map((entry) => entry.effects.map((effect) => effect.label)),
+      [["Created note"], ["Added tags"]],
+    );
+    assert.deepEqual(
+      card!.entries.map((entry) => entry.targets.map((target) => target.label)),
+      [["Item 41"], ["Item 41", "Item 42"]],
+      "each row names the items its receipts covered",
     );
     assert.deepEqual(card!.entries[0].badges, ["Verified"]);
     assert.deepEqual(card!.entries[1].badges, [
@@ -11126,9 +10885,10 @@ describe("agent trace action summary card", function () {
       ).items,
     );
 
+    assert.equal(card?.actionCount, 1);
     assert.deepEqual(
-      card?.entries.map((entry) => entry.text),
-      ["Created note · 1 target"],
+      card?.entries.map((entry) => entry.effects.map((effect) => effect.label)),
+      [["Created note"]],
     );
   });
 
@@ -11198,9 +10958,14 @@ describe("agent trace action summary card", function () {
     );
 
     assert.deepEqual(
-      card?.entries.map((entry) => entry.text),
-      ["Ran command"],
-      "an executed effect states itself, and states no targets it re-read",
+      card?.entries.map((entry) => entry.effects.map((effect) => effect.label)),
+      [["Ran command"]],
+      "an executed effect states itself",
+    );
+    assert.deepEqual(
+      card?.entries[0].targets,
+      [],
+      "and states no targets it re-read",
     );
     assert.deepEqual(card?.entries[0].badges, ["Ran (no state proof)"]);
   });
@@ -11248,19 +11013,294 @@ describe("agent trace action summary card", function () {
 
     const card = trace.findByClass("llm-agent-action-summary-card");
     assert.exists(card);
-    const lines = card!
-      .findAllByClass("llm-agent-action-summary-text")
-      .map((node) => node.textContent);
-    assert.deepEqual(lines, [
-      "Created note “Attention in transformers” · 1 target",
-      "Added tags · 2 targets",
-    ]);
+    assert.equal(
+      card!.findByClass("llm-plan-title")!.textContent,
+      "What this turn did",
+    );
+    assert.equal(
+      card!.findByClass("llm-plan-status")!.textContent,
+      "2 actions",
+    );
+    const rows = card!.findAllByClass("llm-agent-action-summary-item");
+    assert.lengthOf(rows, 2, "one row per target set");
+    assert.exists(
+      rows[0].findByClass("llm-paper-context-chip"),
+      "the paper is the row's subject",
+    );
+    assert.exists(
+      rows[0].findByClass("llm-note-context-chip"),
+      "a note effect shows the note chip",
+    );
+    assert.isNull(
+      rows[0].findByClass("llm-context-glyph-icon"),
+      "a note effect has no glyph",
+    );
+    assert.equal(
+      rows[1].findByClass("llm-context-glyph-icon")!.textContent,
+      "+",
+      "tagging shows the + glyph",
+    );
+    assert.deepEqual(
+      rows[1]
+        .findAllByClass("llm-tag-chip-title")
+        .map((tag) => tag.textContent),
+      ["attention", "transformers"],
+    );
     assert.include(
       collectFakeText(card),
       "Authorized by connected client",
       "the connected client's authority stays visible",
     );
     assert.include(collectFakeText(card), "Attention in transformers");
+  });
+
+  it("names a glyph-less effect on the effect itself, with no empty verb node", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const note = card.findAllByClass("llm-agent-action-effect")[0];
+    assert.equal(
+      note.getAttribute("title"),
+      "Created note",
+      "the operation's word is reachable even where it has no glyph to hang on",
+    );
+    assert.isNull(
+      note.findByClass("llm-agent-action-verb"),
+      "an empty verb node is a gap in the row with a tooltip nobody can reach",
+    );
+    const tagged = card.findAllByClass("llm-agent-action-effect")[1];
+    assert.equal(tagged.getAttribute("title"), "Added tags");
+    assert.equal(
+      tagged.findByClass("llm-agent-action-verb")!.getAttribute("title"),
+      "Added tags",
+      "the glyph keeps the tooltip the reader points at",
+    );
+  });
+
+  it("states an effect that named no object in words", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Filed.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "call-file",
+          name: "library_update",
+          ok: true,
+          actionReceipts: [
+            receipt({
+              id: "file-1",
+              capability: "zotero.collections",
+              operation: "move_to_collection",
+            }),
+          ],
+          content: {},
+        }),
+      ],
+    }) as unknown as FakeElement;
+
+    const effect = trace
+      .findByClass("llm-agent-action-summary-card")!
+      .findByClass("llm-agent-action-effect")!;
+    const word = effect.findByClass("llm-agent-action-verb-word")!;
+    assert.equal(
+      word.textContent,
+      "Moved to collection",
+      "a glyph with nothing after it says nothing; the word is shown instead",
+    );
+    assert.include(word.className, "llm-agent-action-verb-word-inline");
+    assert.include(collectFakeText(effect), "Moved to collection");
+  });
+
+  /** A stand-in library window, recording where the card sent the reader. */
+  function navigationHost(
+    pane: () => Record<string, unknown> | null,
+  ): NavigationHost & { calls: string[] } {
+    const calls: string[] = [];
+    return {
+      calls,
+      pane: pane as NavigationHost["pane"],
+      openNote: async () => {
+        calls.push("note");
+        return true;
+      },
+      revealFile: async () => {
+        calls.push("file");
+        return true;
+      },
+      focusMainWindow: () => calls.push("focus"),
+    };
+  }
+
+  it("sends the reader to the paper a chip names", async function () {
+    const host = navigationHost(() => ({
+      selectItems: async (ids: number[]) => {
+        host.calls.push(`items:${ids.join(",")}`);
+        return true;
+      },
+    }));
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+      actionCardNavigation: host,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const chip = card.findByClass("llm-paper-context-chip")!;
+    assert.include(chip.className, "llm-agent-action-link");
+    const event = await card.dispatchFakeEventAsync("click", {
+      target: chip.findByClass("llm-paper-context-chip-text")!,
+    });
+
+    assert.deepEqual(host.calls, ["items:41", "focus"]);
+    assert.isTrue(
+      event.propagationStopped,
+      "clicking a chip inside a row does not fold the row",
+    );
+  });
+
+  it("says in the card's pill when it could not open what a chip names", async function () {
+    // The pane is there when the card is drawn and refuses the selection when
+    // the reader clicks, the way an item deleted since the turn behaves.
+    const host = navigationHost(() => ({ selectItems: async () => false }));
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+      actionCardNavigation: host,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const status = card.findByClass("llm-plan-status")!;
+    await card.dispatchFakeEventAsync("click", {
+      target: card.findByClass("llm-paper-context-chip")!,
+    });
+
+    assert.equal(status.textContent, "Item 41 is unavailable");
+    assert.equal(status.dataset.status, "error");
+  });
+
+  it("says so when the collection a chip names is gone from the tree", async function () {
+    const host = navigationHost(() => ({
+      selectItems: async () => true,
+      // The tree answers `false` for a row it no longer has, the way a
+      // collection deleted since the turn behaves.
+      collectionsView: { selectByID: async () => false },
+    }));
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Filed.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "call-file",
+          name: "library_update",
+          ok: true,
+          actionReceipts: [
+            receipt({
+              id: "file-1",
+              capability: "zotero.collections",
+              operation: "move_to_collection",
+              normalizedParameters: {
+                destinationCollectionId: 7,
+                collectionName: "Reviews",
+              },
+            }),
+          ],
+          content: {},
+        }),
+      ],
+      actionCardNavigation: host,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const chip = card.findByClass("llm-collection-context-chip")!;
+    assert.include(chip.className, "llm-agent-action-link");
+    await card.dispatchFakeEventAsync("click", { target: chip });
+
+    const status = card.findByClass("llm-plan-status")!;
+    assert.equal(status.textContent, "Reviews is unavailable");
+    assert.equal(status.dataset.status, "error");
+    assert.notInclude(host.calls, "focus", "the reader was taken nowhere");
+  });
+
+  it("does not draw a chip as a link when there is nowhere to send the reader", function () {
+    const host = navigationHost(() => ({
+      selectItems: async () => true,
+      tagSelector: null,
+    }));
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Saved.", timestamp: 1 },
+      events: effectEvents,
+      actionCardNavigation: host,
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const tag = card.findByClass("llm-tag-context-chip")!;
+    assert.notInclude(tag.className, "llm-agent-action-link");
+    assert.isNull(tag.getAttribute("role"));
+    assert.isNull(tag.getAttribute("tabindex"));
+    assert.isNull(
+      tag.findByClass("llm-citation-icon"),
+      "a chip that opens nothing shows no jump glyph",
+    );
+    assert.isUndefined(
+      tag.dataset.llmNav,
+      "a chip that opens nothing claims no destination either",
+    );
+    assert.include(
+      card.findByClass("llm-paper-context-chip")!.className,
+      "llm-agent-action-link",
+      "the papers the pane can still select stay links",
+    );
+  });
+
+  it("turns the pill amber and adds a skip row when a target was rejected", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Moved.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "call-move",
+          name: "library_update",
+          ok: true,
+          content: {},
+          actionReceipts: [
+            receipt({
+              id: "move-1",
+              operation: "move_to_collection",
+              capability: "zotero.collections",
+              status: "partial",
+              verification: "verified",
+              requestedTargets: ["item:1", "item:2"],
+              appliedTargets: ["item:1"],
+              rejectedTargets: ["item:2"],
+              reasons: ["already in Reviews"],
+              normalizedParameters: { collectionName: "Reviews" },
+            }),
+          ],
+        }),
+      ],
+    }) as unknown as FakeElement;
+
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    assert.equal(
+      card.findByClass("llm-plan-status")!.dataset.status,
+      "partial",
+    );
+    const row = card.findByClass("llm-agent-action-summary-item")!;
+    assert.include(
+      collectFakeText(row.findByClass("llm-at-row-skip")!),
+      "Skipped Item 2 · already in Reviews",
+      "the refusal is stated under the row that owns it",
+    );
   });
 
   it("keeps the card outside the collapsed activity disclosure", function () {
@@ -11298,5 +11338,646 @@ describe("agent trace action summary card", function () {
     }) as unknown as FakeElement;
 
     assert.lengthOf(next.findAllByClass("llm-agent-action-summary-card"), 1);
+  });
+  it("marks a row partial when a receipt landed only part of what it asked", function () {
+    const card = summaryCard(
+      buildAgentTraceDisplayItems(
+        [
+          event(1, {
+            type: "tool_result",
+            callId: "call-tags",
+            name: "library_update",
+            ok: true,
+            actionReceipts: [
+              receipt({
+                id: "tags-partial",
+                capability: "zotero.tags",
+                operation: "apply_tags",
+                status: "partial",
+                requestedTargets: ["item:41", "item:42"],
+                appliedTargets: ["item:41"],
+                normalizedParameters: { tags: ["attention"] },
+              }),
+            ],
+            content: {},
+          }),
+        ],
+        null,
+      ).items,
+    );
+
+    assert.isTrue(
+      card?.entries[0].partial,
+      "a partial receipt states the row did less than it asked, with nothing refused",
+    );
+  });
+
+  it("turns the pill amber when a receipt landed only part of what it asked", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Tagged.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "call-tags",
+          name: "library_update",
+          ok: true,
+          actionReceipts: [
+            receipt({
+              id: "tags-partial",
+              capability: "zotero.tags",
+              operation: "apply_tags",
+              status: "partial",
+              requestedTargets: ["item:41", "item:42"],
+              appliedTargets: ["item:41"],
+              normalizedParameters: { tags: ["attention"] },
+            }),
+          ],
+          content: {},
+        }),
+      ],
+    }) as unknown as FakeElement;
+
+    assert.equal(
+      trace
+        .findByClass("llm-agent-action-summary-card")!
+        .findByClass("llm-plan-status")!.dataset.status,
+      "partial",
+    );
+  });
+});
+
+describe("end-of-turn card precedence", function () {
+  const savedNote: AgentSavedNoteResultCard = {
+    kind: "saved_note",
+    actionId: "note-create-1",
+    title: "Attention in transformers",
+    destination: "Zotero",
+    bodyHtml: "<h1>Attention in transformers</h1><p>What the note says.</p>",
+    note: { itemId: 99, libraryID: 1, key: "N99" },
+  };
+
+  const noteChange: AgentNoteChangeResultCard = {
+    kind: "note_change",
+    actionId: "note-edit-1",
+    title: "Attention in transformers",
+    description: "Rewrote the discussion section.",
+    note: { itemId: 99, libraryID: 1, key: "N99" },
+    conversationKey: 5,
+    state: "applied",
+    afterVerified: true,
+    before: { checksum: "sha256:before", recoveryId: "before" } as never,
+    after: { checksum: "sha256:after", recoveryId: "after" } as never,
+  };
+
+  function event(
+    seq: number,
+    payload: AgentRunEventRecord["payload"],
+  ): AgentRunEventRecord {
+    return {
+      runId: "run-precedence",
+      seq,
+      eventType: payload.type,
+      payload,
+      createdAt: seq,
+    };
+  }
+
+  type TestReceipt = Extract<
+    AgentRunEventRecord["payload"],
+    { type: "tool_result" }
+  >["actionReceipts"][number];
+
+  /** What a note write journals: the note the read-back proved it landed on. */
+  function noteReceipt(operation: string, noteId: number): TestReceipt {
+    return {
+      version: 2,
+      id: `${operation}:${noteId}`,
+      proposalId: `${operation}:${noteId}`,
+      proofDomain: "zotero_state",
+      capability: "zotero.notes",
+      operation,
+      verification: "verified",
+      status: "applied",
+      requestedTargets: ["item:41"],
+      appliedTargets: ["item:41"],
+      alreadySatisfiedTargets: [],
+      rejectedTargets: [],
+      reasons: [],
+      verifiedFacts: [`native_note:${noteId}:text_match`],
+    } as unknown as TestReceipt;
+  }
+
+  /** The note write, with the receipt that claims the note it wrote. */
+  function noteWriteEvents(receipts: TestReceipt[]): AgentRunEventRecord[] {
+    return [
+      event(1, {
+        type: "tool_call",
+        callId: "w1",
+        name: "note_write",
+        args: { noteId: 99 },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+      event(2, {
+        type: "tool_result",
+        callId: "w1",
+        name: "note_write",
+        ok: true,
+        actionReceipts: receipts,
+        content: { noteId: 99 },
+        toolLabel: "Note Write",
+        workCategory: "zotero_action",
+      }),
+    ];
+  }
+
+  const savedNoteEventsWithReceipt = () =>
+    noteWriteEvents([noteReceipt("note_create", 99)]);
+  const noteChangeEventsWithReceipt = () =>
+    noteWriteEvents([noteReceipt("note_edit", 99)]);
+  const savedNoteEventsWithoutReceipt = () => noteWriteEvents([]);
+
+  /** A second effect, on another paper, so the turn did more than the note. */
+  function tagReceiptEvent(itemId: number): AgentRunEventRecord {
+    return event(3, {
+      type: "tool_result",
+      callId: "t1",
+      name: "library_update",
+      ok: true,
+      actionReceipts: [
+        {
+          version: 2,
+          id: "tags-1",
+          proposalId: "tags-1",
+          proofDomain: "zotero_state",
+          capability: "zotero.tags",
+          operation: "apply_tags",
+          verification: "verified",
+          status: "applied",
+          requestedTargets: [`item:${itemId}`],
+          appliedTargets: [`item:${itemId}`],
+          alreadySatisfiedTargets: [],
+          rejectedTargets: [],
+          reasons: [],
+          verifiedFacts: [],
+          normalizedParameters: { tags: ["attention"] },
+        } as unknown as TestReceipt,
+      ],
+      content: {},
+    });
+  }
+
+  /** The turn that finalized a document the trace offers to open. */
+  const planDocumentEvents = (): AgentRunEventRecord[] => [
+    event(1, {
+      type: "material_finalized",
+      callId: "submit-1",
+      materialRef: {
+        documentId: "run-precedence:document:1",
+        documentVersion: 1,
+        contentHash: "sha256:material",
+      },
+      materialKind: "guide",
+      materialTitle: "Attention in transformers",
+    }),
+  ];
+
+  /** The assistant turn the trace belongs to, as the panel holds it. */
+  const turnMessage = (text: string) => ({
+    role: "assistant" as const,
+    text,
+    timestamp: 1,
+    runMode: "agent" as const,
+    agentRunId: "run-precedence",
+    streaming: false,
+  });
+
+  function renderTurn(params: {
+    cards: (AgentSavedNoteResultCard | AgentNoteChangeResultCard)[];
+    events: AgentRunEventRecord[];
+    message: ReturnType<typeof turnMessage>;
+    previous?: FakeElement;
+  }): FakeElement {
+    const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
+    const originalZotero = globalScope.Zotero;
+    globalScope.Zotero = {
+      ...((originalZotero as Record<string, unknown>) || {}),
+      Libraries: { userLibraryID: 1, get: () => undefined },
+    };
+    try {
+      return withToolPresentationsReturning(
+        {
+          note_write: {
+            label: "Note Write",
+            summaries: { onSuccess: "Note saved" },
+            buildResultCards: () => params.cards,
+          },
+        },
+        () =>
+          renderAgentTrace({
+            doc: noteDocument,
+            message: params.message,
+            events: params.events,
+            previous: params.previous as unknown as HTMLElement | undefined,
+          }) as unknown as FakeElement,
+      );
+    } finally {
+      globalScope.Zotero = originalZotero;
+    }
+  }
+
+  it("shows a lone new note as the note mode of the action card, once", function () {
+    const trace = renderTurn({
+      cards: [savedNote],
+      events: savedNoteEventsWithReceipt(),
+      message: turnMessage("Saved."),
+    });
+    const cards = trace.findAllByClass("llm-agent-action-summary-card");
+
+    assert.lengthOf(cards, 1);
+    assert.equal(cards[0].dataset.mode, "note");
+    assert.include(cards[0].className, "llm-saved-note-card");
+    assert.equal(
+      cards[0].findByClass("llm-plan-title")!.textContent,
+      "Attention in transformers",
+    );
+    assert.equal(cards[0].findByClass("llm-plan-status")!.textContent, "Saved");
+    assert.isTrue(
+      cards[0].findByClass("llm-agent-action-row")!.open,
+      "the note the reader came for is open",
+    );
+    assert.include(
+      collectFakeText(cards[0].findByClass("llm-note-preview")),
+      "What the note says.",
+    );
+    assert.lengthOf(
+      trace.findAllByClass("llm-saved-note-destination"),
+      0,
+      "the standalone saved-note card is not rendered again",
+    );
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("shows a lone note edit as note mode with the diff and Undo", function () {
+    const trace = renderTurn({
+      cards: [noteChange],
+      events: noteChangeEventsWithReceipt(),
+      message: turnMessage("Updated."),
+    });
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+
+    assert.equal(card.dataset.mode, "note");
+    assert.include(card.className, "llm-note-change-card");
+    assert.equal(
+      card.findByClass("llm-plan-title")!.textContent,
+      "Changed ‘Attention in transformers’",
+    );
+    assert.equal(card.findByClass("llm-plan-status")!.textContent, "Applied");
+    assert.deepEqual(
+      card.findAllByClass("llm-plan-action").map((b) => b.textContent),
+      ["Open note", "Undo"],
+    );
+    assert.lengthOf(
+      trace.findAllByClass("llm-note-review-card"),
+      0,
+      "the standalone note-change card is not rendered again",
+    );
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("folds a note into the action card when other receipts exist", function () {
+    const trace = renderTurn({
+      cards: [noteChange],
+      events: [...noteChangeEventsWithReceipt(), tagReceiptEvent(5)],
+      message: turnMessage("Done."),
+    });
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+
+    assert.equal(card.dataset.mode, "action");
+    assert.equal(card.findByClass("llm-plan-status")!.textContent, "2 actions");
+    const row = card.findByClass("llm-agent-action-row")!;
+    assert.isFalse(row.open, "the note row starts collapsed");
+    assert.lengthOf(
+      collectFakeText(row).match(/Undo/g) || [],
+      0,
+      "a collapsed row does no work until the reader opens it",
+    );
+    assert.lengthOf(trace.findAllByClass("llm-note-review-card"), 0);
+    row.open = true;
+    row.dispatchFakeEvent("toggle");
+    assert.deepEqual(
+      row.findAllByClass("llm-plan-action").map((b) => b.textContent),
+      ["Open note", "Undo"],
+      "opening the row renders the note it wrote",
+    );
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("folds in the note of a write that could not read the note back", function () {
+    // The receipt proved nothing about which note it wrote, so the row names a
+    // note without an id. One row and one card are left, and they are the same
+    // write.
+    const blindReceipt = {
+      ...(noteReceipt("note_create", 99) as unknown as Record<string, unknown>),
+      verifiedFacts: [],
+    } as unknown as TestReceipt;
+    const trace = renderTurn({
+      cards: [savedNote],
+      events: noteWriteEvents([blindReceipt]),
+      message: turnMessage("Saved."),
+    });
+    const cards = trace.findAllByClass("llm-agent-action-summary-card");
+
+    assert.lengthOf(cards, 1);
+    assert.equal(cards[0].dataset.mode, "note");
+    assert.include(
+      collectFakeText(cards[0].findByClass("llm-note-preview")),
+      "What the note says.",
+      "the note the row could not name is still the note it opens",
+    );
+    assert.lengthOf(
+      trace.findAllByClass("llm-saved-note-destination"),
+      0,
+      "the standalone saved-note card is not rendered beside it",
+    );
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("shows the last thing that happened to a note, not both", function () {
+    // The run saved the note and then edited it. Both cards name the same
+    // action, and the change is what the note ended up as.
+    const trace = renderTurn({
+      cards: [
+        { ...savedNote, actionId: "note-1" },
+        { ...noteChange, actionId: "note-1" },
+      ],
+      events: noteChangeEventsWithReceipt(),
+      message: turnMessage("Updated."),
+    });
+    const cards = trace.findAllByClass("llm-agent-action-summary-card");
+
+    assert.lengthOf(cards, 1);
+    assert.equal(
+      cards[0].findByClass("llm-plan-title")!.textContent,
+      "Changed \u2018Attention in transformers\u2019",
+    );
+    assert.lengthOf(trace.findAllByClass("llm-note-review-card"), 0);
+    assert.lengthOf(trace.findAllByClass("llm-saved-note-destination"), 0);
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("keeps rendering a note card that no receipt claims", function () {
+    const trace = renderTurn({
+      cards: [savedNote],
+      events: savedNoteEventsWithoutReceipt(),
+      message: turnMessage("Saved."),
+    });
+
+    assert.lengthOf(trace.findAllByClass("llm-saved-note-card"), 1);
+    assert.lengthOf(trace.findAllByClass("llm-saved-note-destination"), 1);
+    assert.isNull(trace.findByClass("llm-agent-action-summary-card"));
+    disposeAgentTrace(trace as unknown as HTMLElement);
+  });
+
+  it("places the action card after the plan and document cards", function () {
+    const message = turnMessage("Done.");
+    const events = [...planDocumentEvents(), tagReceiptEvent(5)];
+    const cardOrder = (trace: FakeElement) => {
+      const order = trace.children.map((child) => child.className);
+      return {
+        document: order.findIndex((name) =>
+          name.includes("llm-plan-document-card"),
+        ),
+        action: order.findIndex((name) =>
+          name.includes("llm-agent-action-summary-card"),
+        ),
+      };
+    };
+    const trace = renderTurn({ cards: [], events, message });
+    const first = cardOrder(trace);
+
+    assert.isAtLeast(first.document, 0, "the document card is rendered");
+    assert.isAtLeast(first.action, 0, "the action card is rendered");
+    assert.isBelow(first.document, first.action);
+
+    // A re-render keeps the document card and rebuilds the action card, so the
+    // reader must not end up with two of them, or with them the other way up.
+    const again = renderTurn({ cards: [], events, message, previous: trace });
+    const second = cardOrder(again);
+
+    assert.lengthOf(again.findAllByClass("llm-agent-action-summary-card"), 1);
+    assert.lengthOf(again.findAllByClass("llm-plan-document-card"), 1);
+    assert.isBelow(second.document, second.action);
+    disposeAgentTrace(again as unknown as HTMLElement);
+  });
+});
+
+describe("action card note detail", function () {
+  const savedNote: AgentSavedNoteResultCard = {
+    kind: "saved_note",
+    actionId: "a1",
+    title: "Summary",
+    destination: "My Library › Paper",
+    bodyHtml: "<h1>Summary</h1><p>Body.</p>",
+    note: { itemId: 99, libraryID: 1, key: "N99" },
+  };
+  const entry: ActionCardEntry = {
+    targets: [{ kind: "item", itemId: 11, label: "Smith, 2021" }],
+    effects: [
+      {
+        receiptId: "n",
+        operation: "note_create",
+        verb: { word: "wrote" },
+        label: "Created note",
+        objects: [{ kind: "note", label: "Summary", noteId: 99 }],
+      },
+    ],
+    verification: "verified",
+    badges: ["Verified"],
+    rejected: [],
+    detail: { kind: "saved_note", card: savedNote },
+  };
+
+  it("renders a created note's preview and an Open note action", function () {
+    const status = noteDocument.createElement("span");
+    const detail = renderActionCardDetail(
+      noteDocument,
+      entry,
+      status,
+    ) as unknown as FakeElement;
+    assert.exists(detail.findByClass("llm-note-preview"));
+    assert.include(
+      collectFakeText(detail.findByClass("llm-note-preview")!),
+      "Body.",
+    );
+    assert.deepEqual(
+      detail.findAllByClass("llm-plan-action").map((b) => b.textContent),
+      ["Open note"],
+    );
+  });
+
+  it("renders an edited note's diff container, Open note and Undo", function () {
+    const change: AgentNoteChangeResultCard = {
+      kind: "note_change",
+      title: "Reading notes",
+      description: "The note was updated and verified in Zotero.",
+      note: { itemId: 99, libraryID: 1, key: "N99" },
+      conversationKey: 1,
+      actionId: "a2",
+      state: "applied",
+      before: { checksum: "b" } as never,
+      after: { checksum: "a" } as never,
+    };
+    const status = noteDocument.createElement("span");
+    const detail = renderActionCardDetail(
+      noteDocument,
+      { ...entry, detail: { kind: "note_change", card: change } },
+      status,
+    ) as unknown as FakeElement;
+    assert.equal(
+      detail.findByClass("llm-note-review-description")!.textContent,
+      change.description,
+    );
+    assert.deepEqual(
+      detail.findAllByClass("llm-plan-action").map((b) => b.textContent),
+      ["Open note", "Undo"],
+    );
+    assert.isFalse(
+      detail.findAllByClass("llm-plan-action")[1].disabled,
+      "an applied change keeps the control that reverses it",
+    );
+    assert.exists(
+      detail.findByClass("llm-agent-action-diff"),
+      "the diff loads asynchronously into a container the row already holds",
+    );
+  });
+
+  it("returns null for a row without a note detail", function () {
+    assert.isNull(
+      renderActionCardDetail(
+        noteDocument,
+        { ...entry, detail: undefined },
+        noteDocument.createElement("span"),
+      ),
+    );
+  });
+});
+
+describe("action card row detail wiring", function () {
+  const savedNote: AgentSavedNoteResultCard = {
+    kind: "saved_note",
+    actionId: "a1",
+    title: "Summary",
+    destination: "My Library › Paper",
+    bodyHtml: "<h1>Summary</h1><p>Body.</p>",
+    note: { itemId: 99, libraryID: 1, key: "N99" },
+  };
+
+  const card: AgentActionSummaryResultCard = {
+    kind: "action_summary",
+    actionCount: 1,
+    entries: [
+      {
+        targets: [{ kind: "item", itemId: 11, label: "Smith, 2021" }],
+        effects: [
+          {
+            receiptId: "n",
+            operation: "note_create",
+            verb: {},
+            label: "Created note",
+            objects: [{ kind: "note", label: "Summary", noteId: 99 }],
+          },
+        ],
+        verification: "verified",
+        badges: ["Verified"],
+        rejected: [],
+        detail: { kind: "saved_note", card: savedNote },
+      },
+    ],
+  };
+
+  /** Render the card, recording every `status` element a row detail was given. */
+  function renderWithSpy(mode: "action" | "note") {
+    const given: FakeElement[] = [];
+    const node = renderActionSummaryCard(noteDocument, card, {
+      mode,
+      ...(mode === "note"
+        ? {
+            header: {
+              title: "Summary",
+              status: "Saved",
+              statusKind: "completed",
+              extraClass: "llm-saved-note-card",
+            },
+          }
+        : {}),
+      renderDetail: (doc, _entry, status) => {
+        given.push(status as unknown as FakeElement);
+        const body = doc.createElement("div");
+        body.className = "llm-spy-detail";
+        return body;
+      },
+    }) as unknown as FakeElement;
+    return { node, given };
+  }
+
+  it("builds a folded row's body once, when the reader opens it", function () {
+    const { node, given } = renderWithSpy("action");
+    const row = node.findByClass("llm-agent-action-row")!;
+
+    assert.lengthOf(given, 0, "a folded row does no work until it is opened");
+    assert.isNull(node.findByClass("llm-spy-detail"));
+
+    row.dispatchFakeEvent("toggle");
+    assert.lengthOf(given, 0, "a toggle that closed the row builds nothing");
+
+    row.open = true;
+    row.dispatchFakeEvent("toggle");
+    assert.lengthOf(given, 1);
+    assert.exists(node.findByClass("llm-spy-detail"));
+
+    row.dispatchFakeEvent("toggle");
+    assert.lengthOf(given, 1, "the body is built once, not once per toggle");
+    assert.lengthOf(node.findAllByClass("llm-spy-detail"), 1);
+  });
+
+  it("gives a folded row a pill of its own, not the card's", function () {
+    const { node, given } = renderWithSpy("action");
+    const row = node.findByClass("llm-agent-action-row")!;
+    row.open = true;
+    row.dispatchFakeEvent("toggle");
+    const status = given[0];
+    const body = node.findByClass("llm-agent-action-row-body")!;
+    const headerPill = node
+      .findByClass("llm-plan-header")!
+      .findByClass("llm-plan-status")!;
+
+    assert.equal(status.tagName, "span");
+    assert.equal(status.className, "llm-plan-status");
+    assert.equal(status.textContent, "");
+    assert.strictEqual(
+      body.children[0],
+      status,
+      "the row's pill is the first thing in the body it belongs to",
+    );
+    assert.notStrictEqual(
+      status,
+      headerPill,
+      "a row's failure must not overwrite what the card says about the turn",
+    );
+  });
+
+  it("gives the note mode's only row the card's own pill, at once", function () {
+    const { node, given } = renderWithSpy("note");
+    const headerPill = node
+      .findByClass("llm-plan-header")!
+      .findByClass("llm-plan-status")!;
+
+    assert.lengthOf(given, 1, "the note is rendered without being asked for");
+    assert.strictEqual(given[0], headerPill);
+    assert.equal(headerPill.textContent, "Saved");
+    assert.isTrue(node.findByClass("llm-agent-action-row")!.open);
+    assert.exists(node.findByClass("llm-spy-detail"));
   });
 });

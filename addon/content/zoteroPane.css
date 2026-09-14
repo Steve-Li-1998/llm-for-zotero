@@ -174,6 +174,15 @@
   --llm-context-icon-note-color: #eab308;
   --llm-context-icon-file-color: #64748b;
   --llm-context-icon-model-color: #a855f7;
+  /* Diff preview tints: a light wash for the line, a stronger wash for the
+     changed segment, and a readable foreground for markers and strikethrough.
+     Overridden for dark mode below. */
+  --llm-diff-add-bg: #edf8f0;
+  --llm-diff-add-strong: #bfe9cb;
+  --llm-diff-add-fg: #1f8a49;
+  --llm-diff-remove-bg: #fbeeee;
+  --llm-diff-remove-strong: #f3c9c9;
+  --llm-diff-remove-fg: #b94141;
   --llm-pin-border-color: color-mix(
     in srgb,
     var(--color-accent) 55%,
@@ -336,6 +345,12 @@
   --llm-codeblock-string: #86efac;
   --llm-codeblock-number: #fde68a;
   --llm-codeblock-meta: #fda4af;
+  --llm-diff-add-bg: rgba(63, 185, 110, 0.13);
+  --llm-diff-add-strong: rgba(63, 185, 110, 0.36);
+  --llm-diff-add-fg: #5fcf8a;
+  --llm-diff-remove-bg: rgba(226, 88, 88, 0.13);
+  --llm-diff-remove-strong: rgba(226, 88, 88, 0.34);
+  --llm-diff-remove-fg: #ea7c7c;
   --llm-mermaid-canvas-bg: #151515;
   --llm-mermaid-canvas-border: rgba(255, 255, 255, 0.12);
   --llm-mermaid-button-bg: transparent;
@@ -6703,19 +6718,10 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-hitl-diff {
-  --llm-agent-hitl-diff-add-text: inherit;
-  --llm-agent-hitl-diff-remove-text: inherit;
   border: 1px solid var(--stroke-secondary);
   border-radius: 10px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--fill-quaternary) 86%, black 14%);
-}
-
-.window-is-dark .llm-agent-hitl-diff,
-:root[lwtheme-brighttext] .llm-agent-hitl-diff,
-:root[sizemode][lwtheme-brighttext] .llm-agent-hitl-diff {
-  --llm-agent-hitl-diff-add-text: #7ce4a1;
-  --llm-agent-hitl-diff-remove-text: #ff9f9f;
+  background: var(--material-background);
 }
 
 .llm-agent-hitl-diff-body {
@@ -6725,47 +6731,40 @@ label.llm-search-results-item:hover {
 
 .llm-agent-hitl-diff-line {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
+  grid-template-columns: 44px minmax(0, 1fr);
   align-items: stretch;
   min-width: 0;
-  border-top: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
-}
-
-.llm-agent-hitl-diff-line:first-child {
-  border-top: 0;
 }
 
 .llm-agent-hitl-diff-line-context {
-  background: color-mix(in srgb, var(--fill-quaternary) 92%, transparent);
+  background: transparent;
+  color: var(--fill-secondary);
 }
 
 .llm-agent-hitl-diff-line-add {
-  background: rgba(34, 197, 94, 0.14);
+  background: var(--llm-diff-add-bg);
 }
 
 .llm-agent-hitl-diff-line-remove {
-  background: rgba(239, 68, 68, 0.14);
+  background: var(--llm-diff-remove-bg);
 }
 
 .llm-agent-hitl-diff-gutter {
   display: grid;
-  grid-template-columns: 1fr 14px;
-  gap: 2px;
-  align-items: center;
-  padding: 3px 4px 3px 6px;
-  border-right: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
+  grid-template-columns: 1fr 12px;
+  gap: 3px;
+  align-items: start;
+  padding: 3px 5px 3px 6px;
   color: var(--fill-tertiary);
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--llm-fs-10);
-  line-height: 1.35;
+  line-height: 1.45;
+  user-select: none;
 }
 
 .llm-agent-hitl-diff-line-number {
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .llm-agent-hitl-diff-marker {
@@ -6773,43 +6772,46 @@ label.llm-search-results-item:hover {
   font-weight: 700;
 }
 
-.llm-agent-hitl-diff-line-add .llm-agent-hitl-diff-marker,
-.llm-agent-hitl-diff-line-add .llm-agent-hitl-diff-segment-add {
-  color: var(--llm-agent-hitl-diff-add-text);
+.llm-agent-hitl-diff-line-add .llm-agent-hitl-diff-marker {
+  color: var(--llm-diff-add-fg);
 }
 
-.llm-agent-hitl-diff-line-remove .llm-agent-hitl-diff-marker,
-.llm-agent-hitl-diff-line-remove .llm-agent-hitl-diff-segment-remove {
-  color: var(--llm-agent-hitl-diff-remove-text);
+.llm-agent-hitl-diff-line-remove .llm-agent-hitl-diff-marker {
+  color: var(--llm-diff-remove-fg);
 }
 
 .llm-agent-hitl-diff-content {
   margin: 0;
-  padding: 3px 10px;
+  padding: 3px 10px 3px 6px;
   min-width: 0;
-  min-height: 1.35em;
+  min-height: 1.45em;
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--llm-fs-10);
-  line-height: 1.35;
+  line-height: 1.45;
   color: var(--fill-primary);
 }
 
+.llm-agent-hitl-diff-line-context .llm-agent-hitl-diff-content,
+.llm-agent-hitl-diff-line-remove .llm-agent-hitl-diff-content {
+  color: var(--fill-secondary);
+}
+
 .llm-agent-hitl-diff-segment-add {
-  background: rgba(34, 197, 94, 0.18);
-  border-radius: 4px;
+  background: var(--llm-diff-add-strong);
+  border-radius: 3px;
+  color: var(--fill-primary);
 }
 
 .llm-agent-hitl-diff-segment-remove {
-  background: rgba(239, 68, 68, 0.18);
-  border-radius: 4px;
+  background: var(--llm-diff-remove-strong);
+  border-radius: 3px;
+  text-decoration: line-through;
+  text-decoration-color: var(--llm-diff-remove-fg);
 }
 
-.llm-agent-hitl-diff-gap,
 .llm-agent-hitl-diff-empty {
   padding: 4px 10px;
   font-size: var(--llm-fs-10);
@@ -6818,11 +6820,15 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-hitl-diff-gap {
+  padding: 3px 10px;
+  font-size: var(--llm-fs-10);
+  color: var(--fill-tertiary);
+  background: var(--fill-quinary);
   text-align: center;
   border-top: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
+    color-mix(in srgb, var(--stroke-secondary) 60%, transparent);
   border-bottom: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
+    color-mix(in srgb, var(--stroke-secondary) 60%, transparent);
 }
 
 .llm-agent-hitl-checklist {
@@ -7500,6 +7506,23 @@ label.llm-search-results-item:hover {
 @media (prefers-color-scheme: dark) {
   .llm-rose-loader-inline {
     color: rgb(255, 255, 255) !important;
+  }
+}
+
+/* Zotero paints the panel from its own dark surfaces whenever the platform
+   asks for a dark scheme, and it does that without setting `.window-is-dark`
+   or the lightweight-theme attribute that the dark block near the top of this
+   sheet keys off. The diff tints are declared for that case too, so a dark
+   panel never shows the light wash under the panel's own light text. Both
+   hooks carry the same values; whichever the running window offers wins. */
+@media (prefers-color-scheme: dark) {
+  .llm-panel {
+    --llm-diff-add-bg: rgba(63, 185, 110, 0.13);
+    --llm-diff-add-strong: rgba(63, 185, 110, 0.36);
+    --llm-diff-add-fg: #5fcf8a;
+    --llm-diff-remove-bg: rgba(226, 88, 88, 0.13);
+    --llm-diff-remove-strong: rgba(226, 88, 88, 0.34);
+    --llm-diff-remove-fg: #ea7c7c;
   }
 }
 
@@ -9095,25 +9118,208 @@ label.llm-search-results-item:hover {
 
 .llm-agent-action-summary-item {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.llm-agent-action-summary-list > li + li {
+  padding-top: 8px;
+  border-top: 1px solid
+    color-mix(in srgb, var(--stroke-secondary) 60%, transparent);
+}
+
+.llm-agent-action-targets {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  min-width: 0;
+}
+
+.llm-agent-action-targets .llm-paper-context-chip-label {
+  color: var(--fill-primary);
+}
+
+.llm-agent-action-effects {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.llm-agent-action-effect {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+
+.llm-agent-action-verb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-12);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.llm-agent-action-verb .llm-context-glyph-icon {
+  color: var(--fill-tertiary);
+  font-weight: 600;
+}
+
+/*
+ * The operation's word beside a glyph: out of the reader's way, but still in
+ * the accessibility tree, so a screen reader hears what the glyph means.
+ */
+.llm-agent-action-verb-word {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* An effect with no object chip has only its word to state itself. */
+.llm-agent-action-verb-word-inline {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+}
+
+.llm-agent-action-verb-destructive .llm-context-glyph-icon {
+  color: #c84b4b;
+}
+
+.llm-agent-action-effect .llm-tag-chip-label.removed .llm-tag-chip-title {
+  text-decoration: line-through;
+  color: var(--fill-tertiary);
+}
+
+.llm-agent-action-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--llm-fs-11);
 }
 
 .llm-agent-action-summary-item .llm-agent-process-chips {
+  margin-left: auto;
   padding-left: 0;
 }
 
-.llm-agent-action-summary-text {
-  color: var(--fill-primary);
-  font-size: var(--llm-fs-12);
-  overflow-wrap: anywhere;
+.llm-agent-action-summary-item .llm-at-row {
+  flex-basis: 100%;
+  padding-left: 8px;
 }
 
 .llm-agent-action-summary-source {
   margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
   color: var(--fill-secondary);
   font-size: var(--llm-fs-10);
   overflow-wrap: anywhere;
+}
+
+.llm-agent-action-link {
+  cursor: pointer;
+}
+
+.llm-agent-action-link .llm-citation-icon {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  margin-left: -2px;
+  transition: width 100ms;
+}
+
+.llm-agent-action-link:hover .llm-paper-context-chip-label,
+.llm-agent-action-link:hover .llm-collection-chip-label,
+.llm-agent-action-link:hover .llm-tag-chip-label,
+.llm-agent-action-link:hover .llm-other-ref-chip-label {
+  color: var(--color-accent);
+}
+
+.llm-agent-action-link:hover .llm-citation-icon {
+  width: 14px;
+  min-width: 14px;
+  color: var(--color-accent);
+}
+
+.llm-agent-action-link:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-radius: 8px;
+}
+
+details.llm-agent-action-row > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+details.llm-agent-action-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.llm-agent-action-row-marker {
+  flex: 0 0 auto;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-14);
+  line-height: 1;
+  transform-origin: 50% 52%;
+  transition: transform 120ms ease;
+  user-select: none;
+  margin-left: 2px;
+}
+
+details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
+  transform: rotate(90deg);
+}
+
+.llm-agent-action-row-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* A folded row owns a pill the way the card owns one: its note controls write
+   their outcome into it. It exists only for that, so it takes no room and no
+   width until one of them has something to say. */
+.llm-agent-action-row-body > .llm-plan-status {
+  align-self: flex-start;
+}
+
+.llm-agent-action-row-body > .llm-plan-status:empty {
+  display: none;
+}
+
+.llm-agent-action-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.llm-note-preview {
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--fill-quinary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .llm-agent-action-row-marker,
+  .llm-agent-action-link .llm-citation-icon {
+    transition: none;
+  }
 }
 
 .llm-note-review-description {
@@ -9376,8 +9582,14 @@ label.llm-search-results-item:hover {
   color: #2e9b55;
 }
 
+.llm-plan-status[data-status="partial"] {
+  background: color-mix(in srgb, #d58a22 16%, transparent);
+  color: #d58a22;
+}
+
 .llm-plan-status[data-status="failed"],
-.llm-plan-status[data-status="blocked"] {
+.llm-plan-status[data-status="blocked"],
+.llm-plan-status[data-status="error"] {
   background: color-mix(in srgb, #c84b4b 14%, transparent);
   color: #c84b4b;
 }
@@ -10660,6 +10872,18 @@ label.llm-search-results-item:hover {
 
 .llm-context-icon-file {
   color: var(--llm-context-icon-file-color);
+}
+
+.llm-context-icon-command {
+  mask-image: url("icons/action-source-code.svg");
+  -webkit-mask-image: url("icons/action-source-code.svg");
+  color: var(--llm-context-icon-file-color);
+}
+
+.llm-context-icon-trash {
+  mask-image: url("icons/action-delete.svg");
+  -webkit-mask-image: url("icons/action-delete.svg");
+  color: #c84b4b;
 }
 
 .llm-context-icon-collection,

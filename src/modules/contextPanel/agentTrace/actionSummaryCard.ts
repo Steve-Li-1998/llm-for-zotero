@@ -1,142 +1,122 @@
-import type {
-  AgentActionSummaryResultCard,
-  AgentRunEventRecord,
-} from "../../../agent/types";
-import type { AgentActionReceipt } from "../../../agent/contracts/types";
-import { receiptReportsEffect } from "../../../agent/contracts/actionEvaluation";
-import {
-  AGENT_ACTION_VERIFICATION_LABELS,
-  readAgentActionVerification,
-} from "../../../agent/contracts/actionVerificationLabels";
-import { operationLabel } from "../../../agent/contracts/operationCatalog";
+import type { AgentActionSummaryResultCard } from "../../../agent/types";
 import { createDocumentCardLayout } from "../documentCard";
+import type { ActionCardEntry } from "./actionCardModel";
+import {
+  navigationTargetOf,
+  renderObjectChip,
+  renderProcessChips,
+  renderSkipRow,
+  renderTargetList,
+  renderVerb,
+  renderVerbWord,
+} from "./actionCardChips";
+import {
+  attachActionCardNavigation,
+  canNavigate,
+  createZoteroNavigationHost,
+  type NavigationHost,
+} from "./actionCardNavigation";
 
-/** The wording a connected client's authority carries wherever it is shown. */
-const EXTERNAL_AUTHORITY_LABEL = "Authorized by connected client";
+// The projection that builds the card lives in `actionCardModel`; this module
+// draws what it produced. Callers keep importing the builder from here until
+// the panel is rewired to the model directly.
+export { buildAgentActionSummaryCard } from "./actionCardModel";
 
-/** How many distinct objects a receipt claims to have covered. */
-function receiptTargetCount(receipt: AgentActionReceipt): number {
-  const requested = receipt.requestedTargets?.length || 0;
-  if (requested) return requested;
-  return new Set([
-    ...(receipt.appliedTargets || []),
-    ...(receipt.alreadySatisfiedTargets || []),
-  ]).size;
-}
+/**
+ * How the card is drawn beyond its rows.
+ *
+ * `mode` is the surface it is drawn for: the turn's own card, or the note the
+ * same rows are reused for when the note is all the turn did. `header`
+ * overrides the card's title and pill for that other surface, and
+ * `renderDetail` gives a row that carries a detail the body it opens.
+ */
+export type ActionCardRenderOptions = {
+  mode?: "action" | "note";
+  header?: {
+    title: string;
+    status: string;
+    statusKind: string;
+    extraClass?: string;
+  };
+  renderDetail?: (
+    doc: Document,
+    entry: ActionCardEntry,
+    status: HTMLElement,
+  ) => HTMLElement | null;
+  /** Where a clicked chip takes the reader; the running Zotero by default. */
+  navigation?: NavigationHost;
+};
 
-/** Every receipt the run journaled, in the order the trace carries them. */
-function collectRunReceipts(
-  events: readonly AgentRunEventRecord[],
-): AgentActionReceipt[] {
-  const byId = new Map<string, AgentActionReceipt>();
-  for (const entry of events) {
-    const payload = entry.payload;
-    const receipts =
-      payload.type === "tool_result" || payload.type === "codex_tool_activity"
-        ? payload.actionReceipts
-        : undefined;
-    for (const receipt of receipts || []) {
-      // One effect reaches the trace through both the tool result and the
-      // connected runtime's activity event; the receipt id is its identity.
-      if (receipt?.id && !byId.has(receipt.id)) byId.set(receipt.id, receipt);
-    }
-  }
-  return [...byId.values()];
-}
-
-/** The material the run's visible answer was rendered from, when it named one. */
-function answerMaterialTitle(
-  events: readonly AgentRunEventRecord[],
-  materialTitle: (documentId: string) => string | undefined,
-): string | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const payload = events[index]?.payload;
-    if (payload?.type !== "final") continue;
-    const documentId = payload.materialRef?.documentId;
-    return documentId ? materialTitle(documentId) : undefined;
-  }
-  return undefined;
+/**
+ * What the pill says about the turn as a whole.
+ *
+ * A turn is only "completed" when every row landed everything it named and
+ * proved it. A target the run refused, an effect that landed only part of what
+ * it asked for, or an effect no read-back confirmed, makes it partial: the
+ * reader is told the turn did less than it claims.
+ */
+function cardStatus(
+  card: AgentActionSummaryResultCard,
+): "completed" | "partial" {
+  const partial = card.entries.some(
+    (entry) =>
+      entry.rejected.length ||
+      entry.partial ||
+      entry.verification === "unverified",
+  );
+  return partial ? "partial" : "completed";
 }
 
 /**
- * What the turn did, projected from the receipts the run journaled.
+ * One row: the items it covered, what happened to them, and its verdict.
  *
- * The reader used to get this as the `[Action status: …]` block appended to
- * the answer, which was written for the model. The same facts are stated here
- * instead, in the product's own words: the operation's catalog label rather
- * than the name of the tool that ran it, the targets it covered, the material
- * it landed, and the shared verification wording the row chips already use.
- *
- * Which receipts count is `receiptReportsEffect`, the same predicate the
- * model-facing block selects with, so the card and the block can never come to
- * disagree about what the turn did. A turn that only read and answered states
- * nothing and shows no card.
- *
- * `materialTitle` resolves a document id against the materials this run
- * finalized, so the card names a document the same way every other row in the
- * trace names it.
+ * The objects come first because they are the row's subject — "these two
+ * papers" — and each effect follows as its glyph and the object it acted on.
+ * A row whose receipts refused a target states that refusal on its own line
+ * underneath, so the verdict beside the effects is never read as covering it.
  */
-export function buildAgentActionSummaryCard(
-  events: readonly AgentRunEventRecord[],
-  materialTitle: (documentId: string) => string | undefined,
-): AgentActionSummaryResultCard | null {
-  const entries = collectRunReceipts(events)
-    .filter(receiptReportsEffect)
-    .map((receipt) => {
-      const title = receipt.materialRef?.documentId
-        ? materialTitle(receipt.materialRef.documentId)
-        : undefined;
-      const targets = receiptTargetCount(receipt);
-      const verification = readAgentActionVerification(receipt.verification);
-      return {
-        receiptId: receipt.id,
-        text: [
-          operationLabel(receipt.operation),
-          title ? ` “${title}”` : "",
-          targets ? ` · ${targets} target${targets === 1 ? "" : "s"}` : "",
-        ].join(""),
-        badges: [
-          verification ? AGENT_ACTION_VERIFICATION_LABELS[verification] : "",
-          receipt.executionAuthority === "external_runtime"
-            ? EXTERNAL_AUTHORITY_LABEL
-            : "",
-        ].filter(Boolean),
-      };
-    });
-  if (!entries.length) return null;
-  return {
-    kind: "action_summary",
-    answerMaterial: answerMaterialTitle(events, materialTitle),
-    entries,
-  };
-}
-
-/** One receipt's line: what it did, and what its proof was worth. */
-function renderActionSummaryEntry(
+function renderRowLine(
   doc: Document,
-  entry: AgentActionSummaryResultCard["entries"][number],
+  entry: ActionCardEntry,
+  hasDetail: boolean,
 ): HTMLElement {
-  const row = doc.createElement("li");
+  const row = doc.createElement("div");
   row.className = "llm-agent-action-summary-item";
-  const text = doc.createElement("span");
-  text.className = "llm-agent-action-summary-text";
-  text.textContent = entry.text;
-  row.appendChild(text);
-  if (!entry.badges.length) return row;
-  // The same chip shape the trace rows use, so one verdict reads the same way
-  // wherever the reader meets it.
-  const badges = doc.createElement("div");
-  badges.className = "llm-agent-process-chips";
-  for (const badge of entry.badges) {
-    const chip = doc.createElement("div");
-    chip.className = "llm-agent-process-chip";
-    const label = doc.createElement("span");
-    label.className = "llm-agent-process-chip-label";
-    label.textContent = badge;
-    chip.appendChild(label);
-    badges.appendChild(chip);
+  if (entry.targets.length)
+    row.appendChild(renderTargetList(doc, entry.targets));
+  const effects = doc.createElement("div");
+  effects.className = "llm-agent-action-effects";
+  for (const effect of entry.effects) {
+    const node = doc.createElement("span");
+    node.className = "llm-agent-action-effect";
+    node.dataset.receiptId = effect.receiptId;
+    // The operation's word belongs to the effect, not to its glyph: an
+    // operation drawn without one — a note write, a file write — must still
+    // say what it was to a reader who points at it.
+    node.setAttribute("title", effect.label);
+    const nameless = !effect.objects.length;
+    const verb = renderVerb(doc, effect.verb, effect.label, nameless);
+    if (verb) node.appendChild(verb);
+    for (const object of effect.objects)
+      node.appendChild(renderObjectChip(doc, object));
+    // An effect that named no object would otherwise be a glyph pointing at
+    // nothing, or nothing at all; its word is shown in their place.
+    if (nameless && !verb)
+      node.appendChild(renderVerbWord(doc, effect.label, true));
+    effects.appendChild(node);
   }
-  row.appendChild(badges);
+  row.appendChild(effects);
+  if (entry.badges.length)
+    row.appendChild(renderProcessChips(doc, entry.badges));
+  if (hasDetail) {
+    const marker = doc.createElement("span");
+    marker.className = "llm-agent-action-row-marker";
+    marker.setAttribute("aria-hidden", "true");
+    marker.textContent = "›";
+    row.appendChild(marker);
+  }
+  if (entry.rejected.length)
+    row.appendChild(renderSkipRow(doc, entry.rejected, entry.rejectedReason));
   return row;
 }
 
@@ -144,20 +124,86 @@ function renderActionSummaryEntry(
 export function renderActionSummaryCard(
   doc: Document,
   card: AgentActionSummaryResultCard,
+  options: ActionCardRenderOptions = {},
 ): HTMLElement {
   const container = doc.createElement("section");
-  container.className = "llm-plan-container llm-agent-action-summary-card";
-  const { header } = createDocumentCardLayout(doc, {
-    title: "What this turn did",
-    status: `${card.entries.length} action${card.entries.length === 1 ? "" : "s"}`,
-    statusKind: "completed",
-  });
+  container.className = `llm-plan-container llm-agent-action-summary-card${
+    options.header?.extraClass ? ` ${options.header.extraClass}` : ""
+  }`;
+  container.dataset.mode = options.mode || "action";
+  const { header, status } = createDocumentCardLayout(
+    doc,
+    options.header || {
+      title: "What this turn did",
+      status: `${card.actionCount} action${card.actionCount === 1 ? "" : "s"}`,
+      statusKind: cardStatus(card),
+    },
+  );
   container.appendChild(header);
   const list = doc.createElement("ul");
   list.className = "llm-agent-action-summary-list";
-  for (const entry of card.entries)
-    list.appendChild(renderActionSummaryEntry(doc, entry));
+  for (const entry of card.entries) {
+    const item = doc.createElement("li");
+    const renderDetail = entry.detail ? options.renderDetail : undefined;
+    if (!renderDetail) {
+      item.appendChild(renderRowLine(doc, entry, false));
+      list.appendChild(item);
+      continue;
+    }
+    // A row with a body is a disclosure: its line is the summary the reader
+    // clicks, and the body opens under it.
+    const details = doc.createElement("details") as HTMLDetailsElement;
+    details.className = "llm-agent-action-row";
+    const summary = doc.createElement("summary");
+    summary.appendChild(renderRowLine(doc, entry, true));
+    const body = doc.createElement("div");
+    body.className = "llm-agent-process-stage-body llm-agent-action-row-body";
+    details.append(summary, body);
+    if (options.mode === "note") {
+      // The note surface shows the body straight away, because the note is
+      // what the reader came for, and its outcome goes to the card's own pill.
+      details.open = true;
+      const detail = renderDetail(doc, entry, status);
+      if (detail) body.appendChild(detail);
+    } else {
+      // A folded row builds its body the first time it is opened. The note
+      // body reads the note and its journal back from disk, and a card of rows
+      // must not start those reads for every row on every render. Its outcome
+      // has no card pill to go to, so the row is given one of its own.
+      const rowStatus = doc.createElement("span");
+      rowStatus.className = "llm-plan-status";
+      body.appendChild(rowStatus);
+      let built = false;
+      details.addEventListener("toggle", () => {
+        if (built || !details.open) return;
+        built = true;
+        const detail = renderDetail(doc, entry, rowStatus);
+        if (detail) body.appendChild(detail);
+      });
+    }
+    item.appendChild(details);
+    list.appendChild(item);
+  }
   container.appendChild(list);
+  // A chip is only a link where the reader can actually be taken: a tag with
+  // no tag selector on screen, or an object this window cannot reach, is left
+  // as the plain chip it is rather than one that would click for nothing.
+  const navigation = options.navigation || createZoteroNavigationHost();
+  const links = Array.from(
+    container.querySelectorAll(".llm-agent-action-link"),
+  ) as HTMLElement[];
+  for (const link of links) {
+    const target = navigationTargetOf(link);
+    if (target && canNavigate(target, navigation)) continue;
+    link.classList.remove("llm-agent-action-link");
+    link.removeAttribute("role");
+    link.removeAttribute("tabindex");
+    // The chip no longer claims a destination, so nothing downstream reads one
+    // off it either.
+    delete link.dataset.llmNav;
+    link.querySelector(".llm-citation-icon")?.remove();
+  }
+  attachActionCardNavigation(container, status, navigation);
   if (card.answerMaterial) {
     const source = doc.createElement("div");
     source.className = "llm-agent-action-summary-source";

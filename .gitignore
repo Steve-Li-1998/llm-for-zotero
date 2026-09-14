@@ -29,9 +29,18 @@ tmp/
 AGENTS.md
 CLAUDE.md
 skills-lock.json
+
+# Local Superpowers files (at any directory depth)
+.superpowers/
+superpowers/
+
 # Local design notes
 /docs/
 /docs/claude-session-isolation-design.md
 /docs/claude-code-mode-user-guide.md
 /docs/claude-code-mode-user-guide.zh-CN.md
 /docs/assets/claude-code-mode-user-guide/
+
+# Local documentation at any directory depth
+doc/
+docs/

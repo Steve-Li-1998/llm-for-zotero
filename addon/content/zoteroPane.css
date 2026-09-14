@@ -3180,6 +3180,8 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
   padding: 2px 0;
 }
 
@@ -9248,6 +9250,7 @@ label.llm-search-results-item:hover {
   align-items: center;
   gap: 2px 4px;
   min-width: 0;
+  max-width: 100%;
 }
 
 .llm-agent-action-targets .llm-paper-context-chip-label {
@@ -9260,6 +9263,7 @@ label.llm-search-results-item:hover {
   align-items: center;
   gap: 2px 8px;
   min-width: 0;
+  max-width: 100%;
 }
 
 .llm-agent-action-effect {
@@ -9267,6 +9271,35 @@ label.llm-search-results-item:hover {
   align-items: center;
   gap: 4px;
   min-width: 0;
+  max-width: 100%;
+}
+
+/* Composer chips size themselves to their full labels. In the action card,
+   let every link in that flex chain shrink so the title, rather than the card,
+   owns the narrow-width overflow. */
+.llm-agent-action-summary-card .llm-selected-context {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.llm-agent-action-summary-card .llm-selected-context-header {
+  min-width: 0;
+}
+
+.llm-agent-action-summary-card
+  :is(
+    .llm-paper-context-chip-text,
+    .llm-collection-chip-title,
+    .llm-tag-chip-title,
+    .llm-other-ref-chip-title
+  ) {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .llm-agent-action-verb {

@@ -1866,16 +1866,60 @@
                     Allow writes from external MCP clients
                   </html:span>
                 </html:label>
+                <html:label class="llm-pref-check">
+                  <html:input
+                    type="checkbox"
+                    id="__addonRef__-external-mcp-files"
+                  ></html:input>
+                  <html:span data-l10n-id="pref-external-mcp-files">
+                    Allow standalone MCP filesystem access
+                  </html:span>
+                </html:label>
+                <html:label class="llm-pref-check">
+                  <html:input
+                    type="checkbox"
+                    id="__addonRef__-external-mcp-commands"
+                  ></html:input>
+                  <html:span data-l10n-id="pref-external-mcp-commands">
+                    Allow MCP clients to run commands on this computer
+                  </html:span>
+                </html:label>
+                <html:label
+                  class="llm-pref-label"
+                  for="__addonRef__-external-mcp-read-directories"
+                >
+                  <html:span data-l10n-id="pref-external-mcp-read-directories">
+                    Additional readable directories (one absolute path per line)
+                  </html:span>
+                </html:label>
+                <html:textarea
+                  id="__addonRef__-external-mcp-read-directories"
+                  class="llm-pref-input"
+                  rows="2"
+                  spellcheck="false"
+                ></html:textarea>
+                <html:label
+                  class="llm-pref-label"
+                  for="__addonRef__-external-mcp-write-directories"
+                >
+                  <html:span data-l10n-id="pref-external-mcp-write-directories">
+                    Additional writable directories (one absolute path per line)
+                  </html:span>
+                </html:label>
+                <html:textarea
+                  id="__addonRef__-external-mcp-write-directories"
+                  class="llm-pref-input"
+                  rows="2"
+                  spellcheck="false"
+                ></html:textarea>
                 <html:span
                   class="llm-pref-hint"
                   data-l10n-id="pref-external-mcp-description"
                 >
-                  Trust clients holding the MCP connection credential to use all
-                  exposed Zotero write tools, including deletion and scripts.
-                  The connected agent controls approval; Original Agent
-                  permission modes do not apply. Zotero validates and verifies
-                  changes. Integrated Codex and Claude Code use their own MCP
-                  enablement settings.
+                  The connected agent controls ordinary approval. Zotero still
+                  enforces the configured library, file, and command boundaries
+                  and verifies supported changes. Standalone file access and
+                  host commands require their separate opt-ins.
                 </html:span>
               </html:div>
             </html:div>

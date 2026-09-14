@@ -44,6 +44,8 @@ import { getCodexProfileSignature } from "../src/codexAppServer/constants";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { createResearchUpdateTool } from "../src/agent/tools/plan/researchUpdate";
 import { createUpdatePlanTool } from "../src/agent/tools/plan/updatePlan";
+import { createFileIOTool } from "../src/agent/tools/write/fileIO";
+import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
 import { assert } from "chai";
 import { DatabaseSync } from "node:sqlite";
 import { PlanExecutionCoordinator } from "../src/agent/plans/coordinator";
@@ -1355,6 +1357,8 @@ describe("transactional Plan task transitions", function () {
       },
     });
     registry.register(createUpdatePlanTool());
+    registry.register(createFileIOTool());
+    registry.register(createRunCommandTool());
     for (const name of [
       "library_search",
       "library_read",

@@ -20,6 +20,7 @@ import { preparationEffectBlock } from "../../contracts/actionPreparation";
 import { getOriginalAgentPermissionMode } from "../../originalAgentPermissionMode";
 import { isAgentChangeJournalAvailable } from "../../store/changeJournal";
 import { matchPlanEffectProposals } from "../../plans/effectAuthorization";
+import { evaluateHostAccess } from "../../authorization/hostAccess";
 import type {
   AgentInvocationPlan,
   AgentToolContext,
@@ -198,6 +199,21 @@ export class InvocationAssessor {
             !approvedEffectContext
           ? `Approved Plan execution blocked ${tool.spec.name}: the frozen effect specification is unavailable.`
           : undefined;
+    const hostAccess =
+      request.executionContext && !directAgent
+        ? await evaluateHostAccess({
+            toolName: tool.spec.name,
+            plan,
+            executionContext: request.executionContext,
+          })
+        : ({ kind: "allow" } as const);
+    const hostAccessAuthorization: AuthorizationDecision | null =
+      hostAccess.kind === "allow"
+        ? null
+        : hostAccess.kind === "block" ||
+            (delegated && context.authorization?.standalone)
+          ? { kind: "block", reason: hostAccess.reason }
+          : { kind: "confirm", reason: hostAccess.reason };
     const approvedEffectAuthorized = approvedEffectMatch?.kind === "matched";
     const enforceContract =
       !delegated &&
@@ -285,33 +301,35 @@ export class InvocationAssessor {
     if (delegated) proposal.runtime = "external";
     const authorization: AuthorizationDecision = approvedEffectFailure
       ? { kind: "block", reason: approvedEffectFailure }
-      : delegated
-        ? authorizeExternalAction(proposal)
-        : authorizeOriginalAction(proposal, {
-            mode: getOriginalAgentPermissionMode(),
-            interaction,
-            executionContext: request.executionContext,
-            hasApprovedPlanAuthority: Boolean(
-              approvedPlan &&
-              ((scopeValidated && !scopeFailure) || approvedEffectAuthorized),
-            ),
-            constraints:
-              approvedEffectMatch?.kind === "matched"
-                ? approvedEffectMatch.constraints
-                : request.actionContract?.intent?.semantic?.constraints || [],
-            semantic: request.executionContext
-              ? undefined
-              : request.classifiedIntent?.semantic ||
-                request.actionContract?.intent?.semantic,
-            hasMatchingActionIntent:
-              hostAction ||
-              Boolean(
-                scopeValidated &&
-                !scopeFailure &&
-                preparedAction?.proposals.length &&
-                request.actionContract?.obligations.length,
+      : hostAccessAuthorization
+        ? hostAccessAuthorization
+        : delegated
+          ? authorizeExternalAction(proposal)
+          : authorizeOriginalAction(proposal, {
+              mode: getOriginalAgentPermissionMode(),
+              interaction,
+              executionContext: request.executionContext,
+              hasApprovedPlanAuthority: Boolean(
+                approvedPlan &&
+                ((scopeValidated && !scopeFailure) || approvedEffectAuthorized),
               ),
-          });
+              constraints:
+                approvedEffectMatch?.kind === "matched"
+                  ? approvedEffectMatch.constraints
+                  : request.actionContract?.intent?.semantic?.constraints || [],
+              semantic: request.executionContext
+                ? undefined
+                : request.classifiedIntent?.semantic ||
+                  request.actionContract?.intent?.semantic,
+              hasMatchingActionIntent:
+                hostAction ||
+                Boolean(
+                  scopeValidated &&
+                  !scopeFailure &&
+                  preparedAction?.proposals.length &&
+                  request.actionContract?.obligations.length,
+                ),
+            });
     return {
       input,
       plan,

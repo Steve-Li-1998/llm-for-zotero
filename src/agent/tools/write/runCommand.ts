@@ -71,198 +71,182 @@ async function drainPipe(pipe: any): Promise<string> {
 /**
  * Run a shell command using Mozilla's Subprocess module.
  */
-async function executeCommand(params: {
+type CommandOutcome =
+  | "succeeded"
+  | "failed"
+  | "uncertain"
+  | "timed_out"
+  | "cancelled"
+  | "launch_failed";
+
+export async function executeCommand(params: {
   command: string;
   cwd?: string;
   timeoutMs: number;
-}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  signal?: AbortSignal;
+}): Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  outcome: CommandOutcome;
+}> {
   const { command, timeoutMs } = params;
   const { shell, shellFlag } = resolveShellPath();
-
-  // Try Mozilla Subprocess.call (Zotero 7/8)
+  if (params.signal?.aborted)
+    return {
+      stdout: "",
+      stderr: "Command cancelled before launch.",
+      exitCode: -1,
+      outcome: "cancelled",
+    };
+  let subprocess: any;
+  const chromeUtils = (globalThis as any).ChromeUtils;
   try {
-    let Subprocess: any;
-    const CU = (globalThis as any).ChromeUtils;
-    if (CU?.importESModule) {
-      try {
-        const mod = CU.importESModule(
-          "resource://gre/modules/Subprocess.sys.mjs",
-        );
-        Subprocess = mod.Subprocess || mod.default || mod;
-      } catch {
-        /* fallback below */
-      }
+    if (chromeUtils?.importESModule) {
+      const mod = chromeUtils.importESModule(
+        "resource://gre/modules/Subprocess.sys.mjs",
+      );
+      subprocess = mod.Subprocess || mod.default || mod;
     }
-    if (!Subprocess && CU?.import) {
-      try {
-        const mod = CU.import("resource://gre/modules/Subprocess.jsm");
-        Subprocess = mod.Subprocess || mod;
-      } catch {
-        /* fallback below */
-      }
+  } catch {
+    /* try the older module below, before any process is launched */
+  }
+  if (!subprocess && chromeUtils?.import) {
+    try {
+      const mod = chromeUtils.import("resource://gre/modules/Subprocess.jsm");
+      subprocess = mod.Subprocess || mod;
+    } catch {
+      /* reported below */
     }
+  }
+  if (typeof subprocess?.call !== "function")
+    return {
+      stdout: "",
+      stderr:
+        "Controllable host command execution is unavailable in this Zotero environment. No command was launched.",
+      exitCode: -1,
+      outcome: "launch_failed",
+    };
 
-    if (Subprocess?.call) {
-      const info = getRuntimePlatformInfo();
-
-      if (info.platform === "windows") {
-        // Windows: Subprocess pipes don't capture cmd.exe output in Zotero's
-        // Gecko build. Redirect to a fixed temp file, then read it back.
-        const Components = (globalThis as any).Components;
-        const tempDir =
-          (globalThis as any).Services?.dirsvc?.get(
-            "TmpD",
-            Components?.interfaces?.nsIFile,
-          )?.path || "C:\\Windows\\Temp";
-        const tempOut = `${tempDir}\\zotero-llm-cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`;
-        const wrappedCommand = `( ${command} ) > "${tempOut}" 2>&1`;
-
-        const proc = await Subprocess.call({
-          command: shell,
-          arguments: [shellFlag, wrappedCommand],
-          workdir: params.cwd || undefined,
-        });
-
-        // Drain pipes (they'll be empty on Windows, but drain to avoid hangs)
-        const drainPromise = Promise.all([
-          drainPipe(proc.stdout),
-          drainPipe(proc.stderr),
-        ]);
-
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<"timeout">((resolve) => {
-          timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
-        });
-
-        const resultPromise = (async () => {
-          await drainPromise;
-          const { exitCode } = await proc.wait();
-          return exitCode;
-        })();
-
-        let race: number | "timeout";
-        try {
-          race = await Promise.race([resultPromise, timeoutPromise]);
-        } finally {
-          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-        }
-        if (race === "timeout") {
-          try {
-            proc.kill();
-          } catch {
-            /* ignore */
-          }
-          try {
-            const IO = (globalThis as any).IOUtils;
-            await IO.remove(tempOut, { ignoreAbsent: true });
-          } catch {
-            /* ignore */
-          }
-          return { stdout: "", stderr: "[Command timed out]", exitCode: -1 };
-        }
-
-        // Read captured output from temp file
-        let stdout = "";
-        try {
-          const IOUtils = (globalThis as any).IOUtils;
-          const data = await IOUtils.read(tempOut);
-          stdout = new TextDecoder("utf-8").decode(
-            data instanceof Uint8Array ? data : new Uint8Array(data),
-          );
-          await IOUtils.remove(tempOut, { ignoreAbsent: true });
-        } catch {
-          /* temp file missing or unreadable */
-        }
-
-        return { stdout, stderr: "", exitCode: race };
-      } else {
-        // macOS / Linux: pipes work normally
-        const proc = await Subprocess.call({
-          command: shell,
-          arguments: [shellFlag, command],
-          workdir: params.cwd || undefined,
-        });
-
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<"timeout">((resolve) => {
-          timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
-        });
-
-        const resultPromise = (async () => {
-          const [stdout, stderr] = await Promise.all([
-            drainPipe(proc.stdout),
-            drainPipe(proc.stderr),
-          ]);
-          const { exitCode } = await proc.wait();
-          return { stdout, stderr, exitCode };
-        })();
-
-        let raceResult:
-          | { stdout: string; stderr: string; exitCode: number }
-          | "timeout";
-        try {
-          raceResult = await Promise.race([resultPromise, timeoutPromise]);
-        } finally {
-          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-        }
-        if (raceResult === "timeout") {
-          try {
-            proc.kill();
-          } catch {
-            /* ignore */
-          }
-          const partial = await resultPromise.catch(() => ({
-            stdout: "",
-            stderr: "",
-            exitCode: -1,
-          }));
-          return {
-            stdout: partial.stdout,
-            stderr: partial.stderr + "\n[Command timed out]",
-            exitCode: -1,
-          };
-        }
-        return raceResult;
-      }
+  const info = getRuntimePlatformInfo();
+  let tempOut = "";
+  let process: any;
+  try {
+    let launchedCommand = command;
+    if (info.platform === "windows") {
+      const Components = (globalThis as any).Components;
+      const tempDir =
+        (globalThis as any).Services?.dirsvc?.get(
+          "TmpD",
+          Components?.interfaces?.nsIFile,
+        )?.path || "C:\\Windows\\Temp";
+      tempOut = `${tempDir}\\zotero-llm-cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`;
+      launchedCommand = `( ${command} ) > "${tempOut}" 2>&1`;
     }
+    process = await subprocess.call({
+      command: shell,
+      arguments: [shellFlag, launchedCommand],
+      workdir: params.cwd || undefined,
+    });
   } catch (error) {
-    Zotero.debug?.(
-      `[llm-for-zotero] Subprocess.call failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    return {
+      stdout: "",
+      stderr: `Command launch failed; no fallback execution was attempted: ${error instanceof Error ? error.message : String(error)}`,
+      exitCode: -1,
+      outcome: "launch_failed",
+    };
+  }
+  if (params.signal?.aborted) {
+    try {
+      process.kill();
+    } catch {
+      /* best effort */
+    }
+    return {
+      stdout: "",
+      stderr:
+        "Command cancelled; termination was requested, but detached descendants may still be running.",
+      exitCode: -1,
+      outcome: "cancelled",
+    };
   }
 
-  // Fallback: nsIProcess (no stdout capture)
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+  const stop = <T extends "timed_out" | "cancelled">(outcome: T): T => {
+    try {
+      process.kill();
+    } catch {
+      /* termination is best effort; the outcome states the uncertainty */
+    }
+    return outcome;
+  };
+  const timeout = new Promise<"timed_out">((resolve) => {
+    timeoutHandle = setTimeout(() => resolve(stop("timed_out")), timeoutMs);
+  });
+  const cancellation = new Promise<"cancelled">((resolve) => {
+    abortListener = () => resolve(stop("cancelled"));
+    params.signal?.addEventListener("abort", abortListener, { once: true });
+  });
+  const resultPromise = (async () => {
+    const [stdout, stderr, waited] = await Promise.all([
+      drainPipe(process.stdout),
+      drainPipe(process.stderr),
+      process.wait(),
+    ]);
+    return { stdout, stderr, exitCode: Number(waited.exitCode) };
+  })();
+  resultPromise.catch(() => undefined);
   try {
-    const Components = (globalThis as any).Components;
-    if (!Components?.classes) {
+    const settled = await Promise.race([resultPromise, timeout, cancellation]);
+    if (settled === "timed_out" || settled === "cancelled") {
       return {
         stdout: "",
-        stderr: "Shell execution is not available in this Zotero environment.",
+        stderr:
+          settled === "timed_out"
+            ? "Command timed out; termination was requested, but detached descendants may still be running."
+            : "Command cancelled; termination was requested, but detached descendants may still be running.",
         exitCode: -1,
+        outcome: settled,
       };
     }
-    const nsILocalFile = Components.classes[
-      "@mozilla.org/file/local;1"
-    ].createInstance(Components.interfaces.nsIFile);
-    nsILocalFile.initWithPath(shell);
-
-    const process = Components.classes[
-      "@mozilla.org/process/util;1"
-    ].createInstance(Components.interfaces.nsIProcess);
-    process.init(nsILocalFile);
-    process.run(true, [shellFlag, command], 2);
+    let stdout = settled.stdout;
+    if (tempOut) {
+      try {
+        const bytes = await (globalThis as any).IOUtils.read(tempOut);
+        stdout = new TextDecoder("utf-8").decode(
+          bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
+        );
+      } catch {
+        /* keep captured output */
+      }
+    }
     return {
-      stdout:
-        "(nsIProcess does not capture stdout — check output files instead)",
-      stderr: "",
-      exitCode: process.exitValue,
+      stdout,
+      stderr: settled.stderr,
+      exitCode: settled.exitCode,
+      outcome: settled.exitCode === 0 ? "succeeded" : "failed",
     };
   } catch (error) {
     return {
       stdout: "",
-      stderr: `Failed to execute command: ${error instanceof Error ? error.message : String(error)}`,
+      stderr: `Command outcome is uncertain after launch: ${error instanceof Error ? error.message : String(error)}`,
       exitCode: -1,
+      outcome: "uncertain",
     };
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    if (abortListener)
+      params.signal?.removeEventListener("abort", abortListener);
+    if (tempOut) {
+      try {
+        await (globalThis as any).IOUtils?.remove?.(tempOut, {
+          ignoreAbsent: true,
+        });
+      } catch {
+        /* managed temporary output cleanup is best effort */
+      }
+    }
   }
 }
 
@@ -1033,7 +1017,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
     spec: {
       name: "run_command",
       description:
-        "Run a shell command on the local machine. The command string is passed directly to the native shell (cmd.exe on Windows, zsh on macOS, bash on Linux). " +
+        "Run a host shell command. cwd selects the process working directory; it does not confine filesystem access. The command string is passed directly to the native shell (cmd.exe on Windows, zsh on macOS, bash on Linux). " +
         "Use this for explicit shell tasks, data analysis scripts, conversion, or CLI tools. Not for ordinary Zotero paper/library reading when semantic Zotero tools can answer. Returns stdout, stderr, and exit code.",
       inputSchema: {
         type: "object",
@@ -1202,6 +1186,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           command: input.command,
           cwd: input.cwd,
           timeoutMs: input.timeoutMs,
+          signal: context.signal,
         });
       const formatResult = (
         commandResult: Awaited<ReturnType<typeof executeCommand>>,
@@ -1225,6 +1210,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
             stdout,
             stderr,
             command: input.command,
+            outcome: commandResult.outcome,
           },
           effect,
           ...(actionEvidence ? { actionEvidence } : {}),

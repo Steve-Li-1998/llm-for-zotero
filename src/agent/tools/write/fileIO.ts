@@ -1,6 +1,7 @@
 import { loadWorkflowMaterial } from "../../documents/workflowMaterial";
 import { prepareDocumentMarkdownExport } from "../../documents/exportBundle";
 import {
+  loadPlanDocument,
   loadLatestDocumentForRun,
   loadLatestPlanDocumentForExecution,
 } from "../../documents/store";
@@ -39,6 +40,7 @@ import { collectRequestPaperContexts } from "../requestPaperContexts";
 type FileIOInput = {
   action: "read" | "write";
   filePath: string;
+  documentId?: string;
   content?: string;
   encoding?: string;
   offset?: number;
@@ -582,7 +584,15 @@ async function resolveFileWriteBundle(
   input: FileIOInput,
   context?: AgentToolContext,
 ) {
+  if (input.documentId && !context)
+    throw new Error("An explicit documentId requires a current host execution");
+  const explicitDocument = input.documentId
+    ? await loadPlanDocument(input.documentId)
+    : null;
+  if (input.documentId && explicitDocument?.documentId !== input.documentId)
+    throw new Error(`Finalized document was not found: ${input.documentId}`);
   const document =
+    explicitDocument ||
     (context && (await loadWorkflowMaterial(context.request))) ||
     (context?.request.planContext?.phase === "executing"
       ? await loadLatestPlanDocumentForExecution(
@@ -597,7 +607,7 @@ async function resolveFileWriteBundle(
       context.request.classifiedIntent?.semantic?.noteDestination || "none",
     );
   if (
-    mustUseDocument &&
+    (mustUseDocument || input.documentId) &&
     (!document || document.visibleMarkdown !== input.content)
   )
     throw new Error(
@@ -687,6 +697,11 @@ export function createFileIOTool(): AgentWriteToolDefinition<
           filePath: {
             type: "string",
             description: "Absolute path to the file.",
+          },
+          documentId: {
+            type: "string",
+            description:
+              "For a finalized document export, pass the exact documentId returned by submit_document.",
           },
           content: {
             type: "string",
@@ -825,6 +840,12 @@ export function createFileIOTool(): AgentWriteToolDefinition<
       return ok<FileIOInput>({
         action,
         filePath: rawFilePath.trim(),
+        documentId:
+          action === "write" &&
+          typeof args.documentId === "string" &&
+          args.documentId.trim()
+            ? args.documentId.trim()
+            : undefined,
         content: action === "write" ? rawContent || "" : undefined,
         encoding,
         offset,

@@ -1,5 +1,8 @@
 import { assert } from "chai";
-import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
+import {
+  createRunCommandTool,
+  executeCommand,
+} from "../src/agent/tools/write/runCommand";
 import { createTestActionContractService } from "./helpers/actionContractService";
 
 /**
@@ -80,5 +83,207 @@ describe("run_command effect path", function () {
     assert.lengthOf(receipts, 1);
     assert.equal(receipts[0].verification, "not_applicable");
     assert.equal(receipts[0].status, "cancelled");
+  });
+
+  it("fails before launch when the controllable subprocess backend is unavailable", async function () {
+    const globals = globalThis as any;
+    const originalChromeUtils = globals.ChromeUtils;
+    const originalComponents = globals.Components;
+    globals.ChromeUtils = {};
+    let blockingFallbackUsed = false;
+    globals.Components = {
+      classes: new Proxy(
+        {},
+        {
+          get: () => {
+            blockingFallbackUsed = true;
+            return undefined;
+          },
+        },
+      ),
+    };
+    try {
+      const result = await executeCommand({
+        command: "echo unavailable",
+        timeoutMs: 1000,
+      });
+      assert.equal(result.outcome, "launch_failed");
+      assert.include(result.stderr, "No command was launched");
+      assert.isFalse(blockingFallbackUsed);
+    } finally {
+      globals.ChromeUtils = originalChromeUtils;
+      globals.Components = originalComponents;
+    }
+  });
+
+  it("never retries a rejected subprocess launch through another backend", async function () {
+    const globals = globalThis as any;
+    const originalChromeUtils = globals.ChromeUtils;
+    let launches = 0;
+    globals.ChromeUtils = {
+      importESModule: () => ({
+        Subprocess: {
+          call: async () => {
+            launches++;
+            throw new Error("launch rejected");
+          },
+        },
+      }),
+    };
+    try {
+      const result = await executeCommand({
+        command: "echo once",
+        timeoutMs: 1000,
+      });
+      assert.equal(result.outcome, "launch_failed");
+      assert.equal(launches, 1);
+      assert.include(result.stderr, "no fallback execution was attempted");
+    } finally {
+      globals.ChromeUtils = originalChromeUtils;
+    }
+  });
+
+  it("reports successful and nonzero subprocess exits distinctly", async function () {
+    const globals = globalThis as any;
+    const originalChromeUtils = globals.ChromeUtils;
+    try {
+      for (const exitCode of [0, 7]) {
+        let stdoutRead = false;
+        let stderrRead = false;
+        globals.ChromeUtils = {
+          importESModule: () => ({
+            Subprocess: {
+              call: async () => ({
+                stdout: {
+                  readString: async () => {
+                    if (stdoutRead) return "";
+                    stdoutRead = true;
+                    return "output";
+                  },
+                },
+                stderr: {
+                  readString: async () => {
+                    if (stderrRead) return "";
+                    stderrRead = true;
+                    return exitCode ? "failed" : "";
+                  },
+                },
+                wait: async () => ({ exitCode }),
+                kill: () => undefined,
+              }),
+            },
+          }),
+        };
+        const result = await executeCommand({
+          command: "fixture",
+          timeoutMs: 1000,
+        });
+        assert.equal(result.exitCode, exitCode);
+        assert.equal(result.outcome, exitCode === 0 ? "succeeded" : "failed");
+        assert.equal(result.stdout, "output");
+      }
+    } finally {
+      globals.ChromeUtils = originalChromeUtils;
+    }
+  });
+
+  it("times out one launched subprocess without starting another", async function () {
+    const globals = globalThis as any;
+    const originalChromeUtils = globals.ChromeUtils;
+    let launches = 0;
+    let kills = 0;
+    globals.ChromeUtils = {
+      importESModule: () => ({
+        Subprocess: {
+          call: async () => {
+            launches++;
+            return {
+              stdout: { readString: () => new Promise(() => undefined) },
+              stderr: { readString: () => new Promise(() => undefined) },
+              wait: () => new Promise(() => undefined),
+              kill: () => {
+                kills++;
+              },
+            };
+          },
+        },
+      }),
+    };
+    try {
+      const result = await executeCommand({
+        command: "long task",
+        timeoutMs: 5,
+      });
+      assert.equal(result.outcome, "timed_out");
+      assert.equal(launches, 1);
+      assert.equal(kills, 1);
+      assert.include(result.stderr, "detached descendants");
+    } finally {
+      globals.ChromeUtils = originalChromeUtils;
+    }
+  });
+
+  it("reports an uncertain post-launch runtime failure distinctly", async function () {
+    const globals = globalThis as any;
+    const originalChromeUtils = globals.ChromeUtils;
+    globals.ChromeUtils = {
+      importESModule: () => ({
+        Subprocess: {
+          call: async () => ({
+            stdout: { readString: async () => "" },
+            stderr: { readString: async () => "" },
+            wait: async () => {
+              throw new Error("process status lost");
+            },
+            kill: () => undefined,
+          }),
+        },
+      }),
+    };
+    try {
+      const result = await executeCommand({
+        command: "fixture",
+        timeoutMs: 1000,
+      });
+      assert.equal(result.outcome, "uncertain");
+      assert.include(result.stderr, "outcome is uncertain after launch");
+    } finally {
+      globals.ChromeUtils = originalChromeUtils;
+    }
+  });
+
+  it("cancels a launched subprocess and reports the termination limit", async function () {
+    const globals = globalThis as any;
+    const originalChromeUtils = globals.ChromeUtils;
+    let kills = 0;
+    globals.ChromeUtils = {
+      importESModule: () => ({
+        Subprocess: {
+          call: async () => ({
+            stdout: { readString: async () => "" },
+            stderr: { readString: async () => "" },
+            wait: () => new Promise(() => undefined),
+            kill: () => {
+              kills++;
+            },
+          }),
+        },
+      }),
+    };
+    const controller = new AbortController();
+    try {
+      const resultPromise = executeCommand({
+        command: "long task",
+        timeoutMs: 1000,
+        signal: controller.signal,
+      });
+      controller.abort();
+      const result = await resultPromise;
+      assert.equal(result.outcome, "cancelled");
+      assert.equal(kills, 1);
+      assert.include(result.stderr, "detached descendants");
+    } finally {
+      globals.ChromeUtils = originalChromeUtils;
+    }
   });
 });

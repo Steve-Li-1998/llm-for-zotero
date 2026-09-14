@@ -1,8 +1,16 @@
 import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import {
+  areExternalMcpCommandsEnabled,
+  areExternalMcpFilesEnabled,
   areExternalMcpWritesEnabled,
+  getExternalMcpReadDirectories,
+  getExternalMcpWriteDirectories,
+  setExternalMcpCommandsEnabled,
+  setExternalMcpFilesEnabled,
+  setExternalMcpReadDirectories,
   setExternalMcpWritesEnabled,
+  setExternalMcpWriteDirectories,
 } from "../src/agent/mcp/prefs";
 
 describe("external MCP write preference", function () {
@@ -17,10 +25,24 @@ describe("external MCP write preference", function () {
     } as never;
     try {
       assert.isFalse(areExternalMcpWritesEnabled());
+      assert.isFalse(areExternalMcpFilesEnabled());
+      assert.isFalse(areExternalMcpCommandsEnabled());
       setExternalMcpWritesEnabled(true);
+      setExternalMcpFilesEnabled(true);
+      setExternalMcpCommandsEnabled(true);
       assert.isTrue(areExternalMcpWritesEnabled());
+      assert.isTrue(areExternalMcpFilesEnabled());
+      assert.isTrue(areExternalMcpCommandsEnabled());
+      setExternalMcpReadDirectories(["/papers", "/papers", ""]);
+      setExternalMcpWriteDirectories(["/exports"]);
+      assert.deepEqual(getExternalMcpReadDirectories(), ["/papers"]);
+      assert.deepEqual(getExternalMcpWriteDirectories(), ["/exports"]);
       setExternalMcpWritesEnabled(false);
+      setExternalMcpFilesEnabled(false);
+      setExternalMcpCommandsEnabled(false);
       assert.isFalse(areExternalMcpWritesEnabled());
+      assert.isFalse(areExternalMcpFilesEnabled());
+      assert.isFalse(areExternalMcpCommandsEnabled());
     } finally {
       globalThis.Zotero = original;
     }
@@ -37,9 +59,21 @@ describe("external MCP write preference", function () {
     );
     assert.isBelow(section, markup.indexOf('data-pref-panel="mineru"'));
     assert.include(markup, 'data-l10n-id="pref-external-mcp-writes"');
+    assert.include(markup, 'data-l10n-id="pref-external-mcp-files"');
+    assert.include(markup, 'data-l10n-id="pref-external-mcp-commands"');
+    assert.include(markup, 'id="__addonRef__-external-mcp-read-directories"');
+    assert.include(markup, 'id="__addonRef__-external-mcp-write-directories"');
     assert.include(
       readFileSync("addon/prefs.js", "utf8"),
       'pref("externalMcpWritesEnabled", false)',
+    );
+    assert.include(
+      readFileSync("addon/prefs.js", "utf8"),
+      'pref("externalMcpFilesEnabled", false)',
+    );
+    assert.include(
+      readFileSync("addon/prefs.js", "utf8"),
+      'pref("externalMcpCommandsEnabled", false)',
     );
   });
 });

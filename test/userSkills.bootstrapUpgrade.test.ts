@@ -381,8 +381,9 @@ describe("user skill bootstrap upgrades", function () {
       canonicalWriteNote,
       "Path pattern: `{papertitle}/{papertitle}.md`",
     );
-    // Version 11 uses direct tool calls and host-managed exports.
-    assert.equal(parseSkill(canonicalWriteNote).version, 11);
+    // Version 12 binds file exports to the exact finalized document identity.
+    assert.equal(parseSkill(canonicalWriteNote).version, 12);
+    assert.include(canonicalWriteNote, "returned `documentId`");
   });
 
   it("migrates declarative supersession without replacing legacy match metadata", function () {

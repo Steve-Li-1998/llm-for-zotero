@@ -53,6 +53,8 @@ import {
   ZOTERO_MCP_SCOPE_HEADER,
 } from "../src/agent/mcp/server";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { createFileIOTool } from "../src/agent/tools/write/fileIO";
+import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
 import { getCodexProfileSignature } from "../src/codexAppServer/constants";
 import { getUserSkillsRuntimeRootDir } from "../src/agent/skills/userSkills";
 import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
@@ -417,6 +419,8 @@ describe("Codex app-server native client", function () {
         execute: async () => ({ content: { title: "Fixture" } }),
       } as never);
     }
+    registry.register(createFileIOTool());
+    registry.register(createRunCommandTool());
     (globalThis as never as { Zotero: any }).Zotero = {
       ...originalZotero,
       Server: { Endpoints: {} },
@@ -2398,6 +2402,7 @@ describe("Codex app-server native client", function () {
   it("uses a light Codex-native Zotero resource contract", function () {
     const manifest = buildZoteroEnvironmentManifest({
       scope: {
+        profileSignature: "profile-visible-test",
         conversationKey: 1,
         libraryID: 1,
         kind: "paper",
@@ -2410,6 +2415,24 @@ describe("Codex app-server native client", function () {
       mcpReady: true,
     });
     assert.include(manifest, "Zotero MCP is ready");
+    assert.include(
+      manifest,
+      "The connected Codex runtime owns ordinary invocation approval",
+    );
+    assert.notInclude(
+      manifest,
+      "Semantic action authority is unavailable. Do not execute effects.",
+    );
+    assert.include(
+      manifest,
+      "tools.mcp__llm_for_zotero_profile_visible_test__file_io",
+    );
+    assert.include(
+      manifest,
+      "tools.mcp__llm_for_zotero_profile_visible_test__run_command",
+    );
+    assert.include(manifest, "configured notes directory");
+    assert.include(manifest, "Zotero MCP host-command permission");
     assert.include(manifest, "facts or actions absent from context");
     assert.include(manifest, PAPER_CITATION_CONTRACT);
     assert.equal(manifest.split(PAPER_CITATION_CONTRACT).length - 1, 1);
@@ -2420,6 +2443,37 @@ describe("Codex app-server native client", function () {
     );
     assert.notInclude(manifest, "page N");
     assert.notInclude(manifest, "use shell creatively");
+  });
+
+  it("keeps effects disabled while native Codex is preparing a plan", function () {
+    const manifest = buildZoteroEnvironmentManifest({
+      scope: {
+        profileSignature: "profile-plan-test",
+        conversationKey: 1,
+        libraryID: 1,
+        kind: "paper",
+        paperItemID: 42,
+        activeItemId: 42,
+        activeContextItemId: 43,
+        paperTitle: "Native Paper",
+      },
+      mcpEnabled: true,
+      mcpReady: true,
+      planContext: {
+        phase: "planning",
+        planId: "plan-1",
+        revision: 1,
+      },
+    });
+
+    assert.include(
+      manifest,
+      "Semantic action authority is unavailable. Do not execute effects.",
+    );
+    assert.notInclude(
+      manifest,
+      "The connected Codex runtime owns ordinary invocation approval",
+    );
   });
 
   it("replaces ordinary paper retrieval guidance for raw PDF turns", function () {

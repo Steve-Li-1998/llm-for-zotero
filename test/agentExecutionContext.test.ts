@@ -11,6 +11,13 @@ describe("Agent execution context", function () {
         userText: "tag these papers",
         history: [],
         attachments: [],
+        localDocuments: [
+          {
+            resource: {
+              absolutePath: "/task/requested.md",
+            },
+          },
+        ],
         turnPaperScope: {
           libraryID: 1,
           papers: [
@@ -21,6 +28,7 @@ describe("Agent execution context", function () {
                 itemId: 10,
                 contextItemId: 11,
                 title: "Paper",
+                mineruCacheDir: "/cache/paper",
               },
             },
           ],
@@ -45,5 +53,12 @@ describe("Agent execution context", function () {
         title: "Paper",
       },
     ]);
+    assert.deepEqual(context.configuredAccess.fileAccess?.readFiles, [
+      "/task/requested.md",
+    ]);
+    assert.deepEqual(context.configuredAccess.fileAccess?.readDirectories, [
+      "/cache/paper",
+    ]);
+    assert.deepEqual(context.configuredAccess.fileAccess?.writeDirectories, []);
   });
 });

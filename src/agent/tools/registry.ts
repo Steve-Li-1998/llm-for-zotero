@@ -147,10 +147,8 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Inspect or revert durable actions; use dryRun for conflicts.",
   annotate_pdf:
     "Add a PDF highlight and optional comment using PDF-space rectangles.",
-  file_io:
-    "Read or write explicit local files, including partial text and image artifacts.",
-  run_command:
-    "Run an explicit shell command and return its output and exit code.",
+  file_io: "Read or write local files, including partial text and images.",
+  run_command: "Run a host shell command and return its output and status.",
   zotero_script: "Run Zotero JavaScript with declared access and effect.",
   load_skill:
     "Load exact instructions for an installed skill ID; this grants no authority.",

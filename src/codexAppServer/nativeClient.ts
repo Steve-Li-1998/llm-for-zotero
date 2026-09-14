@@ -40,6 +40,8 @@ import {
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   getZoteroMcpDirectPdfToolNames,
+  getZoteroMcpServerName,
+  qualifyZoteroMcpToolName,
   registerScopedZoteroMcpScope,
   resolveConversationScopeToken,
   updateScopedZoteroMcpScope,
@@ -1733,6 +1735,7 @@ export function buildCodexNativeScopedMcpScopeForTests(params: {
 export function buildZoteroEnvironmentManifest(params: {
   actionPreparation?: import("../agent/contracts/actionPreparation").ActionPreparation;
   actionContract?: import("../agent/contracts/types").AgentActionContract;
+  planContext?: import("../agent/plans/types").PlanRuntimeContext;
   scope: CodexNativeConversationScope;
   mcpEnabled: boolean;
   mcpReady: boolean;
@@ -1758,7 +1761,9 @@ export function buildZoteroEnvironmentManifest(params: {
     : params.priorReadContextBlock || "";
   const lines = [
     "Zotero environment for this turn:",
-    renderResolvedActionContract(params.actionContract),
+    params.actionContract || params.planContext?.phase === "planning"
+      ? renderResolvedActionContract(params.actionContract)
+      : "The connected Codex runtime owns ordinary invocation approval. Zotero separately enforces the current library, filesystem, command, durable-journal, and conversation boundaries on every MCP call. Tool arguments cannot expand those host grants.",
     params.actionPreparation
       ? `Action preparation: ${JSON.stringify(params.actionPreparation)}. When needs_input, ask the material question through request_user_input; this is unresolved intent or references, not a read-only permission setting. Do not invent a request to enable writes.`
       : "",
@@ -1843,6 +1848,15 @@ export function buildZoteroEnvironmentManifest(params: {
 
   lines.push(
     "- Zotero MCP is ready for facts or actions absent from context.",
+    `- Zotero MCP callable namespace: tools.${qualifyZoteroMcpToolName(
+      getZoteroMcpServerName(scope.profileSignature),
+      "file_io",
+    )} and tools.${qualifyZoteroMcpToolName(
+      getZoteroMcpServerName(scope.profileSignature),
+      "run_command",
+    )}. Use this exact profile-scoped server name for every Zotero MCP tool.`,
+    "- file_io is limited to the configured notes directory, exact host-resolved attachments, and each current paper's own cache directory. Zotero reviews only an exact access expansion.",
+    "- run_command requires the separately enabled Zotero MCP host-command permission. Native Codex or Claude permission settings do not grant that host capability.",
     ...(params.rawPdfMode
       ? [
           "- Raw PDF content: read only the exact current-turn local paths with native shell or file capabilities. Never use paper_read, MinerU, extracted-text context, sibling attachments, or paths from earlier turns as a substitute.",
@@ -3804,6 +3818,7 @@ export async function runCodexAppServerNativeTurn(input: {
         const developerEnvironmentText = buildZoteroEnvironmentManifest({
           actionPreparation: params.actionPreparation,
           actionContract: params.actionContract,
+          planContext,
           scope: scopeWithProfile,
           mcpEnabled,
           mcpReady: optimisticMcpReady,
@@ -3960,6 +3975,7 @@ export async function runCodexAppServerNativeTurn(input: {
           buildZoteroEnvironmentManifest({
             actionPreparation: params.actionPreparation,
             actionContract: params.actionContract,
+            planContext,
             scope: scopeWithProfile,
             mcpEnabled,
             mcpReady,
@@ -3978,6 +3994,7 @@ export async function runCodexAppServerNativeTurn(input: {
           zoteroEnvironmentText: buildZoteroEnvironmentManifest({
             actionPreparation: params.actionPreparation,
             actionContract: params.actionContract,
+            planContext,
             scope: scopeWithProfile,
             mcpEnabled,
             mcpReady,

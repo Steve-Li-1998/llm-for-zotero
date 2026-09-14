@@ -64,6 +64,43 @@ type FigureCropPageService = PdfPageService & {
   >;
 };
 
+/**
+ * Native MCP callers own their semantic request, but the host still owns the
+ * figure selector. Resolve it from the immutable turn text rather than from a
+ * model-supplied tool query. Original Agent calls continue to require their
+ * classified semantic intent.
+ */
+function resolveExternalRuntimeFigureSelection(
+  context: AgentToolContext,
+): SemanticDecisions["figures"] | undefined {
+  if (context.authorization?.kind !== "external_runtime") return undefined;
+  const userText = normalizeText(context.request.userText);
+  if (!/\b(?:fig(?:ure)?s?|images?)\b/i.test(userText)) return undefined;
+
+  const labels = new Set<string>();
+  const labelPattern =
+    /\b((?:extended\s+data\s+|supplement(?:ary|al)\s+)?fig(?:ure)?\.?)\s*(S?\d+[A-Za-z]?)/gi;
+  for (const match of userText.matchAll(labelPattern)) {
+    const prefix = normalizeText(match[1]).toLowerCase();
+    const number = normalizeText(match[2]);
+    if (!number) continue;
+    labels.add(
+      prefix.startsWith("extended data")
+        ? `Extended Data Figure ${number}`
+        : prefix.startsWith("supplement")
+          ? `Supplementary Figure ${number}`
+          : `Figure ${number}`,
+    );
+  }
+  return {
+    labels: [...labels],
+    kind: "figures",
+    includeSupplementary: /\b(?:supplement(?:ary|al)|extended\s+data)\b/i.test(
+      userText,
+    ),
+  };
+}
+
 function normalizeText(value: unknown): string {
   return `${value ?? ""}`.replace(/\s+/g, " ").trim();
 }
@@ -494,7 +531,8 @@ export class PdfFigureExtractionService {
   ): Promise<PaperReadFigureExtractionResult> {
     const selection =
       params.selection ||
-      params.context.request.classifiedIntent?.semantic?.figures;
+      params.context.request.classifiedIntent?.semantic?.figures ||
+      resolveExternalRuntimeFigureSelection(params.context);
     const query = params.input.query || selection?.labels.join(", ") || "";
     if (!selection)
       return {
@@ -541,7 +579,8 @@ export class PdfFigureExtractionService {
       const recordFigures = async (rows: ExtractedPdfFigure[]) => {
         let sourceFingerprint = pdfFingerprint;
         const needsDocumentAssets =
-          params.context.request.documentOutcomePolicy?.required;
+          params.context.request.documentOutcomePolicy?.required ||
+          params.context.authorization?.kind === "external_runtime";
         if (needsDocumentAssets && rows.length) {
           const attachment = Zotero.Items.get(attachmentId);
           const sourcePath = await attachment?.getFilePathAsync();

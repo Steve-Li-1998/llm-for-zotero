@@ -598,6 +598,8 @@ describe("external bridge action approval handling", function () {
                   { name: "library_read" },
                   { name: "library_retrieve" },
                   { name: "paper_read" },
+                  { name: "file_io" },
+                  { name: "run_command" },
                 ],
               },
             }),
@@ -700,9 +702,8 @@ describe("external bridge action approval handling", function () {
         customInstruction,
         "Do not create a Papers, papers, Notes, or other alternate subfolder",
       );
-      // A Markdown note written with Claude Code's own Write tool bypasses
-      // note_write and every property the host proves through it, so the
-      // prompt must route notes to note_write and leave Write for other files.
+      // A Markdown note written with Claude Code's own Write tool bypasses the
+      // shared finalized-document exporter and its file receipts.
       assert.notInclude(
         customInstruction,
         "If using Claude Code's Write tool for a Markdown note",
@@ -711,10 +712,8 @@ describe("external bridge action approval handling", function () {
         customInstruction,
         "use the Zotero note_write tool, not Claude Code's Write tool",
       );
-      assert.include(
-        customInstruction,
-        "Claude Code's Write tool stays available for files that are not notes",
-      );
+      assert.include(customInstruction, "Zotero MCP file_io tool");
+      assert.include(customInstruction, "without native shell or Write access");
       assert.include(customInstruction, "Original agent-mode Zotero behavior");
       assert.include(customInstruction, "(creator, year)");
       assert.include(
@@ -756,6 +755,14 @@ describe("external bridge action approval handling", function () {
       assert.notInclude(
         capturedBody?.allowedTools,
         `mcp__${serverName}__zotero_script`,
+      );
+      assert.notInclude(
+        capturedBody?.allowedTools,
+        `mcp__${serverName}__file_io`,
+      );
+      assert.notInclude(
+        capturedBody?.allowedTools,
+        `mcp__${serverName}__run_command`,
       );
       assert.equal(mcpServers?.[serverName].type, "http");
       assert.equal(

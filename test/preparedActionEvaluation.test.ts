@@ -152,8 +152,8 @@ describe("prepared action completion", function () {
   it("excludes a client's own effect by provenance, not by which capability it used", function () {
     // A receipt is excluded because the connected client's runtime performed
     // the effect, which only the connected-runtime receipt owner can say. Any
-    // other reading — "file.write means a bridge minted it" — holds only while
-    // file_io and run_command stay off the MCP surface.
+    // other reading — "file.write means a bridge minted it" — is invalid now
+    // that file_io and run_command are shared by internal and MCP callers.
     const base: import("../src/agent/contracts/types").AgentActionReceipt = {
       version: 2,
       executionAuthority: "external_runtime",

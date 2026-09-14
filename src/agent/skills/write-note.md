@@ -1,7 +1,7 @@
 ---
 id: write-note
 description: Write a long-form reading or literature note for a specific paper, saved as a Zotero note or Markdown file. Use ONLY when the user explicitly asks to write, draft, or edit a note.
-version: 11
+version: 12
 contexts: any
 activation: auto
 ---
@@ -161,7 +161,7 @@ This failure path does not restrict images the user manually attached or pasted;
 #### For file-based notes (`file_io`)
 
 Finalize the complete document with `submit_document`, including its host-issued figure assets and evidence references.
-Then call `file_io` with the resolved destination path and the exact finalized `visibleMarkdown` returned by the host.
+Then call `file_io` with the returned `documentId`, the resolved destination path, and the exact finalized `visibleMarkdown` returned by the host.
 The host exports verified assets into a sibling asset directory, writes relative Markdown image links, and reads every file back against its expected hash.
 Do not copy image files with shell commands or manufacture relative image paths.
 A failed export leaves the finalized document available for retry.

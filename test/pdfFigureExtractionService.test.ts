@@ -273,6 +273,68 @@ describe("PdfFigureExtractionService", function () {
     assert.include(result.warnings?.join(" ") || "", "unresolved");
   });
 
+  it("resolves native external-runtime figure scope from the host user request", async function () {
+    const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
+    const bytes = Uint8Array.from(
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a/aYAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    files.set(cropPath, bytes);
+    files.set("/tmp/paper.pdf", encoder.encode("source PDF bytes"));
+    const items = new Map([
+      [11, { id: 11, key: "PAPER001", libraryID: 1 }],
+      [
+        22,
+        {
+          id: 22,
+          key: "PDF00001",
+          libraryID: 1,
+          parentID: 11,
+          getFilePathAsync: async () => "/tmp/paper.pdf",
+        },
+      ],
+    ]);
+    globalScope.Zotero = {
+      DataDirectory: { dir: "/tmp/zotero" },
+      Items: { get: (id: number) => items.get(id) },
+    };
+    let observedSelection: unknown;
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async (params: { selection: unknown }) => {
+        observedSelection = params.selection;
+        return [cachedFigure(cropPath)];
+      },
+    } as never).extractFigures({
+      input: { query: "Figure 1" },
+      context: {
+        ...context,
+        authorization: { kind: "external_runtime", standalone: false },
+        request: {
+          ...context.request,
+          userText: "Export the actual cached Figure 1 into my existing note.",
+        },
+      },
+      paperContexts: [paperContext],
+    });
+
+    assert.deepEqual(observedSelection, {
+      labels: ["Figure 1"],
+      kind: "figures",
+      includeSupplementary: false,
+    });
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.figures?.map((figure) => figure.cropPath),
+      [cropPath],
+    );
+    assert.match(
+      result.figures?.[0].documentAsset?.contentHash || "",
+      /^sha256:[a-f0-9]{64}$/,
+    );
+  });
+
   it("returns verified cached crops before source-PDF extraction", async function () {
     const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
     files.set(cropPath, encoder.encode("png"));

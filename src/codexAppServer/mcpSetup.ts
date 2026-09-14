@@ -5,6 +5,7 @@ import {
   getZoteroMcpServerName,
   getZoteroMcpServerUrl,
   invokeRegisteredZoteroMcpEndpoint,
+  qualifyZoteroMcpToolName,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SCOPE_HEADER,
@@ -27,12 +28,16 @@ export const REQUIRED_CODEX_ZOTERO_MCP_TOOL_NAMES = [
   "library_search",
   "library_read",
   "paper_read",
+  "file_io",
+  "run_command",
 ] as const;
 export const REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES = [
   "library_search",
   "library_read",
   "library_retrieve",
   "paper_read",
+  "file_io",
+  "run_command",
 ] as const;
 export const REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES = [
   "library_search",
@@ -689,7 +694,7 @@ export function buildClaudeZoteroMcpAllowedToolNames(
     rawPdfMode
       ? getZoteroMcpDirectPdfToolNames()
       : [...ZOTERO_MCP_SAFE_READ_TOOL_NAMES]
-  ).map((toolName) => `mcp__${serverName}__${toolName}`);
+  ).map((toolName) => qualifyZoteroMcpToolName(serverName, toolName));
 }
 
 export function assertRequiredCodexZoteroMcpToolsReady(

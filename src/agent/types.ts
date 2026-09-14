@@ -903,7 +903,18 @@ export type AgentExecutionContext = Readonly<{
   }>;
   configuredAccess: Readonly<{
     libraryIDs: readonly number[];
+    /** Legacy write roots retained for stored execution-context compatibility. */
     outputDirectories: readonly string[];
+    fileAccess?: Readonly<{
+      /** Exact host-resolved task files; never populated from tool arguments. */
+      readFiles: readonly string[];
+      /** Exact host-approved write targets retained for this execution. */
+      writeFiles?: readonly string[];
+      readDirectories: readonly string[];
+      writeDirectories: readonly string[];
+    }>;
+    /** Explicit host-process execution capability, independent of file roots. */
+    hostCommandExecution?: boolean;
   }>;
   approvedPlanBinding?: Readonly<{
     planId: string;

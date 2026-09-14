@@ -1,6 +1,9 @@
 import { assert } from "chai";
 import { afterEach, describe, it } from "mocha";
-import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
+import {
+  readOnlyInvocationPlan,
+  stateChangeInvocationPlan,
+} from "../src/agent/authorization/invocationPlan";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
@@ -42,6 +45,55 @@ describe("direct-agent execution boundary", function () {
 
   afterEach(function () {
     globalThis.Zotero = originalZotero;
+  });
+
+  it("preserves Original Agent command review semantics", async function () {
+    globalThis.Zotero = {
+      DB: new ChangeJournalTestDb(),
+      Prefs: { get: () => "auto" },
+      Items: { get: () => null },
+      Collections: { get: () => null },
+      debug: () => undefined,
+    } as never;
+    await initAgentChangeJournal();
+    const registry = new AgentToolRegistry(
+      new ActionContractService({} as never),
+    );
+    registry.register({
+      effectOperations: ["command_execute"],
+      spec: {
+        name: "run_command",
+        description: "fixture",
+        inputSchema: { type: "object" },
+        executionClass: "external_effect",
+        requiresConfirmation: true,
+      },
+      validate: (input) => ({ ok: true, value: input }),
+      describeAction: () => [
+        {
+          id: "command_execute:fixture",
+          proofDomain: "execution",
+          capability: "command.execute",
+          operation: "command_execute",
+          source: "command",
+          requestedTargets: [],
+          destinationCollectionIds: [],
+        },
+      ],
+      planInvocation: () =>
+        readOnlyInvocationPlan({
+          mechanism: "shell",
+          domains: ["local_execution"],
+          reason: "Inspect host state.",
+        }),
+      execute: async () => ({ content: { stdout: "/repo" }, effect: "none" }),
+    });
+
+    const prepared = await registry.prepareExecution(
+      { id: "call-command", name: "run_command", arguments: {} },
+      directContext(),
+    );
+    assert.equal(prepared.kind, "result");
   });
 
   it("executes a typed Auto write without semantic or contract state and journals exact authority", async function () {

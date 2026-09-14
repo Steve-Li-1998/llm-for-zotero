@@ -696,7 +696,7 @@ function buildClaudeBridgeNotesDirectoryInstruction(): string {
     "- The notes directory is already configured by the user. Do not use Bash, Glob, Find, LS, or Read to rediscover the vault path, inspect likely note folders, or probe write access when this section is present.",
     "- When the user asks to save a file-based note into the configured notes directory, use the configured Default target path unless the user explicitly names a different folder or absolute path.",
     "- Do not create a Papers, papers, Notes, or other alternate subfolder unless the user explicitly requested that exact folder.",
-    "- Claude Code's Write tool stays available for files that are not notes, and for a file-based note the user explicitly asked for: pass a `.md` file path under the configured Default target path. Use the configured Attachments path for copied figure or image assets.",
+    "- For a requested file-based note, finalize it with submit_document and call the Zotero MCP file_io tool with its documentId, exact visibleMarkdown, and a `.md` path under the configured Default target path. file_io exports and verifies the complete figure bundle without native shell or Write access.",
   ].join("\n");
 }
 

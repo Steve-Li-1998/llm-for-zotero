@@ -23,6 +23,17 @@ export function createAgentExecutionContext(
     options.notesDirectory === undefined
       ? getNotesDirectoryConfig()
       : options.notesDirectory;
+  const taskReadFiles = [
+    ...(request.localDocuments || []).map(
+      ({ resource }) => resource.absolutePath,
+    ),
+  ];
+  const taskReadDirectories = request.turnPaperScope.papers.flatMap(
+    ({ paper }) => (paper.mineruCacheDir ? [paper.mineruCacheDir] : []),
+  );
+  const outputDirectories = notesDirectory?.directoryPath
+    ? [notesDirectory.directoryPath]
+    : [];
   return {
     version: 1,
     executionId,
@@ -68,9 +79,16 @@ export function createAgentExecutionContext(
         request.libraryID || request.turnPaperScope.libraryID
           ? [request.libraryID || request.turnPaperScope.libraryID]
           : [],
-      outputDirectories: notesDirectory?.directoryPath
-        ? [notesDirectory.directoryPath]
-        : [],
+      outputDirectories,
+      fileAccess: {
+        readFiles: [...new Set(taskReadFiles)],
+        writeFiles: [],
+        readDirectories: [
+          ...new Set([...outputDirectories, ...taskReadDirectories]),
+        ],
+        writeDirectories: outputDirectories,
+      },
+      hostCommandExecution: false,
     },
     ...(request.planContext?.phase === "executing"
       ? {

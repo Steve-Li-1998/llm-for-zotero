@@ -1482,6 +1482,8 @@ export type ActionCardEffect = {
   verb: ActionCardVerb;
   label: string;
   objects: ActionCardObject[];
+  /** Exact command source carried by the matching conversation event. */
+  command?: string;
 };
 
 /** One row of the card: the objects a set of effects covered, and its verdict. */
@@ -1502,7 +1504,7 @@ export type ActionCardEntry = {
 };
 
 /**
- * What one turn did, as the reader is told at the end of its trace.
+ * What one turn did, as the reader is told after its final answer.
  *
  * Every row comes from receipts: the objects they covered, the operations they
  * state, the objects those acted on, and what their verification proved.

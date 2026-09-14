@@ -11017,6 +11017,13 @@ describe("agent trace action summary card", function () {
       card!.findByClass("llm-plan-title")!.textContent,
       "What this turn did",
     );
+    const icon = card!.findByClass("llm-agent-action-summary-icon");
+    assert.exists(icon, "the outcome heading starts with the action icon");
+    assert.strictEqual(
+      icon!.parentElement,
+      card!.findByClass("llm-plan-title"),
+    );
+    assert.equal(icon!.getAttribute("aria-hidden"), "true");
     assert.equal(
       card!.findByClass("llm-plan-status")!.textContent,
       "2 actions",
@@ -11052,6 +11059,92 @@ describe("agent trace action summary card", function () {
       "the connected client's authority stays visible",
     );
     assert.include(collectFakeText(card), "Attention in transformers");
+  });
+
+  it("places the action card in the supplied conversation footer after the answer", function () {
+    const bubble = new FakeElement("div");
+    const answer = new FakeElement("div");
+    answer.textContent = "Here is the final answer.";
+    const actionSummaryHost = new FakeElement("div");
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: answer.textContent, timestamp: 1 },
+      events: effectEvents,
+      actionSummaryHost: actionSummaryHost as unknown as HTMLElement,
+    }) as unknown as FakeElement;
+    bubble.append(trace, answer, actionSummaryHost);
+
+    assert.isNull(trace.findByClass("llm-agent-action-summary-card"));
+    assert.lengthOf(
+      actionSummaryHost.findAllByClass("llm-agent-action-summary-card"),
+      1,
+    );
+    assert.equal(bubble.children[2], actionSummaryHost);
+
+    renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: answer.textContent, timestamp: 1 },
+      events: readReceiptEvents,
+      previous: trace as unknown as HTMLElement,
+      actionSummaryHost: actionSummaryHost as unknown as HTMLElement,
+    });
+    assert.lengthOf(
+      actionSummaryHost.children,
+      0,
+      "refresh removes an obsolete card",
+    );
+  });
+
+  it("opens the exact executed command as literal code and can fold it again", function () {
+    const command = "printf '%s\\n' '<script> & ```'\n  printf 'second line'";
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: { role: "assistant", text: "Done.", timestamp: 1 },
+      events: [
+        event(1, {
+          type: "tool_result",
+          callId: "command",
+          name: "run_command",
+          ok: true,
+          content: { command },
+          actionReceipts: [
+            receipt({
+              id: "command",
+              capability: "command.execute",
+              proofDomain: "execution",
+              operation: "command_execute",
+              verification: "execution_only",
+              status: "observed",
+              requestedTargets: [],
+              appliedTargets: [],
+            }),
+          ],
+        }),
+      ],
+    }) as unknown as FakeElement;
+    const card = trace.findByClass("llm-agent-action-summary-card")!;
+    const row = card.findByClass("llm-agent-action-row");
+    assert.exists(row, "the command row must be a disclosure");
+    assert.equal(row!.tagName, "details");
+    assert.equal(row!.children[0].tagName, "summary");
+    assert.isFalse(row!.open);
+    row!.open = true;
+    row!.dispatchFakeEvent("toggle");
+    const pre = row!.findByClass("llm-agent-action-command")!;
+    assert.exists(pre);
+    assert.equal(pre.tagName, "pre");
+    assert.equal(pre.children[0].tagName, "code");
+    assert.equal(pre.children[0].textContent, command);
+    assert.equal(
+      pre.children[0].innerHTML,
+      "",
+      "source is not parsed as markup",
+    );
+    row!.open = false;
+    row!.dispatchFakeEvent("toggle");
+    row!.open = true;
+    row!.dispatchFakeEvent("toggle");
+    assert.lengthOf(row!.findAllByClass("llm-agent-action-command"), 1);
   });
 
   it("names a glyph-less effect on the effect itself, with no empty verb node", function () {
@@ -11970,6 +12063,7 @@ describe("action card row detail wiring", function () {
 
   it("gives the note mode's only row the card's own pill, at once", function () {
     const { node, given } = renderWithSpy("note");
+    assert.isNull(node.findByClass("llm-agent-action-summary-icon"));
     const headerPill = node
       .findByClass("llm-plan-header")!
       .findByClass("llm-plan-status")!;

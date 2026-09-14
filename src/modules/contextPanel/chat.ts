@@ -10395,6 +10395,7 @@ type MountedAssistantView = {
   wrapper: HTMLElement;
   bubble: HTMLElement;
   trace: HTMLElement;
+  actionSummaryHost: HTMLElement;
   user: Message | null;
   runId?: string;
   text: string;
@@ -10444,6 +10445,7 @@ function updateMountedAssistantViews(
       userMessage: view.user,
       events,
       previous: view.trace,
+      actionSummaryHost: view.actionSummaryHost,
       allowPlanRecovery:
         message === latestAssistantMessage(getConversationKey(item)),
       onInterleavedText: () => {
@@ -10463,7 +10465,7 @@ function updateMountedAssistantViews(
       if (!view.answer) {
         view.answer = box.ownerDocument.createElement("div");
         view.answer.className = "llm-assistant-answer";
-        view.bubble.appendChild(view.answer);
+        view.bubble.insertBefore(view.answer, view.actionSummaryHost);
       }
       renderAssistantRichText({
         body,
@@ -11576,6 +11578,8 @@ export function refreshChat(
       const webSourceAnchors = getWebSourceAnchorsFromTrace(traceEvents);
       responseWebSourceAnchors = webSourceAnchors;
       let agentUsesInterleavedText = false;
+      const actionSummaryHost = doc.createElement("div");
+      actionSummaryHost.className = "llm-assistant-actions";
       const agentTraceEl =
         msg.runMode === "agent" && !msg.compactMarker
           ? renderAgentTrace({
@@ -11585,6 +11589,7 @@ export function refreshChat(
               userMessage: previousUserMessage,
               allowPlanRecovery: index === latestAssistantIndex,
               events: traceEvents,
+              actionSummaryHost,
               onTraceMissing:
                 agentRunId && !hasCachedTrace
                   ? () => {
@@ -11775,6 +11780,7 @@ export function refreshChat(
           wrapper,
           bubble,
           trace: agentTraceEl,
+          actionSummaryHost,
           user: previousUserMessage,
           runId: msg.agentRunId,
           text: msg.text,
@@ -11845,6 +11851,7 @@ export function refreshChat(
           conversationKey,
         });
       }
+      if (agentTraceEl) bubble.appendChild(actionSummaryHost);
     }
 
     const meta = doc.createElement("div") as HTMLDivElement;

@@ -89,6 +89,53 @@ function collectRunReceipts(
   return [...byId.values()];
 }
 
+/** Read source already recorded in the trace, without turning it into a receipt. */
+function commandText(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const command = (value as Record<string, unknown>).command;
+  return typeof command === "string" && command.trim() ? command : undefined;
+}
+
+function commandsByReceipt(
+  events: readonly AgentRunEventRecord[],
+): Map<string, string> {
+  const calls = new Map<string, string>();
+  const activities = new Map<string, string>();
+  for (const { payload } of events) {
+    if (payload.type === "tool_call") {
+      const command = commandText(payload.args);
+      if (command) calls.set(payload.callId, command);
+    } else if (payload.type === "codex_tool_activity") {
+      const command = payload.codeBlock || commandText(payload.args);
+      if (command) activities.set(payload.itemId, command);
+    }
+  }
+  const commands = new Map<string, string>();
+  // Prefer the tool's executed result over an activity's copy of its request.
+  const executed = new Map<string, string>();
+  for (const { payload } of events) {
+    if (
+      payload.type !== "tool_result" &&
+      payload.type !== "codex_tool_activity"
+    )
+      continue;
+    const resultCommand =
+      payload.type === "tool_result" ? commandText(payload.content) : undefined;
+    const command =
+      resultCommand ||
+      (payload.type === "tool_result"
+        ? calls.get(payload.callId)
+        : activities.get(payload.itemId));
+    if (!command) continue;
+    for (const receipt of payload.actionReceipts || []) {
+      if (receipt.operation !== "command_execute") continue;
+      commands.set(receipt.id, command);
+      if (resultCommand) executed.set(receipt.id, resultCommand);
+    }
+  }
+  return new Map([...commands, ...executed]);
+}
+
 /** The material the run's visible answer was rendered from, when it named one. */
 function answerMaterialTitle(
   events: readonly AgentRunEventRecord[],
@@ -348,6 +395,7 @@ export function buildAgentActionSummaryCard(
 ): AgentActionSummaryResultCard | null {
   const receipts = collectRunReceipts(events).filter(receiptReportsEffect);
   if (!receipts.length) return null;
+  const commands = commandsByReceipt(events);
   const rows = new Map<string, ActionCardRow>();
   for (const receipt of receipts) {
     const noteIds = noteObjectIds(receipt);
@@ -363,6 +411,9 @@ export function buildAgentActionSummaryCard(
       verb: operationVerb(receipt.operation),
       label: operationLabel(receipt.operation),
       objects: objectsOf(receipt, resolvers, targets),
+      ...(commands.has(receipt.id)
+        ? { command: commands.get(receipt.id) }
+        : {}),
     };
     const targetKey = [...new Set(targets.map((target) => target.itemId))]
       .sort((left, right) => left - right)

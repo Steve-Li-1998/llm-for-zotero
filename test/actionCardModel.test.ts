@@ -81,6 +81,118 @@ const noteResolvers: ActionCardResolvers = {
 };
 
 describe("action card model", function () {
+  it("uses the executed result command ahead of the requested arguments", function () {
+    const requested = "echo requested";
+    const executed = "printf '%s\\n' '<literal>'\n  echo executed";
+    const result = toolResult(2, [
+      receipt({ id: "cmd", operation: "command_execute" }),
+    ]);
+    if (result.payload.type !== "tool_result")
+      throw new Error("Expected result");
+    result.payload.content = { command: executed };
+    const call = {
+      ...result,
+      payload: {
+        type: "tool_call",
+        callId: "c2",
+        name: "run_command",
+        args: { command: requested },
+      },
+    } as AgentRunEventRecord;
+    const card = buildAgentActionSummaryCard([call, result], resolvers)!;
+    assert.equal(card.entries[0].effects[0].command, executed);
+  });
+
+  it("pairs command arguments by call identity when older results omit them", function () {
+    const first = toolResult(3, [
+      receipt({
+        id: "a",
+        operation: "command_execute",
+        requestedTargets: [],
+        appliedTargets: [],
+      }),
+    ]);
+    const second = toolResult(4, [
+      receipt({
+        id: "b",
+        operation: "command_execute",
+        requestedTargets: [],
+        appliedTargets: [],
+      }),
+    ]);
+    const call = (callId: string, command: string) =>
+      ({
+        ...first,
+        payload: {
+          type: "tool_call",
+          callId,
+          name: "run_command",
+          args: { command },
+        },
+      }) as AgentRunEventRecord;
+    const card = buildAgentActionSummaryCard(
+      [call("c4", "echo second"), call("c3", "echo first"), first, second],
+      resolvers,
+    )!;
+    assert.deepEqual(
+      card.entries.map((entry) => entry.effects[0].command),
+      ["echo first", "echo second"],
+    );
+  });
+
+  for (const source of ["codeBlock", "args"] as const) {
+    it(`recovers connected command ${source} from its matching activity`, function () {
+      const command = "printf 'connected\\n'\n  echo done";
+      const result = toolResult(1, []);
+      const started = {
+        ...result,
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "command-1",
+          phase: "started",
+          ...(source === "codeBlock"
+            ? { codeBlock: command }
+            : { args: { command } }),
+        },
+      } as AgentRunEventRecord;
+      const completed = {
+        ...result,
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "command-1",
+          phase: "completed",
+          actionReceipts: [
+            receipt({ id: "cmd", operation: "command_execute" }),
+          ],
+        },
+      } as AgentRunEventRecord;
+      const card = buildAgentActionSummaryCard(
+        [started, completed],
+        resolvers,
+      )!;
+      assert.equal(card.entries[0].effects[0].command, command);
+    });
+  }
+
+  it("does not invent command source from fingerprints or descriptive labels", function () {
+    const card = buildAgentActionSummaryCard(
+      [
+        toolResult(1, [
+          receipt({
+            id: "cmd",
+            operation: "command_execute",
+            normalizedParameters: {
+              commandFingerprint: "abc",
+              expectedText: "Inspect files",
+            },
+          }),
+        ]),
+      ],
+      resolvers,
+    )!;
+    assert.isUndefined(card.entries[0].effects[0].command);
+  });
+
   it("projects a move into target, verb, collection object and verdict", function () {
     const card = buildAgentActionSummaryCard(
       [

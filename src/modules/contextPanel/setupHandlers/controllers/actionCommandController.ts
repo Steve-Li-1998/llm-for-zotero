@@ -1,3 +1,4 @@
+import { scheduleChatContentScroll } from "../../chatScrollSnapshots";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
 import type { ActionRequestContext } from "../../../../agent/actions";
@@ -688,8 +689,8 @@ export function createActionCommandController(
         resolve(null);
       });
       chatBox.appendChild(wrapper);
-      chatBox.scrollTop = chatBox.scrollHeight;
-      fieldEls[0]?.input.focus();
+      scheduleChatContentScroll(chatBox);
+      fieldEls[0]?.input.focus({ preventScroll: true });
     });
 
   const executeAgentAction = async (
@@ -907,7 +908,7 @@ export function createActionCommandController(
         }),
       );
       chatBox.appendChild(wrapper);
-      chatBox.scrollTop = chatBox.scrollHeight;
+      scheduleChatContentScroll(chatBox);
     });
 
   const handleInlineCommand = async (

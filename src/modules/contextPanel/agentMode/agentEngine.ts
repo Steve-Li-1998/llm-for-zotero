@@ -1,3 +1,4 @@
+import { scheduleChatContentScroll } from "../chatScrollSnapshots";
 import { getPendingRequestId, recordLivePlanExecution } from "../state";
 /**
  * Agent mode execution engine.
@@ -832,24 +833,6 @@ function syncInlineActionCardState(
   }
 }
 
-function scrollActionCardIntoView(
-  chatBox: HTMLElement,
-  card: HTMLElement,
-): void {
-  const scroll = () => {
-    try {
-      card.scrollIntoView({ block: "end" });
-    } catch {
-      // Older Zotero runtimes can be picky about scrollIntoView options.
-    }
-    chatBox.scrollTop = chatBox.scrollHeight;
-  };
-  scroll();
-  const view = chatBox.ownerDocument?.defaultView;
-  view?.requestAnimationFrame?.(scroll);
-  view?.setTimeout(scroll, 80);
-}
-
 function findRenderedPendingActionCard(
   chatBox: HTMLElement,
   requestId: string,
@@ -872,7 +855,7 @@ function showInlineConfirmationCard(
   chatBox.querySelector(".llm-action-inline-card")?.remove();
   const renderedCard = findRenderedPendingActionCard(chatBox, requestId);
   if (renderedCard) {
-    scrollActionCardIntoView(chatBox, renderedCard);
+    scheduleChatContentScroll(chatBox);
     syncInlineActionCardState(body, ui);
     return;
   }
@@ -881,7 +864,7 @@ function showInlineConfirmationCard(
   wrapper.dataset.requestId = requestId;
   wrapper.appendChild(renderPendingActionCard(ownerDoc, { requestId, action }));
   chatBox.appendChild(wrapper);
-  scrollActionCardIntoView(chatBox, wrapper);
+  scheduleChatContentScroll(chatBox);
   syncInlineActionCardState(body, ui);
 }
 

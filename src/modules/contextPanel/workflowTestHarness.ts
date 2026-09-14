@@ -1,3 +1,4 @@
+import { waitForElementGeometrySettled } from "./workflowLayout";
 import { getChatScrollSnapshot } from "./chatScrollSnapshots";
 import {
   exerciseNativePlanReview,
@@ -3405,13 +3406,11 @@ async function waitForStandaloneSidebarWidthSettled(
     ".llm-standalone-sidebar",
   ) as HTMLElement | null;
   if (!sidebar) return;
-  let previous = Number.NaN;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const width = sidebar.getBoundingClientRect().width;
-    if (width === previous) return;
-    previous = width;
-    await Zotero.Promise.delay(25);
-  }
+  await waitForElementGeometrySettled({
+    element: sidebar,
+    sample: () => String(sidebar.getBoundingClientRect().width),
+    delay: () => Zotero.Promise.delay(25),
+  });
 }
 
 /**
@@ -3443,15 +3442,15 @@ async function waitForStandaloneSidebarPanelSettled(
     ".llm-standalone-sidebar-panel",
   ) as HTMLElement | null;
   if (!panel) return;
-  let previous = "";
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const rect = panel.getBoundingClientRect();
-    const opacity = doc.defaultView?.getComputedStyle(panel)?.opacity || "";
-    const sample = `${rect.left}:${rect.width}:${opacity}`;
-    if (sample === previous) return;
-    previous = sample;
-    await Zotero.Promise.delay(25);
-  }
+  await waitForElementGeometrySettled({
+    element: panel,
+    sample: () => {
+      const rect = panel.getBoundingClientRect();
+      const opacity = doc.defaultView?.getComputedStyle(panel)?.opacity || "";
+      return `${rect.left}:${rect.width}:${opacity}`;
+    },
+    delay: () => Zotero.Promise.delay(25),
+  });
 }
 
 async function toggleStandaloneSidebar(): Promise<WorkflowTestStandaloneDiagnostics> {

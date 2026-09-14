@@ -120,7 +120,7 @@ function renderRowLine(
   return row;
 }
 
-/** The run's effects, read-only, closing the trace. */
+/** The run's effects, closing the conversation turn after its answer. */
 export function renderActionSummaryCard(
   doc: Document,
   card: AgentActionSummaryResultCard,
@@ -131,7 +131,7 @@ export function renderActionSummaryCard(
     options.header?.extraClass ? ` ${options.header.extraClass}` : ""
   }`;
   container.dataset.mode = options.mode || "action";
-  const { header, status } = createDocumentCardLayout(
+  const { header, title, status } = createDocumentCardLayout(
     doc,
     options.header || {
       title: "What this turn did",
@@ -139,13 +139,22 @@ export function renderActionSummaryCard(
       statusKind: cardStatus(card),
     },
   );
+  if (!options.header) {
+    const icon = doc.createElement("span");
+    icon.className = "llm-agent-action-summary-icon";
+    icon.setAttribute("aria-hidden", "true");
+    title.insertBefore(icon, title.firstChild);
+  }
   container.appendChild(header);
   const list = doc.createElement("ul");
   list.className = "llm-agent-action-summary-list";
   for (const entry of card.entries) {
     const item = doc.createElement("li");
     const renderDetail = entry.detail ? options.renderDetail : undefined;
-    if (!renderDetail) {
+    const commands = entry.effects.flatMap((effect) =>
+      effect.command ? [effect.command] : [],
+    );
+    if (!renderDetail && !commands.length) {
       item.appendChild(renderRowLine(doc, entry, false));
       list.appendChild(item);
       continue;
@@ -159,12 +168,24 @@ export function renderActionSummaryCard(
     const body = doc.createElement("div");
     body.className = "llm-agent-process-stage-body llm-agent-action-row-body";
     details.append(summary, body);
+    const buildBody = (detailStatus: HTMLElement) => {
+      for (const command of commands) {
+        const pre = doc.createElement("pre");
+        pre.className =
+          "llm-agent-process-detail-value-code llm-agent-action-command";
+        const code = doc.createElement("code");
+        code.textContent = command;
+        pre.appendChild(code);
+        body.appendChild(pre);
+      }
+      const detail = renderDetail?.(doc, entry, detailStatus);
+      if (detail) body.appendChild(detail);
+    };
     if (options.mode === "note") {
       // The note surface shows the body straight away, because the note is
       // what the reader came for, and its outcome goes to the card's own pill.
       details.open = true;
-      const detail = renderDetail(doc, entry, status);
-      if (detail) body.appendChild(detail);
+      buildBody(status);
     } else {
       // A folded row builds its body the first time it is opened. The note
       // body reads the note and its journal back from disk, and a card of rows
@@ -177,8 +198,7 @@ export function renderActionSummaryCard(
       details.addEventListener("toggle", () => {
         if (built || !details.open) return;
         built = true;
-        const detail = renderDetail(doc, entry, rowStatus);
-        if (detail) body.appendChild(detail);
+        buildBody(rowStatus);
       });
     }
     item.appendChild(details);

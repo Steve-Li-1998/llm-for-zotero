@@ -230,6 +230,8 @@ type RenderAgentTraceParams = {
   allowPlanRecovery?: boolean;
   onTraceMissing?: () => void;
   onInterleavedText?: () => void;
+  /** The conversation owns this footer below the assistant's final answer. */
+  actionSummaryHost?: HTMLElement;
   /** Where the action card's chips take the reader; the running Zotero by default. */
   actionCardNavigation?: NavigationHost;
 };
@@ -6387,6 +6389,7 @@ export function renderAgentTrace({
   previous,
   allowPlanRecovery = false,
   actionCardNavigation,
+  actionSummaryHost,
 }: RenderAgentTraceParams): HTMLElement | null {
   const runId = message.agentRunId?.trim() || "pending";
   // Temporary native events remain visible until the durable run is loaded.
@@ -6399,6 +6402,7 @@ export function renderAgentTrace({
     !message.pendingAgentTraceEvents?.length &&
     !onTraceMissing
   ) {
+    actionSummaryHost?.replaceChildren();
     return null;
   }
   const retained = previous ? traceViews.get(previous) : undefined;
@@ -6443,6 +6447,7 @@ export function renderAgentTrace({
   view.lastEvent = events[events.length - 1];
 
   if (!events.length) {
+    actionSummaryHost?.replaceChildren();
     const loadingRow = doc.createElement("div");
     loadingRow.className = "llm-at-row llm-at-row-plan";
     const loadingIcon = doc.createElement("span");
@@ -6479,6 +6484,7 @@ export function renderAgentTrace({
     wrap.classList.add("llm-agent-activity-with-pending-action");
   }
   if (pending && isPlanningQuestionAction(pending.action)) {
+    actionSummaryHost?.replaceChildren();
     view.activityClock?.stop();
     wrap.classList.add("llm-agent-activity-question-card");
     wrap.dataset.llmAssistantTurnReplacement = "true";
@@ -6989,11 +6995,13 @@ export function renderAgentTrace({
     view.document = undefined;
   }
 
-  // What the turn did closes the turn: the plan it worked from and the document
-  // it produced are what the reader came for, and the receipts are read after
-  // them. The plan and the document are the only children a re-render keeps, so
-  // this card is rebuilt below them every time.
-  if (actionCardNode) wrap.appendChild(actionCardNode);
+  // Chat owns the position below the final answer. Standalone trace surfaces
+  // have no separate answer and keep their outcome below the other cards.
+  if (actionSummaryHost)
+    actionSummaryHost.replaceChildren(
+      ...(actionCardNode ? [actionCardNode] : []),
+    );
+  else if (actionCardNode) wrap.appendChild(actionCardNode);
 
   // The rule separates the activity trace from the answer, so visible answer
   // text is authoritative even when a restored row retained a stale streaming

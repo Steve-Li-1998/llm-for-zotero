@@ -9,7 +9,11 @@ import {
   setOriginalAgentPermissionMode,
 } from "../src/agent/originalAgentPermissionMode";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
-import type { AgentToolContext, AgentToolResult } from "../src/agent/types";
+import type {
+  AgentRunEventRecord,
+  AgentToolContext,
+  AgentToolResult,
+} from "../src/agent/types";
 
 /**
  * A turn that wrote a note and also changed the library, in the running
@@ -34,6 +38,204 @@ describe("workflow: one action card for a mixed turn", function () {
       0,
       "action-card tests must not leave panel hosts for later workflows",
     );
+  });
+
+  it("puts command actions after the final answer and toggles their literal source", async function () {
+    const workflow = (Zotero as any).LLMForZotero.api
+      .workflowTest as WorkflowTestApi;
+    const parent = new Zotero.Item("journalArticle");
+    parent.libraryID = Zotero.Libraries.userLibraryID;
+    parent.setField("title", "Action footer workflow");
+    await parent.saveTx();
+    const command = "printf '%s\\n' '<script> & ```'\n  printf 'second line'";
+    // Recorded command evidence exercises presentation without executing a shell command.
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "action-footer",
+        seq: 1,
+        eventType: "tool_result",
+        createdAt: Date.now(),
+        payload: {
+          type: "tool_result",
+          callId: "command",
+          name: "run_command",
+          ok: true,
+          content: { command, exitCode: 0 },
+          actionReceipts: [
+            {
+              version: 2,
+              id: "command",
+              proposalId: "command",
+              operation: "command_execute",
+              capability: "command.execute",
+              proofDomain: "execution",
+              verification: "execution_only",
+              status: "observed",
+              requestedTargets: [],
+              appliedTargets: [],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: [],
+              verifiedFacts: [],
+            },
+            {
+              version: 2,
+              id: "tag",
+              proposalId: "tag",
+              operation: "apply_tags",
+              capability: "zotero.tags",
+              proofDomain: "zotero_state",
+              verification: "verified",
+              status: "applied",
+              requestedTargets: [`item:${parent.id}`],
+              appliedTargets: [`item:${parent.id}`],
+              alreadySatisfiedTargets: [],
+              rejectedTargets: [],
+              reasons: [],
+              verifiedFacts: [],
+              normalizedParameters: { tags: ["Reviewed"] },
+            },
+          ],
+        },
+      },
+      {
+        runId: "action-footer",
+        seq: 2,
+        eventType: "final",
+        createdAt: Date.now(),
+        payload: {
+          type: "final",
+          text: "The final answer comes before the action card.",
+        },
+      },
+    ];
+    try {
+      await workflow.openStandaloneForItem(parent.id);
+      await workflow.resizeStandaloneWindow(900, 700);
+      const win = (Zotero as any).LLMForZotero.data.standaloneWindow as Window;
+      // Rebuild from serialized trace events as history rendering does.
+      for (const recorded of [events, JSON.parse(JSON.stringify(events))]) {
+        await workflow.seedStandaloneConversation([
+          { role: "user", text: "Run the command" },
+          {
+            role: "assistant",
+            text: "The final answer comes before the action card.",
+            runMode: "agent",
+            streaming: false,
+            pendingAgentTraceEvents: recorded,
+          },
+        ]);
+        const doc = win.document;
+        const card = doc.querySelector<HTMLElement>(
+          ".llm-agent-action-summary-card",
+        )!;
+        const answer = doc.querySelector<HTMLElement>(".llm-assistant-answer")!;
+        assert.exists(card);
+        assert.exists(answer);
+        assert.isNull(
+          card.closest(".llm-agent-activity"),
+          "the outcome is outside the trace",
+        );
+        assert.isTrue(
+          Boolean(answer.compareDocumentPosition(card) & 4),
+          "the answer precedes the card",
+        );
+        assert.isAtLeast(
+          card.getBoundingClientRect().top -
+            answer.getBoundingClientRect().bottom,
+          16,
+          "the answer has a clear gap before its outcome card",
+        );
+        const title = card.querySelector<HTMLElement>(".llm-plan-title")!;
+        const icon = title.querySelector<HTMLElement>(
+          ".llm-agent-action-summary-icon",
+        )!;
+        assert.exists(icon);
+        assert.strictEqual(title.firstChild, icon);
+        assert.equal(title.textContent, "What this turn did");
+        assert.equal(icon.getAttribute("aria-hidden"), "true");
+        assert.include(
+          win.getComputedStyle(icon).maskImage,
+          "action-turn-summary.svg",
+        );
+        assert.isAbove(icon.getBoundingClientRect().width, 0);
+        const titleRect = title.getBoundingClientRect();
+        const badgeRect = card
+          .querySelector(".llm-plan-status")!
+          .getBoundingClientRect();
+        assert.closeTo(
+          titleRect.top + titleRect.height / 2,
+          badgeRect.top + badgeRect.height / 2,
+          1,
+          "the icon heading and action count align vertically",
+        );
+        assert.lengthOf(
+          doc.querySelectorAll(".llm-agent-action-summary-card"),
+          1,
+        );
+        const panel = card.closest<HTMLElement>(".llm-panel")!;
+        const originalScale = panel.style.getPropertyValue("--llm-font-scale");
+        try {
+          for (const scale of ["1", "1.3"]) {
+            panel.style.setProperty("--llm-font-scale", scale);
+            const answerSize = win.getComputedStyle(answer).fontSize;
+            for (const label of card.querySelectorAll<HTMLElement>(
+              ".llm-plan-title, .llm-plan-status, .llm-agent-action-verb-word-inline, .llm-agent-process-chip-label, .llm-paper-context-chip-text, .llm-tag-chip-title",
+            )) {
+              assert.equal(
+                win.getComputedStyle(label).fontSize,
+                answerSize,
+                `${label.className} matches conversation text at scale ${scale}`,
+              );
+            }
+          }
+        } finally {
+          if (originalScale)
+            panel.style.setProperty("--llm-font-scale", originalScale);
+          else panel.style.removeProperty("--llm-font-scale");
+        }
+        const row = card.querySelector<HTMLDetailsElement>(
+          "details.llm-agent-action-row",
+        )!;
+        assert.exists(row);
+        assert.isFalse(row.open);
+        row.querySelector("summary")!.click();
+        await Zotero.Promise.delay(50);
+        assert.isTrue(row.open);
+        const pre = row.querySelector<HTMLPreElement>(
+          "pre.llm-agent-action-command",
+        )!;
+        assert.exists(pre);
+        assert.equal(pre.querySelector("code")!.textContent, command);
+        assert.isNull(pre.querySelector("script"));
+        assert.isAbove(pre.getBoundingClientRect().height, 0);
+        assert.equal(win.getComputedStyle(pre).whiteSpace, "pre");
+        assert.equal(win.getComputedStyle(pre).borderTopWidth, "1px");
+        assert.equal(
+          win.getComputedStyle(pre.querySelector("code")!).fontSize,
+          win.getComputedStyle(answer).fontSize,
+        );
+        const expandedHeight = row.getBoundingClientRect().height;
+        row.querySelector("summary")!.click();
+        await Zotero.Promise.delay(50);
+        assert.isFalse(row.open, "clicking again collapses the command");
+        assert.isBelow(
+          row.getBoundingClientRect().height,
+          expandedHeight,
+          "the closed disclosure removes the code from the visible layout",
+        );
+        row.querySelector("summary")!.click();
+        await Zotero.Promise.delay(50);
+        assert.lengthOf(
+          row.querySelectorAll("pre.llm-agent-action-command"),
+          1,
+        );
+      }
+    } finally {
+      await workflow.closeStandalone();
+      await parent.eraseTx();
+      await workflow.reset();
+    }
   });
 
   it("folds the note into one card and its chips move the live pane", async function () {

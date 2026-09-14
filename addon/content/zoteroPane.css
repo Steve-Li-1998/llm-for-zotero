@@ -5803,7 +5803,8 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-process-detail-value-code code,
-.llm-agent-process-detail-value-json code {
+.llm-agent-process-detail-value-json code,
+.llm-agent-action-command > code {
   background: none;
   padding: 0;
   border: none;
@@ -9105,6 +9106,61 @@ label.llm-search-results-item:hover {
 
 .llm-agent-action-summary-card {
   box-shadow: none;
+  font-size: var(--llm-fs-12);
+}
+
+.llm-agent-action-summary-card[data-mode="action"] .llm-plan-heading {
+  align-items: center;
+}
+
+.llm-agent-action-summary-card[data-mode="action"] .llm-plan-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.llm-agent-action-summary-icon {
+  flex: 0 0 auto;
+  width: 1.25em;
+  height: 1.25em;
+  background-color: currentColor;
+  mask: url("icons/action-turn-summary.svg") center / contain no-repeat;
+}
+
+/* Outcome text follows the conversation's size, including its font scale. */
+.llm-agent-action-summary-card
+  :is(
+    .llm-plan-title,
+    .llm-plan-status,
+    .llm-agent-process-chip,
+    .llm-agent-action-path,
+    .llm-agent-action-summary-source,
+    .llm-agent-hitl-badge,
+    .llm-paper-picker-badge,
+    .llm-at-row
+  ) {
+  font-size: var(--llm-fs-12);
+}
+
+.llm-assistant-actions:empty {
+  display: none;
+}
+
+.llm-assistant-actions:not(:empty) {
+  padding-top: 16px;
+}
+
+.llm-agent-action-row-body > .llm-agent-action-command {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--llm-codeblock-border);
+  border-radius: 8px;
+  background: var(--llm-codeblock-bg);
+  color: var(--llm-codeblock-text);
+  font-size: inherit;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
 }
 
 .llm-agent-action-summary-list {

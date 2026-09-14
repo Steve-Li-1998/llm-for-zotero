@@ -1,5 +1,5 @@
 pref("enable", true);
-pref("sidebarLayout", "independent");
+pref("sidebarLayout", "stacked");
 pref("standaloneSidebarWidth", 220);
 pref("input", "This is input");
 pref("apiBase", "");

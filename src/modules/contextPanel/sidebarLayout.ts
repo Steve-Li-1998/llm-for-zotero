@@ -5,11 +5,11 @@ export const SIDEBAR_LAYOUT_PREF = `${config.prefsPrefix}.sidebarLayout`;
 
 export function getSidebarLayout(): SidebarLayout {
   try {
-    return Zotero.Prefs.get(SIDEBAR_LAYOUT_PREF, true) === "stacked"
-      ? "stacked"
-      : "independent";
+    return Zotero.Prefs.get(SIDEBAR_LAYOUT_PREF, true) === "independent"
+      ? "independent"
+      : "stacked";
   } catch {
-    return "independent";
+    return "stacked";
   }
 }
 

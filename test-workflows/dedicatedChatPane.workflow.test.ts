@@ -10,6 +10,8 @@ describe("workflow: dedicated native chat pane", function () {
     ReturnType<WorkflowTestApi["createPaperWithPdfFixture"]>
   >[];
   const readers: any[] = [];
+  const layoutPref = "extensions.zotero.llmforzotero.sidebarLayout";
+  let originalLayout: unknown;
 
   async function until(check: () => boolean, message: string) {
     const deadline = Date.now() + 10000;
@@ -102,6 +104,8 @@ describe("workflow: dedicated native chat pane", function () {
     assert.include(Zotero.DataDirectory.dir, ".scaffold/test/data");
     api = (Zotero as any).LLMForZotero.api.workflowTest;
     await api.reset();
+    originalLayout = Zotero.Prefs.get(layoutPref, true);
+    Zotero.Prefs.set(layoutPref, "independent", true);
     win = Zotero.getMainWindow();
     fixtures = [];
     for (const title of ["Dedicated pane A", "Dedicated pane B"])
@@ -115,6 +119,8 @@ describe("workflow: dedicated native chat pane", function () {
     for (const reader of readers) reader.close();
     for (const fixture of fixtures || []) await api.cleanupFixture(fixture);
     await api.reset();
+    if (originalLayout === undefined) Zotero.Prefs.clear(layoutPref, true);
+    else Zotero.Prefs.set(layoutPref, originalLayout as string, true);
   });
 
   it("opens from the rail without a selection and keeps Library chat locked", async function () {
@@ -462,8 +468,16 @@ describe("workflow: dedicated native chat pane", function () {
       select.dispatchEvent(event);
     };
     try {
+      Zotero.Prefs.clear(prefKey, true);
       let select = await openPreferences();
-      assert.equal(select.value, "independent", "Independent is the default");
+      assert.equal(select.value, "stacked", "Stacked is the default");
+      choose(select, "independent");
+      await until(
+        () =>
+          win.document.documentElement.getAttribute("data-llm-pane-view") ===
+          "chat",
+        "explicit Independent choice applies",
+      );
       assert.isAbove(
         select.getBoundingClientRect().height,
         0,
@@ -531,7 +545,7 @@ describe("workflow: dedicated native chat pane", function () {
       assert.equal(input.value, "Keep this draft across layout changes");
     } finally {
       preferences?.close();
-      Zotero.Prefs.set(prefKey, original || "independent", true);
+      Zotero.Prefs.set(prefKey, original || "stacked", true);
     }
   });
 

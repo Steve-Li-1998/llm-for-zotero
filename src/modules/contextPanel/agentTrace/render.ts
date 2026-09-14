@@ -1,9 +1,14 @@
 import type {
+  AgentActionSummaryResultCard,
   AgentNoteChangeResultCard,
   AgentSavedNoteResultCard,
 } from "../../../agent/types";
 import { projectPaperReferences } from "../../../shared/paperDisplayLabels";
-import { getAgentRuntime } from "../../../agent";
+import type { AgentActionVerification } from "../../../agent/contracts/actionVerificationLabels";
+import {
+  AGENT_ACTION_VERIFICATION_LABELS,
+  worstAgentActionVerification,
+} from "../../../agent/contracts/actionVerificationLabels";
 import {
   exportPlanDocumentMarkdown,
   savePlanDocumentAsNote,
@@ -13,6 +18,7 @@ import {
   loadPlanDocumentOutbox,
 } from "../../../agent/documents/store";
 import type { PlanDocument } from "../../../agent/documents/types";
+import { subscribeDocumentPublication } from "../../../agent/documents/publicationEvents";
 import { planExecutionCoordinator } from "../../../agent/plans/coordinator";
 import {
   loadPlanArtifact,
@@ -22,9 +28,9 @@ import {
   isContentLikeToolArgumentKey,
   isMalformedToolArgumentsDiagnostic,
 } from "../../../agent/toolArgumentDiagnostics";
-import { summarizeFileIOCall } from "../../../agent/tools/write/fileIO";
 import type {
   AgentActionContract,
+  AgentActionReceipt,
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentPendingChoiceValue,
@@ -37,9 +43,12 @@ import type {
   AgentTraceChip,
   AgentTraceDetail,
   AgentTraceRequestSummary,
+  AgentStage,
+  AgentWorkCategory,
   PlanArtifact,
   PlanExecutionLedger,
 } from "../../../agent/types";
+import { SKILL_ACTIVATION_TRACE_LABEL } from "../../../agent/workCategory";
 import { getConversationWriteGeneration } from "../../../shared/conversationWriteFence";
 import type { GeneratedChatImage } from "../../../shared/types";
 import { toFileUrl } from "../../../utils/pathFileUrl";
@@ -57,7 +66,7 @@ import { renderAssistantGeneratedImagesInto } from "../generatedImageRender";
 import {
   normalizePaperContextRefs,
   normalizeSelectedTextSources,
-} from "../normalizers";
+} from "../../../services/context/normalizers";
 import {
   planDocumentCitationSourceHref as citationSourceHref,
   getPlanDocumentItemTitle as itemTitle,
@@ -80,9 +89,17 @@ import {
   disposeStreamingMarkdown,
   renderStreamingMarkdownInto,
 } from "../streamingMarkdown";
-import { sanitizeText } from "../textUtils";
+import { sanitizeText } from "../../../utils/textSanitization";
 import type { Message, PaperContextRef } from "../types";
 import { createWebFaviconImage } from "../webFavicon";
+import {
+  buildAgentActionSummaryCard,
+  renderActionSummaryCard,
+} from "./actionSummaryCard";
+import type { NavigationHost } from "./actionCardNavigation";
+import { actionCardNoteMode, attachNoteDetails } from "./actionCardModel";
+import { renderActionCardDetail } from "./actionCardNoteDetail";
+import { createZoteroActionCardResolvers } from "./actionCardResolvers";
 import { renderDiffPreviewField } from "./diffPreviewField";
 import { getDiscoveryCardProjection } from "./discoveryCardProjection";
 import { renderNoteChangeCard } from "./noteChangeCard";
@@ -95,6 +112,9 @@ import {
   buildToolResultTraceInfo,
   type ToolResultTraceInfo,
 } from "./toolResultTraceInfo";
+import { getAgentRuntime } from "../../../agent";
+import { projectStageEvents } from "./stageProjection";
+import { resolveAgentToolPresentation } from "./toolPresentation";
 import {
   appendAgentTraceText,
   compactAgentTraceEvents,
@@ -104,18 +124,6 @@ import {
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 
-const INTERNAL_PLAN_TOOL_NAMES = new Set([
-  "update_plan",
-  "amend_plan",
-  "task_update",
-  "request_user_input",
-  "submit_plan_document",
-  "submit_document",
-  "research_update",
-  "approve_research_expansion",
-  "approve_research_mutation",
-]);
-
 type AgentTraceSummaryRow = {
   kind: AgentTraceSummaryKind;
   icon: string;
@@ -124,6 +132,36 @@ type AgentTraceSummaryRow = {
   /** Optional code block shown below the summary text (e.g. shell commands). */
   codeBlock?: string;
 };
+
+type AgentStagePayload = Extract<
+  AgentRunEventRecord["payload"],
+  { type: "agent_stage" }
+>;
+type AgentStageStatus = AgentStagePayload["status"];
+
+/**
+ * What each stage is called for the reader.
+ *
+ * The stage vocabulary is the agent's own `AgentWorkCategory`; these are the
+ * product words for it, kept here because they are presentation and nowhere
+ * else in the system needs them. `external_system` is the category's name and
+ * "External action" is the reader's.
+ */
+const AGENT_STAGE_LABELS: Readonly<Record<AgentStage, string>> = {
+  retrieval: "Read evidence",
+  planning: "Planning",
+  generation: "Generated material",
+  zotero_action: "Zotero action",
+  external_system: "External action",
+};
+
+/**
+ * The label for a run that declared no stage at all.
+ *
+ * Such a trace predates the work-category contract, so its one projected
+ * stage covers everything the run did and must not claim to be any of them.
+ */
+const UNDIFFERENTIATED_AGENT_STAGE_LABEL = "Agent activity";
 
 const agentTraceActionExpandedCache = new Map<string, boolean>();
 const agentActivityExpandedCache = new WeakMap<
@@ -144,6 +182,25 @@ type AgentTraceDisplayItem =
       chips?: AgentTraceChip[];
       details?: AgentTraceDetail[];
       detailKey?: string;
+      workCategory?: AgentWorkCategory;
+      /**
+       * The row that announces what its whole stage produced: the material a
+       * generation stage finalized, or the material write a Zotero action
+       * landed. Its stage names itself after it rather than repeating it.
+       */
+      stageHeadline?: boolean;
+    }
+  | {
+      type: "stage";
+      /** Stable across re-renders so the retained view keeps this node. */
+      key: string;
+      stage: AgentStage;
+      status: AgentStageStatus;
+      label: string;
+      chips?: AgentTraceChip[];
+      /** Reconstructed for a trace recorded before stages existed. */
+      projected?: boolean;
+      children: AgentTraceDisplayItem[];
     }
   | {
       type: "card_list";
@@ -173,6 +230,10 @@ type RenderAgentTraceParams = {
   allowPlanRecovery?: boolean;
   onTraceMissing?: () => void;
   onInterleavedText?: () => void;
+  /** The conversation owns this footer below the assistant's final answer. */
+  actionSummaryHost?: HTMLElement;
+  /** Where the action card's chips take the reader; the running Zotero by default. */
+  actionCardNavigation?: NavigationHost;
 };
 
 export function formatAgentActivityDuration(durationMs: number): string {
@@ -257,20 +318,72 @@ function appendAgentActivityDisclosure(params: {
   const summary =
     details.querySelector?.("summary") || doc.createElement("summary");
   summary.className = "llm-agent-activity-summary";
-  const duration = formatAgentActivityDuration(
-    resolveAgentActivityDurationMs(message, userMessage, events),
+  const durationMs = resolveAgentActivityDurationMs(
+    message,
+    userMessage,
+    events,
   );
-  summary.textContent = working
-    ? planPhase === "planning"
-      ? "Planning…"
-      : planPhase === "executing"
-        ? "Executing plan…"
-        : "Working…"
-    : planPhase === "planning"
-      ? `Planned in ${duration}`
-      : planPhase === "executing"
-        ? `Plan ran for ${duration}`
-        : `Worked for ${duration}`;
+  const view = traceViews.get(wrap)!;
+  if (working) {
+    let label = summary.querySelector(".llm-agent-activity-label");
+    if (!label) {
+      label = doc.createElement("span");
+      label.className = "llm-agent-activity-label llm-text-shimmer";
+      summary.replaceChildren(label);
+    }
+    label.textContent =
+      planPhase === "planning"
+        ? "Planning"
+        : planPhase === "executing"
+          ? "Executing plan"
+          : "Working";
+    if (!view.activityClock) {
+      const elapsed = doc.createElement("span");
+      elapsed.className = "llm-agent-activity-elapsed";
+      elapsed.setAttribute("role", "timer");
+      elapsed.setAttribute("aria-live", "off");
+      summary.appendChild(elapsed);
+      const win = doc.defaultView;
+      const clock = {
+        startedAt: Date.now() - durationMs,
+        paint: () => {
+          const totalSeconds = Math.max(
+            0,
+            Math.floor((Date.now() - clock.startedAt) / 1000),
+          );
+          const seconds = String(totalSeconds % 60);
+          const text =
+            totalSeconds < 60
+              ? `${seconds}s`
+              : `${Math.floor(totalSeconds / 60)}m ${seconds.padStart(2, "0")}s`;
+          if (elapsed.textContent !== text) elapsed.textContent = text;
+        },
+        stop: () => {
+          if (timer !== undefined) win?.clearInterval(timer);
+          view.activityClock = undefined;
+        },
+      };
+      // Only this text node ticks: it must not refresh the transcript or run
+      // scroll restoration. Wall time also catches up after a background pause.
+      const timer = win?.setInterval(() => {
+        if (!elapsed.isConnected) clock.stop();
+        else clock.paint();
+      }, 1000);
+      view.activityClock = clock;
+    }
+    view.activityClock.startedAt = Date.now() - durationMs;
+    view.activityClock.paint();
+  } else {
+    view.activityClock?.stop();
+    const duration = formatAgentActivityDuration(durationMs);
+    summary.replaceChildren();
+    summary.textContent =
+      planPhase === "planning"
+        ? `Planned in ${duration}`
+        : planPhase === "executing"
+          ? `Plan ran for ${duration}`
+          : `Worked for ${duration}`;
+  }
   if (mounted) return;
   details.append(summary, list);
   details.addEventListener("toggle", () => {
@@ -1057,7 +1170,10 @@ function renderTagAssignmentTableField(
  */
 function renderResultCardList(
   doc: Document,
-  cards: Exclude<AgentToolResultCard, { kind: "saved_note" | "note_change" }>[],
+  cards: Exclude<
+    AgentToolResultCard,
+    { kind: "saved_note" | "note_change" | "action_summary" }
+  >[],
 ): HTMLDivElement {
   const container = doc.createElement("div");
   container.className =
@@ -1690,9 +1806,14 @@ function getPaperResultMinSelection(
   );
 }
 
+/**
+ * Whether this card is a question the run is waiting on, rather than an
+ * approval of prepared work. The action says so: the host stamps the
+ * interaction kind its tool declared.
+ */
 function isPlanningQuestionAction(action: AgentPendingAction): boolean {
   return (
-    action.toolName === "request_user_input" &&
+    action.interaction === "user_input" &&
     action.mode === "review" &&
     action.fields.length > 0 &&
     action.fields.every((field) => field.type === "choice")
@@ -3022,14 +3143,6 @@ function buildAgentTraceRequestSummary(
   };
 }
 
-function getToolDefinition(name: string) {
-  try {
-    return getAgentRuntime().getToolDefinition(name);
-  } catch {
-    return undefined;
-  }
-}
-
 function resolveToolPresentationSummary(
   summary: AgentToolPresentationSummary | undefined,
   input: {
@@ -3048,8 +3161,30 @@ function resolveToolPresentationSummary(
   return normalized || null;
 }
 
-function toolLabelFromName(name: string): string {
-  const explicitLabel = getToolDefinition(name)?.presentation?.label?.trim();
+/**
+ * Whether this tool asked to stay out of the trace.
+ *
+ * The name is the registry key and nothing more; the answer is the tool's own
+ * declaration. A trace of a tool the registry no longer knows shows its rows,
+ * which is the right failure: a row the reader can read beats a row silently
+ * dropped because a name matched a list written years earlier.
+ */
+function isToolHiddenFromTrace(name: string): boolean {
+  return resolveAgentToolPresentation(name)?.hiddenInTrace === true;
+}
+
+/**
+ * What to call a tool in a row.
+ *
+ * The run stamps the tool's own label on every event it emits, so a trace
+ * recorded months ago still reads the way it read when it ran. Only an event
+ * from before that (or one a connected client relayed without a label) falls
+ * back to the live registry, and then to title-casing the identifier.
+ */
+function toolLabelFromEvent(name: string, eventLabel?: string): string {
+  const stamped = readAgentTraceText(eventLabel);
+  if (stamped) return stamped;
+  const explicitLabel = resolveAgentToolPresentation(name)?.label?.trim();
   if (explicitLabel) return explicitLabel;
   return name
     .split("_")
@@ -3064,7 +3199,7 @@ function buildAgentTraceToolChips(
   userMessage: Message | null | undefined,
 ): AgentTraceChip[] {
   const requestSummary = buildAgentTraceRequestSummary(userMessage);
-  const customChips = getToolDefinition(toolName)?.presentation?.buildChips?.({
+  const customChips = resolveAgentToolPresentation(toolName)?.buildChips?.({
     args,
     request: requestSummary,
   });
@@ -3184,10 +3319,6 @@ function buildAgentTraceToolChips(
     }
   }
 
-  if (!chips.length && toolName === "get_active_context") {
-    return buildAgentTraceRequestChips(userMessage);
-  }
-
   return chips;
 }
 
@@ -3280,9 +3411,6 @@ function buildAgentTraceActionDetails(
   return dedupeAgentTraceDetails(details);
 }
 
-const FILE_IO_TRACE_ACTION_FIELDS = ["action", "mode", "operation", "op"];
-const FILE_IO_TRACE_PATH_FIELDS = ["filePath", "path", "file_path", "filepath"];
-
 function redactContentLikeTraceArgs(value: unknown, key = ""): unknown {
   if (isContentLikeToolArgumentKey(key)) {
     if (typeof value === "string") {
@@ -3310,45 +3438,25 @@ function redactContentLikeTraceArgs(value: unknown, key = ""): unknown {
   return out;
 }
 
-function readFirstTraceStringField(
-  args: Record<string, unknown>,
-  fields: readonly string[],
-): { field: string; value: string } | null {
-  for (const field of fields) {
-    const value = args[field];
-    if (typeof value === "string" && value.trim()) {
-      return { field, value };
-    }
-  }
-  return null;
-}
-
 function buildAgentTraceArgsDetails(
   toolName: string | undefined,
   args: unknown,
 ): AgentTraceDetail[] {
   const details: AgentTraceDetail[] = [];
   const record = isAgentTraceRecord(args) ? args : null;
-  if (record) {
-    if (toolName === "file_io") {
-      const keys = Object.keys(record);
-      pushTraceDetail(details, "Argument keys", keys.join(", "));
-      const action = readFirstTraceStringField(
-        record,
-        FILE_IO_TRACE_ACTION_FIELDS,
+  // A tool that knows which of its argument spellings matter says so itself.
+  if (toolName) {
+    try {
+      details.push(
+        ...(resolveAgentToolPresentation(toolName)?.buildTraceArgDetails?.({
+          args,
+        }) ?? []),
       );
-      if (action) {
-        pushTraceDetail(
-          details,
-          `Action field (${action.field})`,
-          action.value,
-        );
-      }
-      const path = readFirstTraceStringField(record, FILE_IO_TRACE_PATH_FIELDS);
-      if (path) {
-        pushTraceDetail(details, `Path field (${path.field})`, path.value);
-      }
+    } catch {
+      // Display-only formatting must never take the trace down with it.
     }
+  }
+  if (record) {
     if (isMalformedToolArgumentsDiagnostic(record)) {
       pushTraceDetail(details, "Malformed input", record.rawPreview, "code");
     }
@@ -3362,99 +3470,338 @@ function buildAgentTraceArgsDetails(
   return dedupeAgentTraceDetails(details);
 }
 
-function readTraceStringField(
-  args: Record<string, unknown>,
-  fields: readonly string[],
-): string | null {
-  for (const field of fields) {
-    const value = args[field];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return null;
-}
-
-function buildFileIoTraceCodeBlock(
-  args: Record<string, unknown>,
-): string | undefined {
-  const filePath = readTraceStringField(args, [
-    "filePath",
-    "path",
-    "file_path",
-    "filepath",
-  ]);
-  if (!filePath) return undefined;
-  const action =
-    readTraceStringField(args, ["action", "mode", "operation", "op"]) ||
-    "access";
-  return `${action} ${filePath}`;
+/**
+ * The words for a skill activation, when the event is one.
+ *
+ * Skill activation reaches the trace as an event its producer labelled, with
+ * the skill it activated in the event's arguments. Both sides read that label
+ * from one constant, so the row recognises exactly what the bridge stamped
+ * and never asks what the call was named.
+ */
+function skillActivationText(label: string, args: unknown): string | null {
+  if (label !== SKILL_ACTIVATION_TRACE_LABEL) return null;
+  const record =
+    args && typeof args === "object" && !Array.isArray(args)
+      ? (args as Record<string, unknown>)
+      : {};
+  const skill = readAgentTraceText(record.skill);
+  if (!skill) return null;
+  const source = readAgentTraceText(record.source);
+  const verb =
+    source === "codex-native-slash" ? "Invoked Skill" : "Using Skill";
+  return `${verb}: ${skill}`;
 }
 
 function summarizeAgentTraceToolCall(
   name: string,
   args: unknown,
+  toolLabel?: string,
   request?: AgentTraceRequestSummary,
   resultInfo?: ToolResultTraceInfo,
 ): AgentTraceSummaryRow {
-  const label = toolLabelFromName(name);
-  const presentation = getToolDefinition(name)?.presentation;
-  const a =
-    args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-  const skillName =
-    name === "Skill" && typeof a.skill === "string" && a.skill.trim()
-      ? a.skill.trim()
-      : null;
-  const skillSource =
-    name === "Skill" && typeof a.source === "string" ? a.source.trim() : "";
-  const skillVerb =
-    skillSource === "codex-native-slash" ? "Invoked Skill" : "Using Skill";
-  const fallbackFileIoSummary =
-    name === "file_io" ? summarizeFileIOCall(args) : null;
+  const label = toolLabelFromEvent(name, toolLabel);
+  const presentation = resolveAgentToolPresentation(name);
+  let codeBlock: ReturnType<
+    NonNullable<typeof presentation>["buildTraceCodeBlock"] & object
+  > | null = null;
+  try {
+    codeBlock = presentation?.buildTraceCodeBlock?.({ args }) ?? null;
+  } catch {
+    codeBlock = null;
+  }
   const text =
     resolveToolPresentationSummary(presentation?.summaries?.onCall, {
       label,
       args,
       request,
     }) ||
-    fallbackFileIoSummary ||
-    (skillName ? `${skillVerb}: ${skillName}` : `Using ${label}`);
+    skillActivationText(label, args) ||
+    `Using ${label}`;
   const displayText =
     resultInfo?.rowSuffix && text === `Using ${label}`
       ? `${text} ${resultInfo.rowSuffix}`
       : text;
 
-  // Show code block for shell commands and file I/O
-  let codeBlock: string | undefined;
-  if (name === "run_command" && typeof a.command === "string") {
-    codeBlock = a.command;
-  } else if (name === "file_io") {
-    codeBlock = buildFileIoTraceCodeBlock(a);
-  }
-
   return {
     kind: "tool",
     icon: "→",
     ...(presentation?.traceIcon ? { iconName: presentation.traceIcon } : {}),
-    // For file_io, use the descriptive onCall text (e.g. "Reading paper section")
-    // instead of the generic label. For other tools (run_command), keep label.
-    text: codeBlock && name !== "file_io" ? label : displayText,
-    codeBlock,
+    // A block that already carries what the summary would say leaves the row
+    // to name the tool instead of repeating the block one line up.
+    text: codeBlock?.replacesSummary ? label : displayText,
+    ...(codeBlock?.code ? { codeBlock: codeBlock.code } : {}),
   };
+}
+
+/** Note operations are the only ones that consume finalized material today. */
+const NOTE_WRITE_ACTION_OPERATIONS = new Set([
+  "note_create",
+  "note_edit",
+  "note_append",
+]);
+
+/** Model-authored labels are capped so one long title cannot own the trace. */
+const MATERIAL_LABEL_MAX_LENGTH = 120;
+
+type TraceMaterialAnnouncement = { kind: string; title: string };
+
+function materialLabel(value: unknown, fallback: string): string {
+  const text = compactAgentTraceText(value);
+  const capped = (text || fallback).slice(0, MATERIAL_LABEL_MAX_LENGTH).trim();
+  return capped || fallback;
+}
+
+/** What the run finalized, named the way the announcing event named it. */
+function readMaterialAnnouncement(
+  payload: Extract<
+    AgentRunEventRecord["payload"],
+    { type: "material_finalized" }
+  >,
+): { documentId: string; announcement: TraceMaterialAnnouncement } | null {
+  const documentId = readAgentTraceText(payload.materialRef?.documentId);
+  if (!documentId) return null;
+  return {
+    documentId,
+    announcement: {
+      kind: materialLabel(payload.materialKind, "document").replace(
+        /[_-]+/gu,
+        " ",
+      ),
+      title: materialLabel(payload.materialTitle, documentId),
+    },
+  };
+}
+
+type BatchItemOutcomePayload = Extract<
+  AgentRunEventRecord["payload"],
+  { type: "batch_item_outcome" }
+>;
+
+/**
+ * What one item of a note batch is called in the trace.
+ *
+ * The durable row key is the only name the announcement carries, so the row
+ * reads it instead of inventing one: `item:42` is the item the note was
+ * written onto, and a second note onto the same item is `item:42#2`. A key of
+ * any other shape is shown as it stands rather than mangled into a number.
+ */
+function batchItemLabel(itemKey: string): string {
+  const parsed = /^item:(\d+)(?:#(\d+))?$/u.exec(itemKey);
+  if (!parsed) return itemKey;
+  return parsed[2]
+    ? `item ${parsed[1]} (note ${parsed[2]})`
+    : `item ${parsed[1]}`;
+}
+
+/**
+ * Whether the announcing call is the one that wrote this note.
+ *
+ * A resumed batch announces every row it holds, so `saved` alone does not mean
+ * this call wrote anything. Events persisted before the batch reported it
+ * carry no `written` field, and the row has to treat that as unknown rather
+ * than pick a side: reading the absence as `false` would relabel every note of
+ * an older run as one the call skipped.
+ */
+function readBatchItemWritten(
+  payload: BatchItemOutcomePayload,
+): boolean | undefined {
+  const written = (payload as { written?: unknown }).written;
+  return typeof written === "boolean" ? written : undefined;
+}
+
+/**
+ * One row per announced batch item, read from the event and nothing else.
+ *
+ * Fifty notes written under one approval are fifty separate outcomes, and the
+ * tool result can only say how many of each there were. The row names the item
+ * and what became of its note, so the trace stays the record of what happened
+ * to each one.
+ */
+function batchItemOutcomeRow(
+  payload: BatchItemOutcomePayload,
+): AgentTraceSummaryRow {
+  const itemKey = readAgentTraceText(payload.itemKey);
+  const label = itemKey ? batchItemLabel(itemKey) : "an item";
+  if (payload.status === "failed")
+    return { kind: "skip", icon: "!", text: `Note write failed for ${label}` };
+  if (payload.status === "pending")
+    return {
+      kind: "skip",
+      icon: "…",
+      text: `Note not written yet for ${label}`,
+    };
+  const written = readBatchItemWritten(payload);
+  if (written === undefined)
+    return { kind: "ok", icon: "✓", text: `Note recorded for ${label}` };
+  return written
+    ? { kind: "ok", icon: "✓", text: `Saved note for ${label}` }
+    : { kind: "ok", icon: "✓", text: `Already saved: ${label}` };
+}
+
+/**
+ * What a note write proved about the Zotero state it claims to have changed.
+ *
+ * The fact strings are opaque strength tokens minted by the verifier, so the
+ * trace reads their shape and never recomputes a digest.
+ */
+function noteWriteEvidence(
+  receipt: AgentActionReceipt,
+): "html_sha256" | "text_match" | null {
+  if (receipt.verification !== "verified") return null;
+  const facts = receipt.verifiedFacts || [];
+  if (facts.some((fact) => /^native_note:.+:html_sha256:.+$/u.test(fact)))
+    return "html_sha256";
+  if (facts.some((fact) => /^native_note:.+:text_match$/u.test(fact)))
+    return "text_match";
+  return null;
+}
+
+type MaterialNoteWriteOutcome = {
+  documentId: string;
+  evidence: "html_sha256" | "text_match" | null;
+};
+
+/**
+ * The material-backed note write a tool result reports, read from its receipts.
+ *
+ * Identity comes from the receipt's frozen `materialRef` and the proposal
+ * operation, never from the tool's name, so a renamed or re-registered write
+ * tool still reads as the same journey stage. A cancelled receipt is a denial,
+ * which the trace already reports as a cancellation rather than a failure.
+ */
+function readMaterialNoteWrite(
+  payload: Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>,
+): MaterialNoteWriteOutcome | null {
+  for (const receipt of payload.actionReceipts || []) {
+    if (!NOTE_WRITE_ACTION_OPERATIONS.has(receipt.operation)) continue;
+    if (receipt.status === "cancelled") return null;
+    const documentId = readAgentTraceText(receipt.materialRef?.documentId);
+    if (!documentId) continue;
+    return { documentId, evidence: noteWriteEvidence(receipt) };
+  }
+  return null;
+}
+
+/**
+ * The glyph that carries each verdict at a glance, in the trace's own marks.
+ *
+ * `not_applicable` is absent on purpose: an action that claimed nothing gets no
+ * chip, and the compiler holds the builder to that.
+ */
+const AGENT_TRACE_VERIFICATION_CHIP_ICONS: Record<
+  Exclude<AgentActionVerification, "not_applicable">,
+  string
+> = {
+  verified: "✓",
+  execution_only: "▸",
+  unverified: "!",
+};
+
+/**
+ * What a result's receipts proved, and under whose authority they ran.
+ *
+ * One row carries one verdict, so several receipts collapse to the weakest
+ * proof among them: a verified tag write beside an unverified note write is not
+ * a verified result. Everything here is read from receipt fields — a tool's
+ * name, its wording, and its card builders cannot make an unverified effect
+ * look verified.
+ *
+ * `materialEvidence` says the row is already followed by the Phase 1 material
+ * journey row ("Zotero state verified" / "checked (text match)"), which names
+ * the same proof and its strength. When that row covers the whole result the
+ * chip would repeat it, so it is dropped; a weaker receipt elsewhere in the
+ * same result still gets its chip, because the evidence row speaks only for the
+ * note write it came from.
+ */
+function buildAgentTraceVerificationChips(
+  receipts: AgentActionReceipt[] | undefined,
+  options: { materialEvidence?: boolean } = {},
+): AgentTraceChip[] {
+  const chips: AgentTraceChip[] = [];
+  const verification = worstAgentActionVerification(receipts);
+  const coveredByEvidenceRow =
+    options.materialEvidence === true && verification === "verified";
+  if (
+    verification &&
+    verification !== "not_applicable" &&
+    !coveredByEvidenceRow
+  )
+    chips.push({
+      icon: AGENT_TRACE_VERIFICATION_CHIP_ICONS[verification],
+      label: AGENT_ACTION_VERIFICATION_LABELS[verification],
+    });
+  if (
+    (receipts || []).some(
+      (receipt) => receipt?.executionAuthority === "external_runtime",
+    )
+  )
+    chips.push({ icon: "↗", label: "Authorized by connected client" });
+  return chips;
+}
+
+/**
+ * The cards a tool result contributes to the trace.
+ *
+ * Only the tool that produced the result knows whether its payload carries a
+ * card, so the decision is the builder's own payload check and never the
+ * result's tool name or its receipts: a result journaled before receipts
+ * existed still shows the diff that proves what happened. A failed write shows
+ * only that diff, because the rest of a card set describes work that did not
+ * land.
+ */
+export function selectToolResultTraceCards(
+  payload: Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>,
+  buildCards: ((content: unknown) => AgentToolResultCard[] | null) | undefined,
+): AgentToolResultCard[] {
+  if (!buildCards) return [];
+  let cards: AgentToolResultCard[] | null = null;
+  try {
+    cards = buildCards(payload.content) ?? null;
+  } catch {
+    // card generation errors must not crash the trace
+    return [];
+  }
+  if (!cards?.length) return [];
+  return payload.ok
+    ? cards
+    : cards.filter(
+        (card) =>
+          card.kind === "note_change" &&
+          ["failed", "mismatch", "unverified"].includes(card.state),
+      );
+}
+
+/** The material a pending note write would consume, named for the user. */
+function pendingNoteMaterialLabel(
+  ctx: AgentTraceAdapterContext,
+  action: AgentPendingAction,
+): string | null {
+  const material = action.material;
+  if (!material || !NOTE_WRITE_ACTION_OPERATIONS.has(material.operation))
+    return null;
+  const documentId = readAgentTraceText(material.ref?.documentId);
+  if (!documentId) return null;
+  return ctx.finalizedMaterials.get(documentId)?.title || documentId;
 }
 
 function summarizeAgentTraceConfirmationRequest(
   action: AgentPendingAction,
   request?: AgentTraceRequestSummary,
+  materialLabelForNote?: string | null,
 ): AgentTraceSummaryRow {
   const toolName = action.toolName;
-  const label = toolLabelFromName(toolName);
-  const text =
-    resolveToolPresentationSummary(
-      getToolDefinition(toolName)?.presentation?.summaries?.onPending,
-      { label, request },
-    ) ||
-    (action.mode === "review"
-      ? `Waiting for your review of ${label}`
-      : `Waiting for your approval to continue with ${label}`);
+  const label = toolLabelFromEvent(toolName);
+  // Material identity outranks the tool's own wording: the user is authorizing
+  // one exact document, so the row names it.
+  const text = materialLabelForNote
+    ? `Waiting for permission to save ${materialLabelForNote} as a note`
+    : resolveToolPresentationSummary(
+        resolveAgentToolPresentation(toolName)?.summaries?.onPending,
+        { label, request },
+      ) ||
+      (action.mode === "review"
+        ? `Waiting for your review of ${label}`
+        : `Waiting for your approval to continue with ${label}`);
   return {
     kind: "plan",
     icon: "...",
@@ -3469,29 +3816,74 @@ function summarizeAgentTraceConfirmationResolved(
   request?: AgentTraceRequestSummary,
 ): AgentTraceSummaryRow {
   const toolName = action.toolName;
-  const label = toolLabelFromName(toolName);
+  const label = toolLabelFromEvent(toolName);
   const selectedActionLabel =
     action.actions?.find((entry) => entry.id === actionId)?.label ||
     (approved ? action.confirmLabel : action.cancelLabel);
+  const planningQuestionCount =
+    action.interaction === "user_input" ? action.fields.length : 0;
   const text =
     resolveToolPresentationSummary(
       approved
-        ? getToolDefinition(toolName)?.presentation?.summaries?.onApproved
-        : getToolDefinition(toolName)?.presentation?.summaries?.onDenied,
+        ? resolveAgentToolPresentation(toolName)?.summaries?.onApproved
+        : resolveAgentToolPresentation(toolName)?.summaries?.onDenied,
       { label, request },
     ) ||
-    (approved
-      ? action.mode === "review"
-        ? `Review received - selected "${selectedActionLabel}" for ${label}`
-        : `Approval received - continuing with ${label}`
-      : action.mode === "review"
-        ? `Stopped ${label} after review`
-        : `Cancelled ${label}`);
+    (approved && planningQuestionCount
+      ? `Answered ${planningQuestionCount} planning question${planningQuestionCount === 1 ? "" : "s"}`
+      : approved
+        ? action.mode === "review"
+          ? `Review received - selected "${selectedActionLabel}" for ${label}`
+          : `Approval received - continuing with ${label}`
+        : action.mode === "review"
+          ? `Stopped ${label} after review`
+          : `Cancelled ${label}`);
   return {
     kind: approved ? "ok" : "skip",
     icon: approved ? "✓" : "-",
     text,
   };
+}
+
+function buildPlanningQuestionTraceDetails(
+  action: AgentPendingAction,
+  data: unknown,
+): AgentTraceDetail[] {
+  if (
+    action.interaction !== "user_input" ||
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data)
+  ) {
+    return [];
+  }
+  const answers = data as Record<string, unknown>;
+  return action.fields.flatMap((field) => {
+    const raw = answers[field.id];
+    let answer = "";
+    if (typeof raw === "string") {
+      answer = sanitizeText(raw).trim();
+    } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const choice = raw as Record<string, unknown>;
+      if (choice.kind === "custom" && typeof choice.text === "string") {
+        answer = sanitizeText(choice.text).trim();
+      } else if (
+        choice.kind === "option" &&
+        typeof choice.optionId === "string" &&
+        field.type === "choice"
+      ) {
+        answer =
+          field.options.find((option) => option.id === choice.optionId)
+            ?.label || "";
+      }
+    }
+    const question = sanitizeText(field.label || "").trim();
+    return question && answer
+      ? [normalizeAgentTraceDetail(question, answer, "text")].filter(
+          (detail): detail is AgentTraceDetail => Boolean(detail),
+        )
+      : [];
+  });
 }
 
 function toolContentLooksEmpty(content: unknown): boolean {
@@ -3519,10 +3911,11 @@ function summarizeAgentTraceToolResult(
   name: string,
   ok: boolean,
   content: unknown,
+  toolLabel?: string,
   effect?: AgentToolEffect,
   request?: AgentTraceRequestSummary,
 ): AgentTraceSummaryRow | null {
-  const label = toolLabelFromName(name);
+  const label = toolLabelFromEvent(name, toolLabel);
   const normalized = isAgentTraceRecord(content) ? content : null;
   if (!ok) {
     const rawError = readAgentTraceText(normalized?.error);
@@ -3531,7 +3924,7 @@ function summarizeAgentTraceToolResult(
     }
     const text =
       resolveToolPresentationSummary(
-        getToolDefinition(name)?.presentation?.summaries?.onError,
+        resolveAgentToolPresentation(name)?.summaries?.onError,
         { label, content, effect, request },
       ) || `Could not complete ${label}: ${rawError || "Tool failed"}`;
     return {
@@ -3545,12 +3938,12 @@ function summarizeAgentTraceToolResult(
   const text =
     resolveToolPresentationSummary(
       isEmpty
-        ? getToolDefinition(name)?.presentation?.summaries?.onEmpty
-        : getToolDefinition(name)?.presentation?.summaries?.onSuccess,
+        ? resolveAgentToolPresentation(name)?.summaries?.onEmpty
+        : resolveAgentToolPresentation(name)?.summaries?.onSuccess,
       { label, content, effect, request },
     ) ||
     resolveToolPresentationSummary(
-      getToolDefinition(name)?.presentation?.summaries?.onSuccess,
+      resolveAgentToolPresentation(name)?.summaries?.onSuccess,
       { label, content, effect, request },
     ) ||
     (isEmpty ? `No results from ${label}` : "");
@@ -3586,26 +3979,27 @@ function summarizeCodexToolActivity(input: {
   }
   const toolName = readAgentTraceText(input.toolName);
   const label =
-    readAgentTraceText(input.toolLabel) ||
-    (toolName ? toolLabelFromName(toolName) : "") ||
-    "Zotero MCP tool";
-  const imageArtifacts = normalizeImageArtifacts(input.artifacts);
-  if (
-    input.phase === "completed" &&
-    input.ok !== false &&
-    imageArtifacts.length &&
-    normalizeMcpToolName(toolName || "") === "paper_read" &&
-    readToolArgsMode(input.args) === "figures"
-  ) {
+    (toolName
+      ? toolLabelFromEvent(toolName, input.toolLabel)
+      : readAgentTraceText(input.toolLabel)) || "Zotero MCP tool";
+  // Only the tool that ran can say what its relayed artifacts amount to.
+  const relayedSummary = toolName
+    ? buildRelayedActivitySummary(toolName, input)
+    : null;
+  if (relayedSummary) {
     return {
       kind: "tool",
       icon: "⌘",
-      text:
-        imageArtifacts.length === 1
-          ? "Extracted 1 figure"
-          : `Extracted ${imageArtifacts.length} figures`,
+      text: relayedSummary,
       codeBlock: readAgentTraceText(input.codeBlock) || undefined,
     };
+  }
+  // A skill activation reaches the trace as a relayed row the bridge
+  // labelled, with the skill in its arguments; the same reading as a
+  // host-run activation, from the same two event fields.
+  const skillText = skillActivationText(label, input.args);
+  if (skillText) {
+    return { kind: "tool", icon: "⌘", text: skillText };
   }
   const verb = input.phase === "completed" ? "Used" : "Using";
   return {
@@ -3616,27 +4010,43 @@ function summarizeCodexToolActivity(input: {
   };
 }
 
+/**
+ * The row a connected client's relayed call gets from the tool that ran.
+ *
+ * The name only locates the spec in the registry; what the row says is the
+ * spec's own answer about the arguments and artifacts it was handed.
+ */
+function buildRelayedActivitySummary(
+  toolName: string,
+  input: {
+    phase: "started" | "completed";
+    args?: unknown;
+    ok?: boolean;
+    artifacts?: AgentToolArtifact[];
+  },
+): string | null {
+  const buildTraceSummary = resolveAgentToolPresentation(
+    normalizeMcpToolName(toolName),
+  )?.buildTraceSummary;
+  if (!buildTraceSummary) return null;
+  try {
+    return (
+      buildTraceSummary({
+        args: input.args,
+        artifacts: input.artifacts,
+        phase: input.phase,
+        ok: input.ok,
+      }) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
 function normalizeMcpToolName(value: string): string {
   const clean = value.trim();
   const match = clean.match(/^mcp__.+__(.+)$/);
   return match?.[1] || clean;
-}
-
-function readToolArgsMode(args: unknown): string {
-  let value = args;
-  if (typeof value === "string") {
-    const clean = value.trim();
-    if (clean.startsWith("{") || clean.startsWith("[")) {
-      try {
-        value = JSON.parse(clean) as unknown;
-      } catch {
-        return "";
-      }
-    }
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const mode = (value as Record<string, unknown>).mode;
-  return typeof mode === "string" ? mode.trim() : "";
 }
 
 type ImageAgentToolArtifact = Extract<AgentToolArtifact, { kind: "image" }>;
@@ -3734,11 +4144,12 @@ function appendImageArtifactGrid(
   return false;
 }
 
-function isGenericAgentStatusText(text: string): boolean {
+export function isGenericAgentStatusText(text: string): boolean {
   const normalized = text.trim().toLowerCase();
   return (
     normalized === "running agent" ||
-    /^continuing agent \(\d+\/\d+\)$/.test(normalized)
+    /^continuing agent \((?:segment \d+, )?\d+\/\d+\)$/.test(normalized) ||
+    /^checkpointed agent segment \d+; continuing$/.test(normalized)
   );
 }
 
@@ -3869,7 +4280,24 @@ type AgentTraceAdapterContext = {
   intermediateInlineTextItems: Set<
     Extract<AgentTraceDisplayItem, { type: "inline_text" }>
   >;
+  /** Material this run announced as finalized, keyed by document id. */
+  finalizedMaterials: Map<string, TraceMaterialAnnouncement>;
+  /** Documents whose note write failed in this run. */
+  failedMaterialWrites: Set<string>;
 };
+
+/**
+ * Events whose row does not turn already-streamed text into an intermediate
+ * draft.
+ *
+ * `message_delta` and `message_rollback` are that text. `final` and
+ * `material_finalized` announce the answer itself rather than a step the agent
+ * took before writing it, so a run that streams a draft and then finalizes its
+ * material must still show one collapsed "Drafting answer" row.
+ */
+const NON_INTERLEAVING_TRACE_EVENT_TYPES = new Set<
+  AgentRunEventRecord["payload"]["type"]
+>(["message_delta", "message_rollback", "final", "material_finalized"]);
 
 function markLatestInlineTextAsIntermediate(
   ctx: AgentTraceAdapterContext,
@@ -4032,19 +4460,16 @@ function appendLegacyAgentTraceEvent(
       return true;
     }
     case "tool_call": {
-      if (INTERNAL_PLAN_TOOL_NAMES.has(entry.payload.name)) return true;
+      if (isToolHiddenFromTrace(entry.payload.name)) return true;
       const resultEvent = ctx.toolResultsByCallId.get(entry.payload.callId);
-      const resultInfo = buildToolResultTraceInfo(
-        entry.payload.name,
-        resultEvent,
-      );
+      const resultInfo = buildToolResultTraceInfo(resultEvent);
       let presentationDetails: AgentTraceDetail[] = [];
       if (resultEvent) {
         try {
           presentationDetails =
-            getToolDefinition(
+            resolveAgentToolPresentation(
               entry.payload.name,
-            )?.presentation?.buildTraceDetails?.({
+            )?.buildTraceDetails?.({
               args: entry.payload.args,
               content: resultEvent.content,
             }) ?? [];
@@ -4061,10 +4486,11 @@ function appendLegacyAgentTraceEvent(
             ),
             ...(resultInfo?.details || []),
           ];
-      const presentation = getToolDefinition(entry.payload.name)?.presentation;
+      const presentation = resolveAgentToolPresentation(entry.payload.name);
       let row = summarizeAgentTraceToolCall(
         entry.payload.name,
         entry.payload.args,
+        entry.payload.toolLabel,
         ctx.requestSummary,
         resultInfo || undefined,
       );
@@ -4082,6 +4508,7 @@ function appendLegacyAgentTraceEvent(
       ctx.items.push({
         type: "action",
         row,
+        workCategory: entry.payload.workCategory,
         chips: buildAgentTraceToolChips(
           entry.payload.name,
           entry.payload.args,
@@ -4097,7 +4524,7 @@ function appendLegacyAgentTraceEvent(
       appendReasoningTraceItem(ctx, entry.payload);
       return true;
     case "tool_result": {
-      if (INTERNAL_PLAN_TOOL_NAMES.has(entry.payload.name)) return true;
+      if (isToolHiddenFromTrace(entry.payload.name)) return true;
       // A write the agent chose on its own must always be visible, ahead of
       // every presentation shortcut: neither a missing summary nor a tool that
       // folds its result into the call row may hide it.
@@ -4105,57 +4532,77 @@ function appendLegacyAgentTraceEvent(
       if (
         !judgment &&
         entry.payload.ok &&
-        getToolDefinition(entry.payload.name)?.presentation
+        resolveAgentToolPresentation(entry.payload.name)
           ?.mergeResultIntoCallTrace
       ) {
         return true;
       }
+      // The journey stage comes from the receipts the write produced, so the
+      // rows below never depend on what the write tool happens to be called.
+      const materialWrite = readMaterialNoteWrite(entry.payload);
       let row = summarizeAgentTraceToolResult(
         entry.payload.name,
         entry.payload.ok,
         entry.payload.content,
+        entry.payload.toolLabel,
         entry.payload.effect,
         ctx.requestSummary,
       );
+      if (materialWrite) {
+        if (!entry.payload.ok)
+          ctx.failedMaterialWrites.add(materialWrite.documentId);
+        const text = entry.payload.ok ? "Saved note" : "Note write failed";
+        row = row
+          ? { ...row, text }
+          : {
+              kind: entry.payload.ok ? "ok" : "skip",
+              icon: entry.payload.ok ? "\u2713" : "!",
+              text,
+            };
+      }
       if (judgment) {
         row = row
           ? { ...row, text: `${row.text} (agent's own call)` }
           : {
               kind: "ok",
               icon: "✓",
-              text: `${toolLabelFromName(entry.payload.name)} completed (agent's own call)`,
+              text: `${toolLabelFromEvent(entry.payload.name, entry.payload.toolLabel)} completed (agent's own call)`,
             };
       }
+      const materialEvidence = entry.payload.ok
+        ? materialWrite?.evidence || null
+        : null;
       if (row) {
         ctx.items.push({
           type: "action",
           row,
+          chips: buildAgentTraceVerificationChips(
+            entry.payload.actionReceipts,
+            {
+              materialEvidence: Boolean(materialEvidence),
+            },
+          ),
+          workCategory: entry.payload.workCategory,
+          ...(materialWrite ? { stageHeadline: true } : {}),
         });
-        if (entry.payload.ok || entry.payload.name === "note_write") {
-          try {
-            const cards =
-              getToolDefinition(
-                entry.payload.name,
-              )?.presentation?.buildResultCards?.(entry.payload.content) ??
-              null;
-            if (cards && cards.length > 0) {
-              ctx.items.push({
-                type: "card_list",
-                cards: entry.payload.ok
-                  ? cards
-                  : cards.filter(
-                      (card) =>
-                        card.kind === "note_change" &&
-                        ["failed", "mismatch", "unverified"].includes(
-                          card.state,
-                        ),
-                    ),
-              });
-            }
-          } catch {
-            // card generation errors must not crash the trace
-          }
+        if (materialEvidence) {
+          ctx.items.push({
+            type: "action",
+            row: {
+              kind: "ok",
+              icon: "\u2713",
+              text:
+                materialEvidence === "html_sha256"
+                  ? "Zotero state verified"
+                  : "Zotero state checked (text match)",
+            },
+          });
         }
+        const cards = selectToolResultTraceCards(
+          entry.payload,
+          resolveAgentToolPresentation(entry.payload.name)?.buildResultCards,
+        );
+        if (cards.length) ctx.items.push({ type: "card_list", cards });
       }
       if (entry.payload.ok) {
         const hasImageGrid = appendImageArtifactGrid(
@@ -4225,13 +4672,19 @@ function appendCodexAgentTraceEvent(
           codeBlock: entry.payload.codeBlock,
           artifacts: entry.payload.artifacts,
         }),
-        chips: toolName
-          ? buildAgentTraceToolChips(
-              toolName,
-              entry.payload.args,
-              ctx.userMessage,
-            )
-          : undefined,
+        workCategory: entry.payload.workCategory,
+        // A write the connected client ran reaches the trace here, so its
+        // receipts must be read for the same verdict an in-app write shows.
+        chips: [
+          ...(toolName
+            ? buildAgentTraceToolChips(
+                toolName,
+                entry.payload.args,
+                ctx.userMessage,
+              )
+            : []),
+          ...buildAgentTraceVerificationChips(entry.payload.actionReceipts),
+        ],
         details,
         detailKey: `codex:${entry.payload.itemId}`,
       });
@@ -4294,6 +4747,27 @@ function appendSharedAgentTraceEvent(
         detailKey: `plan-amendment:${entry.payload.amendmentId}`,
       });
       return true;
+    case "material_finalized": {
+      const announced = readMaterialAnnouncement(entry.payload);
+      if (!announced) return true;
+      ctx.finalizedMaterials.set(announced.documentId, announced.announcement);
+      ctx.items.push({
+        type: "action",
+        row: {
+          kind: "ok",
+          icon: "\u2713",
+          text: `Generated ${announced.announcement.kind}: ${announced.announcement.title}`,
+        },
+        stageHeadline: true,
+      });
+      return true;
+    }
+    case "batch_item_outcome":
+      ctx.items.push({
+        type: "action",
+        row: batchItemOutcomeRow(entry.payload),
+      });
+      return true;
     case "confirmation_required":
       ctx.pendingActions.set(entry.payload.requestId, entry.payload.action);
       ctx.items.push({
@@ -4301,10 +4775,15 @@ function appendSharedAgentTraceEvent(
         row: summarizeAgentTraceConfirmationRequest(
           entry.payload.action,
           ctx.requestSummary,
+          pendingNoteMaterialLabel(ctx, entry.payload.action),
         ),
+        ...(entry.payload.action.interaction === "user_input"
+          ? { detailKey: `confirmation:${entry.payload.requestId}` }
+          : {}),
       });
       return true;
     case "confirmation_resolved": {
+      const requestId = entry.payload.requestId;
       const action = ctx.pendingActions.get(entry.payload.requestId) || {
         toolName: "action",
         title: "Action",
@@ -4313,7 +4792,7 @@ function appendSharedAgentTraceEvent(
         fields: [],
       };
       ctx.pendingActions.delete(entry.payload.requestId);
-      ctx.items.push({
+      const resolvedItem: Extract<AgentTraceDisplayItem, { type: "action" }> = {
         type: "action",
         row: summarizeAgentTraceConfirmationResolved(
           action,
@@ -4321,11 +4800,32 @@ function appendSharedAgentTraceEvent(
           entry.payload.actionId,
           ctx.requestSummary,
         ),
-      });
+        ...(action.interaction === "user_input"
+          ? {
+              detailKey: `confirmation:${requestId}`,
+              details: buildPlanningQuestionTraceDetails(
+                action,
+                entry.payload.data,
+              ),
+            }
+          : {}),
+      };
+      if (action.interaction === "user_input") {
+        const existingIndex = ctx.items.findIndex(
+          (item) =>
+            item.type === "action" &&
+            item.detailKey === `confirmation:${requestId}`,
+        );
+        if (existingIndex >= 0) ctx.items[existingIndex] = resolvedItem;
+        else ctx.items.push(resolvedItem);
+      } else {
+        ctx.items.push(resolvedItem);
+      }
       return true;
     }
     case "final": {
-      const alreadyCompleted = ctx.items.some(
+      const alreadyCompleted = someAgentTraceDisplayItem(
+        ctx.items,
         (item) => item.type === "action" && item.row.kind === "done",
       );
       if (!alreadyCompleted) {
@@ -4352,6 +4852,18 @@ function appendSharedAgentTraceEvent(
   }
 }
 
+/**
+ * How this run names the papers it talks about, as the run itself said.
+ *
+ * A result that resolved paper identities to reader-facing labels reports
+ * them under `displayLabels`. That field is the fact; which tool produced it
+ * is not, so a result is read for it whenever it carries one. A run that
+ * never resolved any has none, and identities stay as they are.
+ */
+function readPaperDisplayLabels(value: unknown): unknown {
+  return isAgentTraceRecord(value) ? value.displayLabels : undefined;
+}
+
 function researchDisplayLabels(
   events: readonly AgentRunEventRecord[],
 ): Map<string, string> | undefined {
@@ -4362,11 +4874,8 @@ function researchDisplayLabels(
       event.providerType === "paper_display_labels" &&
       event.payload?.version === 1
         ? event.payload.displayLabels
-        : event.type === "tool_result" &&
-            event.ok &&
-            ["research_update", "update_plan"].includes(event.name) &&
-            isAgentTraceRecord(event.content)
-          ? event.content.displayLabels
+        : event.type === "tool_result" && event.ok
+          ? readPaperDisplayLabels(event.content)
           : undefined;
     if (values && typeof values === "object")
       return new Map(
@@ -4476,6 +4985,275 @@ export function buildAgentTraceDisplayItems(
   return projection;
 }
 
+/**
+ * Close a run that generated material but could not save it.
+ *
+ * The two halves are reported separately everywhere else, so the reader is
+ * left to guess whether the work survived. This row says it did and names the
+ * one thing left to do, which is the same material a retry would reuse.
+ */
+function appendMaterialOutcomeFooter(ctx: AgentTraceAdapterContext): void {
+  for (const [documentId, material] of ctx.finalizedMaterials) {
+    if (!ctx.failedMaterialWrites.has(documentId)) continue;
+    ctx.items.push({
+      type: "action",
+      row: {
+        kind: "skip",
+        icon: "!",
+        text:
+          `Generated ${material.kind}: complete \u00b7 Note write: failed ` +
+          "\u00b7 Retry available using the same material",
+      },
+    });
+  }
+}
+
+/**
+ * Items a stage group holds.
+ *
+ * A stage groups the work the agent did; the answer it streamed, the thinking
+ * it reported and the messages it wrote are not work steps, so they stay at
+ * the top level and end the stage they interrupt rather than being folded
+ * into it out of order.
+ */
+const STAGE_GROUPED_ITEM_TYPES: ReadonlySet<AgentTraceDisplayItem["type"]> =
+  new Set(["action", "card_list", "image_grid"]);
+
+type OpenTraceStage = {
+  item: Extract<AgentTraceDisplayItem, { type: "stage" }>;
+  /** Receipts the stage's own events proved, for its summary chip. */
+  receipts: AgentActionReceipt[];
+  /**
+   * A close arrived for this stage. The close is emitted immediately before
+   * the event it describes, so the stage stays open until it has taken that
+   * event's rows.
+   */
+  awaitingClose: boolean;
+  /**
+   * Whether the group has reached the item list.
+   *
+   * A stage joins the list with its first row, never when it opens: a stage
+   * whose every row is suppressed would otherwise sit between two halves of
+   * the streamed answer and split them into two paragraphs, and removing it
+   * afterwards cannot put them back together.
+   */
+  shown: boolean;
+};
+
+function traceStageLabel(payload: AgentStagePayload): string {
+  return payload.undifferentiated
+    ? UNDIFFERENTIATED_AGENT_STAGE_LABEL
+    : AGENT_STAGE_LABELS[payload.stage];
+}
+
+function readTraceEventReceipts(
+  payload: AgentRunEventRecord["payload"],
+): AgentActionReceipt[] {
+  if (payload.type === "tool_result") return payload.actionReceipts || [];
+  if (payload.type === "codex_tool_activity")
+    return payload.actionReceipts || [];
+  return [];
+}
+
+/**
+ * Groups the rows a run produced under the stage that produced them.
+ *
+ * The reducer below pushes rows onto one flat array, as it always has; this
+ * moves each event's rows into the stage that was open when the event
+ * arrived. Nothing here reads a tool name: a stage opens, closes and is
+ * labelled entirely from the `agent_stage` events the run recorded (or that
+ * the compatibility projection reconstructed for it).
+ */
+/**
+ * Drop a row's evidence chip when its stage's heading already carries it.
+ *
+ * The heading shows the aggregate of everything the group's rows proved, so a
+ * row whose verdict is that aggregate would state it twice. A row whose proof
+ * differs carries a different label from the shared vocabulary and keeps its
+ * chip -- which is the only case where the second chip tells the reader
+ * something the first did not. The comparison is by label because a heading's
+ * chips are receipt-derived and nothing else in a row's chip set shares that
+ * vocabulary.
+ */
+function suppressChipsTheStageHeadingShows(
+  stage: Extract<AgentTraceDisplayItem, { type: "stage" }>,
+): void {
+  const shown = new Set((stage.chips || []).map((chip) => chip.label));
+  if (!shown.size) return;
+  for (const child of stage.children) {
+    if (child.type !== "action" || !child.chips?.length) continue;
+    child.chips = child.chips.filter((chip) => !shown.has(chip.label));
+  }
+}
+
+function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
+  let open: OpenTraceStage | null = null;
+  let closed: OpenTraceStage | null = null;
+  /** Whether a top-level row has separated the last closed stage from now. */
+  let interrupted = false;
+
+  const close = (): void => {
+    const stage = open;
+    open = null;
+    // A stage no row ever joined never reached the list, so there is nothing
+    // to close and nothing separating what came before it from what follows.
+    if (!stage?.shown) return;
+    // The row that announces what the stage produced becomes its heading, so
+    // the group names its own outcome instead of repeating it one line down.
+    const headlineIndex = stage.item.children.findIndex(
+      (child) => child.type === "action" && child.stageHeadline,
+    );
+    const headline =
+      headlineIndex >= 0
+        ? stage.item.children.splice(headlineIndex, 1)[0]
+        : null;
+    if (headline?.type === "action") stage.item.label = headline.row.text;
+    const chips = buildAgentTraceVerificationChips(stage.receipts);
+    if (chips.length) stage.item.chips = chips;
+    closed = stage;
+    interrupted = false;
+  };
+
+  const openStage = (payload: AgentStagePayload, seq: number): void => {
+    // Two stages of one kind with nothing visible between them are one stage
+    // to the reader, so the second reopens the first instead of repeating it.
+    if (closed && !interrupted && closed.item.stage === payload.stage) {
+      open = closed;
+      closed = null;
+      open.awaitingClose = false;
+      open.item.status = payload.status;
+      return;
+    }
+    const item: Extract<AgentTraceDisplayItem, { type: "stage" }> = {
+      type: "stage",
+      key: `stage:${seq}`,
+      stage: payload.stage,
+      status: payload.status,
+      label: traceStageLabel(payload),
+      ...(payload.projected ? { projected: true } : {}),
+      children: [],
+    };
+    open = { item, receipts: [], awaitingClose: false, shown: false };
+  };
+
+  return {
+    onStageEvent(payload: AgentStagePayload, seq: number): void {
+      if (payload.status === "started") {
+        if (open?.item.stage === payload.stage) {
+          open.awaitingClose = false;
+          open.item.status = "started";
+          return;
+        }
+        close();
+        openStage(payload, seq);
+        return;
+      }
+      if (open?.item.stage !== payload.stage) {
+        close();
+        openStage(payload, seq);
+      }
+      if (!open) return;
+      open.item.status = payload.status;
+      open.awaitingClose = true;
+    },
+    noteEvent(entry: AgentRunEventRecord): void {
+      if (!open) return;
+      open.receipts.push(...readTraceEventReceipts(entry.payload));
+    },
+    /** Move the rows this event produced into the stage that was open. */
+    routeProducedItems(producedFrom: number): void {
+      if (items.length <= producedFrom) return;
+      const produced = items.slice(producedFrom);
+      const groupable = produced.every((item) =>
+        STAGE_GROUPED_ITEM_TYPES.has(item.type),
+      );
+      if (!open || !groupable) {
+        close();
+        interrupted = true;
+        return;
+      }
+      items.length = producedFrom;
+      if (!open.shown) {
+        // The group takes the place its first row would have had.
+        items.push(open.item);
+        open.shown = true;
+      }
+      open.item.children.push(...produced);
+      if (open.awaitingClose) close();
+    },
+    finish(): void {
+      close();
+      // A stage that reopens gains receipts, so its heading's verdict is only
+      // final once the run is: the rows drop what it shows exactly once, here.
+      for (const item of items) {
+        if (item.type === "stage") suppressChipsTheStageHeadingShows(item);
+      }
+    },
+  };
+}
+
+/** Visit every item, inside a stage group or not, in the order produced. */
+function forEachAgentTraceDisplayItem(
+  items: readonly AgentTraceDisplayItem[],
+  visit: (item: AgentTraceDisplayItem) => void,
+): void {
+  for (const item of items) {
+    visit(item);
+    if (item.type === "stage")
+      forEachAgentTraceDisplayItem(item.children, visit);
+  }
+}
+
+/** Whether any item, inside a stage group or not, satisfies `predicate`. */
+function someAgentTraceDisplayItem(
+  items: readonly AgentTraceDisplayItem[],
+  predicate: (item: AgentTraceDisplayItem) => boolean,
+): boolean {
+  return items.some((item) =>
+    item.type === "stage"
+      ? predicate(item) || someAgentTraceDisplayItem(item.children, predicate)
+      : predicate(item),
+  );
+}
+
+/** Rewrite every reader-facing string with the run's paper display labels. */
+function projectPaperReferencesOntoTraceItems(
+  items: readonly AgentTraceDisplayItem[],
+  labels: Map<string, string>,
+): AgentTraceDisplayItem[] {
+  return items.map((item): AgentTraceDisplayItem => {
+    if (item.type === "inline_text")
+      return { ...item, text: projectPaperReferences(item.text, labels) };
+    if (item.type === "reasoning")
+      return {
+        ...item,
+        summary: item.summary
+          ? projectPaperReferences(item.summary, labels)
+          : undefined,
+        details: item.details
+          ? projectPaperReferences(item.details, labels)
+          : undefined,
+      };
+    if (item.type === "message")
+      return { ...item, text: projectPaperReferences(item.text, labels) };
+    if (item.type === "action")
+      return {
+        ...item,
+        row: {
+          ...item.row,
+          text: projectPaperReferences(item.row.text, labels),
+        },
+      };
+    if (item.type === "stage")
+      return {
+        ...item,
+        label: projectPaperReferences(item.label, labels),
+        children: projectPaperReferencesOntoTraceItems(item.children, labels),
+      };
+    return item;
+  });
+}
+
 function buildAgentTraceDisplayItemsCanonical(
   events: AgentRunEventRecord[],
   userMessage: Message | null | undefined,
@@ -4489,7 +5267,9 @@ function buildAgentTraceDisplayItemsCanonical(
   const isCodexTrace = assistantMessage?.modelProviderLabel === "Codex";
   const isAgentTrace = assistantMessage?.runMode === "agent";
   const preserveRolledBackText = isCodexTrace || isAgentTrace;
-  const compactedEvents = compactAgentTraceEvents(events);
+  // A trace recorded before the runtime emitted stage events is reconstructed
+  // once, here, so everything below reads one kind of event log.
+  const compactedEvents = compactAgentTraceEvents(projectStageEvents(events));
   const toolResultsByCallId = new Map<
     string,
     Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>
@@ -4517,6 +5297,8 @@ function buildAgentTraceDisplayItemsCanonical(
     fallbackReasoningStep: 1,
     visibleInlineText: new Set<string>(),
     intermediateInlineTextItems: new Set(),
+    finalizedMaterials: new Map<string, TraceMaterialAnnouncement>(),
+    failedMaterialWrites: new Set<string>(),
   };
 
   items.push({
@@ -4553,8 +5335,13 @@ function buildAgentTraceDisplayItemsCanonical(
     detailKey: "request",
   });
 
+  const stageGrouper = createTraceStageGrouper(items);
   for (let index = 0; index < compactedEvents.length; index += 1) {
     const entry = compactedEvents[index];
+    if (entry.payload.type === "agent_stage") {
+      stageGrouper.onStageEvent(entry.payload, entry.seq);
+      continue;
+    }
     const itemCountBeforeEvent = items.length;
     const handled =
       appendCodexAgentTraceEvent(adapterContext, entry) ||
@@ -4562,14 +5349,28 @@ function buildAgentTraceDisplayItemsCanonical(
       appendSharedAgentTraceEvent(adapterContext, entry);
     if (
       handled &&
-      entry.payload.type !== "message_delta" &&
-      entry.payload.type !== "message_rollback" &&
-      entry.payload.type !== "final" &&
+      !NON_INTERLEAVING_TRACE_EVENT_TYPES.has(entry.payload.type) &&
       items.length > itemCountBeforeEvent
     ) {
       markLatestInlineTextAsIntermediate(adapterContext, itemCountBeforeEvent);
     }
+    stageGrouper.noteEvent(entry);
+    stageGrouper.routeProducedItems(itemCountBeforeEvent);
   }
+  stageGrouper.finish();
+
+  appendMaterialOutcomeFooter(adapterContext);
+
+  // What the run did, stated once at the end for the reader: the answer bubble
+  // no longer carries the model-facing action-status block, and the card
+  // renders wherever the trace does, interleaved text included.
+  const actionSummary = buildAgentActionSummaryCard(
+    compactedEvents,
+    createZoteroActionCardResolvers(
+      (documentId) => adapterContext.finalizedMaterials.get(documentId)?.title,
+    ),
+  );
+  if (actionSummary) items.push({ type: "card_list", cards: [actionSummary] });
 
   const finalText = getFinalTraceText(compactedEvents);
   const isInterleaved = items.some(
@@ -4603,37 +5404,75 @@ function buildAgentTraceDisplayItemsCanonical(
 
   const labels = researchDisplayLabels(events);
   const presentedItems = labels
-    ? displayItems.map((item): AgentTraceDisplayItem => {
-        if (item.type === "inline_text")
-          return { ...item, text: projectPaperReferences(item.text, labels) };
-        if (item.type === "reasoning")
-          return {
-            ...item,
-            summary: item.summary
-              ? projectPaperReferences(item.summary, labels)
-              : undefined,
-            details: item.details
-              ? projectPaperReferences(item.details, labels)
-              : undefined,
-          };
-        if (item.type === "message")
-          return { ...item, text: projectPaperReferences(item.text, labels) };
-        if (item.type === "action")
-          return {
-            ...item,
-            row: {
-              ...item.row,
-              text: projectPaperReferences(item.row.text, labels),
-            },
-          };
-        return item;
-      })
+    ? projectPaperReferencesOntoTraceItems(displayItems, labels)
     : displayItems;
   return {
     items: presentedItems,
     isInterleaved,
     inlineTextReplacesAssistantText,
   };
+}
+
+/** How a stage's heading reports where the stage got to. */
+const AGENT_STAGE_STATUS_ICONS: Readonly<Record<AgentStageStatus, string>> = {
+  started: "\u2026",
+  completed: "\u2713",
+  failed: "!",
+};
+
+/**
+ * One stage group: a heading naming the stage and a body holding its rows.
+ *
+ * A stage with no rows of its own (a material announcement that became the
+ * heading, for instance) is a plain row rather than an empty disclosure.
+ */
+function renderAgentTraceStageShell(
+  doc: Document,
+  item: Extract<AgentTraceDisplayItem, { type: "stage" }>,
+  runId: string,
+): HTMLElement {
+  const expandable = item.children.length > 0;
+  const node = doc.createElement(expandable ? "details" : "div") as HTMLElement;
+  node.className = `llm-agent-process-stage${
+    expandable ? " llm-agent-process-stage-expandable" : ""
+  }`;
+  node.setAttribute("data-stage", item.stage);
+  node.setAttribute("data-stage-status", item.status);
+  const row = doc.createElement("div") as HTMLDivElement;
+  row.className = "llm-at-row llm-at-row-stage";
+  const icon = doc.createElement("span") as HTMLSpanElement;
+  icon.className = "llm-at-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = AGENT_STAGE_STATUS_ICONS[item.status];
+  const label = doc.createElement("span") as HTMLSpanElement;
+  label.className = "llm-at-text llm-agent-process-stage-label";
+  label.textContent = item.label;
+  row.append(icon, label);
+  const chips = renderAgentTraceChips(doc, item.chips);
+  if (!expandable) {
+    node.appendChild(row);
+    if (chips) node.appendChild(chips);
+    return node;
+  }
+  const expansionKey = `${runId}:${item.key}`;
+  const remembered = agentTraceActionExpandedCache.get(expansionKey);
+  (node as HTMLDetailsElement).open = remembered === undefined || remembered;
+  const summary = doc.createElement("summary") as HTMLElement;
+  summary.className =
+    "llm-agent-process-action-summary llm-agent-process-stage-summary";
+  summary.appendChild(row);
+  if (chips) summary.appendChild(chips);
+  node.appendChild(summary);
+  const body = doc.createElement("div") as HTMLDivElement;
+  body.className = "llm-agent-activity-list llm-agent-process-stage-body";
+  node.appendChild(body);
+  node.addEventListener("toggle", () => {
+    agentTraceActionExpandedCache.set(
+      expansionKey,
+      Boolean((node as HTMLDetailsElement).open),
+    );
+  });
+  return node;
 }
 
 function renderAgentTraceChips(
@@ -4745,12 +5584,21 @@ function renderAgentTraceDetailsBody(
     label.textContent = detail.label;
 
     if (detail.kind === "code" || detail.kind === "json") {
-      const pre = doc.createElement("pre") as HTMLPreElement;
-      pre.className = `llm-agent-process-detail-value llm-agent-process-detail-value-${detail.kind}`;
-      const code = doc.createElement("code") as HTMLElement;
-      code.textContent = detail.value;
-      pre.appendChild(code);
-      item.append(label, pre);
+      const value = doc.createElement("div") as HTMLDivElement;
+      value.className = "llm-agent-trace-code";
+      // A fence longer than any run in the payload keeps embedded Markdown
+      // and HTML inside the code block, using the shared safe renderer.
+      const longestFence = (detail.value.match(/`+/g) || []).reduce(
+        (longest, run) => Math.max(longest, run.length),
+        2,
+      );
+      const fence = "`".repeat(longestFence + 1);
+      renderRenderedMarkdownInto(
+        value,
+        `${fence}${detail.kind === "json" ? "json" : "text"}\n${detail.value}\n${fence}`,
+        doc,
+      );
+      item.append(label, value);
     } else {
       const value = doc.createElement("div") as HTMLDivElement;
       value.className = `llm-agent-process-detail-value${
@@ -4844,8 +5692,12 @@ function renderPlanContainer(params: {
     const text = params.doc.createElement("p");
     text.textContent = "Plan execution was interrupted.";
     const resume = params.doc.createElement("button");
+    resume.type = "button";
     resume.className = "llm-plan-action llm-plan-approve";
-    resume.textContent = "Resume execution";
+    const label = params.doc.createElement("span");
+    label.className = "llm-plan-action-label-full";
+    label.textContent = "Resume execution";
+    resume.appendChild(label);
     let disposed = false;
     const onResume = async () => {
       resume.disabled = true;
@@ -5164,12 +6016,8 @@ function renderPlanContainer(params: {
 function getPlanDocumentId(events: AgentRunEventRecord[]): string | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index].payload;
-    if (
-      event.type === "document_ready" ||
-      event.type === "plan_document_ready"
-    ) {
-      return event.documentId;
-    }
+    if (event.type === "material_finalized")
+      return event.materialRef.documentId;
   }
   return null;
 }
@@ -5341,8 +6189,11 @@ function renderPlanDocumentCard(params: {
   root.dataset.llmPlanDocumentId = params.documentId;
   root.textContent = "Loading document…";
   let disposed = false;
+  let loadVersion = 0;
+  let unsubscribe = () => {};
   cardDisposers.set(root, () => {
     disposed = true;
+    unsubscribe();
   });
 
   const paint = (document: PlanDocument) => {
@@ -5445,36 +6296,43 @@ function renderPlanDocumentCard(params: {
     const figures = renderPlanDocumentFigures(params.doc, document);
     if (figures) root.appendChild(figures);
     if (coverage) root.appendChild(coverage);
+    unsubscribe();
     params.onReady?.();
   };
 
-  void Promise.all([
-    loadPlanDocument(params.documentId),
-    loadPlanDocumentOutbox(params.documentId),
-  ])
-    .then(([document, outbox]) => {
-      if (disposed || !root.isConnected) return;
-      if (!document) {
-        root.textContent = "Document is unavailable";
-      } else if (outbox?.status !== "delivered") {
-        // submit_document persists before the assistant message. Do not expose
-        // that durable draft as a finished outcome until message publication
-        // and (for Plans) the terminal ledger transition commit together.
-        root.textContent = "Publishing document…";
-      } else {
-        paint(document);
-      }
-    })
-    .catch((error) => {
-      if (!disposed && root.isConnected)
-        root.textContent =
-          error instanceof Error ? error.message : String(error);
-    });
+  const reload = () => {
+    const version = ++loadVersion;
+    void Promise.all([
+      loadPlanDocument(params.documentId),
+      loadPlanDocumentOutbox(params.documentId),
+    ])
+      .then(([document, outbox]) => {
+        if (disposed || !root.isConnected || version !== loadVersion) return;
+        if (!document) {
+          root.textContent = "Document is unavailable";
+        } else if (outbox?.status !== "delivered") {
+          // submit_document persists before the assistant message. Do not expose
+          // that durable draft as a finished outcome until message publication
+          // and (for Plans) the terminal ledger transition commit together.
+          root.textContent = "Publishing document…";
+        } else {
+          paint(document);
+        }
+      })
+      .catch((error) => {
+        if (!disposed && root.isConnected && version === loadVersion)
+          root.textContent =
+            error instanceof Error ? error.message : String(error);
+      });
+  };
+  unsubscribe = subscribeDocumentPublication(params.documentId, reload);
+  reload();
   return root;
 }
 
 type TraceItemView = { signature: string; node: HTMLElement };
 type TraceView = {
+  activityClock?: { startedAt: number; paint: () => void; stop: () => void };
   discovery?: { key: string; node: HTMLElement };
   list: HTMLElement;
   items: Map<string, TraceItemView>;
@@ -5489,6 +6347,7 @@ type TraceView = {
     caption: HTMLElement;
   };
   allowPlanRecovery?: boolean;
+  streaming?: boolean;
   eventCount?: number;
   lastEvent?: AgentRunEventRecord;
   quoteCitations?: Message["quoteCitations"];
@@ -5500,6 +6359,7 @@ const traceViews = new WeakMap<HTMLElement, TraceView>();
 export function disposeAgentTrace(root: HTMLElement): void {
   const view = traceViews.get(root);
   if (!view) return;
+  view.activityClock?.stop();
   for (const item of view.items.values()) disposeStreamingMarkdown(item.node);
   if (view.plan) disposePlanCard(view.plan.node);
   if (view.document) disposePlanCard(view.document.node);
@@ -5529,6 +6389,8 @@ export function renderAgentTrace({
   onInterleavedText,
   previous,
   allowPlanRecovery = false,
+  actionCardNavigation,
+  actionSummaryHost,
 }: RenderAgentTraceParams): HTMLElement | null {
   const runId = message.agentRunId?.trim() || "pending";
   // Temporary native events remain visible until the durable run is loaded.
@@ -5541,6 +6403,7 @@ export function renderAgentTrace({
     !message.pendingAgentTraceEvents?.length &&
     !onTraceMissing
   ) {
+    actionSummaryHost?.replaceChildren();
     return null;
   }
   const retained = previous ? traceViews.get(previous) : undefined;
@@ -5572,6 +6435,7 @@ export function renderAgentTrace({
   view.quoteOverride = message.quoteDisplayOverride;
   const textOnly =
     view.allowPlanRecovery === allowPlanRecovery &&
+    view.streaming === message.streaming &&
     message.streaming !== false &&
     !formattingChanged &&
     added &&
@@ -5581,10 +6445,12 @@ export function renderAgentTrace({
         entry.payload.type === "message_delta",
     );
   view.allowPlanRecovery = allowPlanRecovery;
+  view.streaming = message.streaming;
   view.eventCount = events.length;
   view.lastEvent = events[events.length - 1];
 
   if (!events.length) {
+    actionSummaryHost?.replaceChildren();
     const loadingRow = doc.createElement("div");
     loadingRow.className = "llm-at-row llm-at-row-plan";
     const loadingIcon = doc.createElement("span");
@@ -5621,6 +6487,8 @@ export function renderAgentTrace({
     wrap.classList.add("llm-agent-activity-with-pending-action");
   }
   if (pending && isPlanningQuestionAction(pending.action)) {
+    actionSummaryHost?.replaceChildren();
+    view.activityClock?.stop();
     wrap.classList.add("llm-agent-activity-question-card");
     wrap.dataset.llmAssistantTurnReplacement = "true";
     onInterleavedText?.();
@@ -5639,244 +6507,289 @@ export function renderAgentTrace({
   const hasFinalResponse = events.some(
     (entry) => entry.payload.type === "final",
   );
-  let cursor = list.firstChild;
   const nextViews = new Map<string, TraceItemView>();
-  let currentKey = "";
-  let currentSignature = "";
-  const place = (node: HTMLElement) => {
-    if (node !== cursor) list.insertBefore(node, cursor);
-    cursor = node.nextSibling;
-    nextViews.set(currentKey, { signature: currentSignature, node });
-  };
-  for (const [itemIndex, itemEntry] of processItems.entries()) {
-    currentKey =
-      itemEntry.type === "reasoning"
-        ? `reasoning:${itemEntry.key}`
-        : itemEntry.type === "action" && itemEntry.detailKey
-          ? `action:${itemEntry.detailKey}`
-          : `${itemEntry.type}:${itemIndex}`;
-    currentSignature = JSON.stringify(itemEntry);
-    if (
-      itemEntry.type === "inline_text" ||
-      (itemEntry.type === "message" && itemEntry.markdown)
-    )
-      currentSignature += `:${view.formattingVersion || 0}`;
-    const old = view.items.get(currentKey);
-    if (old?.signature === currentSignature) {
-      place(old.node);
-      continue;
-    }
-    if (old && itemEntry.type === "inline_text" && message.streaming) {
-      renderStreamingMarkdownInto(
-        old.node,
-        buildAgentTraceMarkdownForRender(itemEntry.text, message),
-        doc,
-        () => {},
-      );
-      place(old.node);
-      continue;
-    }
-    if (old && itemEntry.type === "reasoning") {
-      const target = old.node.querySelector<HTMLElement>(
-        ".llm-agent-reasoning-text",
-      );
-      if (target) {
-        updateReasoningText(
-          target,
-          itemEntry.summary || itemEntry.details || "",
+  // Stage groups nest their rows, so placement walks one container at a time
+  // and recurses into a stage's body with the same retained-view cache.
+  const renderTraceItemsInto = (
+    container: HTMLElement,
+    itemsToRender: readonly AgentTraceDisplayItem[],
+    keyPrefix: string,
+  ): void => {
+    let cursor: ChildNode | null = container.firstChild;
+    let currentKey = "";
+    let currentSignature = "";
+    const place = (node: HTMLElement) => {
+      if (node !== cursor) container.insertBefore(node, cursor);
+      cursor = node.nextSibling;
+      nextViews.set(currentKey, { signature: currentSignature, node });
+    };
+    for (const [itemIndex, itemEntry] of itemsToRender.entries()) {
+      currentKey =
+        keyPrefix +
+        (itemEntry.type === "reasoning"
+          ? `reasoning:${itemEntry.key}`
+          : itemEntry.type === "stage"
+            ? itemEntry.key
+            : itemEntry.type === "action" && itemEntry.detailKey
+              ? `action:${itemEntry.detailKey}`
+              : `${itemEntry.type}:${itemIndex}`);
+      if (itemEntry.type === "stage") {
+        // The group's own signature covers its heading only: a row arriving
+        // inside it must not rebuild the disclosure the reader has open.
+        currentSignature = JSON.stringify({
+          key: itemEntry.key,
+          stage: itemEntry.stage,
+          status: itemEntry.status,
+          label: itemEntry.label,
+          chips: itemEntry.chips,
+          expandable: itemEntry.children.length > 0,
+        });
+        const previousStage = view.items.get(currentKey);
+        const stageNode =
+          previousStage?.signature === currentSignature
+            ? previousStage.node
+            : renderAgentTraceStageShell(doc, itemEntry, runId);
+        place(stageNode);
+        const body = stageNode.querySelector<HTMLElement>(
+          ".llm-agent-process-stage-body",
         );
-        const label = old.node.querySelector("summary");
-        if (label && label.textContent !== itemEntry.label)
-          label.textContent = itemEntry.label;
+        if (body)
+          renderTraceItemsInto(body, itemEntry.children, `${currentKey}/`);
+        continue;
+      }
+      currentSignature = JSON.stringify(itemEntry);
+      if (
+        itemEntry.type === "inline_text" ||
+        (itemEntry.type === "message" && itemEntry.markdown)
+      )
+        currentSignature += `:${view.formattingVersion || 0}`;
+      const old = view.items.get(currentKey);
+      if (old?.signature === currentSignature) {
         place(old.node);
         continue;
       }
-    }
-    if (itemEntry.type === "inline_text") {
-      const inlineEl = doc.createElement("div");
-      inlineEl.className = "llm-agent-inline-text";
-      const inlineText = buildAgentTraceMarkdownForRender(
-        itemEntry.text,
-        message,
-      );
-      try {
-        renderRenderedMarkdownInto(inlineEl, inlineText, doc);
-      } catch {
-        inlineEl.textContent = inlineText;
+      if (old && itemEntry.type === "inline_text" && message.streaming) {
+        renderStreamingMarkdownInto(
+          old.node,
+          buildAgentTraceMarkdownForRender(itemEntry.text, message),
+          doc,
+          () => {},
+        );
+        place(old.node);
+        continue;
       }
-      place(inlineEl);
-      continue;
-    }
-
-    if (itemEntry.type === "message") {
-      const messageEl = doc.createElement("div");
-      messageEl.className = `llm-agent-process-message llm-agent-process-message-${itemEntry.tone}`;
-      if (itemEntry.markdown) {
-        messageEl.classList.add("llm-agent-process-message-markdown");
-        const markdownText = buildAgentTraceMarkdownForRender(
+      if (old && itemEntry.type === "reasoning") {
+        const target = old.node.querySelector<HTMLElement>(
+          ".llm-agent-reasoning-text",
+        );
+        if (target) {
+          updateReasoningText(
+            target,
+            itemEntry.summary || itemEntry.details || "",
+          );
+          const label = old.node.querySelector("summary");
+          if (label && label.textContent !== itemEntry.label)
+            label.textContent = itemEntry.label;
+          place(old.node);
+          continue;
+        }
+      }
+      if (itemEntry.type === "inline_text") {
+        const inlineEl = doc.createElement("div");
+        inlineEl.className = "llm-agent-inline-text";
+        const inlineText = buildAgentTraceMarkdownForRender(
           itemEntry.text,
           message,
         );
         try {
-          renderRenderedMarkdownInto(messageEl, markdownText, doc);
+          renderRenderedMarkdownInto(inlineEl, inlineText, doc);
         } catch {
-          messageEl.textContent = markdownText;
+          inlineEl.textContent = inlineText;
         }
-      } else {
-        messageEl.textContent = itemEntry.text;
-      }
-      place(messageEl);
-      continue;
-    }
-
-    if (itemEntry.type === "card_list") {
-      const papers = itemEntry.cards.filter(
-        (card) => card.kind !== "saved_note" && card.kind !== "note_change",
-      );
-      if (papers.length) place(renderResultCardList(doc, papers));
-      continue;
-    }
-
-    if (itemEntry.type === "image_grid") {
-      const container = doc.createElement("div") as HTMLDivElement;
-      container.className = "llm-agent-image-artifacts";
-      const rendered = renderAssistantGeneratedImagesInto(
-        container,
-        itemEntry.images,
-        doc,
-        {
-          wrapClassName: "llm-agent-image-artifacts-grid",
-          frameClassName: "llm-agent-image-artifact-frame",
-        },
-      );
-      if (rendered) place(container);
-      continue;
-    }
-
-    if (itemEntry.type === "reasoning") {
-      const details = doc.createElement("details") as HTMLDetailsElement;
-      details.className = "llm-agent-reasoning";
-      const expansionKey = `${runId}:${itemEntry.key}`;
-      details.open = Boolean(agentReasoningExpandedCache.get(expansionKey));
-
-      const summary = doc.createElement("summary") as HTMLElement;
-      summary.className = "llm-agent-reasoning-summary";
-      summary.textContent = itemEntry.label;
-      let reasoningToggleHandled = false;
-      const toggleReasoning = (event: Event) => {
-        if (reasoningToggleHandled) return;
-        reasoningToggleHandled = true;
-        event.preventDefault();
-        event.stopPropagation();
-        const next = !details.open;
-        details.open = next;
-        agentReasoningExpandedCache.set(expansionKey, next);
-        doc.defaultView?.setTimeout(() => {
-          reasoningToggleHandled = false;
-        }, 0);
-      };
-      summary.addEventListener("pointerdown", toggleReasoning);
-      summary.addEventListener("mousedown", toggleReasoning);
-      summary.addEventListener("click", (event: Event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      });
-      summary.addEventListener("keydown", (event: KeyboardEvent) => {
-        if (event.key === "Enter" || event.key === " ") {
-          toggleReasoning(event);
-        }
-      });
-      details.appendChild(summary);
-
-      const bodyWrap = doc.createElement("div") as HTMLDivElement;
-      bodyWrap.className = "llm-agent-reasoning-body";
-
-      // Show only summary — details from most models duplicate the summary
-      const reasoningText = itemEntry.summary || itemEntry.details;
-      if (reasoningText) {
-        const summaryBlock = doc.createElement("div") as HTMLDivElement;
-        summaryBlock.className = "llm-agent-reasoning-block";
-        const text = doc.createElement("div") as HTMLDivElement;
-        text.className = "llm-agent-reasoning-text";
-        text.textContent = reasoningText;
-        summaryBlock.appendChild(text);
-        bodyWrap.appendChild(summaryBlock);
+        place(inlineEl);
+        continue;
       }
 
-      // Details section removed — most models duplicate summary in details
+      if (itemEntry.type === "message") {
+        const messageEl = doc.createElement("div");
+        messageEl.className = `llm-agent-process-message llm-agent-process-message-${itemEntry.tone}`;
+        if (itemEntry.markdown) {
+          messageEl.classList.add("llm-agent-process-message-markdown");
+          const markdownText = buildAgentTraceMarkdownForRender(
+            itemEntry.text,
+            message,
+          );
+          try {
+            renderRenderedMarkdownInto(messageEl, markdownText, doc);
+          } catch {
+            messageEl.textContent = markdownText;
+          }
+        } else {
+          messageEl.textContent = itemEntry.text;
+        }
+        place(messageEl);
+        continue;
+      }
 
-      details.appendChild(bodyWrap);
-      place(details);
-      continue;
-    }
+      if (itemEntry.type === "card_list") {
+        // Saved notes, note changes and the turn's action summary are outcomes
+        // rather than steps: they are appended below the activity disclosure so
+        // the reader sees them without opening it.
+        const papers = itemEntry.cards.filter(
+          (card) =>
+            card.kind !== "saved_note" &&
+            card.kind !== "note_change" &&
+            card.kind !== "action_summary",
+        );
+        if (papers.length) place(renderResultCardList(doc, papers));
+        continue;
+      }
 
-    const actionDetails = buildAgentTraceActionDetails(itemEntry);
-    const isExpandable = actionDetails.length > 0;
-    const actionWrap = doc.createElement(
-      isExpandable ? "details" : "div",
-    ) as HTMLElement;
-    actionWrap.className = `llm-agent-process-action${
-      isExpandable ? " llm-agent-process-action-expandable" : ""
-    }`;
-    const expansionKey = `${runId}:action:${itemEntry.detailKey || itemIndex}`;
-    if (isExpandable) {
-      (actionWrap as HTMLDetailsElement).open = Boolean(
-        agentTraceActionExpandedCache.get(expansionKey),
-      );
-    }
-    const row = doc.createElement("div");
-    row.className = `llm-at-row llm-at-row-${itemEntry.row.kind}`;
-    const isActivePlanningRow =
-      message.streaming === true &&
-      tracePlanPhase === "planning" &&
-      itemEntry.row.kind === "plan" &&
-      /^planning\b/i.test(itemEntry.row.text.trim());
-    if (isActivePlanningRow) {
-      row.classList.add("llm-at-row-planning-active");
-    }
-    const icon = isActivePlanningRow
-      ? createPlanningDriveIcon(doc)
-      : doc.createElement("span");
-    if (!isActivePlanningRow) {
-      icon.className = `llm-at-icon${
-        itemEntry.row.iconName ? ` llm-at-icon-${itemEntry.row.iconName}` : ""
+      if (itemEntry.type === "image_grid") {
+        const container = doc.createElement("div") as HTMLDivElement;
+        container.className = "llm-agent-image-artifacts";
+        const rendered = renderAssistantGeneratedImagesInto(
+          container,
+          itemEntry.images,
+          doc,
+          {
+            wrapClassName: "llm-agent-image-artifacts-grid",
+            frameClassName: "llm-agent-image-artifact-frame",
+          },
+        );
+        if (rendered) place(container);
+        continue;
+      }
+
+      if (itemEntry.type === "reasoning") {
+        const details = doc.createElement("details") as HTMLDetailsElement;
+        details.className = "llm-agent-reasoning";
+        const expansionKey = `${runId}:${itemEntry.key}`;
+        details.open = Boolean(agentReasoningExpandedCache.get(expansionKey));
+
+        const summary = doc.createElement("summary") as HTMLElement;
+        summary.className = "llm-agent-reasoning-summary";
+        summary.textContent = itemEntry.label;
+        let reasoningToggleHandled = false;
+        const toggleReasoning = (event: Event) => {
+          if (reasoningToggleHandled) return;
+          reasoningToggleHandled = true;
+          event.preventDefault();
+          event.stopPropagation();
+          const next = !details.open;
+          details.open = next;
+          agentReasoningExpandedCache.set(expansionKey, next);
+          doc.defaultView?.setTimeout(() => {
+            reasoningToggleHandled = false;
+          }, 0);
+        };
+        summary.addEventListener("pointerdown", toggleReasoning);
+        summary.addEventListener("mousedown", toggleReasoning);
+        summary.addEventListener("click", (event: Event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        summary.addEventListener("keydown", (event: KeyboardEvent) => {
+          if (event.key === "Enter" || event.key === " ") {
+            toggleReasoning(event);
+          }
+        });
+        details.appendChild(summary);
+
+        const bodyWrap = doc.createElement("div") as HTMLDivElement;
+        bodyWrap.className = "llm-agent-reasoning-body";
+
+        // Show only summary — details from most models duplicate the summary
+        const reasoningText = itemEntry.summary || itemEntry.details;
+        if (reasoningText) {
+          const summaryBlock = doc.createElement("div") as HTMLDivElement;
+          summaryBlock.className = "llm-agent-reasoning-block";
+          const text = doc.createElement("div") as HTMLDivElement;
+          text.className = "llm-agent-reasoning-text";
+          text.textContent = reasoningText;
+          summaryBlock.appendChild(text);
+          bodyWrap.appendChild(summaryBlock);
+        }
+
+        // Details section removed — most models duplicate summary in details
+
+        details.appendChild(bodyWrap);
+        place(details);
+        continue;
+      }
+
+      const actionDetails = buildAgentTraceActionDetails(itemEntry);
+      const isExpandable = actionDetails.length > 0;
+      const actionWrap = doc.createElement(
+        isExpandable ? "details" : "div",
+      ) as HTMLElement;
+      actionWrap.className = `llm-agent-process-action${
+        isExpandable ? " llm-agent-process-action-expandable" : ""
       }`;
-      icon.setAttribute("aria-hidden", "true");
-      if (!itemEntry.row.iconName) icon.textContent = itemEntry.row.icon;
-    }
-    const text = doc.createElement("span");
-    text.className = `llm-at-text llm-at-${itemEntry.row.kind}-text`;
-    text.textContent = itemEntry.row.text;
-    if (isExpandable) {
-      row.append(icon, text);
-
-      const summary = doc.createElement("summary") as HTMLElement;
-      summary.className = "llm-agent-process-action-summary";
-      summary.appendChild(row);
-      const chips = renderAgentTraceChips(doc, itemEntry.chips);
-      if (chips) summary.appendChild(chips);
-      actionWrap.appendChild(summary);
-      actionWrap.appendChild(renderAgentTraceDetailsBody(doc, actionDetails));
-      actionWrap.addEventListener("toggle", () => {
-        const open = Boolean((actionWrap as HTMLDetailsElement).open);
-        agentTraceActionExpandedCache.set(expansionKey, open);
-      });
-    } else {
-      row.append(icon, text);
-      actionWrap.appendChild(row);
-      const chips = renderAgentTraceChips(doc, itemEntry.chips);
-      if (chips) {
-        actionWrap.appendChild(chips);
+      if (itemEntry.workCategory) {
+        actionWrap.setAttribute("data-work-category", itemEntry.workCategory);
       }
-    }
+      const expansionKey = `${runId}:action:${itemEntry.detailKey || itemIndex}`;
+      if (isExpandable) {
+        (actionWrap as HTMLDetailsElement).open = Boolean(
+          agentTraceActionExpandedCache.get(expansionKey),
+        );
+      }
+      const row = doc.createElement("div");
+      row.className = `llm-at-row llm-at-row-${itemEntry.row.kind}`;
+      const isActivePlanningRow =
+        message.streaming === true &&
+        tracePlanPhase === "planning" &&
+        itemEntry.row.kind === "plan" &&
+        /^planning\b/i.test(itemEntry.row.text.trim());
+      if (isActivePlanningRow) {
+        row.classList.add("llm-at-row-planning-active");
+      }
+      const icon = isActivePlanningRow
+        ? createPlanningDriveIcon(doc)
+        : doc.createElement("span");
+      if (!isActivePlanningRow) {
+        icon.className = `llm-at-icon${
+          itemEntry.row.iconName ? ` llm-at-icon-${itemEntry.row.iconName}` : ""
+        }`;
+        icon.setAttribute("aria-hidden", "true");
+        if (!itemEntry.row.iconName) icon.textContent = itemEntry.row.icon;
+      }
+      const text = doc.createElement("span");
+      text.className = `llm-at-text llm-at-${itemEntry.row.kind}-text`;
+      text.textContent = itemEntry.row.text;
+      if (isExpandable) {
+        row.append(icon, text);
 
-    place(actionWrap);
-  }
-  while (cursor) {
-    const next = cursor.nextSibling;
-    list.removeChild(cursor);
-    cursor = next;
-  }
+        const summary = doc.createElement("summary") as HTMLElement;
+        summary.className = "llm-agent-process-action-summary";
+        summary.appendChild(row);
+        const chips = renderAgentTraceChips(doc, itemEntry.chips);
+        if (chips) summary.appendChild(chips);
+        actionWrap.appendChild(summary);
+        actionWrap.appendChild(renderAgentTraceDetailsBody(doc, actionDetails));
+        actionWrap.addEventListener("toggle", () => {
+          const open = Boolean((actionWrap as HTMLDetailsElement).open);
+          agentTraceActionExpandedCache.set(expansionKey, open);
+        });
+      } else {
+        row.append(icon, text);
+        actionWrap.appendChild(row);
+        const chips = renderAgentTraceChips(doc, itemEntry.chips);
+        if (chips) {
+          actionWrap.appendChild(chips);
+        }
+      }
+
+      place(actionWrap);
+    }
+    while (cursor) {
+      const next = cursor.nextSibling;
+      container.removeChild(cursor);
+      cursor = next;
+    }
+  };
+  renderTraceItemsInto(list, processItems, "");
   for (const [key, old] of view.items) {
     if (nextViews.get(key)?.node !== old.node)
       disposeStreamingMarkdown(old.node);
@@ -5911,25 +6824,58 @@ export function renderAgentTrace({
   });
 
   let hasSavedNote = false;
-  const shownNoteActions = new Map<
-    string,
-    AgentNoteChangeResultCard | AgentSavedNoteResultCard
-  >();
-  for (const item of processItems) {
-    if (item.type !== "card_list") continue;
+  let actionSummaryCard: AgentActionSummaryResultCard | undefined;
+  const noteCards: (AgentNoteChangeResultCard | AgentSavedNoteResultCard)[] =
+    [];
+  // These cards are the turn's outcome, not a step, so they are collected from
+  // the whole item tree: a card list an action produced is grouped into the
+  // stage that produced it, and the in-stage renderer drops these kinds
+  // because they belong here, below the disclosure.
+  forEachAgentTraceDisplayItem(processItems, (item) => {
+    if (item.type !== "card_list") return;
     for (const card of item.cards) {
-      if (card.kind === "note_change") {
-        shownNoteActions.set(card.actionId, card);
-      }
-      if (card.kind === "saved_note") {
-        hasSavedNote = true;
-        if (card.actionId) shownNoteActions.set(card.actionId, card);
-        else wrap.appendChild(renderSavedNoteCard(doc, card));
-      }
+      if (card.kind === "note_change" || card.kind === "saved_note") {
+        if (card.kind === "saved_note") hasSavedNote = true;
+        noteCards.push(card);
+      } else if (card.kind === "action_summary") actionSummaryCard = card;
+    }
+  });
+
+  // One card per action: a note the run created and then edited is one note,
+  // and the change is the last thing that happened to it. A card that names no
+  // action shares its identity with nothing and stands on its own.
+  const noteCardsByAction = new Map<string, (typeof noteCards)[number]>();
+  const anonymousNoteCards: typeof noteCards = [];
+  for (const card of noteCards) {
+    if (card.actionId) noteCardsByAction.set(card.actionId, card);
+    else anonymousNoteCards.push(card);
+  }
+  let standaloneNoteCards = [
+    ...noteCardsByAction.values(),
+    ...anonymousNoteCards,
+  ];
+
+  // A note card and an action row are two statements about the same write. The
+  // row takes the note over, so the reader is shown it once; a note no receipt
+  // claims keeps the card it has always had.
+  let actionCardNode: HTMLElement | undefined;
+  if (actionSummaryCard) {
+    const attached = attachNoteDetails(actionSummaryCard, standaloneNoteCards);
+    standaloneNoteCards = attached.unmatched;
+    // Receipts can arrive before the answer starts. Reveal their outcome only
+    // after streaming finishes, even if a final trace event has arrived sooner.
+    if (message.streaming !== true) {
+      const noteMode = actionCardNoteMode(attached.card);
+      actionCardNode = renderActionSummaryCard(doc, attached.card, {
+        mode: noteMode ? "note" : "action",
+        ...(noteMode ? { header: noteMode } : {}),
+        renderDetail: renderActionCardDetail,
+        ...(actionCardNavigation ? { navigation: actionCardNavigation } : {}),
+      });
     }
   }
 
-  for (const card of shownNoteActions.values())
+  for (const card of standaloneNoteCards)
     wrap.appendChild(
       card.kind === "note_change"
         ? renderNoteChangeCard(doc, card)
@@ -6055,6 +7001,14 @@ export function renderAgentTrace({
     view.document.caption.remove();
     view.document = undefined;
   }
+
+  // Chat owns the position below the final answer. Standalone trace surfaces
+  // have no separate answer and keep their outcome below the other cards.
+  if (actionSummaryHost)
+    actionSummaryHost.replaceChildren(
+      ...(actionCardNode ? [actionCardNode] : []),
+    );
+  else if (actionCardNode) wrap.appendChild(actionCardNode);
 
   // The rule separates the activity trace from the answer, so visible answer
   // text is authoritative even when a restored row retained a stale streaming

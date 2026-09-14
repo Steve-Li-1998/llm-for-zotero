@@ -1,6 +1,6 @@
 import type { Message } from "./types";
-import { normalizeAttachmentContentHash } from "./normalizers";
-import { extractManagedBlobHash } from "./attachmentStorage";
+import { normalizeAttachmentContentHash } from "../../services/context/normalizers";
+import { extractManagedBlobHash } from "../../services/attachmentStorage";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 
 // Turns queued for deletion stay in memory and the DB until the undo window

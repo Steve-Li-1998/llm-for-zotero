@@ -5,6 +5,7 @@ import type {
   ActionMechanism,
   ActionProposal,
   AuthorizationDecision,
+  AuthorizationAssessment,
   OriginalAuthorizationContext,
 } from "./types";
 
@@ -99,7 +100,7 @@ export function normalizeStoredActionConstraints(
 export function authorizeOriginalAction(
   proposal: ActionProposal,
   context: OriginalAuthorizationContext,
-): AuthorizationDecision {
+): AuthorizationAssessment {
   const violation = proposalViolatesConstraints(
     proposal,
     context.constraints || [],
@@ -110,17 +111,6 @@ export function authorizeOriginalAction(
       reason: violation.description,
     };
   }
-  if (
-    context.semantic?.conversationOnly &&
-    (proposal.capabilities.includes("zotero.notes") ||
-      proposal.capabilities.includes("file.write"))
-  ) {
-    return {
-      kind: "block",
-      reason:
-        "Remember this within the conversation only. The user did not request a saved note or file; answer from the paper and retain the discussion in chat.",
-    };
-  }
   const integrityFailure = actionIntegrityFailure(proposal);
   if (integrityFailure) return integrityFailure;
   const trustedRead =
@@ -129,97 +119,84 @@ export function authorizeOriginalAction(
   if (trustedRead) {
     return { kind: "execute", authority: "safe_read" };
   }
-  const requested = Boolean(
-    context.hasMatchingActionIntent || context.hasApprovedPlanAuthority,
-  );
-  // Yolo delegates judgment: an effect the interpreter did not predict may
-  // still run once every hard rail above has passed. Safe and auto require
-  // the exact requested authority.
-  if (!requested && context.mode !== "yolo") {
-    return {
-      kind: "block",
-      reason: "The proposed effect has no matching semantic action authority.",
-    };
-  }
+  // Stored classifier-era workflows retain their selection gate while fresh
+  // direct-agent turns no longer create or consume semantic authority.
   if (
-    proposal.capabilities.includes("zotero.import") &&
-    (context.semantic?.literature === "discover" ||
-      context.semantic?.literature === "select_then_import")
+    context.semantic?.conversationOnly &&
+    (proposal.capabilities.includes("zotero.notes") ||
+      proposal.capabilities.includes("file.write"))
   ) {
     return {
       kind: "block",
       reason:
-        "Paper discovery requires user selection in every permission mode. Call literature_review with the ranked candidates; only its approved selection may initiate the import.",
+        "Remember this within the conversation only. The stored workflow does not permit a saved note or file.",
     };
   }
   if (
-    context.interaction?.entryPoint === "action_ui" ||
-    context.interaction?.reviewPreference === "review"
+    context.semantic &&
+    proposal.capabilities.includes("zotero.import") &&
+    (context.semantic.literature === "discover" ||
+      context.semantic.literature === "select_then_import")
   ) {
+    return {
+      kind: "block",
+      reason:
+        "Paper discovery requires user selection. Call literature_review with the ranked candidates before importing the approved selection.",
+    };
+  }
+  const chatLibraryID = context.executionContext?.chatLibraryID;
+  const isLibraryWrite =
+    proposal.domains.includes("zotero_library") &&
+    proposal.effects.some((effect) => effect !== "read");
+  if (context.executionContext && isLibraryWrite && !chatLibraryID) {
+    return {
+      kind: "block",
+      reason:
+        "The chat library is unresolved. Resolve and freeze its native identity before changing Zotero state.",
+    };
+  }
+  // A user-requested review is a workflow requirement, not an automatic permission gate.
+  if (context.interaction?.reviewPreference === "review") {
     return {
       kind: "confirm",
       reason: "Review the prepared changes before applying them, as requested.",
     };
   }
+  // YOLO delegates permission decisions, including risk and filesystem/library expansion.
+  if (context.mode === "yolo") {
+    return { kind: "execute", authority: "yolo_judgment" };
+  }
   if (context.hasApprovedPlanAuthority) {
     return { kind: "execute", authority: "plan_approval" };
-  }
-  // Creating requested research material is not a review step. This exemption
-  // applies only after the exact native note action matched the turn contract;
-  // edits, scripts, extra effects, ambiguity and explicit prohibitions retain
-  // their normal authorization path.
-  if (
-    context.hasMatchingActionIntent &&
-    proposal.operation === "note_create" &&
-    proposal.capabilities.length === 1 &&
-    proposal.capabilities[0] === "zotero.notes" &&
-    proposal.invocationPlan.mechanism === "none" &&
-    proposal.invocationPlan.impact === "state_change" &&
-    proposal.invocationPlan.assurance === "runtime_enforced" &&
-    proposal.domains.length === 1 &&
-    proposal.domains[0] === "zotero_library" &&
-    proposal.effects.length === 1 &&
-    proposal.effects[0] === "create" &&
-    !proposal.riskSignals.length
-  ) {
-    return { kind: "execute", authority: "requested_note" };
   }
   if (context.mode === "safe") {
     return {
       kind: "confirm",
-      reason: "Safe mode reviews this action before it runs.",
+      reason: "Safe mode reviews every external write before it runs.",
     };
   }
-  if (context.mode === "yolo") {
-    return {
-      kind: "execute",
-      authority: requested ? "yolo" : "yolo_judgment",
-    };
-  }
-  const exceptionalDanger = proposal.riskSignals.some((signal) =>
-    [
-      "ambiguous_target",
-      "scope_expansion",
-      "sensitive_egress",
-      "broad_delete",
-      "privilege_escalation",
-      "package_system_modification",
-      "download_to_shell",
-    ].includes(signal),
+  const plan = proposal.invocationPlan;
+  const known = plan.impact === "state_change" && plan.assurance !== "unknown";
+  const localEffects = proposal.effects.every((effect) =>
+    ["read", "create", "modify", "delete"].includes(effect),
   );
-  if (exceptionalDanger) {
-    return {
-      kind: "confirm",
-      reason:
-        "Auto mode found genuine ambiguity or exceptional danger in the exact action.",
-    };
-  }
-  if (context.hasMatchingActionIntent) {
+  const reversible = known && localEffects && proposal.reversibility === "full";
+  const routineWrite =
+    known &&
+    !proposal.riskSignals.length &&
+    proposal.effects.every((effect) =>
+      ["read", "create", "modify"].includes(effect),
+    ) &&
+    (plan.assurance === "runtime_enforced" ||
+      (proposal.effects.includes("create") &&
+        !proposal.effects.includes("modify")));
+  if (reversible || routineWrite) {
     return { kind: "execute", authority: "auto_policy" };
   }
   return {
-    kind: "block",
-    reason: "The proposed effect has no matching semantic action authority.",
+    kind: "model_review",
+    reason:
+      "Assess this action against the user's intention and its concrete effects.",
   };
 }
 

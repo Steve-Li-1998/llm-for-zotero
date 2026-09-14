@@ -1,11 +1,8 @@
 import { renderMarkdownForNote } from "../../utils/markdown";
-import {
-  sanitizeText,
-  escapeNoteHtml,
-  getCurrentLocalTimestamp,
-  normalizeSelectedTextSource,
-} from "./textUtils";
-import { normalizeAttachmentContentHash } from "./normalizers";
+import { getCurrentLocalTimestamp } from "./textUtils";
+import { sanitizeText, escapeNoteHtml } from "../../utils/textSanitization";
+import { normalizeSelectedTextSource } from "../../services/context/normalizers";
+import { normalizeAttachmentContentHash } from "../../services/context/normalizers";
 import { MAX_SELECTED_IMAGES } from "./constants";
 import {
   getTrackedAssistantNoteForParent,
@@ -16,7 +13,7 @@ import {
   ensureAttachmentBlobFromPath,
   extractManagedBlobHash,
   isManagedBlobPath,
-} from "./attachmentStorage";
+} from "../../services/attachmentStorage";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import {
   ATTACHMENT_GC_MIN_AGE_MS,
@@ -32,12 +29,10 @@ import type {
   SelectedTextSource,
 } from "./types";
 import {
-  readNoteSnapshot,
   stripNoteHtml,
   stripNoteMarkup,
   decodeNoteHtmlEntities,
-  type NoteSnapshot,
-} from "./noteSnapshot";
+} from "../../services/notes/noteSnapshot";
 import {
   extractStandalonePaperSourceLabel,
   extractInlineCitationMentions,
@@ -46,12 +41,12 @@ import {
   matchAssistantCitationCandidates,
   lookupCachedCitationPage,
 } from "./assistantCitationLinks";
+import { resolveNoteParentItem } from "./portalScope";
 import {
   isGlobalPortalItem,
   isPaperPortalItem,
-  resolveNoteParentItem,
   resolvePaperPortalBaseItem,
-} from "./portalScope";
+} from "../../services/context/portalItems";
 import {
   isClaudeGlobalPortalItem,
   isClaudePaperPortalItem,
@@ -63,7 +58,7 @@ import {
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
 import { getMessageCitationPaperContexts } from "./citationContexts";
-import { findMatchingTrustedQuoteCitation } from "./quoteCitations";
+import { findMatchingTrustedQuoteCitation } from "../../services/quotes/quoteCitations";
 import {
   buildQuoteExpandedMarkdown,
   getMessageQuoteDisplay,
@@ -72,7 +67,7 @@ import {
   buildGeneratedImagesHtmlForNote,
   formatGeneratedImagesMarkdownForNote,
   normalizeEmbeddableGeneratedImages,
-} from "./noteImages";
+} from "../../services/notes/noteImages";
 import {
   containsVisualFigureFences,
   replaceVisualFigureFencesWithNoteImages,
@@ -83,103 +78,13 @@ import {
   persistVerifiedNoteHtml,
   type CreatedZoteroNoteReceipt,
   type NotePersistenceSaveOptions,
-} from "./notePersistence";
-
-export { readNoteSnapshot, stripNoteHtml, type NoteSnapshot };
-
-export function isLikelyHtmlNoteContent(text: string): boolean {
-  if (!text || !/[<>]/.test(text)) return false;
-  return /<\/?(?:p|div|span|strong|b|em|i|u|a|ul|ol|li|blockquote|h[1-6]|br|hr|code|pre)\b/i.test(
-    text,
-  );
-}
-
-export function normalizeNoteSourceText(contentText: string): string {
-  const raw = sanitizeText(contentText || "").trim();
-  if (!raw) return "";
-  if (!isLikelyHtmlNoteContent(raw)) return raw;
-  return decodeNoteHtmlEntities(noteHtmlToMarkdown(raw)) || stripNoteHtml(raw);
-}
-
-/** Compose first; decode entities once at the public HTML-to-text boundary. */
-function noteHtmlToMarkdown(raw: string): string {
-  let normalized = raw.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, "");
-  // Native serialization can remove all whitespace between paragraphs. Preserve
-  // block boundaries explicitly, including every paragraph of a quotation.
-  const quote =
-    /<blockquote\b[^>]*>((?:(?!<\/?blockquote\b)[\s\S])*)<\/blockquote>/gi;
-  while (/<blockquote\b/i.test(normalized)) {
-    const next = normalized.replace(
-      quote,
-      (_match, body: string) =>
-        `\n\n${noteHtmlToMarkdown(body)
-          .split("\n")
-          .map((line) => (line ? `> ${line}` : ">"))
-          .join("\n")}\n\n`,
-    );
-    if (next === normalized) break;
-    normalized = next;
-  }
-
-  normalized = normalized.replace(
-    /<a\b[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
-    (_match, _quote, href, text) => {
-      const label = stripNoteMarkup(text).trim();
-      const target = `${href || ""}`.trim();
-      if (!label) return target;
-      return target ? `[${label}](${target})` : label;
-    },
-  );
-  normalized = normalized.replace(
-    /<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi,
-    (_match, _tag, text) => `**${stripNoteMarkup(text).trim()}**`,
-  );
-  normalized = normalized.replace(
-    /<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi,
-    (_match, _tag, text) => `*${stripNoteMarkup(text).trim()}*`,
-  );
-  normalized = normalized.replace(
-    /<code[^>]*>([\s\S]*?)<\/code>/gi,
-    (_match, text) => `\`${stripNoteMarkup(text).trim()}\``,
-  );
-  normalized = normalized.replace(
-    /<pre[^>]*>([\s\S]*?)<\/pre>/gi,
-    (_match, text) => `\n\n\`\`\`\n${stripNoteMarkup(text)}\n\`\`\`\n\n`,
-  );
-  normalized = normalized.replace(/<hr\s*\/?>/gi, "\n\n---\n\n");
-  normalized = normalized.replace(/<br\s*\/?>/gi, "\n");
-  normalized = normalized.replace(
-    /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,
-    (_match, level, text) =>
-      `\n\n${"#".repeat(Number(level) || 1)} ${stripNoteMarkup(text).trim()}\n\n`,
-  );
-  normalized = normalized.replace(/<li[^>]*>/gi, "\n- ");
-  normalized = normalized.replace(/<\/li>/gi, "");
-  normalized = normalized.replace(
-    /<\/?(?:p|div|section|article)\b[^>]*>/gi,
-    "\n\n",
-  );
-  // Strip remaining HTML tags, but preserve <img> tags (for embedded figures)
-  normalized = normalized.replace(/<(?!img\b)[^>]+>/g, "");
-  normalized = normalized
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  return normalized;
-}
-
-export function renderRawNoteHtml(contentText: string): string {
-  const raw = normalizeNoteSourceText(contentText);
-  if (!raw) return "<p></p>";
-  try {
-    return renderMarkdownForNote(raw);
-  } catch (err) {
-    ztoolkit.log("Note markdown render error:", err);
-    return escapeNoteHtml(raw).replace(/\n/g, "<br/>");
-  }
-}
+} from "../../services/notePersistence";
+import {
+  appendNoteHtml,
+  normalizeNoteSourceText,
+  renderRawNoteHtml,
+} from "../../services/notes/noteRendering";
+import { resolveParentItemForNoteTarget } from "../../services/notes/noteTarget";
 
 async function renderRawNoteHtmlForSave(
   contentText: string,
@@ -213,38 +118,6 @@ async function renderRawNoteHtmlForSave(
     ztoolkit.log("Note markdown render error:", err);
     return escapeNoteHtml(noteSource).replace(/\n/g, "<br/>");
   }
-}
-
-export function resolveParentItemForNoteTarget(
-  item: Zotero.Item,
-): Zotero.Item | null {
-  if (
-    isGlobalPortalItem(item) ||
-    isClaudeGlobalPortalItem(item) ||
-    isCodexGlobalPortalItem(item)
-  ) {
-    return null;
-  }
-  if (isPaperPortalItem(item)) {
-    return resolvePaperPortalBaseItem(item);
-  }
-  if (isClaudePaperPortalItem(item)) {
-    return resolveClaudePaperPortalBaseItem(item);
-  }
-  if (isCodexPaperPortalItem(item)) {
-    return resolveCodexPaperPortalBaseItem(item);
-  }
-  const noteParentItem = resolveNoteParentItem(item);
-  if (noteParentItem) {
-    return noteParentItem;
-  }
-  if ((item as any).isNote?.()) {
-    return null;
-  }
-  if (item.isAttachment() && item.parentID) {
-    return Zotero.Items.get(item.parentID) || null;
-  }
-  return item;
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,25 +1069,6 @@ async function buildChatHistoryNotePayloadForSave(
     noteText,
     noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
   };
-}
-
-export function appendNoteHtml(
-  existingHtml: string,
-  newAnswerHtml: string,
-): string {
-  const base = (existingHtml || "").trim();
-  const addition = (newAnswerHtml || "").trim();
-  if (!base) return addition;
-  if (!addition) return base;
-  // Native editors store all note content inside the schema container.
-  // Appending outside it forces an editor rewrite during save verification.
-  const schema = base.match(
-    /^(<div\b[^>]*\bdata-schema-version=[^>]*>)([\s\S]*)<\/div>$/i,
-  );
-  if (schema) {
-    return `${schema[1]}${schema[2].trim()}\n<hr>\n${addition}\n</div>`;
-  }
-  return `${base}<hr/>${addition}`;
 }
 
 export type AssistantResponseNoteDestination =

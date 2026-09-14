@@ -8,7 +8,7 @@ import type {
   AgentToolReviewResolution,
   AgentToolResult,
 } from "./types";
-import { normalizeNoteSourceText } from "../modules/contextPanel/notes";
+import { normalizeNoteSourceText } from "../services/notes/noteRendering";
 import type {
   EditableArticleMetadataPatch,
   EditableArticleMetadataField,

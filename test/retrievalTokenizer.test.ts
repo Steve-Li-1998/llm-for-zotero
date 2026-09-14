@@ -6,7 +6,7 @@ import {
   tokenizeRetrievalDiversity,
   tokenizeRetrievalQuery,
   tokenizeRetrievalText,
-} from "../src/modules/contextPanel/retrievalTokenizer";
+} from "../src/services/retrieval/retrievalTokenizer";
 
 describe("retrievalTokenizer", function () {
   it("preserves academic compounds and indexes their split parts", function () {

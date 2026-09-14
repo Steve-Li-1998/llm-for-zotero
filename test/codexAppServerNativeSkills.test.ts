@@ -1,7 +1,3 @@
-import {
-  classifiedFixture,
-  skillReceiptFixture,
-} from "./helpers/semanticIntent";
 import { assert } from "chai";
 import {
   buildCodexNativeSkillInstructionBlock,
@@ -35,7 +31,7 @@ describe("Codex native skills", function () {
     setUserSkills([]);
   });
 
-  it("uses the host semantic selection despite conflicting request words", async function () {
+  it("uses an explicit host selection despite conflicting request words", async function () {
     setUserSkills([
       makeSkill("write-note", "Write-note instructions."),
       makeSkill("compare-papers", "Compare instructions."),
@@ -44,24 +40,10 @@ describe("Codex native skills", function () {
       scope: { conversationKey: 1, libraryID: 7, kind: "global" },
       userText: "compare",
       model: "gpt-5.4",
-      classifiedIntent: classifiedFixture(),
-      skillRoutingReceipt: {
-        routerSchemaVersion: 1,
-        routerIdentityHash: "frozen",
-        skillManifestHash: "manifest",
-        skills: [
-          {
-            id: "write-note",
-            source: "explicit",
-            requestedScope: "none",
-            version: 1,
-            instructionHash: "hash",
-          },
-        ],
-      },
+      skillContext: { forcedSkillIds: ["write-note"] },
     });
     assert.deepEqual(result.matchedSkillIds, ["write-note"]);
-    assert.equal(result.resolutionSource, "semantic");
+    assert.equal(result.resolutionSource, "explicit");
   });
 
   it("includes explicit skill selections without a second interpretation", async function () {
@@ -152,8 +134,7 @@ describe("Codex native skills", function () {
       userText: "summarize this paper",
       model: "",
       apiBase: "",
-      classifiedIntent: classifiedFixture(),
-      skillRoutingReceipt: skillReceiptFixture(["simple-paper-qa"]),
+      skillContext: { forcedSkillIds: ["simple-paper-qa"] },
     });
     assert.deepEqual(paperTurn.matchedSkillIds, ["simple-paper-qa"]);
 
@@ -166,8 +147,7 @@ describe("Codex native skills", function () {
       userText: "summarize my library",
       model: "",
       apiBase: "",
-      classifiedIntent: classifiedFixture(),
-      skillRoutingReceipt: skillReceiptFixture(["library-analysis"]),
+      skillContext: { forcedSkillIds: ["library-analysis"] },
     });
     assert.deepEqual(libraryTurn.matchedSkillIds, ["library-analysis"]);
   });
@@ -185,6 +165,7 @@ describe("Codex native skills", function () {
       model: "",
       apiBase: "",
       skillContext: {
+        forcedSkillIds: ["compare-papers"],
         selectedCollectionContexts: [
           {
             collectionId: 4,
@@ -193,8 +174,6 @@ describe("Codex native skills", function () {
           },
         ],
       },
-      classifiedIntent: classifiedFixture(),
-      skillRoutingReceipt: skillReceiptFixture(["compare-papers"]),
     });
 
     assert.deepEqual(resolved.matchedSkillIds, ["compare-papers"]);
@@ -217,6 +196,7 @@ describe("Codex native skills", function () {
       model: "",
       apiBase: "",
       skillContext: {
+        forcedSkillIds: ["evidence-based-qa"],
         selectedCollectionContexts: [
           {
             collectionId: 4,
@@ -225,8 +205,6 @@ describe("Codex native skills", function () {
           },
         ],
       },
-      classifiedIntent: classifiedFixture(),
-      skillRoutingReceipt: skillReceiptFixture(["evidence-based-qa"]),
     });
 
     assert.deepEqual(resolved.matchedSkillIds, ["evidence-based-qa"]);
@@ -383,7 +361,8 @@ describe("Codex native skills", function () {
     );
     const plainSection = block.slice(block.indexOf("Skill: simple-paper-qa"));
     assert.include(customizedSection, "USER CUSTOMIZATIONS");
-    assert.include(customizedSection, "OVERRIDE any conflicting defaults");
+    assert.include(customizedSection, "following the current request");
+    assert.include(customizedSection, "host permission policy");
     assert.notInclude(plainSection, "USER CUSTOMIZATIONS");
   });
 });

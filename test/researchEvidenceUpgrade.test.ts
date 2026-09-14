@@ -86,7 +86,9 @@ describe("research evidence upgrades and record batches", function () {
   it("announces the cap in the manifest and rejects a larger record batch", async function () {
     harness = installResearchHarness({ papers: paperFixtures(6) });
     await harness.approve();
-    const inventory = await harness.run({ operation: "inventory_scope" });
+    const { content: inventory } = await harness.run({
+      operation: "inventory_scope",
+    });
     assert.equal(inventory.maxPapersPerRecord, 4);
     await harness.verifiedRead(
       harness.papers.map((paper) => paper.key),

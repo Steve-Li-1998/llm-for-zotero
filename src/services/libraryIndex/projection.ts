@@ -1,5 +1,5 @@
-import { resolveContextAttachmentSupportFromMetadata } from "../../modules/contextPanel/contextAttachmentSupport";
-import { isMineruSyncPackageTitle } from "../../modules/contextPanel/mineruSync";
+import { resolveContextAttachmentSupportFromMetadata } from "../paperContent/contextAttachmentSupport";
+import { isMineruSyncPackageTitle } from "../mineru/sync";
 import type {
   LibraryIndexAttachment,
   LibraryIndexChildNote,

@@ -1,4 +1,4 @@
-import type { AgentWriteToolDefinition } from "../../types";
+import type { AgentToolDefinition } from "../../types";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { fail, ok, validateObject } from "../shared";
 import { classifyRequest } from "../../model/requestClassifier";
@@ -8,7 +8,7 @@ type SelfContainedTestToolInput = {
   target?: string;
 };
 
-export function createSelfContainedTestTool(): AgentWriteToolDefinition<
+export function createSelfContainedTestTool(): AgentToolDefinition<
   SelfContainedTestToolInput,
   unknown
 > {
@@ -25,8 +25,14 @@ export function createSelfContainedTestTool(): AgentWriteToolDefinition<
           target: { type: "string" },
         },
       },
-      executionClass: "external_effect",
-      requiresConfirmation: true,
+      // Control class, not external_effect: this tool exercises the
+      // confirmation lifecycle and mutates nothing, which is exactly what its
+      // read-only invocation plan below reports. Declaring it as an external
+      // effect would claim a typed action adapter it does not have, and the
+      // per-invocation guard would never catch the lie because a read-only
+      // plan is never assessed as an effect.
+      executionClass: "control",
+      workCategory: "external_system",
     },
     guidance: {
       matches: (request) => classifyRequest(request).isDemoToolQuery,

@@ -5,7 +5,10 @@ import {
   syncSelectedTextContextForSource,
 } from "../contextResolution";
 import { resolveConversationKeyForNoteFocus } from "../portalScope";
-import { resolveNoteEditingParentItem, resolveNoteEditingScope } from "./scope";
+import {
+  resolveNoteEditingParentItem,
+  resolveNoteEditingScope,
+} from "../../../services/notes/scope";
 
 function normalizeTitle(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";

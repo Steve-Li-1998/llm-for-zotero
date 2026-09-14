@@ -1,6 +1,7 @@
 import { loadWorkflowMaterial } from "../../documents/workflowMaterial";
 import { prepareDocumentMarkdownExport } from "../../documents/exportBundle";
 import {
+  loadPlanDocument,
   loadLatestDocumentForRun,
   loadLatestPlanDocumentForExecution,
 } from "../../documents/store";
@@ -8,7 +9,13 @@ import {
  * Tool for reading and writing files on the local filesystem.
  * Enables the agent to read data files, write scripts, export results, etc.
  */
-import type { AgentToolContext, AgentWriteToolDefinition } from "../../types";
+import type {
+  AgentActionEvidence,
+  AgentToolContext,
+  AgentToolTraceCodeBlock,
+  AgentTraceDetail,
+  AgentWriteToolDefinition,
+} from "../../types";
 import {
   readOnlyInvocationPlan,
   stateChangeInvocationPlan,
@@ -17,7 +24,7 @@ import type { PaperContextRef } from "../../../shared/types";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "../../../modules/contextPanel/paperAttribution";
+} from "../../../services/paperContent/paperAttribution";
 import { ok, fail, validateObject } from "../shared";
 import { getLocalParentPath } from "../../../utils/localPath";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
@@ -27,12 +34,13 @@ import {
 } from "../../store/journalRecoveryBlobStore";
 import { FILE_IO_CONTENT_FIELDS } from "../../toolArgumentFields";
 import { isMalformedToolArgumentsDiagnostic } from "../../toolArgumentDiagnostics";
-import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../modules/contextPanel/mineruCache";
+import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../services/mineru/mineruCache";
 import { collectRequestPaperContexts } from "../requestPaperContexts";
 
 type FileIOInput = {
   action: "read" | "write";
   filePath: string;
+  documentId?: string;
   content?: string;
   encoding?: string;
   offset?: number;
@@ -177,6 +185,61 @@ function isMineruFullMarkdownReadPath(value: string): boolean {
     normalized.includes("llm-for-zotero-mineru/") &&
     getFileNameFromPath(normalized).toLowerCase() === "full.md"
   );
+}
+
+/**
+ * The call's own shape, named field by field.
+ *
+ * The model reaches this tool through several argument spellings, so a reader
+ * looking at a surprising file operation needs to see which spelling arrived
+ * and what it held. The content itself is deliberately absent: the trace
+ * redacts it everywhere else too.
+ */
+export function buildFileIOTraceArgDetails(args: unknown): AgentTraceDetail[] {
+  const record =
+    args && typeof args === "object" && !Array.isArray(args)
+      ? (args as Record<string, unknown>)
+      : null;
+  if (!record) return [];
+  const details: AgentTraceDetail[] = [
+    { label: "Argument keys", value: Object.keys(record).join(", ") },
+  ];
+  const action = readFirstNamedStringField(record, FILE_IO_ACTION_FIELDS);
+  if (action)
+    details.push({
+      label: `Action field (${action.field})`,
+      value: action.value,
+    });
+  const path = readFirstNamedStringField(record, FILE_IO_PATH_FIELDS);
+  if (path)
+    details.push({ label: `Path field (${path.field})`, value: path.value });
+  return details;
+}
+
+/** The one-line "<action> <path>" preview shown under a file operation. */
+export function buildFileIOTraceCodeBlock(
+  args: unknown,
+): AgentToolTraceCodeBlock | null {
+  const record =
+    args && typeof args === "object" && !Array.isArray(args)
+      ? (args as Record<string, unknown>)
+      : null;
+  if (!record) return null;
+  const filePath = readFirstNamedStringField(record, FILE_IO_PATH_FIELDS);
+  if (!filePath) return null;
+  const action = readFirstNamedStringField(record, FILE_IO_ACTION_FIELDS);
+  return { code: `${action?.value || "access"} ${filePath.value}` };
+}
+
+function readFirstNamedStringField(
+  args: Record<string, unknown>,
+  fields: readonly string[],
+): { field: string; value: string } | null {
+  for (const field of fields) {
+    const value = args[field];
+    if (typeof value === "string" && value.trim()) return { field, value };
+  }
+  return null;
 }
 
 export function summarizeFileIOCall(args: unknown): string | null {
@@ -521,7 +584,15 @@ async function resolveFileWriteBundle(
   input: FileIOInput,
   context?: AgentToolContext,
 ) {
+  if (input.documentId && !context)
+    throw new Error("An explicit documentId requires a current host execution");
+  const explicitDocument = input.documentId
+    ? await loadPlanDocument(input.documentId)
+    : null;
+  if (input.documentId && explicitDocument?.documentId !== input.documentId)
+    throw new Error(`Finalized document was not found: ${input.documentId}`);
   const document =
+    explicitDocument ||
     (context && (await loadWorkflowMaterial(context.request))) ||
     (context?.request.planContext?.phase === "executing"
       ? await loadLatestPlanDocumentForExecution(
@@ -536,7 +607,7 @@ async function resolveFileWriteBundle(
       context.request.classifiedIntent?.semantic?.noteDestination || "none",
     );
   if (
-    mustUseDocument &&
+    (mustUseDocument || input.documentId) &&
     (!document || document.visibleMarkdown !== input.content)
   )
     throw new Error(
@@ -607,6 +678,7 @@ export function createFileIOTool(): AgentWriteToolDefinition<
         },
       ];
     },
+    effectOperations: ["file_write"],
     spec: {
       name: "file_io",
       description:
@@ -625,6 +697,11 @@ export function createFileIOTool(): AgentWriteToolDefinition<
           filePath: {
             type: "string",
             description: "Absolute path to the file.",
+          },
+          documentId: {
+            type: "string",
+            description:
+              "For a finalized document export, pass the exact documentId returned by submit_document.",
           },
           content: {
             type: "string",
@@ -649,7 +726,7 @@ export function createFileIOTool(): AgentWriteToolDefinition<
         },
       },
       executionClass: "external_effect",
-      requiresConfirmation: true,
+      workCategory: "external_system",
     },
 
     guidance: {
@@ -668,6 +745,8 @@ export function createFileIOTool(): AgentWriteToolDefinition<
 
     presentation: {
       label: "File I/O",
+      buildTraceArgDetails: ({ args }) => buildFileIOTraceArgDetails(args),
+      buildTraceCodeBlock: ({ args }) => buildFileIOTraceCodeBlock(args),
       summaries: {
         onCall: ({ args }) => {
           return summarizeFileIOCall(args) || "Accessing file";
@@ -761,6 +840,12 @@ export function createFileIOTool(): AgentWriteToolDefinition<
       return ok<FileIOInput>({
         action,
         filePath: rawFilePath.trim(),
+        documentId:
+          action === "write" &&
+          typeof args.documentId === "string" &&
+          args.documentId.trim()
+            ? args.documentId.trim()
+            : undefined,
         content: action === "write" ? rawContent || "" : undefined,
         encoding,
         offset,
@@ -957,6 +1042,7 @@ export function createFileIOTool(): AgentWriteToolDefinition<
       const exportedFiles = [];
       let changed = false;
       let actionId: string | undefined;
+      const actionEvidence: AgentActionEvidence[] = [];
       for (const file of bundle.files) {
         const expectedHash = await sha256Bytes(file.bytes);
         // Reconcile verified members on retry without replaying their write.
@@ -977,6 +1063,7 @@ export function createFileIOTool(): AgentWriteToolDefinition<
         changed ||= result.effect !== "none";
         actionId = (result.content as any).actionId || actionId;
         exportedFiles.push(result.content);
+        actionEvidence.push(...(result.actionEvidence || []));
       }
       const primary = exportedFiles[exportedFiles.length - 1];
       return {
@@ -987,6 +1074,10 @@ export function createFileIOTool(): AgentWriteToolDefinition<
           documentId: bundle.documentId,
           exportedFiles,
         },
+        // One record per journalled file, in write order. The receipt for a
+        // file write is proved by its own readback identity, so these carry
+        // the durable step of each member rather than a verdict.
+        actionEvidence,
       };
     },
   };

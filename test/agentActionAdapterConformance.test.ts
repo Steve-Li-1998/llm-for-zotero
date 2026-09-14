@@ -28,6 +28,7 @@ function createRegistry(executed: { value: boolean }): AgentToolRegistry {
     }),
   );
   registry.register({
+    effectOperations: ["remove_tags"],
     spec: {
       name: "library_update",
       description: "update library",

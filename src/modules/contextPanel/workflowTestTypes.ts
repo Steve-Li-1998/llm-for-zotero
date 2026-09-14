@@ -423,6 +423,14 @@ export type WorkflowTestCrossPaperHistoryIsolationResult = {
 };
 
 export type WorkflowTestApi = {
+  mountPublicationTrace(
+    documentId: string,
+    text: string,
+  ): {
+    root: HTMLElement;
+    deliver(conversationKey: number): Promise<void>;
+    dispose(): void;
+  };
   reset: () => Promise<void>;
   enableLiveAgentSending: () => void;
   createPaperWithPdfFixture: (input: {
@@ -476,6 +484,7 @@ export type WorkflowTestApi = {
     noteHtml: string;
   }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  refreshActiveConversationPanels: (conversationKey?: number) => void;
   exerciseNativePlanReview: typeof import("./nativePlanReviewReplay").exerciseNativePlanReview;
   exerciseNativeQuestionReview: (
     panelId: string,
@@ -489,6 +498,12 @@ export type WorkflowTestApi = {
     Awaited<
       ReturnType<typeof import("./planHistoryReplay").exercisePlanHistoryReplay>
     >
+  >;
+  exerciseAgentDeliveryReplay: (input: {
+    panelId: string;
+    failFinalRefresh?: boolean;
+  }) => ReturnType<
+    typeof import("./agentDeliveryReplay").exerciseAgentDeliveryReplay
   >;
   exerciseStreamingReplay: (input: {
     panelId: string;
@@ -546,6 +561,7 @@ export type WorkflowTestApi = {
   selectPanelModelEntry: (
     panelId: string,
     entryId: string,
+    options?: { expectWebChat?: boolean },
   ) => Promise<WorkflowTestDiagnostics>;
   exerciseWebChatPdfToggleWorkflow: (
     panelId: string,
@@ -645,6 +661,10 @@ export type WorkflowTestApi = {
   }) => Promise<WorkflowTestRuntimeGeometry>;
   exerciseStandaloneComposerManualResize: () => Promise<WorkflowTestStandaloneComposerResizeDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
+  withPendingStandaloneSend: (
+    text: string,
+    inspect: () => Promise<void>,
+  ) => Promise<void>;
   startNewStandaloneConversation: () => Promise<WorkflowTestStandaloneDiagnostics>;
   clickStandaloneReasoningOption: (label: string) => Promise<void>;
   getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;
@@ -773,6 +793,7 @@ export type WorkflowTestApi = {
     query: string,
   ) => Promise<WorkflowTestHistorySearchResult>;
   failNextPendingTurnFinalizes: (count: number) => Promise<void>;
+  forceWebChatSessionAnchorFailures: (count: number) => Promise<void>;
   askCapturingFinalRequest: (
     panelId: string,
     text: string,

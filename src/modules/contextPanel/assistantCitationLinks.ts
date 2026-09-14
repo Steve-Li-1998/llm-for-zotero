@@ -1,4 +1,5 @@
-import { sanitizeText, setStatus } from "./textUtils";
+import { setStatus } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
@@ -6,11 +7,11 @@ import {
   resolvePaperContextDisplayRef,
   resolvePaperContextRefFromAttachment,
   type PaperContextDisplayCache,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   normalizePaperContextRefs,
   normalizeSelectedTextPaperContexts,
-} from "./normalizers";
+} from "../../services/context/normalizers";
 import {
   findMatchingTrustedQuoteCitation,
   MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE,
@@ -18,14 +19,14 @@ import {
   normalizeQuoteCitations,
   QUOTE_CITATION_PATTERN,
   stripQuoteCitationAnchorsFromDisplayText,
-} from "./quoteCitations";
+} from "../../services/quotes/quoteCitations";
 import {
   buildQuoteRenderPlan,
   getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
   type QuoteRenderOccurrence,
 } from "./quoteRenderPlan";
-import { stripLeadingCitationSeparators } from "./citationText";
+import { stripLeadingCitationSeparators } from "../../services/quotes/citationText";
 import {
   extractCitationAuthorKey,
   extractCitationYear,
@@ -36,19 +37,17 @@ import {
   parseStandaloneCitationLabel,
   stripCitationControlChars,
   stripCitationKeyFromLabel,
-} from "./citationLabelParser";
+} from "../../services/quotes/citationLabelParser";
 import {
   buildAutoNavigableCitationCandidateKeys as buildResolverAutoNavigableCitationCandidateKeys,
   rankCitationResolverCandidate,
   type CitationResolverCandidate,
   type RankedCitationCandidate,
 } from "./citationCandidateResolver";
-import {
-  getActiveReaderForSelectedTab,
-  resolveContextSourceItem,
-} from "./contextResolution";
+import { resolveContextSourceItem } from "./contextResolution";
+import { getActiveReaderForSelectedTab } from "../../services/pdf/zoteroReaderTabs";
 import { persistPendingChatScrollRestoreForElement } from "./chatScrollSnapshots";
-import { isPdfContextAttachment } from "./contextAttachmentSupport";
+import { isPdfContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import {
   buildCitationQuoteHash,
   clearCitationPageCache,

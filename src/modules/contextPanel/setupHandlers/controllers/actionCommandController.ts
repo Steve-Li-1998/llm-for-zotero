@@ -1,3 +1,4 @@
+import { scheduleChatContentScroll } from "../../chatScrollSnapshots";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
 import type { ActionRequestContext } from "../../../../agent/actions";
@@ -8,7 +9,7 @@ import type { ModelProfileOverride } from "../../../../modelCapabilities";
 import { getAgentModeEnabled } from "../../prefHelpers";
 import { formatActionLabel } from "../../actionStatusText";
 import { renderPendingActionCard } from "../../agentTrace/render";
-import { buildPaperKey } from "../../pdfContext";
+import { buildPaperKey } from "../../../../services/paperContent/pdfContext";
 import {
   resolvePaperScopedDefaultInput,
   type PaperScopedActionProfile,
@@ -688,8 +689,8 @@ export function createActionCommandController(
         resolve(null);
       });
       chatBox.appendChild(wrapper);
-      chatBox.scrollTop = chatBox.scrollHeight;
-      fieldEls[0]?.input.focus();
+      scheduleChatContentScroll(chatBox);
+      fieldEls[0]?.input.focus({ preventScroll: true });
     });
 
   const executeAgentAction = async (
@@ -907,7 +908,7 @@ export function createActionCommandController(
         }),
       );
       chatBox.appendChild(wrapper);
-      chatBox.scrollTop = chatBox.scrollHeight;
+      scheduleChatContentScroll(chatBox);
     });
 
   const handleInlineCommand = async (

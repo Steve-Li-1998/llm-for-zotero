@@ -9,17 +9,17 @@ import {
 } from "../../state";
 import {
   getActiveContextAttachmentFromTabs,
-  getActiveReaderForSelectedTab,
   getActiveReaderSelectionText,
 } from "../../contextResolution";
-import { resolvePaperContextRefFromAttachment } from "../../paperAttribution";
+import { getActiveReaderForSelectedTab } from "../../../../services/pdf/zoteroReaderTabs";
+import { resolvePaperContextRefFromAttachment } from "../../../../services/paperContent/paperAttribution";
 import { getCurrentSelectionPageLocationFromReader } from "../../livePdfSelectionLocator";
 import { includeReaderSelectedText } from "../../readerTextInclusion";
 import {
   captureScreenshotSelection,
   optimizeImageDataUrl,
 } from "../../screenshot";
-import { captureCurrentPdfPage } from "../../pdfPageCapture";
+import { captureCurrentPdfPage } from "../../../../services/pdf/pdfPageCapture";
 import {
   getScreenshotDisabledHint,
   isScreenshotUnsupportedModel,
@@ -505,7 +505,7 @@ export function attachComposeCaptureController(
           return;
         }
         const { getPdfPageCount, parsePageRanges, capturePdfPages } =
-          await import("../../pdfPageCapture");
+          await import("../../../../services/pdf/pdfPageCapture");
         const totalPages = getPdfPageCount();
         if (totalPages <= 0) {
           setStatus(

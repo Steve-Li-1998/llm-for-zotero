@@ -3,9 +3,54 @@ import type {
   AgentConfirmationResolution,
   AgentPendingAction,
 } from "../src/agent/types";
-import { resolveCodexNativeApprovalWithOptionalReviewCard } from "../src/modules/contextPanel/chat";
+import {
+  resolveCodexNativeApprovalWithOptionalReviewCard,
+  resolveCodexNativeHostInteractionWithTrace,
+} from "../src/modules/contextPanel/chat";
 
 describe("Codex native approval bridge", function () {
+  it("lets the trace exclusively own a host-interaction question card", async function () {
+    const events: string[] = [];
+    let traceOwnsCard = false;
+    const action: AgentPendingAction = {
+      toolName: "request_user_input",
+      title: "Plan needs your input",
+      fields: [],
+    };
+
+    const resolution = await resolveCodexNativeHostInteractionWithTrace({
+      body: {} as Element,
+      action,
+      nextRequestId: () => "host-question-1",
+      trace: {
+        noteMcpConfirmationRequired: () => events.push("required"),
+        noteMcpConfirmationResolved: () => events.push("resolved"),
+      },
+      showActionCard: async (
+        _body,
+        requestId,
+        renderedAction,
+        _signal,
+        ownsCard,
+      ) => {
+        assert.equal(requestId, "host-question-1");
+        assert.strictEqual(renderedAction, action);
+        traceOwnsCard = Boolean(ownsCard);
+        return { approved: true, actionId: "continue" };
+      },
+    });
+
+    assert.isTrue(
+      traceOwnsCard,
+      "the immediate bridge must not mount a duplicate inline card",
+    );
+    assert.deepEqual(events, ["required", "resolved"]);
+    assert.deepEqual(resolution, {
+      approved: true,
+      actionId: "continue",
+    });
+  });
+
   it("does not display a resolved native question or invent an answer", async function () {
     const controller = new AbortController();
     controller.abort();

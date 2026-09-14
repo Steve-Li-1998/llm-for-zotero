@@ -225,6 +225,7 @@ describe("library_batch", function () {
     };
     const toolRegistry = new AgentToolRegistry();
     toolRegistry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "batch_test_write",
         description: "Apply one test page",
@@ -408,7 +409,7 @@ describe("library_batch", function () {
   it("leaves review to the actual prepared action page", function () {
     const tool = makeTool();
     assert.equal(tool.spec.executionClass, "control");
-    assert.isFalse(tool.spec.requiresConfirmation);
+    assert.notProperty(tool.spec, "requiresConfirmation");
     assert.isUndefined(
       tool.createPendingAction,
       "no generic batch approval card",
@@ -879,6 +880,38 @@ describe("library_batch", function () {
       cursor: 2,
       appliedCount: 1,
     });
+  });
+
+  it("does not offer another tool's batches as its own interrupted work", async function () {
+    installMode("safe");
+    const noteBatch: BatchJobRecord = {
+      jobId: "batch-note_write_batch-1",
+      conversationKey: 9,
+      // Note batches share the job table but are resumed by note_write_batch,
+      // so listing one here would offer work this tool cannot continue.
+      action: "note_write_batch",
+      inputJson: "{}",
+      cursor: 1,
+      appliedCount: 1,
+      totalCount: 3,
+      status: "failed",
+      createdAt: 10,
+      updatedAt: 20,
+    };
+    const tool = createLibraryBatchTool({
+      actionRegistry: new ActionRegistry(),
+      toolRegistry: {} as never,
+      zoteroGateway: {} as never,
+      batchJobStore: makeJobStore({ interrupted: [noteBatch] }),
+    });
+    const validated = tool.validate({ listInterrupted: true });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = (await tool.execute(validated.value, context)).content as {
+      interruptedJobs: Array<Record<string, unknown>>;
+    };
+    assert.isEmpty(result.interruptedJobs);
   });
 
   it("resumes only the frozen remaining item IDs and preserves cumulative progress", async function () {

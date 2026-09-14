@@ -42,7 +42,10 @@ import {
 } from "../src/agent/mcp/server";
 import { getCodexProfileSignature } from "../src/codexAppServer/constants";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { createResearchUpdateTool } from "../src/agent/tools/plan/researchUpdate";
 import { createUpdatePlanTool } from "../src/agent/tools/plan/updatePlan";
+import { createFileIOTool } from "../src/agent/tools/write/fileIO";
+import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
 import { assert } from "chai";
 import { DatabaseSync } from "node:sqlite";
 import { PlanExecutionCoordinator } from "../src/agent/plans/coordinator";
@@ -59,28 +62,41 @@ import type {
 import {
   initAgentPlanStore,
   loadPlanExecutionLedger,
+  savePlanArtifact,
   savePlanExecutionLedger,
   saveTaskEvidence,
 } from "../src/agent/plans/store";
 import type {
   ExecutionTask,
+  PlanArtifact,
+  PlanEffectSpecification,
   PlanExecutionLedger,
   TaskEvidence,
 } from "../src/agent/plans/types";
 import { takePendingPlanExecution } from "../src/modules/contextPanel/planModeState";
-import { PlanExecutionRunSession } from "../src/agent/plans/runSession";
+import {
+  PlanExecutionRunSession,
+  recordMcpPlanEvidence,
+} from "../src/agent/plans/runSession";
+import { listTaskEvidence } from "../src/agent/plans/store";
+import { verificationObservations } from "../src/agent/research/graphLoop";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 import { createPreparePlanExecutionTool } from "../src/agent/tools/plan/preparePlanExecution";
 import { finalizeNativePlanProposal } from "../src/agent/plans/nativePlanning";
 import { loadPlanArtifact } from "../src/agent/plans/store";
 import { initResearchStore } from "../src/agent/research/store";
-import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/chat";
+import { announceFinalizedMaterialForRunForTests } from "../src/modules/contextPanel/chat";
+import { createCodexNativeActivityTraceControllerForTests } from "../src/modules/contextPanel/codexNativeTrace/controller";
 import {
   initAgentTraceStore,
   getAgentRunTrace,
+  createAgentRun,
+  appendAgentRunEvent,
 } from "../src/agent/store/traceStore";
+import type { AgentEvent } from "../src/agent/types";
 import type { Message } from "../src/modules/contextPanel/types";
 import { ensureConversationKeyLedgerEntry } from "../src/shared/conversationKeyLedger";
+import { researchMutationDigest } from "../src/agent/research/mutationApproval";
 
 const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
 
@@ -485,6 +501,17 @@ describe("transactional Plan task transitions", function () {
   });
 
   it("retains an unchanged typed mutation scope across native proposal-only revisions", async function () {
+    const zotero = (globalScope.Zotero || {}) as Record<string, unknown>;
+    globalScope.Zotero = {
+      ...zotero,
+      Items: {
+        ...((zotero.Items || {}) as Record<string, unknown>),
+        get: (itemId: number) =>
+          itemId === 3900
+            ? { id: 3900, key: "ITEM3900", libraryID: 1, deleted: false }
+            : null,
+      },
+    };
     const initialRequest = resolvedAgentRequest({
       conversationKey: 41,
       userText: 'Add the tag "review" to item 3900.',
@@ -584,10 +611,10 @@ describe("transactional Plan task transitions", function () {
     } as any);
     const revised = (await loadPlanArtifact("native-tag-revision", 2))!;
     assert.deepEqual(
-      revised.actionContract?.obligations,
-      original.actionContract?.obligations,
+      revised.effectSpecification?.effects,
+      original.effectSpecification?.effects,
     );
-    assert.deepEqual(revised.actionContract?.hardConstraints, constraints);
+    assert.deepEqual(revised.effectSpecification?.constraints, constraints);
     assert.equal(
       (await loadPlanArtifact("native-tag-revision", 1))?.status,
       "superseded",
@@ -614,8 +641,8 @@ describe("transactional Plan task transitions", function () {
       { request: revisionRequest, runId: "second" } as any,
     );
     assert.isEmpty(
-      (await loadPlanArtifact("native-tag-revision", 2))?.actionContract
-        ?.obligations,
+      (await loadPlanArtifact("native-tag-revision", 2))?.effectSpecification
+        ?.effects,
     );
   });
 
@@ -692,7 +719,7 @@ describe("transactional Plan task transitions", function () {
     } as any);
     const staged = await loadPlanArtifact(plan.planId, 1);
     assert.equal(staged?.status, "drafting");
-    assert.deepEqual(staged?.actionContract?.hardConstraints, noExecution);
+    assert.deepEqual(staged?.effectSpecification?.constraints, noExecution);
     let approvalError: unknown;
     try {
       await new PlanExecutionCoordinator().approve({
@@ -792,6 +819,157 @@ describe("transactional Plan task transitions", function () {
       (await loadPlanArtifact(plan.planId, 1))?.digest,
       ready.digest,
     );
+  });
+
+  it("accepts the concise research contract shape produced by native Codex Plan", function () {
+    const tool = createPreparePlanExecutionTool();
+    const validated = tool.validate({
+      libraryID: 1,
+      contract: {
+        deliverable: {
+          kind: "document",
+          spec: {
+            title: "A thematic review",
+            format: "markdown",
+            destination: "chat",
+            wordCount: 3500,
+            sections: ["Thematic synthesis", "References"],
+          },
+        },
+        investigation: {
+          question: "How do the papers connect?",
+          subquestions: ["Which assumptions differ?", "What evidence agrees?"],
+          criteria: {
+            inclusion: "Every paper in the selected collection",
+            evidence: "Use body evidence for consequential claims",
+          },
+          reviewMode: "narrative",
+          readingStrategy: "adaptive",
+          scopeAmendmentPolicy: "fixed",
+          scope: {
+            libraryID: 1,
+            kind: "collection",
+            collectionIds: [2],
+            items: [
+              { itemId: 29, itemKey: "TKRTP7V2" },
+              { itemId: 30, itemKey: "CLVE4LUY" },
+            ],
+          },
+          requiredEvidenceDepth: "body",
+          estimatedDeepReadPapers: 12,
+          approvedLargeCorpus: false,
+        },
+      },
+      steps: [
+        {
+          content: "Verify every paper",
+          activeForm: "Verifying paper understanding",
+          expectedEffect: "read",
+          acceptanceCriteria: ["Every paper has verified body evidence"],
+        },
+        {
+          content: "Build the synthesis",
+          activeForm: "Building the synthesis",
+          expectedEffect: "reasoning",
+          acceptanceCriteria: ["Comparisons remain evidence bounded"],
+        },
+        {
+          content: "Publish the review",
+          activeForm: "Publishing the review",
+          expectedEffect: "artifact",
+          acceptanceCriteria: ["The complete review is visible in chat"],
+        },
+      ],
+    });
+
+    assert.isTrue(validated.ok, validated.ok ? "" : validated.error);
+    if (!validated.ok) return;
+    const investigation = validated.value.contract?.investigation as any;
+    const spec = (validated.value.contract?.deliverable as any).spec;
+    assert.equal(
+      (validated.value.steps[2].acceptanceCriteria[0] as { verifier: string })
+        .verifier,
+      "document_integrity",
+      "final publication is not an intermediate material producer",
+    );
+    assert.deepEqual(investigation.scope, {
+      libraryID: 1,
+      kind: "collections",
+      collectionIds: [2],
+    });
+    assert.deepEqual(investigation.subquestions, [
+      { id: "question-1", question: "Which assumptions differ?" },
+      { id: "question-2", question: "What evidence agrees?" },
+    ]);
+    assert.deepEqual(investigation.criteria, []);
+    assert.equal(investigation.estimatedDeepReadPapers, 0);
+    assert.deepEqual(spec, {
+      kind: "literature_review",
+      title: "A thematic review",
+      requiredSections: ["Thematic synthesis", "References"],
+      requiresReferences: true,
+      requiresCoverageSection: true,
+      allowFigures: false,
+    });
+
+    const ambiguous = tool.validate({
+      ...validated.value,
+      contract: {
+        ...validated.value.contract,
+        deliverable: {
+          kind: "document",
+          spec: {
+            title: "Review",
+            include: [
+              "author-year citations",
+              "comparison table covering all 12 papers",
+            ],
+          },
+        },
+      },
+    });
+    assert.isFalse(
+      ambiguous.ok,
+      "content features must not become mandatory literal headings",
+    );
+    if (!ambiguous.ok) assert.include(ambiguous.error, "requiredSections");
+
+    const savedZotero = globalScope.Zotero;
+    globalScope.Zotero = {
+      ...((savedZotero || {}) as Record<string, unknown>),
+      Items: {
+        get: (id: number) =>
+          id === 29 ? { key: "TKRTP7V2", libraryID: 1 } : undefined,
+      },
+    };
+    try {
+      const inferred = tool.validate({
+        ...validated.value,
+        contract: {
+          ...((validated.value.contract || {}) as Record<string, unknown>),
+          investigation: {
+            ...investigation,
+            scope: { libraryID: 1, items: [{ itemId: 29 }] },
+            estimatedDeepReadPapers: 1,
+          },
+        },
+      });
+      assert.isTrue(inferred.ok, inferred.ok ? "" : inferred.error);
+      if (inferred.ok) {
+        assert.deepEqual((inferred.value.contract as any).investigation.scope, {
+          libraryID: 1,
+          kind: "items",
+          itemKeys: ["TKRTP7V2"],
+        });
+        assert.equal(
+          (inferred.value.contract as any).investigation
+            .estimatedDeepReadPapers,
+          0,
+        );
+      }
+    } finally {
+      globalScope.Zotero = savedZotero;
+    }
   });
 
   beforeEach(async function () {
@@ -977,6 +1155,107 @@ describe("transactional Plan task transitions", function () {
     );
   });
 
+  it("round-trips a stage event through the real trace store", async function () {
+    // The store has no event-type whitelist by design, so a stage event must
+    // survive a real write and read with every field intact.
+    const runId = "stage-round-trip";
+    await ensureConversationKeyLedgerEntry({
+      conversationKey: 41,
+      instanceID: "stage-instance",
+      conversationID: "stage-conversation",
+      system: "upstream",
+      kind: "paper",
+      profileSignature: "stage-profile",
+      libraryID: 1,
+      paperItemID: 41,
+      issuedAt: 1,
+    });
+    await createAgentRun({
+      runId,
+      conversationKey: 41,
+      mode: "agent",
+      status: "running",
+      createdAt: 1,
+    });
+    const stage: AgentEvent = {
+      type: "agent_stage",
+      stage: "zotero_action",
+      status: "completed",
+      callId: "call-1",
+      toolName: "note_write",
+      toolLabel: "Write note",
+      receiptIds: ["receipt-1", "receipt-2"],
+      materialRef: {
+        documentId: "run:document:1",
+        documentVersion: 1,
+        contentHash: "sha256:note",
+      },
+      batchId: "batch-1",
+      itemKey: "item:1",
+    };
+    await appendAgentRunEvent(runId, 1, stage);
+    const trace = await getAgentRunTrace(runId);
+    assert.deepEqual(
+      trace.events.map((entry) => entry.eventType),
+      ["agent_stage"],
+    );
+    assert.deepEqual(trace.events[0].payload, stage);
+  });
+
+  it("brackets a host-announced material with its own generation stage", async function () {
+    // A native run's only material is the one the host announces after the
+    // document is delivered. The run already carries stages the bridge
+    // emitted, so the compatibility projection will not touch it -- this
+    // append has to bracket itself, exactly as the runtime does.
+    const runId = "material-stage-append";
+    await ensureConversationKeyLedgerEntry({
+      conversationKey: 41,
+      instanceID: "material-instance",
+      conversationID: "material-conversation",
+      system: "upstream",
+      kind: "paper",
+      profileSignature: "material-profile",
+      libraryID: 1,
+      paperItemID: 41,
+      issuedAt: 1,
+    });
+    await createAgentRun({
+      runId,
+      conversationKey: 41,
+      mode: "agent",
+      status: "running",
+      createdAt: 1,
+    });
+    await appendAgentRunEvent(runId, 1, {
+      type: "agent_stage",
+      stage: "retrieval",
+      status: "completed",
+    });
+    await announceFinalizedMaterialForRunForTests(runId, {
+      documentId: "run:document:9",
+      documentVersion: 3,
+      contentHash: "sha256:report",
+      title: "The report",
+      version: 2,
+      documentKind: "report",
+    } as never);
+    const trace = await getAgentRunTrace(runId);
+    assert.deepEqual(
+      trace.events.map((entry) => entry.eventType),
+      ["agent_stage", "agent_stage", "material_finalized"],
+    );
+    assert.deepEqual(trace.events[1].payload, {
+      type: "agent_stage",
+      stage: "generation",
+      status: "completed",
+      materialRef: {
+        documentId: "run:document:9",
+        documentVersion: 3,
+        contentHash: "sha256:report",
+      },
+    });
+  });
+
   it("preserves typed restrictions when native feedback revises the explanation", async function () {
     const tool = createPreparePlanExecutionTool();
     const input = tool.validate({
@@ -1031,13 +1310,13 @@ describe("transactional Plan task transitions", function () {
       } as any);
     }
     assert.deepEqual(
-      (await loadPlanArtifact("restrictions", 2))?.actionContract
-        ?.hardConstraints,
+      (await loadPlanArtifact("restrictions", 2))?.effectSpecification
+        ?.constraints,
       restrictions,
     );
     assert.deepEqual(
-      (await loadPlanArtifact("restrictions", 1))?.actionContract
-        ?.hardConstraints,
+      (await loadPlanArtifact("restrictions", 1))?.effectSpecification
+        ?.constraints,
       restrictions,
     );
   });
@@ -1078,11 +1357,14 @@ describe("transactional Plan task transitions", function () {
       },
     });
     registry.register(createUpdatePlanTool());
+    registry.register(createFileIOTool());
+    registry.register(createRunCommandTool());
     for (const name of [
       "library_search",
       "library_read",
       "paper_read",
       "task_update",
+      "research_update",
     ])
       registry.register({
         spec: {
@@ -1140,7 +1422,12 @@ describe("transactional Plan task transitions", function () {
             }
             if (turnNumber <= 2) {
               assert.include(cachedToolNames!, "prepare_plan_execution");
-              assert.notInclude(cachedToolNames!, "task_update");
+              assert.include(
+                cachedToolNames!,
+                "task_update",
+                "native Plan threads must preload guarded execution tools for their resumed execution turn",
+              );
+              assert.include(cachedToolNames!, "research_update");
             } else {
               assert.notInclude(
                 cachedToolNames!,
@@ -1160,6 +1447,44 @@ describe("transactional Plan task transitions", function () {
               assert.notInclude(
                 tools.tools.map((tool: any) => tool.name),
                 "update_plan",
+              );
+              const prepareDefinition = tools.tools.find(
+                (tool: any) => tool.name === "prepare_plan_execution",
+              );
+              assert.include(
+                prepareDefinition?.description || "",
+                "Stage",
+                "native Plan must present requirement preparation as staging",
+              );
+              assert.notMatch(
+                prepareDefinition?.description || "",
+                /\bapprove\b|start execution/i,
+                "requirement staging must not sound like approval or execution",
+              );
+              const acceptanceCriterionAlternatives =
+                prepareDefinition?.inputSchema?.properties?.steps?.items
+                  ?.properties?.acceptanceCriteria?.items?.oneOf || [];
+              assert.isTrue(
+                acceptanceCriterionAlternatives.some(
+                  (schema: any) => schema?.type === "string",
+                ),
+                "native Plan must advertise concise acceptance checks in its MCP schema",
+              );
+              const nativeInvestigation =
+                prepareDefinition?.inputSchema?.properties?.contract?.properties
+                  ?.investigation;
+              assert.include(
+                nativeInvestigation?.properties?.scope?.properties?.kind
+                  ?.enum || [],
+                "collection",
+                "the MCP contract must advertise the native singular collection scope",
+              );
+              assert.isTrue(
+                (
+                  nativeInvestigation?.properties?.subquestions?.items?.oneOf ||
+                  []
+                ).some((schema: any) => schema?.type === "string"),
+                "the MCP contract must advertise concise native subquestions",
               );
               emit({
                 method: "turn/plan/updated",
@@ -1192,13 +1517,7 @@ describe("transactional Plan task transitions", function () {
                       content: "Explain the concept",
                       activeForm: "Explaining the concept",
                       expectedEffect: "reasoning",
-                      acceptanceCriteria: [
-                        {
-                          criterionId: "answer",
-                          description: "A bounded explanation",
-                          verifier: "bounded_reasoning",
-                        },
-                      ],
+                      acceptanceCriteria: ["A bounded explanation"],
                     },
                     {
                       content: "Check the requested caveat",
@@ -1281,6 +1600,11 @@ describe("transactional Plan task transitions", function () {
       });
       assert.equal(first.text, "# Proposal 1\n\nExplain the agreed concept.");
       const firstArtifact = await loadPlanArtifact("native-lifecycle", 1);
+      assert.deepInclude(firstArtifact?.steps[0].acceptanceCriteria[0], {
+        criterionId: "step-1-criterion-1",
+        description: "A bounded explanation",
+        verifier: "bounded_reasoning",
+      });
       assert.isTrue(
         stagedContexts[0].signal?.aborted,
         "finished native scopes invalidate pending contract preparation",
@@ -1343,6 +1667,19 @@ describe("transactional Plan task transitions", function () {
       assert.isAtLeast(
         requests.filter((r) => r.method === "thread/resume").length,
         3,
+      );
+      const firstResumeIndex = requests.findIndex(
+        (request) => request.method === "thread/resume",
+      );
+      assert.isAtLeast(firstResumeIndex, 0);
+      assert.isAtLeast(
+        requests.findLastIndex(
+          (request, index) =>
+            index < firstResumeIndex &&
+            request.method === "config/mcpServer/reload",
+        ),
+        0,
+        "the phase-specific MCP catalog must reload before a stored thread resumes",
       );
       assert.equal(
         (await loadPlanExecutionLedger(ledger.executionId))?.planDigest,
@@ -1454,7 +1791,30 @@ describe("transactional Plan task transitions", function () {
   });
 
   it("binds MCP document submission to the current durable task after research advances", async function () {
-    await savePlanExecutionLedger(documentExecution());
+    const documentLedger = documentExecution();
+    await savePlanArtifact({
+      version: 4,
+      planId: documentLedger.planId,
+      conversationKey: documentLedger.conversationKey,
+      provider: "codex",
+      revision: documentLedger.revision,
+      digest: documentLedger.planDigest,
+      status: "approved",
+      contract: { deliverable: { kind: "answer" } },
+      contractDigest: "sha256:contract",
+      steps: documentLedger.tasks.map((task) => ({
+        planStepId: task.planStepId,
+        content: task.content,
+        activeForm: task.activeForm,
+        acceptanceCriteria: task.acceptanceCriteria,
+        expectedEffect: task.expectedEffect,
+        completionRequirements: task.completionRequirements,
+      })),
+      createdAt: 1,
+      updatedAt: 1,
+      approvedAt: 1,
+    });
+    await savePlanExecutionLedger(documentLedger);
     const restorePrefs = installDirectPathTestPrefs();
     const zotero = globalScope.Zotero as any;
     const originalGet = zotero.Prefs.get;
@@ -1633,6 +1993,303 @@ describe("transactional Plan task transitions", function () {
     );
   });
 
+  it("resolves a producer-created target only from its verified receipt", async function () {
+    const producer: ExecutionTask = {
+      ...reasoningTask(),
+      taskId: "execution-1:create-task",
+      planStepId: "create-step",
+      content: "Create the destination collection",
+      activeForm: "Creating the destination collection",
+      expectedEffect: "mutation",
+      effectIds: ["create-destination"],
+      completionRequirements: [],
+      status: "completed",
+      completedAt: 2,
+      evidenceIds: ["create-receipt"],
+    };
+    const consumer: ExecutionTask = {
+      ...reasoningTask(),
+      taskId: "execution-1:move-task",
+      planStepId: "move-step",
+      content: "Move the paper",
+      activeForm: "Moving the paper",
+      expectedEffect: "mutation",
+      effectIds: ["move-paper"],
+      completionRequirements: [],
+    };
+    const ledger = {
+      ...execution(),
+      activeTaskId: consumer.taskId,
+      tasks: [producer, consumer],
+    };
+    await savePlanExecutionLedger(ledger);
+    await saveTaskEvidence({
+      version: 3,
+      evidenceId: "create-receipt",
+      executionId: ledger.executionId,
+      taskId: producer.taskId,
+      kind: "mutation_receipt",
+      verified: true,
+      criterionIds: [],
+      payload: {
+        type: "mutation_receipts",
+        receiptIds: ["receipt-create"],
+        effectIds: ["create-destination"],
+        effectTargets: [
+          { effectId: "create-destination", targetIds: ["library:1"] },
+        ],
+      },
+      receipt: {
+        version: 2,
+        id: "receipt-create",
+        proposalId: "proposal-create",
+        proofDomain: "zotero_state",
+        capability: "zotero.collections",
+        operation: "create_collection",
+        verification: "verified",
+        status: "applied",
+        requestedTargets: ["library:1"],
+        appliedTargets: ["collection:77"],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: [],
+        reasons: [],
+        verifiedFacts: ["Collection 77 exists"],
+      },
+      summary: "Created collection 77",
+      createdAt: 2,
+    });
+    const artifact = {
+      version: 5,
+      effectSpecification: {
+        version: 1,
+        constraints: [],
+        effects: [
+          {
+            effectId: "create-destination",
+            approval: "initial",
+            operation: "create_collection",
+            targets: [
+              {
+                domain: "zotero",
+                libraryID: 1,
+                targetIds: ["library:1"],
+                scopeDigest: "sha256:library",
+              },
+            ],
+            targetBindings: [],
+            parameters: { collectionName: "Reviewed" },
+            review: "default",
+            restrictions: [],
+            dependsOnEffectIds: [],
+            materialBindings: [],
+          },
+          {
+            effectId: "move-paper",
+            approval: "initial",
+            operation: "move_to_collection",
+            targets: [
+              {
+                domain: "zotero",
+                libraryID: 1,
+                targetIds: ["item:42"],
+                scopeDigest: "sha256:item",
+              },
+            ],
+            targetBindings: [
+              {
+                role: "destination_collection",
+                producedByEffectId: "create-destination",
+              },
+            ],
+            parameters: { sourceCollectionId: 8 },
+            review: "default",
+            restrictions: [],
+            dependsOnEffectIds: ["create-destination"],
+            materialBindings: [],
+          },
+        ],
+        deferredEffects: [],
+      },
+    } as PlanArtifact;
+    const request = resolvedAgentRequest({
+      conversationKey: 41,
+      mode: "agent",
+      userText: "Continue the plan",
+    });
+    const session = new PlanExecutionRunSession(request, async () => {});
+    (session as unknown as { artifact: PlanArtifact }).artifact = artifact;
+    (session as unknown as { ledger: PlanExecutionLedger }).ledger = ledger;
+
+    assert.deepEqual(await session.resolvedWorkflowTargetBindings(), {
+      "move-paper": ["collection:77"],
+    });
+  });
+
+  it("makes newly approved research-derived effects usable in the same agent run", async function () {
+    const deferred = {
+      effectId: "tag-research-results",
+      approval: "after_research" as const,
+      operation: "apply_tags" as const,
+      targetSelectionDescription: "Papers supported by the completed review",
+      targetBindings: [],
+      parameters: { tags: ["reviewed"] },
+      review: "review" as const,
+      restrictions: [],
+      dependsOnEffectIds: [],
+      materialBindings: [],
+    };
+    const baseSpecification: PlanEffectSpecification = {
+      version: 1,
+      constraints: [],
+      effects: [],
+      deferredEffects: [deferred],
+    };
+    const approvedSpecification: PlanEffectSpecification = {
+      ...baseSpecification,
+      effects: [
+        {
+          effectId: "tag-research-results:approved:1",
+          approval: "after_research",
+          operation: "apply_tags",
+          targets: [
+            {
+              domain: "zotero",
+              libraryID: 1,
+              targetIds: ["item:42"],
+              scopeDigest: "sha256:item-42",
+            },
+          ],
+          targetBindings: [],
+          parameters: deferred.parameters,
+          review: deferred.review,
+          restrictions: [],
+          dependsOnEffectIds: [],
+          materialBindings: [],
+          derivedFromDeferredEffectId: deferred.effectId,
+        },
+      ],
+    };
+    const task: ExecutionTask = {
+      ...reasoningTask(),
+      expectedEffect: "mutation",
+      effectIds: ["tag-research-results:approved:1"],
+      completionRequirements: [],
+    };
+    const ledger: PlanExecutionLedger = {
+      ...execution(),
+      researchEffectSpecificationDigest: await researchMutationDigest(
+        approvedSpecification,
+      ),
+      tasks: [task],
+      activeTaskId: task.taskId,
+    };
+    await savePlanExecutionLedger(ledger);
+    const request = resolvedAgentRequest({
+      conversationKey: 41,
+      mode: "agent",
+      userText: "Approve and apply the research-selected tags",
+      planContext: {
+        phase: "executing",
+        planId: ledger.planId,
+        revision: ledger.revision,
+        executionId: ledger.executionId,
+        approvedDigest: ledger.planDigest,
+        provider: "original",
+        activeTaskId: task.taskId,
+      },
+    });
+    const session = new PlanExecutionRunSession(request, async () => {});
+    (session as unknown as { artifact: PlanArtifact }).artifact = {
+      version: 5,
+      effectSpecification: baseSpecification,
+    } as PlanArtifact;
+    (session as unknown as { ledger: PlanExecutionLedger }).ledger = ledger;
+
+    await session.recordToolResult({
+      toolName: "approve_research_mutation",
+      executionClass: "control",
+      input: {},
+      result: {
+        callId: "approve-derived",
+        name: "approve_research_mutation",
+        ok: true,
+        actionReceipts: [],
+        content: { effectSpecification: approvedSpecification },
+      },
+      runId: "run-1",
+    });
+
+    assert.deepEqual(
+      session
+        .approvedEffectSpecification()
+        ?.effects.map((effect) => effect.effectId),
+      ["tag-research-results:approved:1"],
+    );
+  });
+
+  it("rolls back an entire Plan transition batch when a later transition is invalid", async function () {
+    const first = reasoningTask();
+    const second: ExecutionTask = {
+      ...reasoningTask(),
+      taskId: "execution-1:task-2",
+      planStepId: "step-2",
+      content: "Write a second bounded conclusion",
+      activeForm: "Writing a second bounded conclusion",
+      status: "pending",
+      attemptCount: 0,
+      startedAt: undefined,
+    };
+    await savePlanExecutionLedger({
+      ...execution(),
+      tasks: [first, second],
+    });
+
+    let failure = "";
+    try {
+      await new PlanExecutionCoordinator().requestTransitionBatch(
+        [
+          {
+            request: {
+              executionId: "execution-1",
+              taskId: first.taskId,
+              toStatus: "completed",
+              requestedBy: "original",
+            },
+            evidence: reasoningEvidence(),
+          },
+          {
+            request: {
+              executionId: "execution-1",
+              taskId: second.taskId,
+              toStatus: "skipped",
+              requestedBy: "original",
+            },
+          },
+        ],
+        2,
+      );
+    } catch (error) {
+      failure = String(error);
+    }
+
+    assert.match(failure, /only the user may skip/i);
+    const persisted = await loadPlanExecutionLedger("execution-1");
+    assert.deepEqual(
+      persisted?.tasks.map((task) => task.status),
+      ["in_progress", "pending"],
+    );
+    assert.equal(
+      Number(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM llm_for_zotero_plan_task_evidence",
+          )
+          .get()?.count,
+      ),
+      0,
+    );
+  });
+
   it("advances an intermediate material task from stored document evidence before the later save", async function () {
     const first = {
       ...reasoningTask(),
@@ -1700,6 +2357,85 @@ describe("transactional Plan task transitions", function () {
     const ledger = await loadPlanExecutionLedger("execution-1");
     assert.equal(ledger?.tasks[0].status, "completed");
     assert.equal(ledger?.activeTaskId, second.taskId);
+  });
+
+  it("keeps an approved Plan running after a research call is rejected before execution", async function () {
+    const ledger = {
+      ...execution(),
+      effectSpecificationDigest: "sha256:effects",
+    };
+    await savePlanExecutionLedger(ledger);
+    await savePlanArtifact({
+      version: 5,
+      skillBindings: [],
+      planId: ledger.planId,
+      conversationKey: ledger.conversationKey,
+      provider: "original",
+      revision: ledger.revision,
+      digest: ledger.planDigest,
+      status: "approved",
+      contract: { deliverable: { kind: "answer" } },
+      contractDigest: "sha256:contract",
+      effectSpecification: {
+        version: 1,
+        effects: [],
+        deferredEffects: [],
+        constraints: [],
+      },
+      steps: ledger.tasks.map((task) => ({
+        planStepId: task.planStepId,
+        content: task.content,
+        activeForm: task.activeForm,
+        acceptanceCriteria: task.acceptanceCriteria,
+        expectedEffect: task.expectedEffect,
+        completionRequirements: task.completionRequirements,
+      })),
+      createdAt: 1,
+      updatedAt: 1,
+      approvedAt: 1,
+    });
+    const request = resolvedAgentRequest({
+      conversationKey: ledger.conversationKey,
+      mode: "agent",
+      userText: "Execute the approved review",
+      libraryID: 1,
+      planContext: {
+        phase: "executing",
+        planId: ledger.planId,
+        revision: ledger.revision,
+        executionId: ledger.executionId,
+        approvedDigest: ledger.planDigest,
+        activeTaskId: ledger.activeTaskId,
+        provider: "original",
+      },
+    });
+    const registry = new AgentToolRegistry();
+    registry.register(createResearchUpdateTool({} as never));
+    const rejected = await registry.prepareExecution(
+      { id: "invalid-research", name: "research_update", arguments: {} },
+      { request, item: null, currentAnswerText: "", modelName: "test-model" },
+    );
+    assert.equal(rejected.kind, "result");
+    if (rejected.kind !== "result") return;
+    assert.isFalse(rejected.execution.result.ok);
+    assert.isTrue(rejected.execution.result.inputRejected);
+    assert.include(
+      String((rejected.execution.result.content as any).error),
+      "Invalid tool input",
+    );
+    const session = new PlanExecutionRunSession(request, async () => {});
+    await session.recordToolResult({
+      toolName: "research_update",
+      executionClass: rejected.execution.tool.spec.executionClass,
+      input: rejected.execution.input,
+      result: rejected.execution.result,
+      runId: "run-invalid-research",
+    });
+    const persisted = await loadPlanExecutionLedger(ledger.executionId);
+    assert.equal(persisted?.status, "running");
+    assert.equal(persisted?.tasks[0].status, "in_progress");
+    assert.deepEqual(persisted?.tasks[0].evidenceIds, []);
+    assert.isEmpty(rejected.execution.result.actionReceipts);
   });
 
   it("rolls back evidence and progress when the transition write fails", async function () {
@@ -1902,6 +2638,64 @@ describe("transactional Plan task transitions", function () {
     assert.equal(
       (await loadPlanExecutionLedger("execution-1"))?.tasks[0].status,
       "completed",
+    );
+  });
+
+  it("retains targeted native reads during a reasoning task for subsequent edge verification", async function () {
+    const ledger = execution();
+    await savePlanExecutionLedger(ledger);
+    await recordMcpPlanEvidence(
+      {
+        phase: "executing",
+        executionId: ledger.executionId,
+        planId: ledger.planId,
+        revision: ledger.revision,
+      },
+      {
+        requestId: "targeted-pair",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "zotero",
+        ok: true,
+        mutability: "read",
+        timestamp: 10,
+        readObservations: [
+          {
+            version: 1,
+            observationId: "pair-read",
+            issuer: "zotero_host",
+            toolName: "paper_read",
+            callDigest: "call",
+            inputDigest: "input",
+            resultDigest: "result",
+            libraryID: 1,
+            itemKey: "PAPER1",
+            capabilities: ["body"],
+            readMode: "targeted",
+            certificateDigest: "certificate",
+          },
+        ],
+      },
+    );
+    const evidence = await listTaskEvidence(
+      ledger.executionId,
+      ledger.activeTaskId!,
+    );
+    assert.deepEqual(
+      verificationObservations({
+        edge: {
+          source: "1:PAPER1",
+          target: "1:PAPER2",
+          createdAt: 5,
+        } as Parameters<typeof verificationObservations>[0]["edge"],
+        taskEvidence: evidence,
+      }),
+      ["pair-read"],
+    );
+    assert.equal(
+      (await loadPlanExecutionLedger(ledger.executionId))?.tasks[0].status,
+      "in_progress",
+      "a targeted read does not substitute for the reasoning task's completion",
     );
   });
 

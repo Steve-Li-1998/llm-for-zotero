@@ -8,7 +8,7 @@ import {
   normalizeSelectedTextPaperContexts,
   normalizeSelectedTextSource,
   normalizeSelectedTextSources,
-} from "../src/modules/contextPanel/normalizers";
+} from "../src/services/context/normalizers";
 
 describe("contextPanel normalizers", function () {
   it("normalizePositiveInt should return null for invalid values", function () {

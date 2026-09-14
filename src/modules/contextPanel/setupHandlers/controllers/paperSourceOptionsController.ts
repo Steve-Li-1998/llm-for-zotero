@@ -1,12 +1,12 @@
 import type { PaperContentSourceMode } from "../../types";
 import type { PdfSupport } from "../../../../providers";
-import { resolveContextAttachmentSupport } from "../../contextAttachmentSupport";
+import { resolveContextAttachmentSupport } from "../../../../services/paperContent/contextAttachmentSupport";
 import {
   getContextSourceModeBadgeLabel,
   getContextSourceModeDescriptor,
   getContextSourceModeHumanLabel,
-} from "../../contextSourceModes";
-import { sanitizeText } from "../../textUtils";
+} from "../../../../services/paperContent/contextSourceModes";
+import { sanitizeText } from "../../../../utils/textSanitization";
 import type { PaperContextRef } from "../../types";
 
 export type MineruSourceUiState = "cached" | "idle" | "processing" | "failed";

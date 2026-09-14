@@ -15,6 +15,197 @@ export {
   type UpdatePlanInput,
 } from "../../plans/preparation";
 
+const PLAN_EFFECT_OPERATIONS = [
+  "update_metadata",
+  "apply_tags",
+  "remove_tags",
+  "move_to_collection",
+  "remove_from_collection",
+  "create_collection",
+  "set_item_collections",
+  "save_notes_batch",
+  "save_saved_search",
+  "delete_saved_search",
+  "update_collection",
+  "update_library_tag",
+  "set_item_tags",
+  "create_items",
+  "reparent_items",
+  "relate_items",
+  "delete_collection",
+  "save_note",
+  "import_identifiers",
+  "trash_items",
+  "restore_from_trash",
+  "merge_items",
+  "delete_attachment",
+  "rename_attachment",
+  "relink_attachment",
+  "import_local_files",
+  "note_create",
+  "note_edit",
+  "note_append",
+  "annotation_write",
+  "settings_update",
+  "undo",
+  "revert",
+  "file_write",
+  "command_execute",
+  "zotero_script_execute",
+  "read_full",
+] as const;
+
+const PLAN_EFFECT_TARGET_SCHEMA = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["domain", "libraryID", "targetIds", "scopeDigest"],
+      properties: {
+        domain: { type: "string", enum: ["zotero"] },
+        libraryID: { type: "integer", minimum: 1 },
+        targetIds: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string" },
+          description:
+            "Host-resolved native target identities such as item:42 or collection:7.",
+        },
+        scopeDigest: { type: "string" },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["domain", "paths"],
+      properties: {
+        domain: { type: "string", enum: ["filesystem"] },
+        paths: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string" },
+        },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["domain", "fingerprints"],
+      properties: {
+        domain: { type: "string", enum: ["execution"] },
+        fingerprints: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string" },
+        },
+      },
+    },
+  ],
+};
+
+const PLAN_EFFECT_RESTRICTION_SCHEMA = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "effects", "domains", "description"],
+      properties: {
+        kind: { type: "string", enum: ["deny_effects"] },
+        effects: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["read", "create", "modify", "delete", "execute", "egress"],
+          },
+        },
+        domains: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: [
+              "zotero_library",
+              "filesystem",
+              "local_execution",
+              "network",
+              "privileged_zotero",
+            ],
+          },
+        },
+        exceptOperations: { type: "array", items: { type: "string" } },
+        operations: { type: "array", items: { type: "string" } },
+        description: { type: "string" },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "mechanisms", "description"],
+      properties: {
+        kind: { type: "string", enum: ["deny_mechanisms"] },
+        mechanisms: {
+          type: "array",
+          items: { type: "string", enum: ["shell", "zotero_script"] },
+        },
+        description: { type: "string" },
+      },
+    },
+  ],
+};
+
+const PLAN_MATERIAL_BINDING_SCHEMA = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["role", "material"],
+      properties: {
+        role: { type: "string" },
+        material: {
+          type: "object",
+          additionalProperties: false,
+          required: ["documentId", "documentVersion", "contentHash"],
+          properties: {
+            documentId: { type: "string" },
+            documentVersion: { type: "integer", minimum: 1 },
+            contentHash: { type: "string" },
+          },
+        },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["role", "producedByStepId", "outputId"],
+      properties: {
+        role: { type: "string" },
+        producedByStepId: { type: "string" },
+        outputId: { type: "string" },
+      },
+    },
+  ],
+};
+
+const PLAN_TARGET_BINDING_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["role", "producedByEffectId"],
+  properties: {
+    role: { type: "string" },
+    producedByEffectId: { type: "string" },
+  },
+};
+
+const PLAN_EFFECT_COMMON_PROPERTIES = {
+  effectId: { type: "string" },
+  operation: { type: "string", enum: PLAN_EFFECT_OPERATIONS },
+  parameters: { type: "object", additionalProperties: true },
+  review: { type: "string", enum: ["default", "review", "direct"] },
+  targetBindings: { type: "array", items: PLAN_TARGET_BINDING_SCHEMA },
+  restrictions: { type: "array", items: PLAN_EFFECT_RESTRICTION_SCHEMA },
+  dependsOnEffectIds: { type: "array", items: { type: "string" } },
+  materialBindings: { type: "array", items: PLAN_MATERIAL_BINDING_SCHEMA },
+};
+
 export function createUpdatePlanTool(
   gateway?: ZoteroGateway,
 ): AgentToolDefinition<UpdatePlanInput, unknown> {
@@ -37,7 +228,7 @@ export function createUpdatePlanTool(
           contract: {
             type: "object",
             description:
-              "Composable approved outcome. Omit effects unless the user explicitly requested a Zotero library write. The host adds scopeSnapshot, researchPolicy, and the resolved citationStyle; do not invent them.",
+              "Composable approved investigation and deliverable. The host adds scopeSnapshot, researchPolicy, and the resolved citationStyle; do not invent them. Describe writes separately in effectSpecification.",
             additionalProperties: false,
             required: ["deliverable"],
             properties: {
@@ -198,83 +389,69 @@ export function createUpdatePlanTool(
                   },
                 },
               },
+            },
+          },
+          effectSpecification: {
+            type: "object",
+            description:
+              "Concrete requested effects and restrictions. Omit when the Plan has no effectful action. Use deferredEffects only when research must choose exact targets and a later approval is required.",
+            additionalProperties: false,
+            required: ["version", "constraints", "effects", "deferredEffects"],
+            properties: {
+              version: { type: "integer", enum: [1] },
+              constraints: {
+                type: "array",
+                items: PLAN_EFFECT_RESTRICTION_SCHEMA,
+              },
               effects: {
-                type: "object",
-                description:
-                  "Include only for a library write explicitly requested by the user.",
-                additionalProperties: false,
-                required: ["libraryMutation"],
-                properties: {
-                  libraryMutation: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["approval"],
-                    properties: {
-                      approval: {
-                        type: "string",
-                        enum: ["initial", "after_research"],
-                      },
-                      intent: {
-                        type: "object",
-                        description:
-                          "Required for after_research. Exact targets are determined later and require a second approval.",
-                        additionalProperties: false,
-                        required: [
-                          "summary",
-                          "intents",
-                          "targetSelectionDescription",
-                        ],
-                        properties: {
-                          summary: { type: "string" },
-                          targetSelectionDescription: { type: "string" },
-                          intents: {
-                            type: "array",
-                            minItems: 1,
-                            items: {
-                              type: "object",
-                              additionalProperties: true,
-                              required: [
-                                "capability",
-                                "operation",
-                                "proofDomain",
-                                "coverage",
-                                "targetKind",
-                              ],
-                              properties: {
-                                capability: { type: "string" },
-                                operation: { type: "string" },
-                                proofDomain: {
-                                  type: "string",
-                                  enum: [
-                                    "zotero_state",
-                                    "file_state",
-                                    "execution",
-                                  ],
-                                },
-                                coverage: {
-                                  type: "string",
-                                  enum: ["one", "some", "all"],
-                                },
-                                targetKind: {
-                                  type: "string",
-                                  enum: ["papers", "items"],
-                                },
-                                parameters: {
-                                  type: "object",
-                                  additionalProperties: true,
-                                },
-                                reviewPreference: {
-                                  type: "string",
-                                  enum: ["default", "review", "direct"],
-                                  description:
-                                    "review when the user asked to inspect this change before it applies; direct when they said just do it; otherwise default. The permission mode decides whether default is reviewed.",
-                                },
-                              },
-                            },
-                          },
-                        },
-                      },
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: [
+                    "effectId",
+                    "approval",
+                    "operation",
+                    "targets",
+                    "targetBindings",
+                    "parameters",
+                    "review",
+                    "restrictions",
+                    "dependsOnEffectIds",
+                    "materialBindings",
+                  ],
+                  properties: {
+                    ...PLAN_EFFECT_COMMON_PROPERTIES,
+                    approval: { type: "string", enum: ["initial"] },
+                    targets: {
+                      type: "array",
+                      minItems: 1,
+                      items: PLAN_EFFECT_TARGET_SCHEMA,
                     },
+                  },
+                },
+              },
+              deferredEffects: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: [
+                    "effectId",
+                    "approval",
+                    "operation",
+                    "targetSelectionDescription",
+                    "targetBindings",
+                    "parameters",
+                    "review",
+                    "restrictions",
+                    "dependsOnEffectIds",
+                    "materialBindings",
+                  ],
+                  properties: {
+                    ...PLAN_EFFECT_COMMON_PROPERTIES,
+                    approval: { type: "string", enum: ["after_research"] },
+                    targetSelectionDescription: { type: "string" },
                   },
                 },
               },
@@ -295,11 +472,11 @@ export function createUpdatePlanTool(
               ],
               properties: {
                 planStepId: { type: "string" },
-                actionIndexes: {
+                effectIds: {
                   type: "array",
-                  items: { type: "integer", minimum: 0 },
+                  items: { type: "string" },
                   description:
-                    "For mutation steps, the exact zero-based requested action indexes this step fulfills.",
+                    "For mutation steps, the stable effect IDs from effectSpecification that this step fulfills.",
                 },
                 materialOutputId: {
                   type: "string",
@@ -355,15 +532,21 @@ export function createUpdatePlanTool(
         },
       },
       executionClass: "control",
-      requiresConfirmation: false,
+      workCategory: "planning",
     },
+    /**
+     * The plan machinery itself. Its calls are how a plan is drafted and
+     * advanced, and the plan card already shows the reader the outcome, so a
+     * row for each of them would report the trace's own plumbing.
+     */
+    presentation: { hiddenInTrace: true },
     isAvailable: (request) =>
       request.planContext?.phase === "planning" &&
       !request.planContext.nativePlanning,
     guidance: {
       matches: (request) => request.planContext?.phase === "planning",
       instruction:
-        "You are planning, not executing. For an ordered workflow over known papers, omit investigation unless it requires open-ended research or corpus screening. Use deliverable completion_report, effects.libraryMutation:{approval:initial} (the host supplies the frozen contract), actionIndexes on mutation steps, and an intermediate artifact step with materialOutputId plus material_integrity before saving generated content. Do not recopy action parameters into effects. Use read-only Zotero/PDF/web/literature tools as needed. Never call a write, command, script, import, upload, or settings tool. Call update_plan with a composable contract and three stable steps for an ordinary literature review: (1) read the frozen scope and build a durable understanding of every paper, (2) discover cross-paper relationships and construct the answer, and (3) publish the verified document. Every acceptance criterion is {criterionId,description,verifier}; the host derives completion requirements, so never provide a separate requirement list. Use verifier verified_read on the reading step, research_coverage on the relationship-synthesis step, and document_integrity plus document_published on the final document step. When the user gives an exact bounded subset such as the first N sorted papers, resolve it with one bounded metadata query and use scope kind 'items' with exactly those itemKeys; library_search compact rows already contain itemKey, title, creator, and year, so omit include and never use zotero_script just to recover keys. Never freeze the containing collection or library instead. The frozen snapshot is authoritative, so do not add an execution step that re-enumerates or verifies it. For an ordinary literature review set reviewMode:'narrative', readingStrategy:'adaptive', criteria:[], requiredEvidenceDepth:'body', and estimatedDeepReadPapers:0. Adaptive means the host reads every accessible paper to the depth permitted by measured model capacity; never invent a paper quota. Use reviewMode:'scoping' when the user wants a field map. Use reviewMode:'systematic', readingStrategy:'selected', and explicit inclusion/exclusion criteria only when the user asks for formal eligibility screening, PRISMA-style selection, or another systematic method. Use deliverable:{kind:'document',spec:{kind:'literature_review',title,requiredSections,requiresReferences:true,requiresCoverageSection:true,allowFigures:false}}. Omit effects entirely unless the user explicitly requested a library write. A research-selected write must use effects.libraryMutation.approval='after_research' with summary, targetSelectionDescription, and action intents; never claim the initial plan authorizes unknown targets. Use mutation_receipts only on a mutation criterion and bounded_reasoning only for genuinely host-unverifiable bounded judgments. Set ready=true only after the plan is complete for review; the host freezes the exact Zotero corpus, research policy, and citation preferences.",
+        "You are planning, not executing. For an ordered workflow over known papers, omit investigation unless it requires open-ended research or corpus screening. Describe each requested write in effectSpecification with a stable effectId, exact operation, host-resolved target identities, normalized parameters, restrictions, dependencies, and any exact or producer-bound material. Bind every mutation step to its effectIds. Use a deferredEffect only when research must choose the exact targets; it receives a separate later approval. For generated content that will be saved, add an earlier artifact step with materialOutputId and material_integrity, then bind the save effect to that producer step. Use read-only Zotero/PDF/web/literature tools as needed. Never call a write, command, script, import, upload, or settings tool while planning. Call update_plan with a composable contract and three stable steps for an ordinary literature review: (1) read the frozen scope and build a durable understanding of every paper, (2) discover cross-paper relationships and construct the answer, and (3) publish the verified document. Every acceptance criterion is {criterionId,description,verifier}; the host derives completion requirements, so never provide a separate requirement list. Use verifier verified_read on the reading step, research_coverage on the relationship-synthesis step, and document_integrity plus document_published on the final document step. When the user gives an exact bounded subset such as the first N sorted papers, resolve it with one bounded metadata query and use scope kind 'items' with exactly those itemKeys; library_search compact rows already contain itemKey, title, creator, and year, so omit include and never use zotero_script just to recover keys. Never freeze the containing collection or library instead. The frozen snapshot is authoritative, so do not add an execution step that re-enumerates or verifies it. For an ordinary literature review set reviewMode:'narrative', readingStrategy:'adaptive', criteria:[], requiredEvidenceDepth:'body', and estimatedDeepReadPapers:0. Adaptive means the host reads every accessible paper to the depth permitted by measured model capacity; never invent a paper quota. Use reviewMode:'scoping' when the user wants a field map. Use reviewMode:'systematic', readingStrategy:'selected', and explicit inclusion/exclusion criteria only when the user asks for formal eligibility screening, PRISMA-style selection, or another systematic method. Use deliverable:{kind:'document',spec:{kind:'literature_review',title,requiredSections,requiresReferences:true,requiresCoverageSection:true,allowFigures:false}}. Omit effectSpecification unless the user explicitly requested an effectful action. Use mutation_receipts only on a mutation criterion and bounded_reasoning only for genuinely host-unverifiable bounded judgments. Set ready=true only after the plan is complete for review; the host freezes the exact Zotero corpus, research policy, citation preferences, effect scope, and skill pins.",
     },
     validate: validateUpdatePlanInput,
     planInvocation: () =>

@@ -1,6 +1,8 @@
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 import { assert } from "chai";
 import { createHash } from "node:crypto";
+import { innermostToolResult } from "../src/agent/contracts/toolResultEnvelope";
 import {
   exportPlanDocumentMarkdown,
   savePlanDocumentAsNote,
@@ -21,6 +23,22 @@ describe("durable document note association", function () {
   let failFinalization: boolean;
   let requireAtomicState: boolean;
   let imageImports: number;
+  let reloadCalls: number;
+  let corruptReloadsFrom: number;
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Note mutations invalidate cached paper context, which reaches the
+    // panel's retrieval cache through a host surface bridge the plugin
+    // composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   beforeEach(function () {
     original = globals.Zotero;
     originalIO = globals.IOUtils;
@@ -35,6 +53,8 @@ describe("durable document note association", function () {
     failFinalization = false;
     requireAtomicState = false;
     imageImports = 0;
+    reloadCalls = 0;
+    corruptReloadsFrom = Number.POSITIVE_INFINITY;
     document = {
       version: 2,
       documentId: "summary-document",
@@ -122,7 +142,13 @@ describe("durable document note association", function () {
         });
       }
       async reload() {
-        this.html = this.stored;
+        reloadCalls++;
+        // A forced read-back can disagree with the in-memory note when the
+        // native write never reached the database.
+        this.html =
+          reloadCalls >= corruptReloadsFrom
+            ? "<h1>Summary</h1><p>Truncated by another client.</p>"
+            : this.stored;
       }
     }
     const parent = {
@@ -202,6 +228,20 @@ describe("durable document note association", function () {
     }
     assert.match(String(failure), message);
   }
+  /** Direct Agent execution context: no semantic contract, only a run identity. */
+  function directContext(runId: string | undefined) {
+    return {
+      request: {
+        conversationKey: 42,
+        libraryID: 1,
+        executionContext: {
+          version: 1,
+          executionId: "direct-execution-42",
+        },
+      },
+      runId,
+    } as any;
+  }
   function addFigure() {
     const bytes = new Uint8Array([1, 2, 3]);
     globals.IOUtils.read = async () => bytes;
@@ -275,6 +315,227 @@ describe("durable document note association", function () {
     assert.include(
       proposals[0].parameters?.expectedText || "",
       "Exact durable summary.",
+    );
+  });
+  it("allows a direct finalized document to enter the shared note lifecycle without semantic state", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = directContext("summary-run");
+
+    await tool.planInvocation(input.value, context);
+    const proposals = await tool.describeAction!(input.value, context);
+
+    assert.equal(proposals[0].parameters?.documentId, document.documentId);
+    assert.equal(proposals[0].parameters?.contentHash, document.contentHash);
+    assert.include(
+      proposals[0].parameters?.expectedText || "",
+      "Exact durable summary.",
+    );
+  });
+  it("binds the note proposal to its destination and note mode", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = directContext("summary-run");
+
+    await tool.planInvocation(input.value, context);
+    const proposals = await tool.describeAction!(input.value, context);
+
+    assert.equal(proposals[0].parameters?.targetItemId, 42);
+    assert.equal(proposals[0].parameters?.noteMode, "create");
+  });
+  it("freezes the exact material reference in the note proposal", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = directContext("summary-run");
+
+    await tool.planInvocation(input.value, context);
+    const proposals = await tool.describeAction!(input.value, context);
+
+    assert.equal(proposals[0].parameters?.documentId, document.documentId);
+    assert.equal(proposals[0].parameters?.documentVersion, 1);
+    assert.equal(proposals[0].parameters?.contentHash, document.contentHash);
+  });
+  it("saves a direct finalized document in a later run of the same conversation", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    // The generate turn finalized the document; the save turn is a new run.
+    const saving = {
+      ...directContext("a-later-run"),
+      journalFallbackApproved: true,
+    };
+
+    await tool.planInvocation(input.value, saving);
+    const proposals = await tool.describeAction!(input.value, saving);
+    assert.equal(proposals[0].parameters?.contentHash, document.contentHash);
+
+    const result: any = await tool.execute(input.value, saving);
+    assert.equal(result.effect, "applied");
+    assert.equal(notes.size, 1);
+    assert.include(
+      notes.get([...notes.keys()][0]).getNote(),
+      "Exact durable summary.",
+    );
+  });
+  it("carries native note verification on the finalized-document create path", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = {
+      ...directContext("summary-run"),
+      journalFallbackApproved: true,
+    };
+
+    await tool.planInvocation(input.value, context);
+    const result: any = await tool.execute(input.value, context);
+
+    // The receipt reads native evidence from the innermost tool result.
+    const saved: any = innermostToolResult(result.content);
+    assert.equal(saved.noteVerification?.noteId, saved.noteId);
+    assert.isTrue(saved.noteVerification?.matches);
+    assert.equal(saved.noteVerification?.expectedHtml, document.visibleHtml);
+  });
+  it("refuses a note write when the approved material content changed", async function () {
+    addFigure();
+    const note = new globals.Zotero.Item("note");
+    note.key = "EXISTING";
+    await note.loadPrimaryData();
+    note.setNote("<p>Original</p>");
+    await note.saveTx();
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+      getActiveNoteSnapshot: () => ({
+        noteId: note.id,
+        title: "Note",
+        libraryID: 1,
+        html: note.getNote(),
+        text: "Original",
+      }),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "edit",
+      targetNoteId: note.id,
+      documentId: document.documentId,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = {
+      ...directContext("summary-run"),
+      journalFallbackApproved: true,
+    };
+
+    await tool.planInvocation(input.value, context);
+    document.contentHash = "sha256:rewritten-content";
+
+    await rejects(tool.execute(input.value, context), /content hash/i);
+    assert.equal(note.getNote(), "<p>Original</p>");
+    assert.equal(imageImports, 0);
+  });
+  it("refuses a note write when the approved material version changed", async function () {
+    addFigure();
+    const note = new globals.Zotero.Item("note");
+    note.key = "EXISTING";
+    await note.loadPrimaryData();
+    note.setNote("<p>Original</p>");
+    await note.saveTx();
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+      getActiveNoteSnapshot: () => ({
+        noteId: note.id,
+        title: "Note",
+        libraryID: 1,
+        html: note.getNote(),
+        text: "Original",
+      }),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "edit",
+      targetNoteId: note.id,
+      documentId: document.documentId,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = {
+      ...directContext("summary-run"),
+      journalFallbackApproved: true,
+    };
+
+    await tool.planInvocation(input.value, context);
+    document.documentVersion = 2;
+
+    await rejects(tool.execute(input.value, context), /version/i);
+    assert.equal(note.getNote(), "<p>Original</p>");
+    assert.equal(imageImports, 0);
+  });
+  it("refuses a finalized document that is not a direct version 2 document", async function () {
+    document.origin = {
+      kind: "planned",
+      planId: "plan-1",
+      planRevision: 1,
+      executionId: "execution-1",
+      parentTaskId: "task-1",
+      contractDigest: "digest-1",
+    };
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createEditCurrentNoteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+
+    await rejects(
+      tool.planInvocation(input.value, directContext("summary-run")),
+      /not a direct version 2 Agent document/,
     );
   });
   it("embeds finalized document figures when replacing an existing note", async function () {
@@ -358,6 +619,54 @@ describe("durable document note association", function () {
     assert.equal(saved.itemId, retried.itemId);
     assert.isFalse(retried.created);
     assert.equal(notes.get(saved.itemId).getNote(), document.visibleHtml);
+  });
+  it("does not record a document as saved when the final read-back disagrees", async function () {
+    const target = { parentItemId: 42, libraryID: 1 };
+    // Calibrate against a healthy save so the corruption lands on the last
+    // forced read-back whatever the persistence internals do.
+    await savePlanDocumentAsNote(document.documentId, target);
+    const readBacksPerSave = reloadCalls;
+    state = undefined;
+    notes.clear();
+
+    corruptReloadsFrom = reloadCalls + readBacksPerSave;
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /does not match the finalized content/,
+    );
+    assert.isUndefined(state?.savedNote);
+    assert.isDefined(state?.pendingNote);
+
+    corruptReloadsFrom = Number.POSITIVE_INFINITY;
+    const retried = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isTrue(retried.noteVerification?.matches);
+    assert.equal(notes.size, 1);
+  });
+  it("does not promote a reserved note whose read-back cannot be verified", async function () {
+    const target = { parentItemId: 42, libraryID: 1 };
+    failAssociation = true;
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /Association storage unavailable/,
+    );
+    failAssociation = false;
+    const reserved = JSON.parse(JSON.stringify(state));
+    assert.isUndefined(reserved.savedNote);
+
+    // Calibrate the already-reserved branch, then replay it from the same
+    // unpromoted state with its last read-back corrupted.
+    const before = reloadCalls;
+    const satisfied = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isFalse(satisfied.created);
+    const readBacks = reloadCalls - before;
+    state = reserved;
+
+    corruptReloadsFrom = reloadCalls + readBacks;
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /no longer matches this exact document/,
+    );
+    assert.isUndefined(state?.savedNote);
   });
   it("binds a requested parent even when the summary contains no citation cluster", async function () {
     const saved = await savePlanDocumentAsNote(document.documentId, {

@@ -194,7 +194,9 @@ describe("AgentFinalAnswerController", function () {
 
   it("returns an uncommitted action-contract correction before other quality gates", async function () {
     const controller = new AgentFinalAnswerController(
-      makeRequest(),
+      makeRequest({
+        actionContract: { obligations: [{ operation: "note_create" }] },
+      } as never),
       {
         evaluateFinal: async () => ({
           kind: "correct" as const,
@@ -222,7 +224,9 @@ describe("AgentFinalAnswerController", function () {
 
   it("returns a kind-matched uncommitted action-contract failure", async function () {
     const controller = new AgentFinalAnswerController(
-      makeRequest(),
+      makeRequest({
+        actionContract: { obligations: [{ operation: "note_create" }] },
+      } as never),
       {
         evaluateFinal: async () => ({
           kind: "fail" as const,
@@ -247,6 +251,125 @@ describe("AgentFinalAnswerController", function () {
       },
     });
   });
+
+  it("does not invent action obligations for a fresh direct turn", async function () {
+    let legacyEvaluationCalls = 0;
+    const controller = new AgentFinalAnswerController(
+      makeRequest({
+        executionContext: {
+          version: 1,
+          executionId: "direct-1",
+          conversationKey: 1,
+          conversationGeneration: 0,
+          chatLibraryID: 1,
+          permissionOwner: "original_agent",
+          workspaceSnapshot: {
+            selectedPapers: [],
+            selectedCollections: [],
+          },
+          configuredAccess: { libraryIDs: [1], outputDirectories: [] },
+        },
+      }),
+      {
+        evaluateFinal: async () => {
+          legacyEvaluationCalls += 1;
+          return {
+            kind: "fail" as const,
+            failure: "A semantic action contract is unavailable.",
+          };
+        },
+      },
+      [],
+    );
+
+    const decision = await controller.evaluate({
+      candidateText: "Here is the answer.",
+      canCorrect: true,
+      toolExecutionRecords: [],
+    });
+
+    assert.equal(decision.kind, "accept");
+    assert.equal(legacyEvaluationCalls, 0);
+  });
+
+  it("fails a direct applied write whose concrete effect is unverified", async function () {
+    const controller = new AgentFinalAnswerController(
+      makeRequest(),
+      acceptingActionSession(),
+      [],
+    );
+
+    const decision = await controller.evaluate({
+      candidateText: "Saved.",
+      canCorrect: false,
+      toolExecutionRecords: [
+        {
+          name: "library_mutation",
+          ok: true,
+          mutability: "write",
+          effect: "applied",
+          actionReceipts: [],
+        },
+      ],
+    });
+
+    assert.deepEqual(decision, {
+      kind: "fail",
+      userMessage:
+        "library_mutation ran, but its concrete effect could not be verified. Inspect current state before retrying it.",
+    });
+  });
+
+  /**
+   * The two values the final gate treats differently, pinned side by side.
+   *
+   * `unverified` means a re-read was possible and did not confirm the effect,
+   * so the turn cannot claim it. `execution_only` means there is no state to
+   * re-read at all — a shell command — and failing every such turn would make
+   * `run_command` unusable while proving nothing. Phase 3 keeps that split
+   * deliberately, so changing it has to change this test.
+   */
+  for (const scenario of [
+    {
+      verification: "unverified" as const,
+      expected: "fail" as const,
+      why: "a re-read was possible and did not confirm the effect",
+    },
+    {
+      verification: "execution_only" as const,
+      expected: "accept" as const,
+      why: "a shell command leaves no state to re-read",
+    },
+  ]) {
+    it(`${scenario.expected}s an applied write whose receipt is ${scenario.verification} because ${scenario.why}`, async function () {
+      const controller = new AgentFinalAnswerController(
+        makeRequest(),
+        acceptingActionSession(),
+        [],
+      );
+
+      const decision = await controller.evaluate({
+        candidateText: "Ran it.",
+        canCorrect: false,
+        toolExecutionRecords: [
+          {
+            name: "run_command",
+            ok: true,
+            mutability: "write",
+            effect: "applied",
+            actionReceipts: [
+              {
+                verification: scenario.verification,
+                status: "observed",
+              },
+            ],
+          } as never,
+        ],
+      });
+
+      assert.equal(decision.kind, scenario.expected);
+    });
+  }
 
   it("allows one collection evidence correction then accepts the next final", async function () {
     const request = makeRequest({

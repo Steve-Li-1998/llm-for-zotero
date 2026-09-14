@@ -105,10 +105,12 @@ The invoked command exits nonzero for failure or blocking, so shell callers can 
 No report status controls any release command.
 
 Auto and YOLO confirmations are never blindly approved.
-Unexpected cards are cancelled and recorded as failures.
-Safe approval probes check native state and vault file hashes before approval.
-Requested new notes are created without confirmation in Safe, Auto, and YOLO, and must have a saved-note card linking the actual native note.
-The cancellation probe proposes a metadata edit, not a new note.
+Unexpected cards are cancelled and recorded as failures, while an explicitly cataloged exceptional-risk review may be approved after its proposal and unchanged pre-state are checked.
+Approval probes check native state and vault file hashes before approval.
+Safe reviews every external write, including new-note creation, before mutation.
+Auto runs routine reversible same-library changes directly and reviews cross-library, destructive, ambiguous, and out-of-scope effects.
+Verified note creation must produce a saved-note card linking the actual native note.
+The cancellation probe proposes a metadata edit.
 For note content-review cards, the proposed tool call must target the exact paper and its final content must match the displayed review payload.
 Other approval cards must expose their targets.
 They then approve the card as the test operator and inspect the resulting state and receipts.

@@ -112,7 +112,7 @@ async function migrateMineruContentMdCleanup(): Promise<void> {
   if (Zotero.Prefs.get(PREF_MINERU_CONTENT_MD_CLEANUP, true)) return;
   try {
     const { cleanupLegacyContentMdFiles } =
-      await import("../modules/contextPanel/mineruCache");
+      await import("../services/mineru/mineruCache");
     await cleanupLegacyContentMdFiles();
   } catch {
     /* ignore – cache dir may not exist yet */
@@ -128,7 +128,7 @@ async function migrateMineruManifestBuild(): Promise<void> {
   if (Zotero.Prefs.get(PREF_MINERU_MANIFEST_BUILD, true)) return;
   try {
     const { getMineruCacheDir, buildAndWriteManifest } =
-      await import("../modules/contextPanel/mineruCache");
+      await import("../services/mineru/mineruCache");
     const cacheDir = getMineruCacheDir();
     const IOUtils = (globalThis as Record<string, unknown>).IOUtils as
       | {

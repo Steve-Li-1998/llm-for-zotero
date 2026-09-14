@@ -439,16 +439,19 @@ describe("PaperEvidenceFrontier stop guidance by requested coverage", function (
     assert.equal((second.content as any).paperEvidenceProgress.readBudget, 2);
   });
 
-  it("keeps missing-dimension guidance for exhaustive coverage and by default", async function () {
-    for (const frontier of [
-      new PaperEvidenceFrontier(),
-      new PaperEvidenceFrontier({
-        evidencePolicy: {
-          coverage: "exhaustive",
-          readBudget: Number.POSITIVE_INFINITY,
-        },
-      }),
-    ]) {
+  it("derives ordinary stop guidance from the requested read mode while preserving exhaustive coverage", async function () {
+    for (const [frontier, expected] of [
+      [new PaperEvidenceFrontier(), "answer_now"],
+      [
+        new PaperEvidenceFrontier({
+          evidencePolicy: {
+            coverage: "exhaustive",
+            readBudget: Number.POSITIVE_INFINITY,
+          },
+        }),
+        "name_a_specific_missing_dimension",
+      ],
+    ] as const) {
       const input = { mode: "targeted", query: "method" };
       await frontier.processResult({
         input,
@@ -458,7 +461,7 @@ describe("PaperEvidenceFrontier stop guidance by requested coverage", function (
       const reused = await frontier.readCached({ input, toolCallId: "second" });
       assert.equal(
         (reused?.content as any).paperEvidenceProgress.recommendation,
-        "name_a_specific_missing_dimension",
+        expected,
       );
     }
   });

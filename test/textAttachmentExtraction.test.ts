@@ -4,7 +4,7 @@ import { strToU8, zipSync } from "fflate";
 import {
   extractDocxPlainText,
   extractTextAttachmentContent,
-} from "../src/modules/contextPanel/textAttachmentExtraction";
+} from "../src/services/paperContent/textAttachmentExtraction";
 
 describe("text attachment extraction", function () {
   it("extracts plain paragraph and table text from DOCX bytes", function () {

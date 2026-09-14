@@ -37,7 +37,8 @@ import {
   type ModelProfileOverride,
   type ResolvedModelCapabilities,
 } from "../modelCapabilities";
-import { el, iconBtn } from "../utils/domHelpers";
+import { createElement, el, iconBtn } from "../utils/domHelpers";
+import { previewReasoningControls } from "../utils/llmClient";
 import { getGeminiReasoningProfileForModel } from "../utils/reasoningProfiles";
 
 /**
@@ -76,7 +77,11 @@ type EditorDeps = {
   /** The model this entry currently points at; overrides are keyed to it. */
   getModelName: () => string;
   t: (text: string) => string;
-  styles: {
+  /**
+   * Class names from the shared `.llm-pref-*` stylesheet, passed in so this
+   * editor stays independent of which pane mounts it.
+   */
+  classes: {
     input: string;
     inputSm: string;
     helper: string;
@@ -183,6 +188,32 @@ export function deriveLevelParameters(
 }
 
 /**
+ * What one level puts on the wire, for display next to its name.
+ *
+ * The text comes from the request builder itself, so a hosted profile whose
+ * encoding lives in the transport — DeepSeek turning thinking off for
+ * `minimal`, raising the effort to `max` for `xhigh` — describes itself
+ * truthfully instead of falling back to a generic `reasoning_effort=<id>`.
+ */
+export function describeReasoningLevel(
+  detected: ResolvedModelCapabilities,
+  id: string,
+): { sent: string } {
+  const trimmed = id.trim().toLowerCase();
+  const declared = detected.reasoning.options.find(
+    (entry) => entry.id === trimmed,
+  )?.controls?.body;
+  return {
+    sent:
+      (declared && Object.keys(declared).length
+        ? stringifyKeyValueField(declared)
+        : stringifyKeyValueField(
+            previewReasoningControls(detected, trimmed),
+          )) || deriveLevelParameters(detected, trimmed),
+  };
+}
+
+/**
  * The editor's whole decision, as a pure function of its inputs — what gets
  * stored, and which rows deserve a warning. The DOM layer only collects field
  * values and paints the result, so this is where the behavior is tested.
@@ -252,11 +283,8 @@ export function computeProfileOverrideDraft(input: {
     seenIds.add(id);
     options.push({
       id,
-      // Carry the detected label rather than echoing the id. The menu keys
-      // its off/on styling off this string — `isReasoningDisplayLabelActive`
-      // treats "off" and "disabled" as inactive — so relabelling Ollama's
-      // `minimal` to "minimal" would make the button read as *on* while
-      // thinking was off.
+      // A level has one name and it is the id. The menu decides its off/on
+      // styling from the request the level sends, not from this string.
       label: detectedLabelFor(id) || id,
       enabled: true,
       ...(detectedOptions.find((option) => option.id === id)?.effort
@@ -300,7 +328,7 @@ export function computeProfileOverrideDraft(input: {
 export function createModelProfileEditor(
   deps: EditorDeps,
 ): ModelProfileEditorHandle {
-  const { doc, t, styles } = deps;
+  const { doc, t, classes } = deps;
   const root = el(
     doc,
     "div",
@@ -323,21 +351,12 @@ export function createModelProfileEditor(
    * the parameter without ever owning it. Detected levels show their declared
    * body (think=false); everything else shows its derivation.
    */
-  function sentParameterTextFor(id: string): string {
-    const trimmed = id.trim().toLowerCase();
-    const detectedBody = detected.reasoning.options.find(
-      (option) => option.id === trimmed,
-    )?.controls?.body;
-    if (detectedBody && Object.keys(detectedBody).length) {
-      return stringifyKeyValueField(detectedBody);
-    }
-    return deriveLevelParameters(detected, trimmed);
-  }
 
   const sectionLabel = (title: string) =>
-    el(doc, "div", styles.sectionLabel, t(title));
+    createElement(doc, "div", classes.sectionLabel, { textContent: t(title) });
 
-  const hint = (text: string) => el(doc, "span", styles.helper, t(text));
+  const hint = (text: string) =>
+    createElement(doc, "span", classes.helper, { textContent: t(text) });
 
   // ── Reasoning levels ──────────────────────────────────────────────────────
   const reasoningWrap = el(
@@ -350,13 +369,10 @@ export function createModelProfileEditor(
     "div",
     "display: flex; align-items: center; gap: 8px;",
   );
-  const addLevelBtn = el(
-    doc,
-    "button",
-    styles.outlineBtn,
-    t("+ Add level"),
-  ) as HTMLButtonElement;
-  addLevelBtn.type = "button";
+  const addLevelBtn = createElement(doc, "button", classes.outlineBtn, {
+    type: "button",
+    textContent: t("+ Add level"),
+  });
   reasoningHeader.append(sectionLabel("Reasoning levels"), addLevelBtn);
   const reasoningList = el(
     doc,
@@ -392,36 +408,46 @@ export function createModelProfileEditor(
   let reasoningRows: ReasoningRow[] = [];
 
   function addReasoningRow(seed?: { id: string }) {
+    // The level and its delete button are one control and stay on one line;
+    // the wire description is long enough to wrap, so it gets its own row
+    // underneath instead of pushing the × down to a third line.
     const wrap = el(
       doc,
       "div",
-      "display: flex; gap: 6px; align-items: center; flex-wrap: wrap;",
+      "display: flex; flex-direction: column; gap: 3px;",
     );
-    const idInput = el(doc, "input", styles.inputSm) as HTMLInputElement;
+    const controls = el(
+      doc,
+      "div",
+      "display: flex; gap: 6px; align-items: center;",
+    );
+    const idInput = createElement(doc, "input", classes.inputSm);
     idInput.type = "text";
     idInput.style.width = "104px";
     idInput.setAttribute("list", levelSuggestionsId);
     idInput.placeholder = t("level");
     idInput.value = seed?.id || firstUnusedLevelId();
 
-    // Read-only: the id is the whole input; this just shows what it becomes
-    // on the wire, and follows the id as it is typed.
-    const sent = el(
-      doc,
-      "span",
-      styles.helper + " font-family: monospace;",
-      `→ ${sentParameterTextFor(idInput.value)}`,
-    );
+    // Read-only: the id is the whole input; these two just show what it
+    // becomes on the wire and what the reasoning menu calls it, and follow the
+    // id as it is typed.
+    const sent = createElement(doc, "span", classes.helper);
+    sent.style.fontFamily = "monospace";
+    const paintDescription = () => {
+      sent.textContent = `→ ${describeReasoningLevel(detected, idInput.value).sent}`;
+    };
+    paintDescription();
 
     idInput.addEventListener("input", () => {
-      sent.textContent = `→ ${sentParameterTextFor(idInput.value)}`;
+      paintDescription();
       commit();
     });
 
     const removeBtn = iconBtn(doc, "×", t("Delete level"));
     removeBtn.style.fontSize = "15px";
 
-    const warning = el(doc, "span", styles.helper + " color: #b45309;");
+    const warning = createElement(doc, "span", classes.helper);
+    warning.style.color = "#b45309";
     warning.style.display = "none";
 
     const row: ReasoningRow = { wrap, id: idInput, sent, warning };
@@ -431,7 +457,8 @@ export function createModelProfileEditor(
       commit();
     });
 
-    wrap.append(idInput, sent, removeBtn, warning);
+    controls.append(idInput, removeBtn);
+    wrap.append(controls, sent, warning);
     reasoningList.append(wrap);
     reasoningRows.push(row);
     return row;
@@ -456,14 +483,14 @@ export function createModelProfileEditor(
     "div",
     "display: flex; flex-direction: column; gap: 4px;",
   );
-  const extraInput = el(
-    doc,
-    "textarea",
-    styles.input +
-      " min-height: 54px; font-family: monospace; font-size: 12px; resize: vertical;",
-  ) as HTMLTextAreaElement;
+  const extraInput = createElement(doc, "textarea", classes.input);
+  extraInput.style.height = "auto";
+  extraInput.style.minHeight = "54px";
+  extraInput.style.fontFamily = "monospace";
+  extraInput.style.resize = "vertical";
   extraInput.addEventListener("input", commit);
-  const extraError = el(doc, "span", styles.helper + " color: #b45309;");
+  const extraError = createElement(doc, "span", classes.helper);
+  extraError.style.color = "#b45309";
   extraError.style.display = "none";
   extraWrap.append(
     sectionLabel("Extra request parameters"),
@@ -481,13 +508,10 @@ export function createModelProfileEditor(
     "div",
     "display: flex; gap: 8px; align-items: center;",
   );
-  const resetBtn = el(
-    doc,
-    "button",
-    styles.outlineBtn,
-    t("Reset to detected"),
-  ) as HTMLButtonElement;
-  resetBtn.type = "button";
+  const resetBtn = createElement(doc, "button", classes.outlineBtn, {
+    type: "button",
+    textContent: t("Reset to detected"),
+  });
   resetBtn.title = t("Discard changes and return to the detected profile");
   // Always clickable: mid-edit state (a half-typed level, invalid JSON that
   // never committed) is exactly what a user wants to bail out of, and none of

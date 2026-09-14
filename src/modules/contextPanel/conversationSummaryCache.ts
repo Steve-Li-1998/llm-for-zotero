@@ -27,7 +27,7 @@ import {
   type UtilityLLMParams,
 } from "../../utils/utilityLLM";
 import type { ModelProfileOverride } from "../../modelCapabilities";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 
 // --- tunables ---
 /** Start compressing once the history has this many Q&A pairs. */

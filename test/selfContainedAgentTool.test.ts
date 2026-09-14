@@ -1,4 +1,3 @@
-import { declaredSemanticInterpreter } from "./helpers/semanticIntent";
 import { classifiedFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
 import { AgentRuntime } from "../src/agent/runtime";
@@ -224,7 +223,6 @@ describe("self-contained agent tool", function () {
       registry.register(createSelfContainedTestTool());
       const adapter = new InspectingAdapter();
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => adapter,
       });

@@ -9,13 +9,14 @@ import {
 import {
   hasCachedMineruMd,
   writeMineruCacheFiles,
-} from "../src/modules/contextPanel/mineruCache";
+} from "../src/services/mineru/mineruCache";
 import {
   clearAllStatuses,
   getMineruStatus,
   setItemCached,
 } from "../src/modules/mineruProcessingStatus";
-import { MINERU_SYNC_ATTACHMENT_TITLE_PREFIX } from "../src/modules/contextPanel/mineruSync";
+import { MINERU_SYNC_ATTACHMENT_TITLE_PREFIX } from "../src/services/mineru/sync";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 const encoder = new TextEncoder();
 
@@ -134,6 +135,19 @@ function createRawPdf(): MockItem {
 }
 
 describe("mineruBatchProcessor", function () {
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Invalidating cached paper context reaches the panel's retrieval cache
+    // through a host surface bridge the plugin composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   afterEach(function () {
     clearAllStatuses();
     delete (globalThis as unknown as { Zotero?: unknown }).Zotero;

@@ -18,14 +18,22 @@ import { resolvePlanDocumentCitationPreference } from "../documents/citationPref
 import { materializeResearchScopeSnapshot } from "../research/scopeSnapshot";
 import { fail, ok, validateObject } from "../tools/shared";
 import { loadPlanArtifact } from "./store";
+import { decodePlanEffectSpecification } from "./decoders";
+import type { PlanEffectSpecification } from "./types";
+import {
+  buildPlanEffectSpecification,
+  freezePlanEffectSpecification,
+} from "./effectSpecification";
 
 export type UpdatePlanInput = {
   explanation?: string;
   ready: boolean;
   contract?: unknown;
+  effectSpecification?: PlanEffectSpecification;
   steps: Array<{
     planStepId?: string;
     actionIndexes?: number[];
+    effectIds?: string[];
     materialOutputId?: string;
     content: string;
     activeForm: string;
@@ -110,8 +118,19 @@ export function validateUpdatePlanInput(
       return fail(
         `steps[${index}].actionIndexes must be unique nonnegative action indexes`,
       );
+    if (
+      raw.effectIds !== undefined &&
+      (!Array.isArray(raw.effectIds) ||
+        raw.effectIds.some((id) => typeof id !== "string" || !id.trim()) ||
+        new Set(raw.effectIds).size !== raw.effectIds.length)
+    ) {
+      return fail(`steps[${index}].effectIds must be unique stable IDs`);
+    }
     steps.push({
       actionIndexes: raw.actionIndexes as number[] | undefined,
+      effectIds: Array.isArray(raw.effectIds)
+        ? raw.effectIds.map((id) => String(id).trim())
+        : undefined,
       materialOutputId:
         typeof raw.materialOutputId === "string"
           ? raw.materialOutputId.trim() || undefined
@@ -134,6 +153,16 @@ export function validateUpdatePlanInput(
   if (args.ready === true && (steps.length < 3 || steps.length > 7)) {
     return fail("A ready plan requires 3–7 user-visible steps");
   }
+  let effectSpecification: PlanEffectSpecification | undefined;
+  if (args.effectSpecification !== undefined) {
+    try {
+      effectSpecification = decodePlanEffectSpecification(
+        args.effectSpecification,
+      );
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+  }
   return ok({
     explanation:
       typeof args.explanation === "string" && args.explanation.trim()
@@ -141,6 +170,7 @@ export function validateUpdatePlanInput(
         : undefined,
     ready: args.ready === true,
     contract: validateObject(args.contract) ? args.contract : undefined,
+    effectSpecification,
     steps,
   });
 }
@@ -302,12 +332,12 @@ async function preparePlanExecutionUnlocked(
   // Revision feedback supplements the user's restrictions. It does not grant
   // permission to drop them merely because the feedback omits their wording.
   let actionContract = context.request.actionContract;
+  let previousArtifact = await loadPlanArtifact(plan.planId, plan.revision);
+  if (!previousArtifact && plan.revision > 1) {
+    previousArtifact = await loadPlanArtifact(plan.planId, plan.revision - 1);
+  }
   if (plan.nativePlanning && actionContract) {
-    const previous =
-      (await loadPlanArtifact(plan.planId, plan.revision)) ||
-      (plan.revision > 1
-        ? await loadPlanArtifact(plan.planId, plan.revision - 1)
-        : null);
+    const previous = previousArtifact;
     if (previous?.conversationKey === context.request.conversationKey) {
       const rawContract = input.contract as PlanContract | undefined;
       if (
@@ -360,14 +390,72 @@ async function preparePlanExecutionUnlocked(
   }
   if (context.signal?.aborted)
     throw new Error("The planning attempt was interrupted");
+  const explicitEffectSpecification = input.effectSpecification !== undefined;
+  let effectSpecification = input.effectSpecification;
+  let actionIndexEffectIds: ReadonlyMap<number, readonly string[]> = new Map();
+  if (
+    !effectSpecification &&
+    previousArtifact?.version === 5 &&
+    previousArtifact.effectSpecification
+  ) {
+    // Wording-only Plan revisions keep the exact previously frozen effects.
+    // A changed effect must be supplied explicitly through effectSpecification.
+    const additionalConstraints = (
+      actionContract?.hardConstraints || []
+    ).filter((constraint) => constraint.kind !== "no_write");
+    const retainEffects = input.steps.some(
+      (step) => step.expectedEffect === "mutation",
+    );
+    effectSpecification = decodePlanEffectSpecification({
+      version: 1,
+      constraints: [
+        ...previousArtifact.effectSpecification.constraints,
+        ...additionalConstraints,
+      ],
+      effects: retainEffects
+        ? previousArtifact.effectSpecification.effects
+        : [],
+      deferredEffects: retainEffects
+        ? previousArtifact.effectSpecification.deferredEffects
+        : [],
+    });
+  }
+  if (!effectSpecification) {
+    const built = buildPlanEffectSpecification({ contract, actionContract });
+    if (built.kind !== "compatible") {
+      throw new Error(`The plan requires renewed approval: ${built.reason}`);
+    }
+    effectSpecification = built.specification;
+    actionIndexEffectIds = built.actionIndexEffectIds;
+  }
+  if (effectSpecification) {
+    effectSpecification =
+      await freezePlanEffectSpecification(effectSpecification);
+  }
+  const steps = input.steps.map((step) => ({
+    ...step,
+    effectIds:
+      step.effectIds ||
+      step.actionIndexes?.flatMap(
+        (index) => actionIndexEffectIds.get(index) || [],
+      ),
+  }));
+  const v5Contract = explicitEffectSpecification
+    ? contract
+    : {
+        investigation: contract.investigation,
+        deliverable: contract.deliverable,
+        researchPolicy: contract.researchPolicy,
+      };
   const artifact = await planExecutionCoordinator.updateDraft({
     planId: plan.planId,
     conversationKey: context.request.conversationKey,
     provider: plan.provider,
     revision: plan.revision,
     explanation: input.explanation,
-    steps: input.steps,
-    contract,
+    steps,
+    contract: v5Contract,
+    effectSpecification,
     actionContractId: actionContract?.id,
     actionContract,
     sourceRunId: context.runId || "external-mcp-structured",
@@ -387,6 +475,7 @@ async function preparePlanExecutionUnlocked(
           ),
         }
       : undefined,
+    skillBindings: context.request.loadedSkillRecords,
     ready: input.ready && !plan.nativePlanning,
     nativePlanning: plan.nativePlanning,
   });

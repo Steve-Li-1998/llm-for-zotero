@@ -8,7 +8,7 @@ import {
   shouldDowngradePdfSourceForConversation,
   resolveMineruSourceOptionState,
 } from "../src/modules/contextPanel/setupHandlers/controllers/paperSourceOptionsController";
-import { getContextSourceModeDescriptor } from "../src/modules/contextPanel/contextSourceModes";
+import { getContextSourceModeDescriptor } from "../src/services/paperContent/contextSourceModes";
 import type {
   PaperContentSourceMode,
   PaperContextRef,

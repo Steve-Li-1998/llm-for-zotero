@@ -4,7 +4,9 @@ import {
   finishRequest,
   recordLivePlanExecution,
   getLivePlanExecution,
+  getConversationWriteGeneration,
 } from "../src/modules/contextPanel/state";
+import { buildCodexNativeTurnCallbacksForTests } from "../src/modules/contextPanel/chat";
 import type { PlanExecutionLedger } from "../src/agent/plans/types";
 
 describe("live plan execution ownership", function () {
@@ -33,6 +35,36 @@ describe("live plan execution ownership", function () {
     assert.isNull(getLivePlanExecution(key));
     tryBeginRequest(key, 2, null);
     recordLivePlanExecution(key, 1, "run", ledger("running", 3));
+    assert.isNull(getLivePlanExecution(key));
+  });
+
+  it("binds native Codex progress to the captured request and rejects late callbacks", async function () {
+    tryBeginRequest(key, 1, null);
+    const callbacks = buildCodexNativeTurnCallbacksForTests({
+      conversationKey: key,
+      conversationGeneration: getConversationWriteGeneration(key),
+      assistantMessage: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        agentRunId: "native-run",
+        streaming: true,
+      },
+      codexActivityTrace: null,
+      body: {} as Element,
+      item: {} as Zotero.Item,
+      flushResponseStream: () => {},
+      setStatusSafely: () => {},
+      handleDelta: () => {},
+      handleReasoning: () => {},
+      handleUsage: () => {},
+    });
+    await callbacks.onPlanExecutionUpdated?.(ledger("running"));
+    assert.equal(getLivePlanExecution(key)?.runId, "native-run");
+    assert.equal(getLivePlanExecution(key)?.ledger.updatedAt, 1);
+    finishRequest(key, 1);
+    tryBeginRequest(key, 2, null);
+    await callbacks.onPlanExecutionUpdated?.(ledger("running", 2));
     assert.isNull(getLivePlanExecution(key));
   });
 

@@ -3,6 +3,8 @@ import { canonicalJson } from "../services/libraryMutation/canonicalJson";
 import type { PlanSkillRoutingReceipt } from "../skills/routingTypes";
 import { sha256Text } from "../store/journalRecoveryBlobStore";
 import { buildDefaultPlanContract, decodePlanContract } from "./contracts";
+import { decodePlanEffectSpecification } from "./decoders";
+import { buildPlanEffectSpecification } from "./effectSpecification";
 import {
   loadOpenContractRevisionProposal,
   loadPlanArtifact,
@@ -15,10 +17,13 @@ import type {
   PlanCompletionRequirement,
   PlanCompletionRequirementKind,
   PlanContract,
+  PlanEffectSpecification,
   PlanProvider,
+  PlanSkillBinding,
   PlanStep,
 } from "./types";
-import { validatePlanWorkflowBindings } from "./workflowBindings";
+import { validatePlanEffectBindings } from "./workflowBindings";
+import { operationCatalogEntry } from "../contracts/operationCatalog";
 
 export function normalizedText(value: unknown, label: string): string {
   const text = typeof value === "string" ? value.trim() : "";
@@ -71,8 +76,13 @@ export function normalizeAcceptanceCriteria(
 
 export async function computePlanContractDigest(
   contract: PlanContract,
+  effectSpecification?: PlanEffectSpecification,
 ): Promise<string> {
-  return `sha256:${await sha256Text(canonicalJson(contract))}`;
+  return `sha256:${await sha256Text(
+    canonicalJson(
+      effectSpecification ? { contract, effectSpecification } : contract,
+    ),
+  )}`;
 }
 
 /**
@@ -96,9 +106,11 @@ export async function computePlanDigest(params: {
   actionContractId?: string;
   steps: readonly PlanStep[];
   skillRoutingReceipt?: PlanSkillRoutingReceipt;
+  skillBindings?: readonly PlanSkillBinding[];
   nativePlanning?: import("./types").NativePlanBinding;
   contract?: PlanContract;
   contractDigest?: string;
+  effectSpecification?: PlanEffectSpecification;
 }): Promise<string> {
   return `sha256:${await sha256Text(canonicalJson(params))}`;
 }
@@ -325,22 +337,24 @@ export function requireFrozenWriteObligations(
 
 function validatePlanStepContract(params: {
   contract: PlanContract;
+  effectSpecification: PlanEffectSpecification;
   steps: readonly PlanStep[];
 }): void {
   const mutationIndexes = params.steps
     .map((step, index) => (step.expectedEffect === "mutation" ? index : -1))
     .filter((index) => index >= 0);
-  const effect = params.contract.effects?.libraryMutation;
-  if (effect?.approval === "initial")
-    requireFrozenWriteObligations(effect.contract);
-  if (Boolean(effect) !== Boolean(mutationIndexes.length)) {
+  const hasEffects = Boolean(
+    params.effectSpecification.effects.length ||
+    params.effectSpecification.deferredEffects.length,
+  );
+  if (hasEffects !== Boolean(mutationIndexes.length)) {
     throw new Error(
-      effect
+      hasEffects
         ? "A library-mutation contract requires a mutation plan step"
         : "A mutation plan step requires an approved library-mutation contract",
     );
   }
-  validatePlanWorkflowBindings(params.contract, params.steps);
+  validatePlanEffectBindings(params.effectSpecification, params.steps);
   const requirementOwners = new Map<PlanCompletionRequirementKind, number[]>();
   params.steps.forEach((step, index) => {
     for (const requirement of step.completionRequirements || []) {
@@ -374,7 +388,7 @@ function validatePlanStepContract(params: {
   if (params.contract.investigation) {
     const researchOwner = exactlyOne("research_coverage");
     if (
-      effect?.approval === "after_research" &&
+      params.effectSpecification.deferredEffects.length > 0 &&
       mutationIndexes.some((index) => index <= researchOwner)
     ) {
       throw new Error(
@@ -384,7 +398,7 @@ function validatePlanStepContract(params: {
   } else if (requirementOwners.has("research_coverage")) {
     throw new Error("Research coverage requires an investigation contract");
   }
-  if (effect) {
+  if (hasEffects) {
     const receiptOwners = requirementOwners.get("mutation_receipts") || [];
     if (
       receiptOwners.length !== mutationIndexes.length ||
@@ -427,6 +441,7 @@ export async function updatePlanDraft(params: {
   steps: ReadonlyArray<{
     planStepId?: string;
     actionIndexes?: readonly number[];
+    effectIds?: readonly string[];
     materialOutputId?: string;
     content: string;
     activeForm?: string;
@@ -436,11 +451,13 @@ export async function updatePlanDraft(params: {
     targetBoundary?: PlanStep["targetBoundary"];
   }>;
   contract?: PlanContract;
+  effectSpecification?: PlanEffectSpecification;
   actionContractId?: string;
   actionContract?: AgentActionContract;
   sourceRunId?: string;
   nativePlanning?: import("./types").NativePlanBinding;
   skillRoutingReceipt?: PlanSkillRoutingReceipt;
+  skillBindings?: readonly PlanSkillBinding[];
   ready?: boolean;
   now?: number;
 }): Promise<PlanArtifact> {
@@ -463,7 +480,7 @@ export async function updatePlanDraft(params: {
   }
   if (!params.steps.length)
     throw new Error("A plan requires at least one step");
-  const decodedContract = canonicalizePlanResearchEvidenceDepth(
+  const legacyContract = canonicalizePlanResearchEvidenceDepth(
     decodePlanContract(
       params.contract ||
         buildDefaultPlanContract({
@@ -473,7 +490,7 @@ export async function updatePlanDraft(params: {
       { requireSnapshot: params.ready === true },
     ),
   );
-  const mutationEffect = decodedContract.effects?.libraryMutation;
+  const mutationEffect = legacyContract.effects?.libraryMutation;
   const initialMutation =
     mutationEffect?.approval === "initial"
       ? mutationEffect.contract
@@ -491,7 +508,7 @@ export async function updatePlanDraft(params: {
   // not selected yet. The only authority for an after-research effect is the
   // separately persisted exact-target grant created at the second gate.
   const actionContract = resolvePreResearchActionContract(
-    decodedContract,
+    legacyContract,
     params.actionContract,
   );
   const actionContractId = actionContract?.id;
@@ -500,7 +517,38 @@ export async function updatePlanDraft(params: {
       "The supplied action contract ID does not match the plan contract",
     );
   }
-  const contractDigest = await computePlanContractDigest(decodedContract);
+  const builtEffects = params.effectSpecification
+    ? {
+        kind: "compatible" as const,
+        specification: decodePlanEffectSpecification(
+          params.effectSpecification,
+        ),
+        actionIndexEffectIds: new Map<number, readonly string[]>(),
+      }
+    : buildPlanEffectSpecification({
+        contract: legacyContract,
+        actionContract,
+      });
+  if (params.effectSpecification && legacyContract.effects) {
+    throw new Error(
+      "A v5 plan must declare effects only through effectSpecification",
+    );
+  }
+  if (builtEffects.kind !== "compatible") {
+    throw new Error(
+      `The plan requires renewed approval: ${builtEffects.reason}`,
+    );
+  }
+  const effectSpecification = builtEffects.specification;
+  const decodedContract: PlanContract = {
+    investigation: legacyContract.investigation,
+    deliverable: legacyContract.deliverable,
+    researchPolicy: legacyContract.researchPolicy,
+  };
+  const contractDigest = await computePlanContractDigest(
+    decodedContract,
+    effectSpecification,
+  );
   const seen = new Set<string>();
   const seenCriteria = new Set<string>();
   const normalizedSteps = params.steps.map((step, index) => {
@@ -532,33 +580,71 @@ export async function updatePlanDraft(params: {
       acceptanceCriteria,
       expectedCapability: step.expectedCapability?.trim() || undefined,
       expectedEffect: step.expectedEffect,
-      actionIndexes: step.actionIndexes,
+      effectIds:
+        step.effectIds ||
+        step.actionIndexes?.flatMap(
+          (index) => builtEffects.actionIndexEffectIds.get(index) || [],
+        ),
       materialOutputId: step.materialOutputId,
       targetBoundary: step.targetBoundary,
     };
   });
+  const candidateEffects = [
+    ...effectSpecification.effects,
+    ...effectSpecification.deferredEffects,
+  ];
+  const boundSteps = normalizedSteps.map((step) => {
+    if (step.expectedEffect !== "mutation" || step.effectIds?.length) {
+      return step;
+    }
+    const matching = candidateEffects.filter((effect) => {
+      const authority = operationCatalogEntry(effect.operation);
+      return (
+        !step.expectedCapability ||
+        authority?.capability === step.expectedCapability
+      );
+    });
+    if (matching.length !== 1) {
+      throw new Error(
+        `Mutation step '${step.planStepId}' requires frozen write obligations and explicit stable effectIds`,
+      );
+    }
+    return { ...step, effectIds: [matching[0].effectId] };
+  });
   const canonicalSteps = canonicalizePlanVerifierOwnership({
     contract: decodedContract,
-    steps: normalizedSteps,
+    steps: boundSteps,
   });
   const steps = assignCompletionRequirements({
     steps: canonicalSteps,
     contractDigest,
   });
-  validatePlanStepContract({ contract: decodedContract, steps });
+  validatePlanStepContract({
+    contract: decodedContract,
+    effectSpecification,
+    steps,
+  });
+  const skillBindings = [
+    ...new Map(
+      [
+        ...((existing?.version === 5 && existing.skillBindings) || []),
+        ...(params.skillBindings || []),
+      ].map((binding) => [binding.id, binding]),
+    ).values(),
+  ].sort((left, right) => left.id.localeCompare(right.id));
   const digest = await computePlanDigest({
     planId: params.planId,
     conversationKey: params.conversationKey,
     revision: params.revision,
-    actionContractId,
     steps,
-    skillRoutingReceipt: params.skillRoutingReceipt,
+    skillBindings,
     ...(params.nativePlanning ? { nativePlanning: params.nativePlanning } : {}),
     contract: decodedContract,
     contractDigest,
+    effectSpecification,
   });
   const artifact: PlanArtifact = {
-    version: 4,
+    version: 5,
     planId: params.planId,
     conversationKey: params.conversationKey,
     provider: params.provider,
@@ -566,14 +652,12 @@ export async function updatePlanDraft(params: {
     digest,
     status: params.ready ? "awaiting_approval" : "drafting",
     explanation: params.explanation?.trim() || undefined,
-    actionContractId,
-    actionContract,
     sourceRunId: params.sourceRunId || existing?.sourceRunId,
     ...(params.nativePlanning ? { nativePlanning: params.nativePlanning } : {}),
-    skillRoutingReceipt:
-      params.skillRoutingReceipt || existing?.skillRoutingReceipt,
+    skillBindings,
     contract: decodedContract,
     contractDigest,
+    effectSpecification,
     steps,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
@@ -616,11 +700,15 @@ export async function updatePlanDraft(params: {
         ),
         proposalPayloadDigest: await service.digest({
           contract: artifact.contract,
+          effectSpecification: artifact.effectSpecification,
           steps: artifact.steps,
+          skillBindings: artifact.skillBindings,
         }),
         replacementContract: artifact.contract,
         replacementSteps: artifact.steps,
-        replacementActionContract: actionContract,
+        replacementActionContract: undefined,
+        replacementEffectSpecification: artifact.effectSpecification,
+        replacementSkillBindings: artifact.skillBindings,
         rationale:
           params.explanation ||
           "The reviewed successor Plan was revised before approval.",

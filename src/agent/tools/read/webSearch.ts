@@ -235,7 +235,7 @@ export function createWebSearchTool(
         },
       },
       executionClass: "read",
-      requiresConfirmation: false,
+      workCategory: "retrieval",
       localAgentOnly: true,
     },
     isAvailable: isWebAccessToolAvailable,

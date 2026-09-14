@@ -29,6 +29,14 @@ const inFlightResolutions = new Map<
   Promise<WebChatSessionConversationResult | null>
 >();
 
+let forcedAnchorFailures = 0;
+
+// Test-only: make the next N session resolutions fail so workflow tests can
+// drive the failed-anchoring path through the real entry flow.
+export function forceWebChatSessionAnchorFailuresForTests(count: number): void {
+  forcedAnchorFailures = Math.max(0, Math.floor(count));
+}
+
 /**
  * Resolve the local anchor row for a webchat session on a paper.
  *
@@ -51,6 +59,10 @@ export async function resolveWebChatSessionConversation(params: {
   const libraryID = normalizePositiveInt(params.libraryID);
   const paperItemID = normalizePositiveInt(params.paperItemID);
   if (!libraryID || !paperItemID) return null;
+  if (forcedAnchorFailures > 0) {
+    forcedAnchorFailures--;
+    return null;
+  }
   const inFlightKey = `${libraryID}:${paperItemID}`;
   const inFlight = inFlightResolutions.get(inFlightKey);
   if (inFlight) return inFlight;

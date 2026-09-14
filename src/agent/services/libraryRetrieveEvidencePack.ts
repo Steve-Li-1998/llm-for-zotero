@@ -1,11 +1,11 @@
 import {
   buildEvidencePack,
   buildPaperKey,
-} from "../../modules/contextPanel/pdfContext";
+} from "../../services/paperContent/pdfContext";
 import type {
   PaperContextCandidate,
   PdfChunkKind,
-} from "../../modules/contextPanel/types";
+} from "../../services/paperContent/types";
 import type { PaperContextRef } from "../../shared/types";
 import { chunkKindFromSectionLabel } from "../../shared/libraryChatEvidencePolicy";
 import { estimateTextTokens } from "../../utils/modelInputCap";

@@ -38,6 +38,7 @@ export type ActionConstraint = Readonly<
 export type ActionRiskSignal =
   | "ambiguous_target"
   | "scope_expansion"
+  | "exclusive_replacement"
   | "sensitive_egress"
   | "broad_delete"
   | "protected_target"
@@ -56,6 +57,8 @@ export type ActionProposal = {
   domains: ActionDomain[];
   effects: ActionEffect[];
   targets: string[];
+  /** Native libraries resolved by the host for the concrete targets. */
+  targetLibraryIDs?: number[];
   summary: string;
   reversibility: "full" | "partial" | "none";
   riskSignals: ActionRiskSignal[];
@@ -75,7 +78,6 @@ export type AuthorizationDecision =
       authority:
         | "safe_read"
         | "external_runtime"
-        | "requested_note"
         | "auto_policy"
         | "yolo"
         | "yolo_judgment"
@@ -84,18 +86,53 @@ export type AuthorizationDecision =
   | { kind: "confirm"; reason: string }
   | { kind: "block"; reason: string };
 
+/** Only the shared authorization service resolves this intermediate decision. */
+export type AuthorizationAssessment =
+  | AuthorizationDecision
+  | { kind: "model_review"; reason: string };
+
+export type ActionReviewInput = Readonly<{
+  proposal: ActionProposal;
+  input: unknown;
+  userRequest: string;
+  clarifications: unknown;
+  conversation: ReadonlyArray<{ role: "user" | "assistant"; text: string }>;
+  userInstructions?: string;
+  workspace: unknown;
+  constraints: readonly ActionConstraint[];
+}>;
+
+export type ActionReviewVerdict = Readonly<{
+  decision: "execute" | "confirm";
+  reason: string;
+  unavailable?: boolean;
+}>;
+
+export type ActionReviewer = (
+  input: ActionReviewInput,
+  signal?: AbortSignal,
+) => Promise<ActionReviewVerdict>;
+
+export type ActionReviewRecord = ActionReviewVerdict & {
+  proposalDigest: string;
+  elapsedMs: number;
+};
+
 export type ActionInteraction = Readonly<{
   entryPoint: "action_ui" | "conversation";
   reviewPreference: "default" | "review" | "direct";
 }>;
 
 export type OriginalAuthorizationContext = {
-  /** Resolved by the host from entry point and frozen action intent. */
+  /** Resolved by the host from the entry point and concrete proposal. */
   interaction?: ActionInteraction;
   mode: OriginalAgentPermissionMode;
-  semantic?: import("../model/semanticDecisions").SemanticIntent;
   constraints?: readonly ActionConstraint[];
-  /** The exact typed proposal passed the current turn's Action Contract. */
+  /** Legacy capture accepted by stored research flows; direct policy ignores it. */
+  semantic?: import("../model/semanticDecisions").SemanticIntent;
+  /** Host-created turn facts; never accepted from model tool arguments. */
+  executionContext?: import("../types").AgentExecutionContext;
+  /** Legacy compatibility input. Direct-agent policy does not use this as authority. */
   hasMatchingActionIntent?: boolean;
   /** Host-verified approved-plan scope; never supplied by model tool input. */
   hasApprovedPlanAuthority?: boolean;

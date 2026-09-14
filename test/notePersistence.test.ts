@@ -3,7 +3,7 @@ import { rejects } from "node:assert/strict";
 import {
   createFinalizedZoteroNote,
   persistVerifiedNoteHtml,
-} from "../src/modules/contextPanel/notePersistence";
+} from "../src/services/notePersistence";
 
 describe("finalized Zotero note persistence", function () {
   const globalScope = globalThis as typeof globalThis & {

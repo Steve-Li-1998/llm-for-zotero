@@ -3,6 +3,7 @@ import type {
   AgentToolInputValidation,
   ExecutionTaskStatus,
 } from "../../types";
+import type { MaterialRef } from "../../documents/materialRef";
 import { planExecutionCoordinator } from "../../plans/coordinator";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { listTaskEvidence } from "../../plans/store";
@@ -13,12 +14,21 @@ import type {
   PlanCompletionRequirementKind,
   PlanExecutionLedger,
   TaskEvidence,
+  TaskTransitionRequest,
 } from "../../plans/types";
 import { fail, ok, validateObject } from "../shared";
+import {
+  applyExecutionCheckpointUpdates,
+  createEmptyExecutionCheckpoint,
+  loadExecutionEvidenceForRun,
+  type ExecutionCheckpointTaskUpdate,
+} from "../../execution/checkpoint";
 
 type TaskUpdateRequest = {
   taskId: string;
   status: ExecutionTaskStatus;
+  description?: string;
+  dependencies?: string[];
   parentTaskId?: string;
   content?: string;
   activeForm?: string;
@@ -28,9 +38,18 @@ type TaskUpdateRequest = {
   targetIds?: string[];
   reason?: string;
   reasoningAssertion?: string;
+  journalActionIds?: string[];
+  verifiedReceiptIds?: string[];
+  readEvidenceIds?: string[];
+  materialRefs?: MaterialRef[];
 };
 
-type TaskUpdateInput = { task: TaskUpdateRequest };
+type TaskUpdateInput = {
+  /** Compatible shorthand for one transition. */
+  task?: TaskUpdateRequest;
+  /** Atomic batch form used by ordinary tracked work and Plan transitions. */
+  tasks: TaskUpdateRequest[];
+};
 
 const STATUSES = new Set<ExecutionTaskStatus>([
   "pending",
@@ -53,25 +72,120 @@ const VERIFIERS = new Set<PlanCompletionRequirementKind>([
   "user_decision",
 ]);
 
-function validateTaskUpdateInput(
-  args: unknown,
-): AgentToolInputValidation<TaskUpdateInput> {
-  if (!validateObject<Record<string, unknown>>(args)) {
-    return fail("task_update expects an object");
+const MATERIAL_REF_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["documentId", "documentVersion", "contentHash"],
+  properties: {
+    documentId: { type: "string" },
+    documentVersion: { type: "integer", minimum: 1 },
+    contentHash: { type: "string" },
+  },
+} as const;
+
+const TASK_UPDATE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["taskId", "status"],
+  properties: {
+    taskId: { type: "string" },
+    status: { type: "string", enum: Array.from(STATUSES) },
+    description: {
+      type: "string",
+      description: "Required when creating an ordinary tracked task.",
+    },
+    dependencies: { type: "array", items: { type: "string" } },
+    reason: { type: "string" },
+    reasoningAssertion: {
+      type: "string",
+      description:
+        "Required when completing an approved bounded-reasoning Plan task.",
+    },
+    parentTaskId: { type: "string" },
+    content: { type: "string" },
+    activeForm: { type: "string" },
+    acceptanceCriteria: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["criterionId", "description", "verifier"],
+        properties: {
+          criterionId: { type: "string" },
+          description: { type: "string" },
+          verifier: {
+            type: "string",
+            enum: Array.from(VERIFIERS),
+          },
+        },
+      },
+    },
+    expectedEffect: {
+      type: "string",
+      enum: ["read", "artifact", "mutation", "reasoning"],
+    },
+    expectedCapability: { type: "string" },
+    targetIds: { type: "array", items: { type: "string" } },
+    journalActionIds: { type: "array", items: { type: "string" } },
+    verifiedReceiptIds: { type: "array", items: { type: "string" } },
+    readEvidenceIds: { type: "array", items: { type: "string" } },
+    materialRefs: { type: "array", items: MATERIAL_REF_SCHEMA },
+  },
+} as const;
+
+function stringList(
+  value: unknown,
+  label: string,
+): AgentToolInputValidation<string[] | undefined> {
+  if (value === undefined) return ok(undefined);
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== "string" || !entry.trim())
+  ) {
+    return fail(`${label} must be an array of non-empty strings`);
   }
-  if (Array.isArray(args.tasks)) {
-    return fail(
-      "task_update accepts exactly one transition in task; submit later transitions in separate calls",
-    );
+  return ok([...new Set(value.map((entry) => entry.trim()))]);
+}
+
+function parseMaterialRefs(
+  value: unknown,
+): AgentToolInputValidation<MaterialRef[] | undefined> {
+  if (value === undefined) return ok(undefined);
+  if (!Array.isArray(value)) return fail("materialRefs must be an array");
+  const refs: MaterialRef[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!validateObject<Record<string, unknown>>(entry)) {
+      return fail(`materialRefs[${index}] must be an object`);
+    }
+    const documentId =
+      typeof entry.documentId === "string" ? entry.documentId.trim() : "";
+    const contentHash =
+      typeof entry.contentHash === "string" ? entry.contentHash.trim() : "";
+    const documentVersion = Number(entry.documentVersion);
+    if (
+      !documentId ||
+      !contentHash ||
+      !Number.isSafeInteger(documentVersion) ||
+      documentVersion < 1
+    ) {
+      return fail(`materialRefs[${index}] has an invalid immutable identity`);
+    }
+    refs.push({ documentId, documentVersion, contentHash });
   }
-  const raw = args.task;
+  return ok(refs);
+}
+
+function parseTaskUpdate(
+  raw: unknown,
+  label: string,
+): AgentToolInputValidation<TaskUpdateRequest> {
   if (!validateObject<Record<string, unknown>>(raw)) {
-    return fail("task_update.task must be an object");
+    return fail(`${label} must be an object`);
   }
   const taskId = typeof raw.taskId === "string" ? raw.taskId.trim() : "";
   const status = raw.status as ExecutionTaskStatus;
   if (!taskId || !STATUSES.has(status)) {
-    return fail("task_update.task has an invalid identity/status");
+    return fail(`${label} has an invalid identity/status`);
   }
   const acceptanceCriteria = Array.isArray(raw.acceptanceCriteria)
     ? raw.acceptanceCriteria.flatMap((value) => {
@@ -90,11 +204,43 @@ function validateTaskUpdateInput(
     Array.isArray(raw.acceptanceCriteria) &&
     acceptanceCriteria?.length !== raw.acceptanceCriteria.length
   ) {
-    return fail("task_update.task.acceptanceCriteria is invalid");
+    return fail(`${label}.acceptanceCriteria is invalid`);
   }
-  const task: TaskUpdateRequest = {
+  if (
+    raw.expectedEffect !== undefined &&
+    !["read", "artifact", "mutation", "reasoning"].includes(
+      String(raw.expectedEffect),
+    )
+  ) {
+    return fail(`${label}.expectedEffect is invalid`);
+  }
+  const dependencies = stringList(raw.dependencies, `${label}.dependencies`);
+  if (!dependencies.ok) return dependencies;
+  const journalActionIds = stringList(
+    raw.journalActionIds,
+    `${label}.journalActionIds`,
+  );
+  if (!journalActionIds.ok) return journalActionIds;
+  const verifiedReceiptIds = stringList(
+    raw.verifiedReceiptIds,
+    `${label}.verifiedReceiptIds`,
+  );
+  if (!verifiedReceiptIds.ok) return verifiedReceiptIds;
+  const readEvidenceIds = stringList(
+    raw.readEvidenceIds,
+    `${label}.readEvidenceIds`,
+  );
+  if (!readEvidenceIds.ok) return readEvidenceIds;
+  const materialRefs = parseMaterialRefs(raw.materialRefs);
+  if (!materialRefs.ok) return materialRefs;
+  return ok({
     taskId,
     status,
+    description:
+      typeof raw.description === "string"
+        ? raw.description.trim() || undefined
+        : undefined,
+    dependencies: dependencies.value,
     reason:
       typeof raw.reason === "string" && raw.reason.trim()
         ? raw.reason.trim()
@@ -117,11 +263,7 @@ function validateTaskUpdateInput(
         ? raw.activeForm.trim() || undefined
         : undefined,
     acceptanceCriteria,
-    expectedEffect: ["read", "artifact", "mutation", "reasoning"].includes(
-      String(raw.expectedEffect || ""),
-    )
-      ? (raw.expectedEffect as TaskUpdateRequest["expectedEffect"])
-      : undefined,
+    expectedEffect: raw.expectedEffect as TaskUpdateRequest["expectedEffect"],
     expectedCapability:
       typeof raw.expectedCapability === "string"
         ? raw.expectedCapability.trim() || undefined
@@ -129,8 +271,40 @@ function validateTaskUpdateInput(
     targetIds: Array.isArray(raw.targetIds)
       ? raw.targetIds.map(String).filter(Boolean)
       : undefined,
-  };
-  return ok({ task });
+    journalActionIds: journalActionIds.value,
+    verifiedReceiptIds: verifiedReceiptIds.value,
+    readEvidenceIds: readEvidenceIds.value,
+    materialRefs: materialRefs.value,
+  });
+}
+
+export function validateTaskUpdateInput(
+  args: unknown,
+): AgentToolInputValidation<TaskUpdateInput> {
+  if (!validateObject<Record<string, unknown>>(args)) {
+    return fail("task_update expects an object");
+  }
+  const hasTask = args.task !== undefined;
+  const hasTasks = args.tasks !== undefined;
+  if (hasTask === hasTasks) {
+    return fail("task_update requires exactly one of task or tasks");
+  }
+  if (hasTask) {
+    const parsed = parseTaskUpdate(args.task, "task_update.task");
+    return parsed.ok
+      ? ok({ task: parsed.value, tasks: [parsed.value] })
+      : parsed;
+  }
+  if (!Array.isArray(args.tasks) || !args.tasks.length) {
+    return fail("task_update.tasks must be a non-empty array");
+  }
+  const tasks: TaskUpdateRequest[] = [];
+  for (const [index, raw] of args.tasks.entries()) {
+    const parsed = parseTaskUpdate(raw, `task_update.tasks[${index}]`);
+    if (!parsed.ok) return parsed;
+    tasks.push(parsed.value);
+  }
+  return ok({ tasks });
 }
 
 export function buildReasoningAssertionEvidence(params: {
@@ -183,62 +357,32 @@ export function createTaskUpdateTool(): AgentToolDefinition<
     spec: {
       name: "task_update",
       description:
-        "Apply exactly one task transition in the approved plan. Use the immutable task ID; the host validates and commits the transition before automatically starting the next pending step. Completing a reasoning task requires reasoningAssertion in the same update.",
+        "Create or update progress for compound work. Use task as a compatible single-update shorthand or tasks to commit a related batch atomically. Ordinary tasks use a short stable taskId, description, optional dependencies, and host-issued evidence identities. Approved Plan tasks accept immutable IDs and status transitions only.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
-        required: ["task"],
         properties: {
-          task: {
-            type: "object",
-            additionalProperties: false,
-            required: ["taskId", "status"],
-            properties: {
-              taskId: { type: "string" },
-              status: {
-                type: "string",
-                enum: Array.from(STATUSES),
-              },
-              reason: { type: "string" },
-              reasoningAssertion: {
-                type: "string",
-                description:
-                  "Required when completing a reasoning task. State the bounded conclusion that satisfies the approved acceptance criteria; this becomes verified reasoning evidence.",
-              },
-              parentTaskId: { type: "string" },
-              content: { type: "string" },
-              activeForm: { type: "string" },
-              acceptanceCriteria: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["criterionId", "description", "verifier"],
-                  properties: {
-                    criterionId: { type: "string" },
-                    description: { type: "string" },
-                    verifier: {
-                      type: "string",
-                      enum: Array.from(VERIFIERS),
-                    },
-                  },
-                },
-              },
-              expectedEffect: {
-                type: "string",
-                enum: ["read", "artifact", "mutation", "reasoning"],
-              },
-              expectedCapability: { type: "string" },
-              targetIds: { type: "array", items: { type: "string" } },
-            },
+          task: TASK_UPDATE_SCHEMA,
+          tasks: {
+            type: "array",
+            minItems: 1,
+            items: TASK_UPDATE_SCHEMA,
           },
         },
       },
       executionClass: "control",
-      requiresConfirmation: false,
+      workCategory: "planning",
     },
+    /**
+     * The plan machinery itself. Its calls are how a plan is drafted and
+     * advanced, and the plan card already shows the reader the outcome, so a
+     * row for each of them would report the trace's own plumbing.
+     */
+    presentation: { hiddenInTrace: true },
     isAvailable: (request) => {
-      if (request.planContext?.phase !== "executing") return false;
+      if (request.planContext?.phase !== "executing") {
+        return request.executionContext?.permissionOwner === "original_agent";
+      }
       const ledger = request.metadata?.planExecutionLedger as
         | PlanExecutionLedger
         | null
@@ -255,7 +399,7 @@ export function createTaskUpdateTool(): AgentToolDefinition<
         return !ledger || planRequiresModelTaskUpdates(ledger);
       },
       instruction:
-        "Execute the approved plan in order. The host starts the active task and owns the authoritative ledger. Never call task_update for research or document tasks whose requirements are only verified_read, material_integrity, mutation_receipts, research_coverage, document_integrity, or document_published; their owning tools advance them automatically. For any other active task, call task_update with exactly one transition, using the immutable taskId from the approved-plan context. Existing tasks normally need only taskId and status, but when completing a task whose expectedEffect is reasoning or whose completion requirement is bounded_reasoning, include reasoningAssertion in that same update; otherwise completion is rejected. Wait for that call to commit before submitting another transition. A completed request is rejected unless receipts or verified evidence satisfy the task; after completion the host starts the next pending task. Never rename, delete, reorder, or silently skip an approved task.",
+        "Execute the approved plan in order. The host owns the authoritative immutable task ledger. Never call task_update for research or document tasks whose requirements are only verified_read, material_integrity, mutation_receipts, research_coverage, document_integrity, or document_published; their owning tools advance them automatically. For other active tasks, use task as a single-transition shorthand or tasks for an atomic related batch, with only each immutable taskId, status, optional reason, and required reasoningAssertion. A completed request is rejected unless receipts or verified evidence satisfy the task; after completion the host starts the next pending task. Never rename, create, delete, reorder, or silently skip an approved task.",
     },
     validate: validateTaskUpdateInput,
     planInvocation: () =>
@@ -267,64 +411,94 @@ export function createTaskUpdateTool(): AgentToolDefinition<
     execute: async (input, context) => {
       const plan = context.request.planContext;
       if (!plan || plan.phase !== "executing") {
+        const execution = context.request.executionContext;
+        if (execution?.permissionOwner !== "original_agent") {
+          throw new Error(
+            "task_update requires an ordinary Original Agent execution or an approved Plan",
+          );
+        }
+        if (!context.runId || !context.publishExecutionCheckpoint) {
+          throw new Error(
+            "Ordinary task progress requires durable run checkpoint persistence",
+          );
+        }
+        const checkpoint =
+          context.request.executionCheckpoint ||
+          createEmptyExecutionCheckpoint(execution);
+        const inventory = context.loadExecutionEvidence
+          ? await context.loadExecutionEvidence()
+          : await loadExecutionEvidenceForRun(context.runId, context.request);
+        const updates: ExecutionCheckpointTaskUpdate[] = input.tasks.map(
+          (request) => ({
+            taskId: request.taskId,
+            description: request.description,
+            dependencies: request.dependencies,
+            status: request.status,
+            reason: request.reason,
+            journalActionIds: request.journalActionIds,
+            verifiedReceiptIds: request.verifiedReceiptIds,
+            readEvidenceIds: request.readEvidenceIds,
+            materialRefs: request.materialRefs,
+          }),
+        );
+        const updated = applyExecutionCheckpointUpdates({
+          checkpoint,
+          updates,
+          evidence: inventory,
+          context: execution,
+        });
+        await context.publishExecutionCheckpoint(updated);
+        context.request.executionCheckpoint = updated;
+        return { checkpoint: updated };
+      }
+      if (
+        input.tasks.some((request) =>
+          Boolean(
+            request.description ||
+            request.dependencies?.length ||
+            request.parentTaskId ||
+            request.content ||
+            request.activeForm ||
+            request.acceptanceCriteria?.length ||
+            request.expectedEffect ||
+            request.expectedCapability ||
+            request.targetIds?.length ||
+            request.journalActionIds?.length ||
+            request.verifiedReceiptIds?.length ||
+            request.readEvidenceIds?.length ||
+            request.materialRefs?.length,
+          ),
+        )
+      ) {
         throw new Error(
-          "task_update is available only during approved execution",
+          "Approved Plan tasks are immutable; task_update accepts only taskId, status, reason, and bounded reasoning evidence",
         );
       }
       let ledger = await planExecutionCoordinator.startNextTask(
         plan.executionId,
       );
-      const request = input.task;
-      let current = ledger.tasks.find((task) => task.taskId === request.taskId);
-      let admittedSupportingTask = false;
-      if (!current) {
-        if (
-          request.status !== "pending" ||
-          !request.parentTaskId ||
-          !request.content ||
-          !request.acceptanceCriteria?.length ||
-          !request.expectedEffect
-        ) {
+      const transitions: Array<{
+        request: TaskTransitionRequest;
+        evidence?: TaskEvidence;
+      }> = [];
+      for (const request of input.tasks) {
+        const current = ledger.tasks.find(
+          (task) => task.taskId === request.taskId,
+        );
+        if (!current) throw new Error(`Unknown Plan taskId: ${request.taskId}`);
+        if (current.status === request.status) {
           throw new Error(
-            "New supporting tasks require parent, immutable presentation, evidence policy, and pending status",
+            `Task ${request.taskId} is already ${request.status}; task_update requires a status transition`,
           );
         }
-        ledger = await planExecutionCoordinator.admitSupportingTask({
+        const evidence = buildReasoningAssertionEvidence({
           executionId: plan.executionId,
-          taskId: request.taskId,
-          parentTaskId: request.parentTaskId,
-          content: request.content,
-          activeForm: request.activeForm,
-          acceptanceCriteria: request.acceptanceCriteria,
-          expectedEffect: request.expectedEffect,
-          expectedCapability: request.expectedCapability,
-          targetIds: request.targetIds,
+          task: current,
+          status: request.status,
+          assertion: request.reasoningAssertion,
         });
-        admittedSupportingTask = true;
-        current = ledger.tasks.find((task) => task.taskId === request.taskId);
-      }
-      if (!current) throw new Error(`Unknown taskId: ${request.taskId}`);
-      const transitionEvidence = buildReasoningAssertionEvidence({
-        executionId: plan.executionId,
-        task: current,
-        status: request.status,
-        assertion: request.reasoningAssertion,
-      });
-      const latest = ledger.tasks.find(
-        (task) => task.taskId === request.taskId,
-      );
-      if (
-        latest &&
-        latest.status === request.status &&
-        !admittedSupportingTask
-      ) {
-        throw new Error(
-          `Task ${request.taskId} is already ${request.status}; task_update requires a status transition`,
-        );
-      }
-      if (latest && latest.status !== request.status) {
         const requestedBy =
-          request.status === "skipped" && latest.expectedEffect === "mutation"
+          request.status === "skipped" && current.expectedEffect === "mutation"
             ? (await listTaskEvidence(plan.executionId, request.taskId)).some(
                 (entry) =>
                   entry.verified &&
@@ -334,20 +508,19 @@ export function createTaskUpdateTool(): AgentToolDefinition<
               ? "user"
               : plan.provider
             : plan.provider;
-        const transitionRequest = {
-          executionId: plan.executionId,
-          taskId: request.taskId,
-          toStatus: request.status,
-          reason: request.reason,
-          requestedBy,
-        } as const;
-        ledger = transitionEvidence
-          ? await planExecutionCoordinator.requestTransitionWithEvidence({
-              request: transitionRequest,
-              evidence: transitionEvidence,
-            })
-          : await planExecutionCoordinator.requestTransition(transitionRequest);
+        transitions.push({
+          request: {
+            executionId: plan.executionId,
+            taskId: request.taskId,
+            toStatus: request.status,
+            reason: request.reason,
+            requestedBy,
+          },
+          evidence,
+        });
       }
+      ledger =
+        await planExecutionCoordinator.requestTransitionBatch(transitions);
       if (ledger.status === "running" || ledger.status === "pending") {
         ledger = await planExecutionCoordinator.startNextTask(plan.executionId);
       }

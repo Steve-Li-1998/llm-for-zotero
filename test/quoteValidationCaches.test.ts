@@ -6,7 +6,7 @@ import {
   primeQuoteSourceIndexCacheForTests,
   primeQuoteValidationDecisionCacheForTests,
   resetQuoteValidationDecisionCacheForTests,
-} from "../src/modules/contextPanel/chat";
+} from "../src/modules/contextPanel/quoteValidation/caches";
 
 describe("quote validation caches", function () {
   beforeEach(function () {

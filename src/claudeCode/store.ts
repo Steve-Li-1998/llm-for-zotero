@@ -3,34 +3,23 @@ declare const Zotero: any;
 import type {
   ClaudeConversationSummary,
   ClaudeConversationKind,
-  GeneratedChatImage,
-  QuoteCitation,
 } from "../shared/types";
 import { normalizeGeneratedChatImages } from "../shared/generatedImages";
 import {
-  normalizeSelectedTextNoteContexts,
-  normalizeSelectedTextPaperContexts,
-  normalizeSelectedTextSource,
   synthesizeSelectedTextContexts,
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
-} from "../modules/contextPanel/normalizers";
-import { normalizeQuoteCitations } from "../modules/contextPanel/quoteCitations";
+} from "../services/context/normalizers";
+import { normalizeQuoteCitations } from "../services/quotes/quoteCitations";
 import type { StoredChatMessage } from "../utils/chatStore";
-import {
-  parseForcedSkillIdsJson,
-  serializeForcedSkillIds,
-} from "../shared/skillIds";
+import { serializeForcedSkillIds } from "../shared/skillIds";
 import {
   isConversationKeyFor,
   isConversationKeyForKind,
   getConversationKeyRange,
 } from "../shared/conversationKeySpace";
-import {
-  buildLatestStoredMessagesQuery,
-  storedMessageDisplayOrderSql,
-} from "../shared/conversationMessageSql";
+import { storedMessageDisplayOrderSql } from "../shared/conversationMessageSql";
 import {
   CLAUDE_HISTORY_LIMIT,
   buildDefaultClaudeGlobalConversationKey,
@@ -54,7 +43,6 @@ import {
   AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON,
   buildConversationID,
   canMigrateLegacyAmbiguousPaperRegistryScope,
-  getConversationScopeValidationDetails,
   getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
   generateConversationInstanceID,
@@ -63,19 +51,12 @@ import {
   registerConversationScope,
   repairRegisteredConversationScope,
   syncCatalogInstanceID,
-  type ConversationRegistryRow,
   type PaperContextJsonColumns,
 } from "../shared/conversationRegistry";
 import { stagePaperRestoreTargetForStartup } from "../shared/paperConversationRestore";
 import {
-  repairRecoverableCatalogMessageConversationIDs,
-  repairRecoverableMessageConversationIDs,
-} from "../shared/conversationMessageIdentityRepair";
-import {
-  deleteConversationSearchIndexRow,
   deleteConversationSearchIndexRowInTransaction,
   initConversationSearchIndexStore,
-  refreshConversationSearchIndexForConversation,
 } from "../shared/conversationSearchIndex";
 import {
   CONVERSATION_INSTANCE_ID_MIGRATION_IDS,
@@ -122,6 +103,37 @@ import {
   isConversationWriteGenerationCurrent,
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
+import {
+  normalizeCatalogTimestamp,
+  normalizeConversationKey,
+  normalizeLibraryID,
+  normalizeLimit,
+  normalizeOptionalLimit,
+  normalizePaperItemID,
+} from "../shared/conversationStore/keyNormalization";
+import { logConversationStoreWarning } from "../shared/conversationStore/diagnostics";
+import {
+  resolveRepairingMessageConversationSelector as resolveSharedRepairingMessageConversationSelector,
+  type MessageConversationSelector,
+} from "../shared/conversationStore/messageConversationSelector";
+import { getMessagePaperContextRows } from "../shared/conversationStore/messagePaperContextRows";
+import { loadStoredConversationMessages } from "../services/providers/conversationStoreMessageMapping";
+import {
+  backfillStoreCatalogConversationIDs,
+  backfillStoreCatalogConversationInstanceIDs,
+  backfillStoreCatalogConversationTimestamps,
+  repairRecoverableStoreCatalogMessageConversationIDs,
+} from "../services/providers/conversationStoreIdentityRepair";
+import {
+  filterValidStoreConversationSummaries,
+  refreshStoreConversationCatalogSummary,
+  sameStoreCatalogScope,
+  type ConversationStoreCatalogConfig,
+} from "../services/providers/conversationStoreCatalogSummary";
+import {
+  deleteStoreConversationSearchIndex,
+  refreshStoreConversationSearchIndex,
+} from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
 import { clearOwnerAttachmentRefsInTransaction } from "../utils/attachmentRefStore";
 
@@ -172,38 +184,6 @@ const CLAUDE_MESSAGE_SELECT_COLUMNS_SQL = `id,
             context_tokens AS contextTokens,
             context_window AS contextWindow`;
 
-function normalizeConversationKey(conversationKey: number): number | null {
-  if (!Number.isFinite(conversationKey)) return null;
-  const normalized = Math.floor(conversationKey);
-  return normalized > 0 ? normalized : null;
-}
-
-function normalizeLibraryID(libraryID: number): number | null {
-  if (!Number.isFinite(libraryID)) return null;
-  const normalized = Math.floor(libraryID);
-  return normalized > 0 ? normalized : null;
-}
-
-function normalizePaperItemID(paperItemID: number): number | null {
-  if (!Number.isFinite(paperItemID)) return null;
-  const normalized = Math.floor(paperItemID);
-  return normalized > 0 ? normalized : null;
-}
-
-function normalizeLimit(limit: number, fallback: number): number {
-  if (!Number.isFinite(limit)) return fallback;
-  return Math.max(1, Math.floor(limit));
-}
-
-function normalizeOptionalLimit(
-  limit: number | null | undefined,
-): number | null {
-  if (limit === null) return null;
-  if (!Number.isFinite(Number(limit))) return null;
-  const normalized = Math.floor(Number(limit));
-  return normalized > 0 ? normalized : null;
-}
-
 function isClaudeStoreConversationKey(conversationKey: number): boolean {
   return isConversationKeyFor("claude_code", conversationKey);
 }
@@ -224,12 +204,6 @@ function normalizeConversationTitleSeed(value: string): string {
     .trim();
   if (!normalized) return "";
   return normalized.slice(0, 96);
-}
-
-function normalizeCatalogTimestamp(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
-  return Math.floor(parsed);
 }
 
 function buildClaudeConversationID(params: {
@@ -293,75 +267,22 @@ async function resolveClaudeAppendIdentity(
   };
 }
 
-type MessageConversationSelector = {
-  whereSql: string;
-  params: unknown[];
-  registered?: ConversationRegistryRow | null;
+const CLAUDE_MESSAGE_SELECTOR_CONFIG = {
+  messagesTable: CLAUDE_MESSAGES_TABLE,
+  storeLabel: "Claude",
+  getPaperContextRows: getClaudeMessagePaperContextRows,
+  log: logConversationStoreWarning,
 };
-
-async function resolveMessageConversationSelector(
-  conversationKey: number,
-): Promise<MessageConversationSelector> {
-  const registered = await getRegisteredConversationScope(conversationKey);
-  const conversationID = registered?.conversationID || null;
-  return conversationID
-    ? {
-        whereSql:
-          "(conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?))",
-        params: [conversationID, conversationKey],
-        registered,
-      }
-    : {
-        whereSql: "1 = 0",
-        params: [],
-        registered,
-      };
-}
-
-function messageJoinCondition(
-  messageAlias: string,
-  conversationAlias: string,
-): string {
-  return (
-    `(${messageAlias}.conversation_id = ${conversationAlias}.conversation_id OR ((` +
-    `${messageAlias}.conversation_id IS NULL OR TRIM(${messageAlias}.conversation_id) = '') AND ` +
-    `${messageAlias}.conversation_key = ${conversationAlias}.conversation_key))`
-  );
-}
-
-function canonicalMessageConversationSelector(
-  registered: ConversationRegistryRow,
-): MessageConversationSelector {
-  return {
-    whereSql: "conversation_id = ?",
-    params: [registered.conversationID],
-    registered,
-  };
-}
 
 async function resolveRepairingMessageConversationSelector(
   conversationKey: number,
   options: { destructive?: boolean } = {},
 ): Promise<MessageConversationSelector> {
-  let selector = await resolveMessageConversationSelector(conversationKey);
-  if (!selector.registered?.conversationID) return selector;
-  const repair = await repairRecoverableMessageConversationIDs({
-    queryAsync: Zotero.DB.queryAsync.bind(Zotero.DB),
-    tableName: CLAUDE_MESSAGES_TABLE,
-    registered: selector.registered,
-    getPaperContextRows: getClaudeMessagePaperContextRows,
-    storeLabel: "Claude",
-    log: logClaudeScopeWarning,
-  });
-  if (repair.status === "refused") {
-    if (options.destructive) {
-      throw new Error(
-        `Refused destructive Claude conversation operation for ${conversationKey}: ${repair.reason || "ambiguous stale message ids found"}.`,
-      );
-    }
-    selector = canonicalMessageConversationSelector(selector.registered);
-  }
-  return selector;
+  return await resolveSharedRepairingMessageConversationSelector(
+    CLAUDE_MESSAGE_SELECTOR_CONFIG,
+    conversationKey,
+    options,
+  );
 }
 
 function remapLegacyConversationKey(
@@ -544,38 +465,20 @@ async function migrateLegacyClaudeConversationKeys(): Promise<
   return remaps;
 }
 
-function logClaudeScopeWarning(message: string): void {
-  const debug = (
-    globalThis as typeof globalThis & {
-      Zotero?: { debug?: (message: string) => void };
-    }
-  ).Zotero?.debug;
-  debug?.(`LLM: ${message}`);
-}
-
-function formatSearchIndexError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function refreshClaudeConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  try {
-    await refreshConversationSearchIndexForConversation({
-      system: "claude_code",
-      conversationKey,
-    });
-  } catch (error) {
-    logClaudeScopeWarning(
-      `Failed to refresh Claude conversation search index for ${conversationKey}: ${formatSearchIndexError(error)}`,
-    );
-  }
+  await refreshStoreConversationSearchIndex({
+    system: "claude_code",
+    storeLabel: "Claude",
+    conversationKey,
+  });
 }
 
 async function deleteClaudeConversationSearchIndex(
   conversationKey: number,
 ): Promise<void> {
-  await deleteConversationSearchIndexRow({
+  await deleteStoreConversationSearchIndex({
     system: "claude_code",
     conversationKey,
   });
@@ -629,100 +532,36 @@ async function ensureClaudeConversationCatalogColumns(
 }
 
 async function backfillClaudeConversationTimestamps(): Promise<void> {
-  const now = Date.now();
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-     SET created_at = COALESCE(
-       created_at,
-       (SELECT MIN(m.timestamp)
-        FROM ${CLAUDE_MESSAGES_TABLE} m
-        WHERE m.conversation_key = ${CLAUDE_CONVERSATIONS_TABLE}.conversation_key),
-       ?
-     )
-     WHERE created_at IS NULL`,
-    [now],
-  );
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-     SET updated_at = COALESCE(
-       updated_at,
-       (SELECT MAX(m.timestamp)
-        FROM ${CLAUDE_MESSAGES_TABLE} m
-        WHERE m.conversation_key = ${CLAUDE_CONVERSATIONS_TABLE}.conversation_key),
-       created_at,
-       ?
-     )
-     WHERE updated_at IS NULL`,
-    [now],
-  );
+  await backfillStoreCatalogConversationTimestamps(CLAUDE_STORE_CATALOG_CONFIG);
 }
 
 async function refreshClaudeConversationCatalogSummary(
   conversationKey?: number,
 ): Promise<void> {
-  const normalizedKey =
-    conversationKey === undefined
-      ? null
-      : normalizeConversationKey(conversationKey);
-  if (conversationKey !== undefined && !normalizedKey) return;
-  await repairRecoverableClaudeCatalogMessageConversationIDs(
-    normalizedKey || undefined,
-  );
-  const whereSql = normalizedKey ? "WHERE conversation_key = ?" : "";
-  const params = normalizedKey ? [normalizedKey] : [];
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-     SET first_user_title = (
-           SELECT m0.text
-           FROM ${CLAUDE_MESSAGES_TABLE} m0
-           WHERE ${messageJoinCondition("m0", CLAUDE_CONVERSATIONS_TABLE)}
-             AND m0.role = 'user'
-           ORDER BY m0.timestamp ASC, m0.id ASC
-           LIMIT 1
-         ),
-         last_activity_at = COALESCE(
-           (
-             SELECT MAX(m.timestamp)
-             FROM ${CLAUDE_MESSAGES_TABLE} m
-             WHERE ${messageJoinCondition("m", CLAUDE_CONVERSATIONS_TABLE)}
-           ),
-           updated_at,
-           created_at
-         ),
-         user_turn_count = COALESCE(
-           (
-             SELECT SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END)
-             FROM ${CLAUDE_MESSAGES_TABLE} m
-             WHERE ${messageJoinCondition("m", CLAUDE_CONVERSATIONS_TABLE)}
-           ),
-           0
-         )
-     ${whereSql}`,
-    params,
+  await refreshStoreConversationCatalogSummary(
+    CLAUDE_STORE_CATALOG_CONFIG,
+    conversationKey,
   );
 }
 
 async function getClaudeMessagePaperContextRows(
   conversationKey: number,
 ): Promise<PaperContextJsonColumns[]> {
-  return ((await Zotero.DB.queryAsync(
-    `SELECT paper_contexts_json AS paperContextsJson,
-            pdf_paper_contexts_json AS pdfPaperContextsJson,
-            full_text_paper_contexts_json AS fullTextPaperContextsJson,
-            selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
-            citation_paper_contexts_json AS citationPaperContextsJson
-     FROM ${CLAUDE_MESSAGES_TABLE}
-     WHERE conversation_key = ?
-       AND (
-         paper_contexts_json IS NOT NULL OR
-         pdf_paper_contexts_json IS NOT NULL OR
-         full_text_paper_contexts_json IS NOT NULL OR
-         selected_text_paper_contexts_json IS NOT NULL OR
-         citation_paper_contexts_json IS NOT NULL
-       )`,
-    [conversationKey],
-  )) || []) as PaperContextJsonColumns[];
+  return await getMessagePaperContextRows(
+    CLAUDE_MESSAGES_TABLE,
+    conversationKey,
+  );
 }
+
+const CLAUDE_STORE_CATALOG_CONFIG: ConversationStoreCatalogConfig = {
+  system: "claude_code",
+  storeLabel: "Claude",
+  catalogTable: CLAUDE_CONVERSATIONS_TABLE,
+  messagesTable: CLAUDE_MESSAGES_TABLE,
+  buildConversationID: buildClaudeConversationID,
+  getPaperContextRows: getClaudeMessagePaperContextRows,
+  rememberPaperConversationKey: setLastUsedClaudePaperConversationKey,
+};
 
 async function repairRecoverableClaudeCatalogMessageConversationIDs(
   conversationKey?: number,
@@ -731,116 +570,18 @@ async function repairRecoverableClaudeCatalogMessageConversationIDs(
   repaired: number;
   refused: number;
 }> {
-  const normalizedKey =
-    conversationKey === undefined
-      ? null
-      : normalizeConversationKey(conversationKey);
-  if (conversationKey !== undefined && !normalizedKey) {
-    return { checked: 0, repaired: 0, refused: 0 };
-  }
-  return await repairRecoverableCatalogMessageConversationIDs({
-    queryAsync: Zotero.DB.queryAsync.bind(Zotero.DB),
-    catalogTable: CLAUDE_CONVERSATIONS_TABLE,
-    messageTable: CLAUDE_MESSAGES_TABLE,
-    system: "claude_code",
-    kindSql: "c.kind",
-    paperItemIDSql: "c.paper_item_id",
-    getPaperContextRows: getClaudeMessagePaperContextRows,
-    storeLabel: "Claude",
-    log: logClaudeScopeWarning,
-    ...(normalizedKey
-      ? { filterSql: "c.conversation_key = ?", filterParams: [normalizedKey] }
-      : {}),
-  });
+  return await repairRecoverableStoreCatalogMessageConversationIDs(
+    CLAUDE_STORE_CATALOG_CONFIG,
+    conversationKey,
+  );
 }
 
 async function backfillClaudeConversationIDs(): Promise<void> {
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT conversation_key AS conversationKey,
-            library_id AS libraryID,
-            kind AS kind,
-            paper_item_id AS paperItemID
-     FROM ${CLAUDE_CONVERSATIONS_TABLE}`,
-  )) as
-    | Array<{
-        conversationKey?: unknown;
-        libraryID?: unknown;
-        kind?: unknown;
-        paperItemID?: unknown;
-      }>
-    | undefined;
-  for (const row of rows || []) {
-    const conversationKey = normalizeConversationKey(
-      Number(row.conversationKey),
-    );
-    const libraryID = normalizeLibraryID(Number(row.libraryID));
-    const kind =
-      row.kind === "paper" ? "paper" : row.kind === "global" ? "global" : null;
-    if (!conversationKey || !libraryID || !kind) continue;
-    const paperItemID = normalizePaperItemID(Number(row.paperItemID));
-    const conversationID = buildClaudeConversationID({
-      conversationKey,
-      kind,
-      libraryID,
-      paperItemID,
-    });
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-       SET conversation_id = ?
-       WHERE conversation_key = ?
-         AND (conversation_id IS NULL OR TRIM(conversation_id) = '')`,
-      [conversationID, conversationKey],
-    );
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_MESSAGES_TABLE}
-       SET conversation_id = ?
-       WHERE conversation_key = ?
-         AND (conversation_id IS NULL OR TRIM(conversation_id) = '')`,
-      [conversationID, conversationKey],
-    );
-  }
+  await backfillStoreCatalogConversationIDs(CLAUDE_STORE_CATALOG_CONFIG);
 }
 
 async function backfillClaudeConversationInstanceIDs(): Promise<void> {
-  await Zotero.DB.queryAsync(
-    `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-     SET conversation_instance_id = (
-       SELECT r.instance_id
-       FROM llm_for_zotero_conversation_registry r
-       WHERE r.conversation_id = ${CLAUDE_CONVERSATIONS_TABLE}.conversation_id
-         AND r.instance_id IS NOT NULL
-         AND TRIM(r.instance_id) <> ''
-       LIMIT 1
-     )
-     WHERE (conversation_instance_id IS NULL OR TRIM(conversation_instance_id) = '')
-       AND conversation_id IS NOT NULL
-       AND EXISTS (
-         SELECT 1
-         FROM llm_for_zotero_conversation_registry r
-         WHERE r.conversation_id = ${CLAUDE_CONVERSATIONS_TABLE}.conversation_id
-           AND r.instance_id IS NOT NULL
-           AND TRIM(r.instance_id) <> ''
-       )`,
-  );
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT conversation_key AS conversationKey
-     FROM ${CLAUDE_CONVERSATIONS_TABLE}
-     WHERE conversation_instance_id IS NULL
-        OR TRIM(conversation_instance_id) = ''`,
-  )) as Array<{ conversationKey?: unknown }> | undefined;
-  for (const row of rows || []) {
-    const conversationKey = normalizeConversationKey(
-      Number(row.conversationKey),
-    );
-    if (!conversationKey) continue;
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-       SET conversation_instance_id = ?
-       WHERE conversation_key = ?
-         AND (conversation_instance_id IS NULL OR TRIM(conversation_instance_id) = '')`,
-      [generateConversationInstanceID(), conversationKey],
-    );
-  }
+  await backfillStoreCatalogConversationInstanceIDs(CLAUDE_CONVERSATIONS_TABLE);
 }
 
 export async function repairClaudeConversationIdentityRegistry(
@@ -896,7 +637,7 @@ export async function repairClaudeConversationIdentityRegistry(
           },
           options,
         );
-        logClaudeScopeWarning(
+        logConversationStoreWarning(
           `Migrated Claude conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
         );
         continue;
@@ -943,7 +684,7 @@ export async function repairClaudeConversationIdentityRegistry(
           },
           options,
         );
-        logClaudeScopeWarning(
+        logConversationStoreWarning(
           `Repaired Claude conversation ${summary.conversationKey} to paper ${inferredPaperItemID} based on stored paper contexts.`,
         );
         continue;
@@ -1528,362 +1269,13 @@ export async function loadClaudeConversation(
   const selector =
     await resolveRepairingMessageConversationSelector(normalizedKey);
   const normalizedLimit = normalizeLimit(limit, CLAUDE_HISTORY_LIMIT);
-  const rows = (await Zotero.DB.queryAsync(
-    buildLatestStoredMessagesQuery({
-      tableName: CLAUDE_MESSAGES_TABLE,
-      selectColumnsSql: CLAUDE_MESSAGE_SELECT_COLUMNS_SQL,
-      whereSql: selector.whereSql,
-    }),
-    [...selector.params, normalizedLimit],
-  )) as Array<Record<string, unknown>> | undefined;
-
-  if (!rows?.length) return [];
-
-  const messages: StoredChatMessage[] = [];
-  for (const row of rows) {
-    const role =
-      row.role === "assistant"
-        ? "assistant"
-        : row.role === "user"
-          ? "user"
-          : null;
-    if (!role) continue;
-    const selectedTexts = (() => {
-      if (typeof row.selectedTextsJson !== "string" || !row.selectedTextsJson) {
-        return typeof row.selectedText === "string" && row.selectedText.trim()
-          ? [row.selectedText.trim()]
-          : [];
-      }
-      try {
-        const parsed = JSON.parse(row.selectedTextsJson) as unknown;
-        return Array.isArray(parsed)
-          ? parsed.filter(
-              (entry): entry is string =>
-                typeof entry === "string" && Boolean(entry.trim()),
-            )
-          : [];
-      } catch {
-        return [];
-      }
-    })();
-    const selectedTextSources = (() => {
-      if (
-        typeof row.selectedTextSourcesJson !== "string" ||
-        !row.selectedTextSourcesJson
-      ) {
-        return undefined;
-      }
-      try {
-        const parsed = JSON.parse(row.selectedTextSourcesJson) as unknown;
-        return Array.isArray(parsed)
-          ? parsed.map((entry) => normalizeSelectedTextSource(entry))
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedTextPaperContexts = (() => {
-      if (
-        typeof row.selectedTextPaperContextsJson !== "string" ||
-        !row.selectedTextPaperContextsJson
-      ) {
-        return undefined;
-      }
-      try {
-        const parsed = JSON.parse(row.selectedTextPaperContextsJson) as unknown;
-        const normalized = normalizeSelectedTextPaperContexts(
-          parsed,
-          selectedTexts.length,
-        );
-        return normalized.some((entry) => Boolean(entry))
-          ? normalized
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedTextNoteContexts = (() => {
-      if (
-        typeof row.selectedTextNoteContextsJson !== "string" ||
-        !row.selectedTextNoteContextsJson
-      ) {
-        return undefined;
-      }
-      try {
-        const parsed = JSON.parse(row.selectedTextNoteContextsJson) as unknown;
-        const normalized = normalizeSelectedTextNoteContexts(
-          parsed,
-          selectedTexts.length,
-        );
-        return normalized.some((entry) => Boolean(entry))
-          ? normalized
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedTextContexts = synthesizeSelectedTextContexts({
-      selectedTextContexts: (() => {
-        if (
-          typeof row.selectedTextContextsJson !== "string" ||
-          !row.selectedTextContextsJson
-        ) {
-          return undefined;
-        }
-        try {
-          return JSON.parse(row.selectedTextContextsJson) as unknown;
-        } catch {
-          return undefined;
-        }
-      })(),
-      selectedTexts,
-      legacySelectedText: row.selectedText,
-      selectedTextSources,
-      selectedTextPaperContexts,
-      selectedTextNoteContexts,
-    });
-    const paperContexts = (() => {
-      if (typeof row.paperContextsJson !== "string" || !row.paperContextsJson)
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.paperContextsJson) as unknown;
-        const normalized = normalizePaperContextRefs(parsed);
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const pdfPaperContexts = (() => {
-      if (
-        typeof row.pdfPaperContextsJson !== "string" ||
-        !row.pdfPaperContextsJson
-      )
-        return undefined;
-      try {
-        const normalized = normalizePaperContextRefs(
-          JSON.parse(row.pdfPaperContextsJson) as unknown,
-        ).map((context) => ({
-          ...context,
-          contentSourceMode: "pdf" as const,
-        }));
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const fullTextPaperContexts = (() => {
-      if (
-        typeof row.fullTextPaperContextsJson !== "string" ||
-        !row.fullTextPaperContextsJson
-      )
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.fullTextPaperContextsJson) as unknown;
-        const normalized = normalizePaperContextRefs(parsed);
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const citationPaperContexts = (() => {
-      if (
-        typeof row.citationPaperContextsJson !== "string" ||
-        !row.citationPaperContextsJson
-      )
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.citationPaperContextsJson) as unknown;
-        const normalized = normalizePaperContextRefs(parsed);
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const quoteCitations: QuoteCitation[] | undefined = (() => {
-      if (typeof row.quoteCitationsJson !== "string" || !row.quoteCitationsJson)
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.quoteCitationsJson) as unknown;
-        const normalized = normalizeQuoteCitations(parsed);
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedCollectionContexts = (() => {
-      if (
-        typeof row.collectionContextsJson !== "string" ||
-        !row.collectionContextsJson
-      )
-        return undefined;
-      try {
-        const normalized = normalizeCollectionContextRefs(
-          JSON.parse(row.collectionContextsJson) as unknown,
-        );
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const selectedTagContexts = (() => {
-      if (typeof row.tagContextsJson !== "string" || !row.tagContextsJson)
-        return undefined;
-      try {
-        const normalized = normalizeTagContextRefs(
-          JSON.parse(row.tagContextsJson) as unknown,
-        );
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const screenshotImages = (() => {
-      if (typeof row.screenshotImages !== "string" || !row.screenshotImages)
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.screenshotImages) as unknown;
-        const normalized = Array.isArray(parsed)
-          ? parsed.filter(
-              (entry): entry is string =>
-                typeof entry === "string" && Boolean(entry.trim()),
-            )
-          : [];
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const attachments = (() => {
-      if (typeof row.attachmentsJson !== "string" || !row.attachmentsJson)
-        return undefined;
-      try {
-        const parsed = JSON.parse(row.attachmentsJson) as unknown;
-        const normalized = Array.isArray(parsed)
-          ? parsed.filter(
-              (
-                entry,
-              ): entry is NonNullable<
-                StoredChatMessage["attachments"]
-              >[number] =>
-                Boolean(entry) &&
-                typeof entry === "object" &&
-                typeof (entry as { id?: unknown }).id === "string" &&
-                Boolean(String((entry as { id?: string }).id || "").trim()),
-            )
-          : [];
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const generatedImages: GeneratedChatImage[] | undefined = (() => {
-      if (
-        typeof row.generatedImagesJson !== "string" ||
-        !row.generatedImagesJson
-      )
-        return undefined;
-      try {
-        const normalized = normalizeGeneratedChatImages(
-          JSON.parse(row.generatedImagesJson) as unknown,
-        );
-        return normalized.length ? normalized : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
-    const forcedSkillIds = parseForcedSkillIdsJson(row.forcedSkillIdsJson);
-
-    messages.push({
-      id:
-        Number.isFinite(Number(row.id)) && Number(row.id) > 0
-          ? Math.floor(Number(row.id))
-          : undefined,
-      role,
-      text: typeof row.text === "string" ? row.text : "",
-      timestamp: Number.isFinite(Number(row.timestamp))
-        ? Math.floor(Number(row.timestamp))
-        : Date.now(),
-      runMode:
-        row.runMode === "agent"
-          ? "agent"
-          : row.runMode === "chat"
-            ? "chat"
-            : undefined,
-      agentRunId:
-        typeof row.agentRunId === "string" ? row.agentRunId : undefined,
-      documentId:
-        typeof row.documentId === "string" ? row.documentId : undefined,
-      selectedText: selectedTextContexts[0]?.text,
-      selectedTextContexts: selectedTextContexts.length
-        ? selectedTextContexts
-        : undefined,
-      selectedTexts: selectedTextContexts.length
-        ? selectedTextContexts.map((context) => context.text)
-        : undefined,
-      selectedTextSources: selectedTextContexts.length
-        ? selectedTextContexts.map((context) => context.source)
-        : undefined,
-      selectedTextPaperContexts: selectedTextContexts.length
-        ? selectedTextContexts.map((context) => context.paperContext)
-        : undefined,
-      selectedTextNoteContexts: selectedTextContexts.length
-        ? selectedTextContexts.map((context) => context.noteContext)
-        : undefined,
-      forcedSkillIds:
-        role === "user" && forcedSkillIds.length ? forcedSkillIds : undefined,
-      paperContexts,
-      pdfPaperContexts,
-      fullTextPaperContexts,
-      citationPaperContexts,
-      quoteCitations,
-      selectedCollectionContexts,
-      selectedTagContexts,
-      screenshotImages,
-      attachments,
-      generatedImages,
-      modelName: typeof row.modelName === "string" ? row.modelName : undefined,
-      modelEntryId:
-        typeof row.modelEntryId === "string" ? row.modelEntryId : undefined,
-      modelProviderLabel:
-        typeof row.modelProviderLabel === "string"
-          ? row.modelProviderLabel
-          : undefined,
-      interrupted: Number(row.interrupted) === 1 ? true : undefined,
-      webchatRunState:
-        row.webchatRunState === "done" ||
-        row.webchatRunState === "incomplete" ||
-        row.webchatRunState === "error"
-          ? row.webchatRunState
-          : undefined,
-      webchatCompletionReason:
-        row.webchatCompletionReason === "settled" ||
-        row.webchatCompletionReason === "forced_cancel" ||
-        row.webchatCompletionReason === "timeout" ||
-        row.webchatCompletionReason === "error"
-          ? row.webchatCompletionReason
-          : null,
-      reasoningSummary:
-        typeof row.reasoningSummary === "string"
-          ? row.reasoningSummary
-          : undefined,
-      reasoningDetails:
-        typeof row.reasoningDetails === "string"
-          ? row.reasoningDetails
-          : undefined,
-      compactMarker: Boolean(row.compactMarker),
-      contextTokens:
-        Number.isFinite(Number(row.contextTokens)) &&
-        Number(row.contextTokens) > 0
-          ? Math.floor(Number(row.contextTokens))
-          : undefined,
-      contextWindow:
-        Number.isFinite(Number(row.contextWindow)) &&
-        Number(row.contextWindow) > 0
-          ? Math.floor(Number(row.contextWindow))
-          : undefined,
-    });
-  }
-  return messages;
+  return await loadStoredConversationMessages({
+    messagesTable: CLAUDE_MESSAGES_TABLE,
+    selectColumnsSql: CLAUDE_MESSAGE_SELECT_COLUMNS_SQL,
+    whereSql: selector.whereSql,
+    params: selector.params,
+    limit: normalizedLimit,
+  });
 }
 
 export async function clearClaudeConversation(
@@ -2451,163 +1843,18 @@ function sameClaudeCatalogScope(
     paperItemID?: number | null;
   },
 ): boolean {
-  const requestedPaperItemID =
-    params.kind === "paper"
-      ? normalizePaperItemID(Number(params.paperItemID))
-      : null;
-  return (
-    existing.libraryID === params.libraryID &&
-    existing.kind === params.kind &&
-    (existing.paperItemID || null) === (requestedPaperItemID || null)
-  );
+  return sameStoreCatalogScope(existing, params);
 }
 
 async function filterValidClaudeConversationSummaries(
   summaries: ClaudeConversationSummary[],
   expectedPaperItemID?: number | null,
 ): Promise<ClaudeConversationSummary[]> {
-  const filtered: ClaudeConversationSummary[] = [];
-  for (const summary of summaries) {
-    const validSummary =
-      await validateOrRepairClaudeConversationSummary(summary);
-    if (!validSummary) continue;
-    const normalizedExpectedPaperItemID = normalizePaperItemID(
-      Number(expectedPaperItemID),
-    );
-    if (
-      normalizedExpectedPaperItemID &&
-      validSummary.kind === "paper" &&
-      validSummary.paperItemID !== normalizedExpectedPaperItemID
-    ) {
-      continue;
-    }
-    filtered.push(validSummary);
-  }
-  return filtered;
-}
-
-async function validateOrRepairClaudeConversationSummary(
-  summary: ClaudeConversationSummary,
-): Promise<ClaudeConversationSummary | null> {
-  const validation = await getConversationScopeValidationDetails({
-    conversationID: summary.conversationID,
-    conversationKey: summary.conversationKey,
-    system: "claude_code",
-    kind: summary.kind,
-    libraryID: summary.libraryID,
-    paperItemID: summary.paperItemID,
-  });
-  if (validation.valid) return summary;
-
-  const registered =
-    validation.registered ||
-    (await getRegisteredConversationScope(summary.conversationKey));
-  if (
-    canMigrateLegacyAmbiguousPaperRegistryScope(registered, {
-      system: "claude_code",
-      kind: summary.kind,
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-    })
-  ) {
-    await repairRegisteredConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "claude_code",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    logClaudeScopeWarning(
-      `Migrated Claude conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
-    );
-    return summary;
-  }
-  if (registered) return null;
-
-  if (summary.kind === "global") {
-    const registeredMissingGlobal = await registerConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "claude_code",
-      kind: summary.kind,
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    return registeredMissingGlobal ? summary : null;
-  }
-
-  if (summary.paperItemID) {
-    const registeredMissingPaper = await registerConversationScope({
-      conversationID: summary.conversationID,
-      conversationKey: summary.conversationKey,
-      system: "claude_code",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: summary.paperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    return registeredMissingPaper ? summary : null;
-  }
-
-  const evidence = getPaperContextOwnershipEvidenceFromRows(
-    await getClaudeMessagePaperContextRows(summary.conversationKey),
+  return await filterValidStoreConversationSummaries(
+    CLAUDE_STORE_CATALOG_CONFIG,
+    summaries,
+    expectedPaperItemID,
   );
-  const inferredPaperItemID = evidence.singlePaperItemID;
-  if (inferredPaperItemID) {
-    const repairedConversationID = buildClaudeConversationID({
-      conversationKey: summary.conversationKey,
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: inferredPaperItemID,
-    });
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_CONVERSATIONS_TABLE}
-       SET conversation_id = ?,
-           paper_item_id = ?
-       WHERE conversation_key = ?`,
-      [repairedConversationID, inferredPaperItemID, summary.conversationKey],
-    );
-    await Zotero.DB.queryAsync(
-      `UPDATE ${CLAUDE_MESSAGES_TABLE}
-       SET conversation_id = ?
-       WHERE conversation_key = ?`,
-      [repairedConversationID, summary.conversationKey],
-    );
-    setLastUsedClaudePaperConversationKey(
-      summary.libraryID,
-      inferredPaperItemID,
-      summary.conversationKey,
-    );
-    await repairRegisteredConversationScope({
-      conversationKey: summary.conversationKey,
-      system: "claude_code",
-      kind: "paper",
-      libraryID: summary.libraryID,
-      paperItemID: inferredPaperItemID,
-      createdAt: summary.createdAt,
-      updatedAt: summary.updatedAt,
-      title: summary.title,
-    });
-    logClaudeScopeWarning(
-      `Repaired Claude conversation ${summary.conversationKey} to paper ${inferredPaperItemID} while loading history.`,
-    );
-    return {
-      ...summary,
-      conversationID: repairedConversationID,
-      paperItemID: inferredPaperItemID,
-    };
-  }
-
-  return null;
 }
 
 export async function getClaudeConversationSummary(
@@ -2693,7 +1940,7 @@ export async function upsertClaudeConversationSummary(params: {
       paperItemID,
     })
   ) {
-    logClaudeScopeWarning(
+    logConversationStoreWarning(
       `Refused to reassign Claude conversation ${conversationKey} from ${existing.kind}/${existing.libraryID}/${existing.paperItemID || ""} to ${params.kind}/${libraryID}/${paperItemID || ""}.`,
     );
     return false;
@@ -2720,7 +1967,7 @@ export async function upsertClaudeConversationSummary(params: {
       issuedAt: createdAt,
     });
   } catch (error) {
-    logClaudeScopeWarning(String(error));
+    logConversationStoreWarning(String(error));
     return false;
   }
   const registryOk = await registerConversationScope(

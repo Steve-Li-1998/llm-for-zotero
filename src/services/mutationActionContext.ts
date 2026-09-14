@@ -14,11 +14,18 @@ export function getActiveMutationActionId(): string | null {
  * last. Keeping this narrow global queue around the forward call, post-image
  * capture, and notifier flush makes attribution deterministic without
  * serializing read-only planning or confirmation UI.
+ *
+ * The window is reentrant by owner. An action that already holds it owns
+ * every write inside it, so a nested acquire under the same action id runs
+ * inline rather than waiting on itself, while a different owner still
+ * queues. Only a named owner is reentrant: an unowned acquire (`null`) has
+ * no identity to match and queues like any other stranger.
  */
 export async function withActiveMutationAction<T>(
   actionId: string | null,
   task: () => Promise<T>,
 ): Promise<T> {
+  if (actionId !== null && actionId === activeActionId) return task();
   const predecessor = mutationTail;
   let release!: () => void;
   mutationTail = new Promise<void>((resolve) => {

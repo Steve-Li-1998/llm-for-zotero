@@ -24,14 +24,9 @@ describe("paper context summary clear affordance", function () {
       "src/modules/contextPanel/setupHandlers/controllers/composePreviewInteractionController.ts",
     );
     const buildUi = source("src/modules/contextPanel/buildUI.ts");
-    const setupHandlers = source("src/modules/contextPanel/setupHandlers.ts");
 
     assert.include(composeController, ".llm-paper-context-summary-clear");
     assert.include(composeController, "clearAllContext();");
-    assert.notInclude(composeController, "attachContextBarClearMenuController");
     assert.notInclude(buildUi, "llm-context-bar-menu");
-    assert.notInclude(buildUi, "llm-context-bar-clear");
-    assert.notInclude(setupHandlers, "contextBarMenu");
-    assert.notInclude(setupHandlers, "contextBarClearBtn");
   });
 });

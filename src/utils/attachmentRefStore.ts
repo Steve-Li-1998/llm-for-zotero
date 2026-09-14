@@ -2,7 +2,7 @@ import {
   ATTACHMENT_BLOBS_TABLE,
   extractManagedBlobHash,
   removeAttachmentFile,
-} from "../modules/contextPanel/attachmentStorage";
+} from "../services/attachmentStorage";
 import { fileUrlToPath } from "./pathFileUrl";
 import {
   installConversationKeyLedgerAgentTriggers,

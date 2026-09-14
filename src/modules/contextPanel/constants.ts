@@ -20,17 +20,6 @@ export {
 
 export const PANE_ID = "llm-context-panel";
 export const PREFERENCES_PANE_ID = `${config.addonRef}-preferences`;
-export const CHUNK_TARGET_LENGTH = 2000;
-export const CHUNK_OVERLAP = 200;
-export const EMBEDDING_BATCH_SIZE = 16;
-export const RRF_K = 60;
-export const RETRIEVAL_TOP_K_PER_PAPER = 24;
-export const RETRIEVAL_MMR_LAMBDA = 0.7;
-export const RETRIEVAL_MIN_ACTIVE_PAPER_CHUNKS = 2;
-export const RETRIEVAL_MIN_OTHER_PAPER_CHUNKS = 1;
-export const PAPER_FOLLOWUP_RETRIEVAL_MIN_CHUNKS = 2;
-export const PAPER_FOLLOWUP_RETRIEVAL_MAX_CHUNKS = 5;
-export const COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS = 10;
 export const PERSISTED_HISTORY_LIMIT = 200;
 export const AUTO_SCROLL_BOTTOM_THRESHOLD = 1;
 export const FONT_SCALE_DEFAULT_PERCENT = 120;
@@ -53,7 +42,6 @@ export const MAX_SELECTED_TEXT_CONTEXTS = 5;
 export const MAX_EDITABLE_SHORTCUTS = 20;
 export const MAX_SELECTED_IMAGES = 50;
 export const MAX_UPLOAD_PDF_SIZE_BYTES = 50 * 1024 * 1024;
-export const CHAT_ATTACHMENTS_DIR_NAME = "chat-attachments";
 export const PAPER_CONVERSATION_KEY_BASE = UPSTREAM_PAPER_CONVERSATION_KEY_BASE;
 export const GLOBAL_CONVERSATION_KEY_BASE =
   UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE;
@@ -107,93 +95,6 @@ export const BUILTIN_SHORTCUT_FILES = [
   { id: "limitations", label: "Limitations", file: "limitations.txt" },
   { id: "mermaid-diagram", label: "Diagram", file: "mermaid-diagram.txt" },
 ] as const;
-
-export const STOPWORDS = new Set([
-  "an",
-  "as",
-  "at",
-  "by",
-  "do",
-  "he",
-  "if",
-  "in",
-  "is",
-  "it",
-  "me",
-  "my",
-  "no",
-  "of",
-  "on",
-  "or",
-  "so",
-  "to",
-  "up",
-  "we",
-  "al",
-  "and",
-  "are",
-  "the",
-  "for",
-  "but",
-  "not",
-  "you",
-  "has",
-  "had",
-  "was",
-  "its",
-  "can",
-  "may",
-  "per",
-  "via",
-  "use",
-  "who",
-  "how",
-  "why",
-  "all",
-  "did",
-  "get",
-  "got",
-  "let",
-  "our",
-  "out",
-  "she",
-  "too",
-  "yet",
-  "about",
-  "also",
-  "been",
-  "being",
-  "between",
-  "could",
-  "from",
-  "have",
-  "into",
-  "might",
-  "over",
-  "such",
-  "than",
-  "that",
-  "them",
-  "then",
-  "their",
-  "they",
-  "this",
-  "under",
-  "used",
-  "using",
-  "were",
-  "what",
-  "when",
-  "where",
-  "which",
-  "whom",
-  "will",
-  "with",
-  "within",
-  "would",
-  "your",
-  "et",
-]);
 
 export type ModelProfileKey =
   | "primary"

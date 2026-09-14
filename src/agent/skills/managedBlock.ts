@@ -51,26 +51,113 @@ export function spliceManagedBlock(
 }
 
 /**
- * Prompt banner for skills that carry user customizations after the managed
- * block. Returns the banner when non-whitespace content follows the managed
- * block's END marker (the first one, matching extractManagedBlock and the
- * upgrade splice), else null.
+ * Prompt banner for skills that carry user customizations outside the managed
+ * block. When a shipped baseline is available, this detects changes on both
+ * sides of the managed section. Without a baseline it retains after-block
+ * detection for existing callers.
  *
- * User customizations are the user's own instructions and must win over the
- * shipped defaults, but they sit at the bottom of a long skill file where
- * models tend to under-weight them. Every prompt path that injects
+ * User customizations are the user's own preferences, but cannot override the
+ * current request or grant effects. Every prompt path that injects
  * `skill.instruction` should surface this banner next to the skill header.
+ */
+export type SkillCustomizationNoticeOptions = {
+  source?: "system" | "customized" | "personal";
+  /** The current shipped body for a built-in skill, when one exists. */
+  shippedInstruction?: string;
+};
+
+function customizationLocations(
+  instruction: string,
+  shippedInstruction: string,
+): {
+  locations: Array<"before" | "after">;
+  managedSectionChanged: boolean;
+} | null {
+  const current = extractManagedBlock(instruction);
+  const shipped = extractManagedBlock(shippedInstruction);
+  if (current.block === null || shipped.block === null) return null;
+  const locations: Array<"before" | "after"> = [];
+  if (current.before.trim() !== shipped.before.trim()) locations.push("before");
+  if (current.after.trim() !== shipped.after.trim()) locations.push("after");
+  return {
+    locations,
+    managedSectionChanged: current.block !== shipped.block,
+  };
+}
+
+function customizationLocationText(
+  locations: ReadonlyArray<"before" | "after">,
+): string {
+  return locations.length === 2
+    ? "before and after the managed section"
+    : `${locations[0]} the managed section`;
+}
+
+/**
+ * Explain which loaded instructions are user-controlled without treating a
+ * skill as permission or allowing it to override the current request.
+ *
+ * Passing the shipped instruction makes detection exact for both sides of a
+ * managed block. Callers without that baseline retain the legacy after-block
+ * detection behavior.
  */
 export function getSkillCustomizationNotice(
   instruction: string,
+  options: SkillCustomizationNoticeOptions = {},
 ): string | null {
+  if (options.source === "system") return null;
+  if (options.source === "personal") {
+    return (
+      "NOTE: This is a PERSONAL SKILL. Its entire instruction is user-authored. " +
+      "Use these preferences when relevant, while following the current request " +
+      "and host permission policy."
+    );
+  }
+
+  if (options.shippedInstruction !== undefined) {
+    const comparison = customizationLocations(
+      instruction,
+      options.shippedInstruction,
+    );
+    if (!comparison || comparison.managedSectionChanged) {
+      if (options.source !== "customized") return null;
+      return (
+        "NOTE: This built-in skill is CUSTOMIZED, but its user-owned sections " +
+        "could not be separated safely from the shipped defaults. Preserve and " +
+        "apply the entire loaded instruction as potentially user-authored " +
+        "guidance, while following the current request and host permission policy."
+      );
+    }
+    if (!comparison.locations.length) {
+      return options.source === "customized"
+        ? "NOTE: This built-in skill is marked CUSTOMIZED. Preserve the " +
+            "entire loaded instruction as potentially user-authored guidance, " +
+            "while following the current request and host permission policy."
+        : null;
+    }
+    return (
+      `NOTE: This skill contains USER CUSTOMIZATIONS ${customizationLocationText(comparison.locations)}. ` +
+      "Use these preferences when relevant, while following the current request " +
+      "and host permission policy."
+    );
+  }
+
   const { block, after } = extractManagedBlock(instruction);
-  if (block === null || !after.trim()) return null;
-  return (
-    "NOTE: This skill file contains USER CUSTOMIZATIONS after the managed " +
-    "section. They are authoritative and OVERRIDE any conflicting defaults " +
-    "above them. Apply them absolutely."
-  );
+  if (block !== null && after.trim()) {
+    return (
+      "NOTE: This skill contains USER CUSTOMIZATIONS after the managed section. " +
+      "Use these preferences when relevant, while following the current request " +
+      "and host permission policy."
+    );
+  }
+  if (options.source === "customized") {
+    return (
+      "NOTE: This built-in skill is CUSTOMIZED. Preserve the entire loaded " +
+      "instruction as potentially user-authored guidance, while following the " +
+      "current request and host permission policy."
+    );
+  }
+  return null;
 }
 
 /** Simple djb2 hash — fast, good distribution, not crypto. */

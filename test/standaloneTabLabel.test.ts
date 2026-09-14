@@ -2,7 +2,7 @@ import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import { resolveStandalonePaperTabLabel } from "../src/modules/contextPanel/standaloneTabLabel";
 import { resolveActiveNoteSession } from "../src/modules/contextPanel/portalScope";
-import { createNoteConversationItem } from "../src/modules/contextPanel/noteEditing/conversationItem";
+import { createNoteConversationItem } from "../src/services/notes/conversationItem";
 import { t } from "../src/utils/i18n";
 
 describe("standaloneTabLabel", function () {

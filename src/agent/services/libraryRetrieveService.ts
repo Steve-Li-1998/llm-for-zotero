@@ -2,24 +2,24 @@ import {
   buildChunkIndex,
   buildPaperRetrievalCandidates,
   scoreChunkBM25,
-} from "../../modules/contextPanel/pdfContext";
+} from "../../services/paperContent/pdfContext";
 import {
   buildRetrievalQueryPlan,
   generateRetrievalProbeReformulation,
   resolveRetrievalQueryPlan,
   RETRIEVAL_QUERY_VARIANT_HARD_LIMIT,
   type RetrievalQueryPlan,
-} from "../../modules/contextPanel/retrievalQueryPlan";
+} from "../../services/retrieval/retrievalQueryPlan";
 import {
   extractCjkKeywordProbes,
   isCjkDominantText,
   stripTerminalPunctuation,
-} from "../../modules/contextPanel/retrievalTokenizer";
+} from "../../services/retrieval/retrievalTokenizer";
 import type {
   PaperContextCandidate,
   PdfContext,
   PdfChunkKind,
-} from "../../modules/contextPanel/types";
+} from "../../services/paperContent/types";
 import type { AgentRuntimeRequest } from "../types";
 import { resolveResearchPolicy } from "../research/policy";
 import { getTurnPaperScopeFromRequest } from "../context/requestTurnPaperScope";
@@ -47,11 +47,11 @@ import { triageCandidatesWithModel } from "./libraryRetrieveTriage";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "../../modules/contextPanel/paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   buildQuoteCitation,
   mergeQuoteCitations,
-} from "../../modules/contextPanel/quoteCitations";
+} from "../../services/quotes/quoteCitations";
 import type {
   EditableArticleMetadataSnapshot,
   LibraryItemTarget,

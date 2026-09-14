@@ -27,6 +27,17 @@ function message(
 }
 
 describe("conversation turn navigator", function () {
+  it("reserves a 25px message inset when the navigator is visible", function () {
+    const css = readFileSync(
+      resolve(here, "../addon/content/zoteroPane.css"),
+      "utf8",
+    );
+    assert.match(
+      css,
+      /\.llm-chat-shell\.llm-turn-navigator-visible \.llm-messages\s*\{\s*padding-left: 25px;/,
+    );
+  });
+
   it("pairs a query with the first display answer before the next query", function () {
     const messages: Message[] = [
       message("user", "First question", 10),

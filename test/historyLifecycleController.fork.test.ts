@@ -1,7 +1,7 @@
 import {
   createNoteConversationItem,
   getNoteConversation,
-} from "../src/modules/contextPanel/noteEditing/conversationItem";
+} from "../src/services/notes/conversationItem";
 import { getConversationKey } from "../src/modules/contextPanel/conversationIdentity";
 import {
   selectedPaperContextCache,
@@ -168,6 +168,9 @@ class FakeElement {
 
   querySelector(): FakeElement | null {
     return null;
+  }
+  querySelectorAll(): FakeElement[] {
+    return [];
   }
 
   closest(): FakeElement | null {

@@ -1,7 +1,7 @@
 /**
  * Agent Skills — file-driven guidance instructions.
  *
- * Each skill is a native Agent Skill `SKILL.md` file with a semantic
+ * Each skill is a native Agent Skill `SKILL.md` file with a concise
  * description, deterministic context requirements, and a body instruction.
  *
  * Built-in skills are bundled at compile time and copied to the user's
@@ -58,6 +58,18 @@ export type {
   SkillRoutingResolution,
   SkillDirectiveTextResolution,
 } from "./routing";
+export {
+  buildSkillInventory,
+  fingerprintSkillInstruction,
+  loadSkill,
+} from "./progressiveLoading";
+export type {
+  LoadedSkill,
+  LoadedSkillRecord,
+  SkillInventoryEntry,
+} from "./progressiveLoading";
+export { resolvePinnedPlanSkills } from "./planBindings";
+export type { PlanSkillBindingResolution } from "./planBindings";
 
 /**
  * Built-in skill files bundled at compile time.
@@ -91,17 +103,24 @@ export function getBuiltinSkillInstruction(
   return parseSkill(raw).instruction;
 }
 
+/** Return the shipped instruction for a built-in skill ID. */
+export function getBuiltinSkillInstructionById(
+  skillId: string,
+): string | undefined {
+  for (const raw of Object.values(BUILTIN_SKILL_FILES)) {
+    const skill = parseSkill(raw);
+    if (skill.id === skillId) return skill.instruction;
+  }
+  return undefined;
+}
+
 /**
- * Returns the IDs of all skills that should activate for the given request.
- * Called once per user turn (NOT per model inference inside the agent loop).
- * The result is (a) fed into messageBuilder to filter which skill
- * instructions get injected into current-turn guidance, and (b) emitted as
- * trace events.
+ * Resolves explicit and stored skill bindings for legacy Plan artifacts.
+ * Fresh ordinary turns use forced skills and `load_skill` instead.
  *
  * Sources of activation, unioned:
  *   1. `forcedSkillIds` — explicit user selection from the slash menu.
- *   2. Validated semantic router output passed in via `classifiedIds`.
- * Missing router output intentionally activates no automatic skills.
+ *   2. A validated stored routing record passed in via `classifiedIds`.
  */
 export function getMatchedSkillIds(
   request: SkillRoutingRequest &

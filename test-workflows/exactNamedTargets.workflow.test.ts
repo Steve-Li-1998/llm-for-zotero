@@ -1,10 +1,5 @@
-import {
-  semanticContractFixture,
-  classifiedFixture,
-  semanticResponseFixture,
-} from "../test/helpers/semanticIntent";
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
-import { detectTurnIntent } from "../src/agent/model/semanticIntentService";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
@@ -14,11 +9,37 @@ import {
   setOriginalAgentPermissionMode,
 } from "../src/agent/originalAgentPermissionMode";
 import { resolvedAgentRequest } from "../test/helpers/resolvedAgentRequest";
-import type { AgentActionIntent, AgentToolContext } from "../src/agent/types";
+import type {
+  AgentExecutionContext,
+  AgentToolContext,
+} from "../src/agent/types";
+
+function directExecutionContext(
+  conversationKey: number,
+  libraryID: number,
+  executionId: string,
+): AgentExecutionContext {
+  return {
+    version: 1,
+    executionId,
+    conversationKey,
+    conversationGeneration: 0,
+    chatLibraryID: libraryID,
+    permissionOwner: "original_agent",
+    workspaceSnapshot: {
+      selectedPapers: [],
+      selectedCollections: [],
+    },
+    configuredAccess: {
+      libraryIDs: [libraryID],
+      outputDirectories: [],
+    },
+  };
+}
 
 describe("workflow: exact named library targets", function () {
   this.timeout(60000);
-  it("creates and populates two future destinations from one frozen request without confirmation", async function () {
+  it("creates and populates two future destinations through direct concrete calls", async function () {
     const originalMode = getOriginalAgentPermissionMode();
     const libraryID = Zotero.Libraries.userLibraryID;
     const parent = new Zotero.Collection();
@@ -42,53 +63,23 @@ describe("workflow: exact named library targets", function () {
         await item.saveTx();
         items.push(item);
       }
-      const intents: AgentActionIntent[] = names.flatMap((name, index) => [
-        {
-          capability: "zotero.collections",
-          operation: "create_collection",
-          proofDomain: "zotero_state",
-          coverage: "one",
-          targetKind: "items",
-          parameters: { collectionName: name, parentCollectionId: parent.id },
-        },
-        {
-          capability: "zotero.collections",
-          operation: "move_to_collection",
-          proofDomain: "zotero_state",
-          coverage: "some",
-          targetKind: "papers",
-          targetSelectors: [items[index].id, items[2].id].map((value) => ({
-            kind: "item_id",
-            value,
-          })),
-          scopeRole: "destination",
-          scope: {
-            kind: "collection",
-            path: `${parent.name}/${name}`,
-            includeDescendants: false,
-          },
-        },
-      ]);
       const request = resolvedAgentRequest({
         conversationKey: items[0].id,
         mode: "agent",
         conversationKind: "library",
         libraryID,
         userText: `Create Geometry and Memory under "${parent.name}" (${parent.id}). Add existing papers ${items[0].id} and ${items[2].id} to Geometry, and ${items[1].id} and ${items[2].id} to Memory. Preserve every pre-existing membership and tag. Do not create any papers or notes.`,
-        classifiedIntent: classifiedFixture({
-          retrievalIntent: "none",
-          wantedSections: [],
-          writeDisposition: "required",
-          actionInterpretationSource: "semantic",
-          actionIntents: intents,
-        }),
+        executionContext: directExecutionContext(
+          items[0].id,
+          libraryID,
+          `direct-create-file:${Date.now()}`,
+        ),
       });
-      const contracts = new ActionContractService(new ZoteroGateway());
-      request.actionContract = await contracts.createContract(request);
-      request.actionProgress = contracts.createProgress(request.actionContract);
       await initAgentChangeJournal();
       setOriginalAgentPermissionMode("auto");
-      const registry = new AgentToolRegistry(contracts);
+      const registry = new AgentToolRegistry(
+        new ActionContractService(new ZoteroGateway()),
+      );
       for (const name of ["collection_update", "library_update"])
         registry.register(
           (Zotero as any).LLMForZotero.api.agent.getToolDefinition(name),
@@ -98,6 +89,7 @@ describe("workflow: exact named library targets", function () {
         item: null,
         modelName: "workflow",
         currentAnswerText: "",
+        runId: request.executionContext!.executionId,
       };
       const execute = async (name: string, args: Record<string, unknown>) => {
         const execution = await registry.prepareExecution(
@@ -111,10 +103,9 @@ describe("workflow: exact named library targets", function () {
           "clear filing runs without approval",
         );
         if (execution.kind !== "result") throw new Error("Unexpected review");
-        assert.isTrue(
-          execution.execution.result.ok,
-          JSON.stringify(execution.execution.result.content),
-        );
+        if (!execution.execution.result.ok) {
+          throw new Error(JSON.stringify(execution.execution.result.content));
+        }
         assert.isTrue(
           execution.execution.result.actionReceipts!.every(
             (receipt) => receipt.verification === "verified",
@@ -162,68 +153,21 @@ describe("workflow: exact named library targets", function () {
           item.getTags().map((tag) => tag.tag),
           ["preserved"],
         );
-      assert.isTrue(
-        request.actionProgress!.obligations.every(
-          (entry) => entry.status === "fulfilled",
-        ),
-      );
       const mergeRequest = resolvedAgentRequest({
         conversationKey: items[0].id,
         mode: "agent",
         conversationKind: "library",
         libraryID,
         userText: `Merge Geometry (${destinationIds[0]}) and Memory (${destinationIds[1]}) into geometry_memory under ${parent.id}. Preserve every paper, tag and unrelated membership; remove the old collection names.`,
-        classifiedIntent: classifiedFixture({
-          retrievalIntent: "none",
-          wantedSections: [],
-          writeDisposition: "required",
-          actionInterpretationSource: "semantic",
-          actionIntents: [
-            {
-              capability: "zotero.collections",
-              proofDomain: "zotero_state",
-              operation: "update_collection",
-              coverage: "one",
-              targetKind: "items",
-              parameters: {
-                collectionId: destinationIds[0],
-                collectionName: "geometry_memory",
-              },
-            },
-            {
-              capability: "zotero.collections",
-              proofDomain: "zotero_state",
-              operation: "move_to_collection",
-              coverage: "all",
-              targetKind: "papers",
-              scope: {
-                kind: "collection",
-                path: `${parent.name}/Memory`,
-                includeDescendants: false,
-              },
-              scopeRole: "source",
-              parameters: { destinationCollectionId: destinationIds[0] },
-            },
-            {
-              capability: "zotero.collections",
-              proofDomain: "zotero_state",
-              operation: "delete_collection",
-              coverage: "one",
-              targetKind: "items",
-              parameters: {
-                collectionId: destinationIds[1],
-                deleteItems: false,
-              },
-            },
-          ],
-        }),
+        executionContext: directExecutionContext(
+          items[0].id,
+          libraryID,
+          `direct-merge:${Date.now()}`,
+        ),
       });
-      mergeRequest.actionContract =
-        await contracts.createContract(mergeRequest);
-      mergeRequest.actionProgress = contracts.createProgress(
-        mergeRequest.actionContract,
-      );
       context.request = mergeRequest;
+      context.runId = mergeRequest.executionContext!.executionId;
+      setOriginalAgentPermissionMode("yolo");
       await execute("collection_update", {
         action: "rename",
         libraryID,
@@ -264,11 +208,6 @@ describe("workflow: exact named library targets", function () {
         );
       }
       assert.deepEqual(items[3].getCollections(), [parent.id]);
-      assert.isTrue(
-        mergeRequest.actionProgress!.obligations.every(
-          (entry) => entry.status === "fulfilled",
-        ),
-      );
     } finally {
       setOriginalAgentPermissionMode(originalMode);
       for (const item of items) await item.eraseTx();
@@ -295,11 +234,6 @@ describe("workflow: exact named library targets", function () {
           items.push(item);
         }
         const targets = items.slice(0, 2);
-        const targetSelectors = targets.map((item) =>
-          mode === "auto"
-            ? { kind: "title", value: String(item.getField("title")) }
-            : { kind: "item_key", value: item.key },
-        );
         const request = resolvedAgentRequest({
           conversationKey: items[2].id,
           mode: "agent",
@@ -307,65 +241,23 @@ describe("workflow: exact named library targets", function () {
           libraryID: items[0].libraryID,
           userText:
             mode === "auto"
-              ? `Apply exactly these tags to each of the papers titled "${targetSelectors[0].value}", "${targetSelectors[1].value}": coding, drift. Replace their old tags with this exact set. Do not tag any other paper.`
-              : `Set exactly these tags on only the papers with item keys ${targetSelectors.map((s) => s.value).join(", ")}: coding, drift. Replace their previous tags; do not change any other item or field.`,
+              ? `Apply exactly these tags to each of the papers titled "${targets[0].getField("title")}", "${targets[1].getField("title")}": coding, drift. Replace their old tags with this exact set. Do not tag any other paper.`
+              : `Set exactly these tags on only the papers with item keys ${targets.map((item) => item.key).join(", ")}: coding, drift. Replace their previous tags; do not change any other item or field.`,
           model: "gpt-5.4",
           apiBase: "https://api.openai.com/v1",
           apiKey: "workflow-placeholder",
           providerProtocol: "openai_chat_compat",
+          executionContext: directExecutionContext(
+            items[2].id,
+            items[0].libraryID,
+            `direct-tags-${mode}:${Date.now()}`,
+          ),
         });
-        const routing = await detectTurnIntent(
-          request,
-          [
-            {
-              id: "workflow-library",
-              description: "Library operations",
-              version: 1,
-              patterns: [],
-              contexts: ["any"],
-              activation: "auto",
-              instruction: "",
-              source: "system",
-            },
-          ],
-          {
-            llmCall: async (params) => ({
-              text: JSON.stringify(
-                semanticResponseFixture({
-                  taskKind: "write",
-                  writeDisposition: "required",
-                  actionIntents: [
-                    {
-                      operation: "set_item_tags",
-                      coverage: "some",
-                      targetKind: "papers",
-                      targetSelectors,
-                      parameters: { tags: ["coding", "drift"] },
-                    },
-                  ],
-                }),
-              ),
-              completion: { status: "complete" },
-            }),
-          },
-        );
-        assert.equal(
-          routing.classifiedIntent?.actionInterpretationSource,
-          "semantic",
-        );
-        request.classifiedIntent = routing.classifiedIntent!;
-        const contracts = new ActionContractService(new ZoteroGateway());
-        request.actionContract = await contracts.createContract(request);
-        assert.deepEqual(
-          request.actionContract.obligations[0].targetBoundary?.frozenTargetIds,
-          targets.map((item) => item.id),
-        );
-        request.actionProgress = contracts.createProgress(
-          request.actionContract,
-        );
         await initAgentChangeJournal();
         setOriginalAgentPermissionMode(mode);
-        const registry = new AgentToolRegistry(contracts);
+        const registry = new AgentToolRegistry(
+          new ActionContractService(new ZoteroGateway()),
+        );
         registry.register(
           (Zotero as any).LLMForZotero.api.agent.getToolDefinition(
             "library_update",
@@ -376,6 +268,7 @@ describe("workflow: exact named library targets", function () {
           item: null,
           modelName: "workflow",
           currentAnswerText: "",
+          runId: request.executionContext!.executionId,
         };
         const execution = await registry.prepareExecution(
           {
@@ -406,10 +299,9 @@ describe("workflow: exact named library targets", function () {
           "exact requested writes require no mode-based review",
         );
         if (execution.kind !== "result") return;
-        assert.isTrue(
-          execution.execution.result.ok,
-          JSON.stringify(execution.execution.result.content),
-        );
+        if (!execution.execution.result.ok) {
+          throw new Error(JSON.stringify(execution.execution.result.content));
+        }
         assert.isTrue(
           execution.execution.result.actionReceipts!.some(
             (receipt) => receipt.status === "applied",
@@ -458,42 +350,17 @@ describe("workflow: exact named library targets", function () {
         conversationKind: "library",
         libraryID: items[0].libraryID,
         userText: `Move the paper titled "${items[0].getField("title")}" from "${collections[0].name}" to "${collections[1].name}". Preserve all other memberships.`,
-        classifiedIntent: classifiedFixture({
-          retrievalIntent: "none",
-          wantedSections: [],
-          writeDisposition: "required",
-          actionInterpretationSource: "semantic",
-          actionIntents: [
-            {
-              operation: "move_to_collection",
-              capability: "zotero.collections",
-              proofDomain: "zotero_state",
-              coverage: "one",
-              targetKind: "items",
-              targetSelectors: [
-                { kind: "title", value: String(items[0].getField("title")) },
-              ],
-              scope: {
-                kind: "collection",
-                path: collections[0].name,
-                includeDescendants: false,
-              },
-              scopeRole: "source",
-              parameters: {
-                destinationCollectionId: collections[1].id,
-                sourceCollectionId: collections[0].id,
-              },
-              constraints: { collectionMode: "move" },
-            },
-          ],
-        }),
+        executionContext: directExecutionContext(
+          items[0].id,
+          items[0].libraryID,
+          `direct-move:${Date.now()}`,
+        ),
       });
-      const contracts = new ActionContractService(new ZoteroGateway());
-      request.actionContract = await contracts.createContract(request);
-      request.actionProgress = contracts.createProgress(request.actionContract);
       await initAgentChangeJournal();
       setOriginalAgentPermissionMode("yolo");
-      const registry = new AgentToolRegistry(contracts);
+      const registry = new AgentToolRegistry(
+        new ActionContractService(new ZoteroGateway()),
+      );
       registry.register(
         (Zotero as any).LLMForZotero.api.agent.getToolDefinition(
           "library_update",
@@ -512,7 +379,13 @@ describe("workflow: exact named library targets", function () {
             targetCollectionId: collections[1].id,
           },
         },
-        { request, item: null, modelName: "workflow", currentAnswerText: "" },
+        {
+          request,
+          item: null,
+          modelName: "workflow",
+          currentAnswerText: "",
+          runId: request.executionContext!.executionId,
+        },
         { callerKind: "model" },
       );
       assert.equal(execution.kind, "result");

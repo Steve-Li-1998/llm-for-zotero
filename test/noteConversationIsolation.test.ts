@@ -9,12 +9,12 @@ import {
   createPaperPortalItem,
   resolvePaperChatSourceItem,
 } from "../src/modules/contextPanel/portalScope";
-import { createNoteConversationItem } from "../src/modules/contextPanel/noteEditing/conversationItem";
+import { createNoteConversationItem } from "../src/services/notes/conversationItem";
 import {
   restoreConversationComposeContext,
   storedMessagesMatchActivePaper,
 } from "../src/modules/contextPanel/chat";
-import { readNoteSnapshot } from "../src/modules/contextPanel/noteSnapshot";
+import { readNoteSnapshot } from "../src/services/notes/noteSnapshot";
 import { clearAllRefContextState } from "../src/modules/contextPanel/contexts/paperContextState";
 import {
   activeGlobalConversationByLibrary,

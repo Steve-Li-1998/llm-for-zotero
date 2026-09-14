@@ -183,6 +183,7 @@ export function openStandaloneDocumentWindow(
         true,
       );
       initialized = true;
+      newWin.focus();
     } catch (error) {
       failInitialization(error);
     }

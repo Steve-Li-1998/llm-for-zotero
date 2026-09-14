@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import {
   classifiedFixture,
   semanticFixture,
@@ -197,22 +198,28 @@ describe("workflow: expandable ranked discovery", function () {
       }
       throw new Error(`Timed out waiting for ${description}`);
     };
+    let cleanupRoot: HTMLElement | null = null;
     try {
       const panel = await api.renderPanelForItem(fixture.parentItemId);
+      const root = doc.querySelector<HTMLElement>(
+        `[data-workflow-panel-id="${panel.panelId}"]`,
+      )!;
+      assert.exists(root, "workflow panel root");
+      cleanupRoot = root;
       const libraryID = Zotero.Items.get(fixture.parentItemId).libraryID;
       const before = (await Zotero.Items.getAll(libraryID))
         .map((item) => item.id)
         .sort();
       for (const limit of [20, 3]) {
         searches.length = 0;
-        const input = doc.querySelector<HTMLTextAreaElement>("#llm-input")!;
+        const input = root.querySelector<HTMLTextAreaElement>("#llm-input")!;
         let structuredRun: Promise<unknown> | undefined;
         if (limit === 20) {
           input.value = "/discover_related";
           input.dispatchEvent(
             new doc.defaultView!.Event("input", { bubbles: true }),
           );
-          doc.querySelector<HTMLButtonElement>("#llm-send")!.click();
+          root.querySelector<HTMLButtonElement>("#llm-send")!.click();
         } else {
           structuredRun = agent.runAction(
             "discover_related",
@@ -227,7 +234,9 @@ describe("workflow: expandable ranked discovery", function () {
                   panel.panelId,
                   { requestId, action },
                 );
-                doc.querySelector(`[data-request-id="${requestId}"]`)?.remove();
+                root
+                  .querySelector(`[data-request-id="${requestId}"]`)
+                  ?.remove();
                 return resolution;
               },
             },
@@ -235,7 +244,7 @@ describe("workflow: expandable ranked discovery", function () {
         }
         const card = await waitFor(
           () =>
-            doc
+            root
               .querySelector<HTMLElement>(".llm-search-mode-tabs")
               ?.closest<HTMLElement>("[data-request-id]") || null,
           "direct discovery card",
@@ -273,7 +282,7 @@ describe("workflow: expandable ranked discovery", function () {
         assert.equal(more.textContent, "Load more");
         more.click();
         const expanded = await waitFor(() => {
-          const next = doc
+          const next = root
             .querySelector<HTMLElement>(".llm-search-mode-tabs")
             ?.closest<HTMLElement>("[data-request-id]");
           return next &&
@@ -322,7 +331,7 @@ describe("workflow: expandable ranked discovery", function () {
           .querySelector<HTMLButtonElement>('[data-kind="cancel"]')!
           .click();
         await waitFor(
-          () => (!doc.querySelector(".llm-search-mode-tabs") ? true : null),
+          () => (!root.querySelector(".llm-search-mode-tabs") ? true : null),
           "cancel to close discovery",
         );
         await structuredRun;
@@ -333,7 +342,9 @@ describe("workflow: expandable ranked discovery", function () {
         "Load more and Cancel must not import papers",
       );
     } finally {
-      doc.querySelector<HTMLButtonElement>('[data-kind="cancel"]')?.click();
+      cleanupRoot
+        ?.querySelector<HTMLButtonElement>('[data-kind="cancel"]')
+        ?.click();
       agent.registerTool(search);
       await api.reset();
       await api.cleanupFixture(fixture);

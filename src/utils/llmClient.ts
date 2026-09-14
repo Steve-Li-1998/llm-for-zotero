@@ -16,6 +16,7 @@ import {
   getQwenReasoningProfileForModel,
   getReasoningDefaultLevelForModel,
   getRuntimeReasoningOptionsForModel,
+  getThinkingSwitchProfileForModel,
   supportsReasoningForModel,
   withGeminiThoughtSummaries,
 } from "./reasoningProfiles";
@@ -116,6 +117,9 @@ import {
   isReservedRequestKey,
   profileOverrideAppliesTo,
   type ModelProfileOverride,
+  flattenToDotPaths,
+  toReasoningProvider,
+  type ResolvedModelCapabilities,
 } from "../modelCapabilities";
 import {
   CODEX_DIRECT_RESPONSES_URL,
@@ -184,6 +188,12 @@ export type ChatParams = {
   contextCache?: ContextCachePlan;
   /** Session-only opaque state for resuming an incomplete provider response. */
   continuationState?: unknown;
+  /**
+   * Stable, opaque id for the conversation this request belongs to. Only
+   * providers that route on one ever see it; everyone else gets no extra
+   * header. Absent for one-off utility calls, which have no conversation.
+   */
+  sessionId?: string;
   /**
    * User-authored capability overrides for the selected model. Threaded through
    * so capability resolution, token clamping and the request body all see the
@@ -2099,6 +2109,60 @@ export type ReasoningSelection = ReasoningConfig & {
 };
 
 /**
+ * The request fragment one reasoning level actually contributes.
+ *
+ * The preferences editor asks this rather than describing the encoding a
+ * second time, so a level's row can never claim something the transport does
+ * not send. User-authored extra parameters are deliberately excluded: this
+ * describes the level, not the whole body.
+ */
+export function previewReasoningControls(
+  capabilities: ResolvedModelCapabilities,
+  level: string,
+): Record<string, unknown> {
+  const provider = toReasoningProvider(capabilities.provider);
+  if (!provider) return {};
+  const protocol = capabilities.identity.protocol as
+    | ProviderProtocol
+    | undefined;
+  return buildReasoningControlPayload(
+    { provider, level },
+    protocol === "responses_api" || protocol === "codex_responses",
+    capabilities.model,
+    capabilities.identity.apiBase,
+    protocol,
+  ).extra;
+}
+
+/**
+ * Whether a level actually leaves thinking on, judged by the request it sends.
+ *
+ * The chat's reasoning chip used to decide this from the level's display label
+ * — the words "off" and "disabled" meant inactive — which forced profiles to
+ * carry a synonym per level and made the menu and the model editor disagree
+ * about a level's name. The request is the only honest source: a level is
+ * inactive when what it sends switches thinking off, whatever it is called.
+ * An empty fragment is the provider default, which is active.
+ */
+export function isReasoningLevelActive(
+  capabilities: ResolvedModelCapabilities,
+  level: string,
+): boolean {
+  const fragment = previewReasoningControls(capabilities, level);
+  return !flattenToDotPaths(fragment).some(({ key, value }) => {
+    const leaf = key.split(".").pop() || "";
+    if (leaf === "type") return value === "disabled" || value === "none";
+    if (leaf === "think" || leaf === "enable_thinking") return value === false;
+    // thinkingBudget, thinking_budget, budget_tokens — a zero budget is off.
+    if (leaf.toLowerCase().includes("budget")) return value === 0;
+    if (leaf === "effort" || leaf === "reasoning_effort") {
+      return value === "none" || value === "disabled";
+    }
+    return false;
+  });
+}
+
+/**
  * Reasoning controls plus any user-authored extra request parameters.
  *
  * `extraBody` is not reasoning-specific, but this function's result is already
@@ -2352,9 +2416,21 @@ function buildReasoningControlPayload(
     };
   }
 
-  if (reasoning.provider === "kimi") {
-    // Kimi k2/k2.5: "default" = thinking enabled, "minimal" = thinking disabled
-    const thinkingType = reasoning.level === "minimal" ? "disabled" : "enabled";
+  if (
+    reasoning.provider === "minimax" ||
+    reasoning.provider === "glm" ||
+    reasoning.provider === "kimi"
+  ) {
+    const profile = getThinkingSwitchProfileForModel(
+      reasoning.provider,
+      modelName,
+    );
+    const thinkingType =
+      profile?.levelToThinkingType[reasoning.level] ??
+      profile?.levelToThinkingType[profile.defaultLevel];
+    if (!thinkingType) {
+      return emptyReasoningPayload();
+    }
     return {
       extra: { thinking: { type: thinkingType } },
       omitTemperature: false,
@@ -3941,6 +4017,8 @@ async function callNativeProtocol(params: {
   /** ollama_native only: runtime context window to allocate. */
   numCtx?: number;
   profileOverride?: ModelProfileOverride;
+  /** Stable per-conversation id for providers that route on one. */
+  sessionId?: string;
 }): Promise<ModelTurnOutcome> {
   const {
     protocol,
@@ -3962,7 +4040,12 @@ async function callNativeProtocol(params: {
       : protocol === "ollama_native"
         ? resolveOllamaNativeEndpoint(apiBase)
         : resolveGeminiNativeEndpoint({ apiBase, model, stream: isStreaming });
-  const headers = buildProviderTransportHeaders({ protocol, apiKey });
+  const headers = buildProviderTransportHeaders({
+    protocol,
+    apiKey,
+    apiBase,
+    sessionId: params.sessionId,
+  });
   const pdfParts: Array<{ base64: string }> = [];
   if (
     (protocol === "anthropic_messages" || protocol === "gemini_native") &&
@@ -4141,6 +4224,7 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
       protocol: providerProtocol,
       apiBase,
       apiKey,
+      sessionId: params.sessionId,
       model,
       messages,
       outputPolicy,
@@ -4211,6 +4295,8 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
     protocol: providerProtocol,
     apiKey: auth.token,
     authMode,
+    apiBase,
+    sessionId: params.sessionId,
   });
   const buildPayload = createChatPayloadBuilder({
     model,
@@ -4295,6 +4381,7 @@ export async function callLLMStream(
       protocol: providerProtocol,
       apiBase,
       apiKey,
+      sessionId: params.sessionId,
       model,
       messages,
       outputPolicy,
@@ -4374,6 +4461,8 @@ export async function callLLMStream(
     protocol: providerProtocol,
     apiKey: auth.token,
     authMode,
+    apiBase,
+    sessionId: params.sessionId,
   });
   const buildPayload = createChatPayloadBuilder({
     model,

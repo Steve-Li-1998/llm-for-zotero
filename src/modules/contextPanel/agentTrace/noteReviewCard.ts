@@ -8,7 +8,7 @@ import {
   parseSanitizedRenderedHtml,
   renderRenderedMarkdownInto,
 } from "../renderedMarkdown";
-import { normalizeNoteSourceText } from "../notes";
+import { normalizeNoteSourceText } from "../../../services/notes/noteRendering";
 
 type ContentField = Extract<AgentPendingField, { type: "textarea" }>;
 type DiffField = Extract<AgentPendingField, { type: "diff_preview" }>;

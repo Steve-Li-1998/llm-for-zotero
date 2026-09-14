@@ -20,9 +20,10 @@ import {
   hasCachedMineruMd,
   readCachedMineruMd,
   writeMineruCacheFiles,
-} from "../src/modules/contextPanel/mineruCache";
-import { pdfTextCache } from "../src/modules/contextPanel/state";
+} from "../src/services/mineru/mineruCache";
+import { pdfTextCache } from "../src/services/paperContent/contextCache";
 import { clearMineruEligibilityCacheForTests } from "../src/modules/mineruParseEligibility";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 const encoder = new TextEncoder();
 
@@ -191,6 +192,19 @@ function createMineruZip(markdown: string): Uint8Array {
 }
 
 describe("mineruAutoWatch", function () {
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Invalidating cached paper context reaches the panel's retrieval cache
+    // through a host surface bridge the plugin composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   afterEach(function () {
     resetAutoWatchForTests();
     clearMineruEligibilityCacheForTests();

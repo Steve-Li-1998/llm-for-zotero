@@ -1,5 +1,5 @@
 import type { QuoteCitation } from "../../shared/types";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 
 function normalizeQuoteNavigationKey(value: string): string {
   return sanitizeText(value || "")

@@ -684,7 +684,8 @@ describe("agent resource context plan", function () {
       userText.indexOf("### Skill: plain-skill"),
     );
     assert.include(customizedBlock, "USER CUSTOMIZATIONS");
-    assert.include(customizedBlock, "OVERRIDE any conflicting defaults");
+    assert.include(customizedBlock, "Use these preferences when relevant");
+    assert.include(customizedBlock, "host permission policy");
     assert.include(
       customizedBlock,
       "Path pattern: `{papertitle}/{papertitle}.md`",

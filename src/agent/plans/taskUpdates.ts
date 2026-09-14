@@ -25,7 +25,18 @@ type TaskUpdate = {
   alreadyInTransaction?: boolean;
 } & (
   | { kind: "evidence"; evidence: readonly TaskEvidence[] }
-  | { kind: "receipts"; receipts: readonly AgentActionReceipt[] }
+  | {
+      kind: "receipts";
+      receipts: readonly AgentActionReceipt[];
+      receiptEffects?: readonly Readonly<{
+        receiptId: string;
+        effectIds: readonly string[];
+        effectTargets: readonly Readonly<{
+          effectId: string;
+          targetIds: readonly string[];
+        }>[];
+      }>[];
+    }
   | {
       kind: "transition";
       request: TaskTransitionRequest;
@@ -37,11 +48,15 @@ function receiptEvidence(
   task: ExecutionTask,
   receipts: readonly AgentActionReceipt[],
   now: number,
+  receiptEffects: Extract<TaskUpdate, { kind: "receipts" }>["receiptEffects"],
 ): TaskEvidence[] {
   const requirement = task.completionRequirements?.find(
     (entry) => entry.kind === "mutation_receipts",
   );
   return receipts.map((receipt) => {
+    const effectBinding = receiptEffects?.find(
+      (entry) => entry.receiptId === receipt.id,
+    );
     const evidenceId = `${task.executionId}:${task.taskId}:receipt:${receipt.id}`;
     const verified =
       receipt.verification === "verified" &&
@@ -58,7 +73,12 @@ function receiptEvidence(
       contractDigest: requirement?.contractDigest,
       receipt,
       payload: requirement
-        ? { type: "mutation_receipts", receiptIds: [receipt.id] }
+        ? {
+            type: "mutation_receipts",
+            receiptIds: [receipt.id],
+            effectIds: effectBinding?.effectIds,
+            effectTargets: effectBinding?.effectTargets,
+          }
         : undefined,
       reference: receipt.evidenceRef,
       summary: receipt.verifiedFacts.join("; ") || receipt.reasons.join("; "),
@@ -138,7 +158,7 @@ export async function updatePlanTask(
     const now = params.now ?? Date.now();
     const evidence =
       params.kind === "receipts"
-        ? receiptEvidence(task, params.receipts, now)
+        ? receiptEvidence(task, params.receipts, now, params.receiptEffects)
         : params.evidence || [];
     for (const entry of evidence) {
       if (

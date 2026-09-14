@@ -7,6 +7,9 @@ import type {
   AgentActionProgressLedger,
 } from "../../contracts/types";
 import { decodeActionContract } from "../../plans/contracts";
+import { decodePlanEffectSpecification } from "../../plans/decoders";
+import { operationCatalogEntry } from "../../contracts/operationCatalog";
+import { canonicalJson } from "../../services/libraryMutation/canonicalJson";
 import { planExecutionCoordinator } from "../../plans/coordinator";
 import { loadPlanArtifact } from "../../plans/store";
 import {
@@ -22,6 +25,8 @@ import {
   saveResearchMutationApprovalGrant,
 } from "../../research/store";
 import type { ResearchMutationApprovalGrant } from "../../research/types";
+import type { PlanArtifact, PlanDeferredEffect } from "../../plans/types";
+import type { ActionConstraint } from "../../authorization/types";
 import type {
   AgentPendingAction,
   AgentToolDefinition,
@@ -230,6 +235,66 @@ function createProgress(
   };
 }
 
+function researchMutationScope(artifact: PlanArtifact) {
+  if (artifact.version === 5) {
+    const deferredEffects = artifact.effectSpecification?.deferredEffects || [];
+    return {
+      deferredEffects,
+      intents: deferredEffects.flatMap((effect) => {
+        const authority = operationCatalogEntry(effect.operation);
+        return authority
+          ? [
+              {
+                capability: authority.capability,
+                operation: effect.operation,
+                proofDomain: authority.proofDomain,
+                coverage: "all" as const,
+                targetKind: "papers" as const,
+                parameters: effect.parameters,
+                reviewPreference: effect.review,
+              },
+            ]
+          : [];
+      }),
+    };
+  }
+  const mutation = artifact.contract?.effects?.libraryMutation;
+  return mutation?.approval === "after_research"
+    ? {
+        deferredEffects: [] as readonly PlanDeferredEffect[],
+        intents: mutation.intent.intents,
+      }
+    : null;
+}
+
+function researchMutationConstraints(
+  artifact: PlanArtifact,
+  operations: readonly ResearchMutationOperationInput[],
+): readonly ActionConstraint[] | undefined {
+  const legacy = artifact.actionContract?.hardConstraints?.filter(
+    (entry): entry is ActionConstraint => entry.kind !== "no_write",
+  );
+  if (artifact.version !== 5) return legacy;
+  const constraints = [
+    ...(artifact.effectSpecification?.constraints || []),
+    ...(artifact.effectSpecification?.deferredEffects || [])
+      .filter((effect) =>
+        operations.some(
+          (operation) =>
+            operation.operation === effect.operation &&
+            canonicalJson(operation.parameters || {}) ===
+              canonicalJson(effect.parameters),
+        ),
+      )
+      .flatMap((effect) => effect.restrictions),
+  ];
+  return [
+    ...new Map(
+      constraints.map((constraint) => [canonicalJson(constraint), constraint]),
+    ).values(),
+  ];
+}
+
 export function createApproveResearchMutationTool(): AgentToolDefinition<
   ApproveResearchMutationInput,
   unknown
@@ -238,7 +303,7 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
     spec: {
       name: "approve_research_mutation",
       description:
-        "Present the mandatory second approval for research-selected Zotero writes. It freezes exact stable item keys, resolved runtime IDs, operations, and parameters into a new action contract. It does not itself change the library.",
+        "Present the mandatory second approval for research-selected Zotero writes. It freezes exact stable item keys, resolved runtime IDs, operations, parameters, and derived Plan effect IDs. It does not itself change the library.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -275,14 +340,21 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
         },
       },
       executionClass: "control",
+      workCategory: "planning",
       requiresConfirmation: true,
       interaction: "user_input",
     },
+    /**
+     * The plan machinery itself. Its calls are how a plan is drafted and
+     * advanced, and the plan card already shows the reader the outcome, so a
+     * row for each of them would report the trace's own plumbing.
+     */
+    presentation: { hiddenInTrace: true },
     isAvailable: (request) => request.planContext?.phase === "executing",
     guidance: {
       matches: (request) => request.planContext?.phase === "executing",
       instruction:
-        "If the approved contract declares effects.libraryMutation.approval='after_research', do not call any Zotero write tool until research is terminal and approve_research_mutation has frozen and authorized the exact operations and targets under central mode policy. Targets use stable libraryID/itemKey pairs from paper findings. After authorization, use only write calls covered by the returned frozen action contract. If the user skips the changes, mark only the mutation task skipped and preserve the research document.",
+        "If the approved Plan has deferredEffects, do not call a Zotero write tool until research is terminal and approve_research_mutation has frozen and authorized the exact operations, targets, and derived effect IDs under central mode policy. Targets use stable libraryID/itemKey pairs from paper findings. After authorization, use only write calls covered by those derived effects. If the user skips the changes, mark only the mutation task skipped and preserve the research document.",
     },
     validate: validateInput,
     planInvocation: () =>
@@ -295,19 +367,20 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
       if (plan?.phase !== "executing")
         throw new Error("Research mutation approval requires plan execution");
       const artifact = await loadPlanArtifact(plan.planId, plan.revision);
-      const mutation = artifact?.contract?.effects?.libraryMutation;
+      const mutation = artifact ? researchMutationScope(artifact) : null;
       if (
         !artifact ||
         artifact.digest !== plan.approvedDigest ||
-        mutation?.approval !== "after_research"
+        !mutation?.intents.length
       )
         throw new Error(
           "The approved research mutation intent is unavailable.",
         );
       const decision = researchMutationAuthorization({
         context,
-        intents: mutation.intent.intents,
+        intents: mutation.intents,
         operations: input.operations,
+        constraints: researchMutationConstraints(artifact, input.operations),
       });
       if (decision.kind === "block") throw new Error(decision.reason);
       return decision.kind === "confirm";
@@ -319,11 +392,11 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
         throw new Error("Research mutation approval requires plan execution");
       }
       const artifact = await loadPlanArtifact(plan.planId, plan.revision);
-      const mutation = artifact?.contract?.effects?.libraryMutation;
+      const mutation = artifact ? researchMutationScope(artifact) : null;
       if (
         !artifact ||
         artifact.digest !== plan.approvedDigest ||
-        mutation?.approval !== "after_research"
+        !mutation?.intents.length
       ) {
         throw new Error(
           "The approved plan does not contain a research-selected mutation intent",
@@ -341,11 +414,12 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
           "Research-selected changes require terminal complete coverage",
         );
       }
-      const allowedIntents = mutation.intent.intents;
+      const allowedIntents = mutation.intents;
       const decision = researchMutationAuthorization({
         context,
         intents: allowedIntents,
         operations: input.operations,
+        constraints: researchMutationConstraints(artifact, input.operations),
       });
       if (decision.kind === "block") throw new Error(decision.reason);
       if (decision.kind === "confirm" && context.executionAuthority !== "user")
@@ -357,6 +431,9 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
         findings.map((entry) => `${entry.libraryID}:${entry.itemKey}`),
       );
       const obligations: AgentActionContract["obligations"] = [];
+      const derivedEffects: NonNullable<
+        PlanArtifact["effectSpecification"]
+      >["effects"][number][] = [];
       const resultTargets: Array<{
         libraryID: number;
         itemKey: string;
@@ -407,6 +484,40 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
           parameters: operation.parameters,
           targets: operation.targets,
         });
+        if (artifact.version === 5) {
+          const matchingDeferred = mutation.deferredEffects.filter(
+            (effect) =>
+              effect.operation === operation.operation &&
+              canonicalJson(effect.parameters) ===
+                canonicalJson(operation.parameters || {}),
+          );
+          if (matchingDeferred.length !== 1) {
+            throw new Error(
+              `${operation.operation} does not match one exact deferred Plan effect`,
+            );
+          }
+          const deferred = matchingDeferred[0];
+          derivedEffects.push({
+            effectId: `${deferred.effectId}:approved:${index + 1}`,
+            approval: "after_research",
+            operation: deferred.operation,
+            targets: [
+              {
+                domain: "zotero",
+                libraryID: operation.targets[0].libraryID,
+                targetIds: frozenTargetIds.map((itemId) => `item:${itemId}`),
+                scopeDigest,
+              },
+            ],
+            targetBindings: deferred.targetBindings,
+            parameters: deferred.parameters,
+            review: deferred.review,
+            restrictions: deferred.restrictions,
+            dependsOnEffectIds: deferred.dependsOnEffectIds,
+            materialBindings: deferred.materialBindings,
+            derivedFromDeferredEffectId: deferred.effectId,
+          });
+        }
         obligations.push({
           id: `research-mutation-${index + 1}`,
           capability: operation.capability,
@@ -435,6 +546,63 @@ export function createApproveResearchMutationTool(): AgentToolDefinition<
         resolvedTargets: resultTargets,
       });
       const contractId = `research-action:${plan.executionId}:${targetSetDigest.slice(-16)}`;
+      if (artifact.version === 5) {
+        const effectSpecification = decodePlanEffectSpecification({
+          version: 1,
+          constraints: artifact.effectSpecification?.constraints || [],
+          effects: [
+            ...(artifact.effectSpecification?.effects || []),
+            ...derivedEffects,
+          ],
+          deferredEffects: artifact.effectSpecification?.deferredEffects || [],
+        });
+        const effectSpecificationDigest =
+          await researchMutationDigest(effectSpecification);
+        const approvedAt = Date.now();
+        const grant: ResearchMutationApprovalGrant = {
+          version: 4,
+          authority:
+            context.executionAuthority === "user"
+              ? "user"
+              : decision.kind === "execute" && decision.authority === "yolo"
+                ? "yolo"
+                : "auto_policy",
+          grantId: `${contractId}:grant`,
+          planId: artifact.planId,
+          planRevision: artifact.revision,
+          executionId: plan.executionId,
+          conversationKey: artifact.conversationKey,
+          planDigest: artifact.digest,
+          researchResultDigest,
+          scopeLineageDigest: job.scopeLineageDigest,
+          targetSetDigest,
+          effectSpecification,
+          effectSpecificationDigest,
+          status: "approved",
+          approvedAt,
+        };
+        await commitResearchRecords(job, async () => {
+          await saveResearchMutationApprovalGrant(grant);
+          await planExecutionCoordinator.bindResearchDerivedEffects({
+            executionId: plan.executionId,
+            effectSpecification,
+            effectSpecificationDigest,
+            now: approvedAt,
+            alreadyInTransaction: true,
+          });
+        });
+        context.request.actionContract = undefined;
+        context.request.actionProgress = undefined;
+        return {
+          approved: true,
+          grantId: grant.grantId,
+          researchResultDigest,
+          targetSetDigest,
+          effectSpecification,
+          effectIds: derivedEffects.map((effect) => effect.effectId),
+          targets: resultTargets,
+        };
+      }
       const actionContract: AgentActionContract = {
         version: context.request.classifiedIntent?.semantic ? 4 : 3,
         intent: context.request.classifiedIntent?.semantic

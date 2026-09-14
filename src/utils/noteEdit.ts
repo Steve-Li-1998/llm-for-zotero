@@ -4,14 +4,7 @@ import {
   NOTE_TEXT_BREAK_PATTERN,
   stripNoteHtml,
 } from "./noteText";
-
-function escapeNoteHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+import { escapeNoteHtml } from "./textSanitization";
 
 const NOTE_TEXT_BREAK_TAG = new RegExp(
   `^(?:${NOTE_TEXT_BREAK_PATTERN.source})$`,

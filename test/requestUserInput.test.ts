@@ -162,30 +162,13 @@ describe("prepared action clarification", function () {
         answers: [{ id: "source", answer: "Geometry" }],
       });
   });
-  it("passes the selected description to semantic interpretation and rebinds the complete action", async function () {
+  it("returns the selected description to the main loop without reinterpretation", async function () {
     const { resolvedAgentRequest } =
       await import("./helpers/resolvedAgentRequest");
-    const { actionFixture, actionContractFixture } =
-      await import("./helpers/semanticIntent");
-    let interpretedAnswer = "";
-    const tool = createRequestUserInputTool(
-      async () =>
-        actionContractFixture("move_to_collection", {
-          sourceCollectionId: 1,
-          destinationCollectionId: 7,
-        }),
-      async (request) => {
-        interpretedAnswer = request.clarificationHistory![0].answer;
-        return {
-          classifiedIntent: actionFixture("move_to_collection", {
-            sourceCollectionId: 1,
-            destinationCollectionId: 7,
-          }),
-          skillIds: [],
-          degraded: false,
-        };
-      },
-    );
+    let legacyInterpreterCalls = 0;
+    const tool = createRequestUserInputTool(async () => {
+      legacyInterpreterCalls++;
+    });
     const ctx = {
       ...context,
       request: resolvedAgentRequest({
@@ -221,12 +204,14 @@ describe("prepared action clarification", function () {
     );
     assert.isTrue(answer.ok);
     if (!answer.ok) return;
-    await tool.execute(answer.value, ctx);
-    assert.include(interpretedAnswer, "Remove Geometry");
-    assert.equal(ctx.request.actionPreparation?.state, "ready");
-    assert.equal(
-      ctx.request.actionContract?.obligations[0].parameters?.sourceCollectionId,
-      1,
+    const result = await tool.execute(answer.value, ctx);
+    assert.equal(legacyInterpreterCalls, 0);
+    assert.deepEqual(result, {
+      answers: [{ id: "source", answer: "move" }],
+    });
+    assert.include(
+      ctx.request.clarificationHistory?.[0].answer || "",
+      "Remove Geometry",
     );
   });
 });

@@ -1,0 +1,938 @@
+import { buildActionCallDigest } from "../authorization/proposal";
+import type { ActionContractRunSession } from "../contracts/actionContractRunSession";
+import { createUnverifiedReceipt } from "../contracts/actionEvaluation";
+import type { PaperEvidenceFrontier } from "../context/paperEvidenceFrontier";
+import type {
+  AgentPendingReadActivity,
+  buildAgentResourceContextPlan,
+} from "../context/resourceContextPlan";
+import type { MaterialRef } from "../documents/materialRef";
+import {
+  buildArtifactFollowupMessage,
+  filterFollowupMessageForCapabilities,
+  type ToolWorkflowDelivery,
+  type ToolWorkflowOutcome,
+} from "../model/toolArtifactDelivery";
+import { resolveCapabilitiesContentInputs } from "../model/contentCapabilities";
+import { createTrustedReadObservations } from "../plans/readObservation";
+import type { PlanExecutionRunSession } from "../plans/runSession";
+import { canonicalJson } from "../services/libraryMutation/canonicalJson";
+import { sha256Text } from "../store/journalRecoveryBlobStore";
+import {
+  createAgentToolResultHandleRecord,
+  type AgentToolResultHandleRecord,
+} from "../store/toolResultHandles";
+import { buildAgentStageEvent } from "../stageEvents";
+import { resolvePreparedActionReview } from "../tools/execution/review";
+import type { AgentToolRegistry } from "../tools/registry";
+import type { PreparedActionCall } from "../tools/workflowSteps";
+import { resolveAgentToolPresentationLabel } from "../toolPresentation";
+import { resolveAgentToolCallWorkCategory } from "../workCategory";
+import { withConversationWriteLock } from "../../shared/conversationWriteFence";
+import {
+  buildSyntheticToolCall,
+  isUserDeniedToolResult,
+  readToolError,
+  setToolResultReadAvailability,
+} from "./toolResultLifecycle";
+import type {
+  AgentActionReceipt,
+  AgentConfirmationResolution,
+  AgentEvent,
+  AgentInheritedApproval,
+  AgentModelCapabilities,
+  AgentModelMessage,
+  AgentPendingAction,
+  AgentRuntimeRequest,
+  AgentToolCall,
+  AgentToolContext,
+  AgentToolEffect,
+  AgentToolResult,
+} from "../types";
+
+/** One tool call the turn executed, as the runtime's loop consumes it. */
+export type ExecutedToolCall = {
+  toolResult: AgentToolResult;
+  toolDefinition?: import("../types").AgentToolDefinition<any, any>;
+  input?: unknown;
+  documentEvidenceRefs?: unknown[];
+};
+
+/** What the turn remembers about a tool call for its own summaries. */
+export type ToolExecutionRecord = {
+  name: string;
+  ok: boolean;
+  mutability?: "read" | "write";
+  effect?: AgentToolEffect;
+  input?: unknown;
+  content?: unknown;
+  actionReceipts?: AgentActionReceipt[];
+};
+
+/**
+ * Everything the tool-execution block used to reach through `runTurn`'s
+ * closure.
+ *
+ * A turn builds one of these and keeps it for the whole turn. Read-only
+ * state is passed by reference -- `request` and `context` are `const`
+ * objects the turn keeps mutating in place, so the collaborator must see the
+ * same objects rather than a copy. The two turn-scoped `let` bindings this
+ * block writes are reached through setters, because the loop outside reads
+ * them again after a tool call returns.
+ */
+export type ToolExecutionDeps = {
+  /** The tool registry that resolves, prepares and executes a call. */
+  registry: AgentToolRegistry;
+  /** The turn's clock, for durable records this block writes. */
+  now: () => number;
+  /** The caller's cancellation signal, checked at each tool boundary. */
+  signal?: AbortSignal;
+  /** The single event emitter of the turn; every event goes through it. */
+  emit: (event: AgentEvent) => Promise<void>;
+  /** The turn's request object, mutated in place as evidence accumulates. */
+  request: AgentRuntimeRequest;
+  /** The run this turn is writing. */
+  runId: string;
+  /** The tool context, mutated in place by the turn after this is built. */
+  context: AgentToolContext;
+  /** Whether the conversation still accepts writes from this turn. */
+  writeAllowed: () => boolean;
+  /** The adapter's content capabilities, for follow-up message filtering. */
+  adapterCapabilities: AgentModelCapabilities;
+  /** The turn's action-contract session, which records tool receipts. */
+  actionContractSession: ActionContractRunSession;
+  /** The turn's plan session, which records tool results and progress. */
+  activePlanSession: PlanExecutionRunSession;
+  /** The paper-evidence frontier that caches and trims paper reads. */
+  paperEvidenceFrontier: PaperEvidenceFrontier;
+  /** The turn's resource plan, whose signature keys evidence reuse. */
+  resourceContextPlan: ReturnType<typeof buildAgentResourceContextPlan>;
+  /** Durable persistence for compacted tool-result handles. */
+  persistToolResultHandles: (
+    records: AgentToolResultHandleRecord[],
+  ) => Promise<void>;
+  /** Raises a confirmation card and waits for the user's resolution. */
+  requestActionResolution: (action: AgentPendingAction) => Promise<{
+    requestId: string;
+    resolution: AgentConfirmationResolution;
+  }>;
+  /** Material this run finalized, keyed by document id. */
+  finalizedMaterialRefs: Map<string, MaterialRef>;
+  /** Read activities awaiting commit at the end of the turn. */
+  pendingReadActivities: AgentPendingReadActivity[];
+  /** Handle records this turn wrote, preserved for its own recovery. */
+  preservedTurnHandleRecords: AgentToolResultHandleRecord[];
+  /** Every tool call of the turn, in order. */
+  toolExecutionRecords: ToolExecutionRecord[];
+  /** The names of the tools this turn called. */
+  toolsUsedThisTurn: string[];
+  /** The summaries of the prepared actions this turn verified. */
+  workflowSummaries: string[];
+  /**
+   * The answer text streamed so far.
+   *
+   * A getter because the model loop keeps appending to and rolling back the
+   * turn's `currentAnswerText`; a tool context must see its value now, not
+   * the value it had when this collaborator was built.
+   */
+  getCurrentAnswerText: () => string;
+  /**
+   * Records the material a terminal tool result finalized.
+   *
+   * A setter because `finalizedMaterial` is a `let` in `runTurn`, and the
+   * finalization path reads it again after this block writes it.
+   */
+  setFinalizedMaterial: (material: {
+    documentId: string;
+    finalText: string;
+  }) => void;
+  /**
+   * Records that a durable tool-result handle now exists.
+   *
+   * A setter because `toolResultReadAvailable` is a `let` in `runTurn` and
+   * the next model step reads it to decide whether to offer the handle-read
+   * tool.
+   */
+  setToolResultReadAvailable: (available: boolean) => void;
+};
+
+/** The tool-execution collaborator of one turn. */
+export type ToolExecution = {
+  executePreparedToolCall: (
+    call: AgentToolCall,
+    round: number,
+    options?: {
+      inheritedApproval?: AgentInheritedApproval;
+      checkpointedWorkflow?: boolean;
+    },
+  ) => Promise<ExecutedToolCall>;
+  buildToolDelivery: (
+    toolResult: AgentToolResult,
+    callId: string,
+    toolDefinition?: import("../types").AgentToolDefinition<any, any>,
+    contentOverride?: unknown,
+    extraFollowupMessages?: AgentModelMessage[],
+  ) => Promise<ToolWorkflowDelivery>;
+  executeToolWorkflow: (
+    call: AgentToolCall,
+    round: number,
+    options?: {
+      modelCallId?: string;
+      preparedAction?: PreparedActionCall;
+      suppressModelDelivery?: boolean;
+      inheritedApproval?: AgentInheritedApproval;
+      checkpointedWorkflow?: boolean;
+    },
+  ) => Promise<ToolWorkflowOutcome>;
+};
+
+/**
+ * Builds the tool-execution collaborator for one turn.
+ *
+ * This is the block that turns a model's tool call into an executed call,
+ * its events, its receipts and the message the model reads next. It was
+ * three closures inside `runTurn`; the state they shared is now `deps`.
+ */
+export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
+  const executePreparedToolCall = async (
+    call: AgentToolCall,
+    round: number,
+    options: {
+      inheritedApproval?: AgentInheritedApproval;
+      checkpointedWorkflow?: boolean;
+    } = {},
+  ): Promise<ExecutedToolCall> => {
+    const toolDefinition = deps.registry.getTool(call.name);
+    const workCategory = toolDefinition
+      ? resolveAgentToolCallWorkCategory(toolDefinition, call.arguments)
+      : undefined;
+    const toolLabel = resolveAgentToolPresentationLabel(toolDefinition);
+    /**
+     * Open and close this call's stage.
+     *
+     * A call the registry cannot resolve has no declared category, and
+     * guessing one from its name is the thing the stage model exists to
+     * remove -- so it reports no stage at all. The registry answers such
+     * a call with a synthetic error and no effect, so there is no work
+     * for a stage to describe.
+     */
+    const emitCallStage = async (
+      status: "started" | "completed" | "failed",
+      details: {
+        receiptIds?: string[];
+        materialRef?: MaterialRef;
+      } = {},
+    ) => {
+      if (!workCategory) return;
+      await deps.emit(
+        buildAgentStageEvent({
+          stage: workCategory,
+          status,
+          callId: call.id,
+          toolName: call.name,
+          toolLabel,
+          ...details,
+        }),
+      );
+    };
+    const lifecycleError = (): ExecutedToolCall => ({
+      toolResult: {
+        callId: call.id,
+        name: call.name,
+        ok: false,
+        actionReceipts: [
+          createUnverifiedReceipt({
+            reason: "Conversation lifecycle changed before execution.",
+          }),
+        ],
+        content: {
+          error:
+            "Conversation lifecycle changed before this tool could execute.",
+        },
+      },
+    });
+    const executionAllowed = () => !deps.signal?.aborted && deps.writeAllowed();
+    if (!executionAllowed()) return lifecycleError();
+    await emitCallStage("started");
+    await deps.emit({
+      type: "tool_call",
+      callId: call.id,
+      name: call.name,
+      args: call.arguments,
+      toolLabel,
+      workCategory,
+      executionId:
+        deps.request.planContext?.phase === "executing"
+          ? deps.request.planContext.executionId
+          : undefined,
+      taskId:
+        deps.request.planContext?.phase === "executing"
+          ? deps.request.planContext.activeTaskId
+          : undefined,
+    });
+    deps.toolsUsedThisTurn.push(call.name);
+    const cachedPaperEvidence =
+      call.name === "paper_read"
+        ? await deps.paperEvidenceFrontier.readCached({
+            input: call.arguments,
+            toolCallId: call.id,
+            resourceSignature: deps.resourceContextPlan.resourceSignature,
+          })
+        : null;
+    let executedCall: {
+      toolResult: AgentToolResult;
+      toolDefinition?: import("../types").AgentToolDefinition<any, any>;
+      input?: unknown;
+      documentEvidenceRefs?: unknown[];
+    };
+    if (cachedPaperEvidence) {
+      executedCall = {
+        toolResult: {
+          callId: call.id,
+          name: call.name,
+          ok: true,
+          actionReceipts: [],
+          content: cachedPaperEvidence.content,
+        },
+        toolDefinition: deps.registry.getTool(call.name),
+        input: call.arguments,
+      };
+    } else {
+      const execution = await deps.registry.prepareExecution(
+        call,
+        {
+          ...deps.context,
+          currentAnswerText: deps.getCurrentAnswerText(),
+          requestActionReview: async (action) =>
+            (await deps.requestActionResolution(action)).resolution,
+          resolvePreparedAction: (prepared) =>
+            resolvePreparedActionReview(
+              prepared,
+              async (action) =>
+                (await deps.requestActionResolution(action)).resolution,
+              executionAllowed,
+            ),
+        },
+        {
+          callerKind: options.inheritedApproval ? "action" : "model",
+          inheritedApproval: options.inheritedApproval,
+          checkpointedWorkflow: options.checkpointedWorkflow,
+          isExecutionAllowed: executionAllowed,
+          executeWithLock: (task) =>
+            withConversationWriteLock(deps.request.conversationKey, task),
+        },
+      );
+      if (execution.kind === "confirmation") {
+        const { resolution } = await deps.requestActionResolution(
+          execution.action,
+        );
+        if (!executionAllowed()) return lifecycleError();
+        // Resolution semantics belong to the rendered action schema. Some
+        // review-card controls deliberately carry approved:false while
+        // continuing the workflow without applying a mutation.
+        let confirmedExecution = await execution.execute(resolution);
+        while (confirmedExecution.kind === "confirmation") {
+          const next = await deps.requestActionResolution(
+            confirmedExecution.action,
+          );
+          if (!executionAllowed()) return lifecycleError();
+          confirmedExecution = await confirmedExecution.execute(
+            next.resolution,
+          );
+        }
+        executedCall = {
+          toolResult: confirmedExecution.execution.result,
+          toolDefinition: confirmedExecution.execution.tool,
+          input: confirmedExecution.execution.input,
+        };
+      } else {
+        if (!executionAllowed()) return lifecycleError();
+        executedCall = {
+          toolResult: execution.execution.result,
+          toolDefinition: execution.execution.tool,
+          input: execution.execution.input,
+        };
+      }
+    }
+    const { toolResult } = executedCall;
+    let readActivityContent = toolResult.content;
+    if (
+      toolResult.ok &&
+      toolResult.artifacts?.length &&
+      deps.request.documentOutcomePolicy?.required
+    ) {
+      const artifactsByPath = new Map(
+        (deps.request.documentArtifactObservations || []).map((artifact) => [
+          artifact.storedPath,
+          artifact,
+        ]),
+      );
+      for (const artifact of toolResult.artifacts) {
+        artifactsByPath.set(artifact.storedPath, artifact);
+      }
+      deps.request.documentArtifactObservations = [...artifactsByPath.values()];
+    }
+    if (
+      !cachedPaperEvidence &&
+      toolResult.ok &&
+      executedCall.toolDefinition?.spec.executionClass === "read"
+    ) {
+      const observations = await createTrustedReadObservations({
+        toolName: toolResult.name,
+        callId: toolResult.callId,
+        input: executedCall.input,
+        result: toolResult.content,
+      });
+      if (observations.length) {
+        const merged = new Map(
+          (deps.request.documentReadObservations || []).map((entry) => [
+            entry.observationId,
+            entry,
+          ]),
+        );
+        for (const observation of observations) {
+          merged.set(observation.observationId, observation);
+        }
+        deps.request.documentReadObservations = [...merged.values()];
+        executedCall.documentEvidenceRefs = observations.map((observation) => ({
+          evidenceRef: observation.observationId,
+          libraryID: observation.libraryID,
+          itemKey: observation.itemKey,
+          capabilities: observation.capabilities,
+          attachmentItemKey: observation.attachmentItemKey,
+          pageIndex: observation.pageIndex,
+          sourceFingerprint: observation.sourceFingerprint,
+        }));
+      }
+    }
+    let paperEvidenceFrontierState:
+      | "advanced"
+      | "unchanged"
+      | "unavailable"
+      | undefined = cachedPaperEvidence?.frontier;
+    if (!cachedPaperEvidence && toolResult.ok && call.name === "paper_read") {
+      const originalContent = toolResult.content;
+      const processed = await deps.paperEvidenceFrontier.processResult({
+        input: executedCall.input,
+        content: originalContent,
+        toolCallId: call.id,
+        resourceSignature: deps.resourceContextPlan.resourceSignature,
+        persistOriginal: async (content) => {
+          const inputDigest = `sha256:${await sha256Text(
+            canonicalJson(executedCall.input),
+          )}`;
+          const record = createAgentToolResultHandleRecord({
+            conversationKey: deps.request.conversationKey,
+            toolName: call.name,
+            toolCallId: call.id,
+            inputDigest,
+            resourceSignature: deps.resourceContextPlan.resourceSignature,
+            content,
+            createdAt: deps.now(),
+          });
+          if (!record) return undefined;
+          await deps.persistToolResultHandles([record]);
+          deps.preservedTurnHandleRecords.push(record);
+          deps.setToolResultReadAvailable(true);
+          setToolResultReadAvailability(deps.request, true);
+          return record.handle;
+        },
+      });
+      toolResult.content = processed.content;
+      readActivityContent = processed.originalContent ?? originalContent;
+      paperEvidenceFrontierState = processed.frontier;
+    }
+    deps.toolExecutionRecords.push({
+      name: toolResult.name,
+      ok: toolResult.ok,
+      mutability:
+        executedCall.toolDefinition?.spec.executionClass === "external_effect"
+          ? "write"
+          : "read",
+      effect: toolResult.effect,
+      input: executedCall.input,
+      content: toolResult.content,
+      actionReceipts: toolResult.actionReceipts,
+    });
+    if (toolResult.ok) {
+      if (paperEvidenceFrontierState !== "unchanged") {
+        deps.pendingReadActivities.push({
+          toolName: toolResult.name,
+          toolLabel:
+            typeof executedCall.toolDefinition?.presentation?.label === "string"
+              ? executedCall.toolDefinition.presentation.label
+              : undefined,
+          input: executedCall.input,
+          content: readActivityContent,
+          artifacts: toolResult.artifacts,
+          request: deps.request,
+          timestamp: deps.now(),
+        });
+      }
+    } else {
+      const rawError = readToolError(toolResult);
+      const userDenied = isUserDeniedToolResult(toolResult);
+      // A denial is the user steering, not the tool failing. Counting it
+      // meant three careful "Cancel" clicks failed the run outright and
+      // -- because persistence is gated on completion -- discarded its
+      // memory along with it.
+      if (rawError && !userDenied) {
+        await deps.emit({
+          type: "tool_error",
+          callId: toolResult.callId,
+          name: toolResult.name,
+          error: rawError,
+          round,
+          toolLabel,
+          workCategory,
+        });
+      }
+    }
+    await emitCallStage(toolResult.ok ? "completed" : "failed", {
+      receiptIds: toolResult.actionReceipts?.length
+        ? toolResult.actionReceipts.map((receipt) => receipt.id)
+        : undefined,
+      materialRef: toolResult.materialRef,
+    });
+    await deps.emit({
+      type: "tool_result",
+      callId: toolResult.callId,
+      name: toolResult.name,
+      ok: toolResult.ok,
+      toolLabel,
+      workCategory,
+      effect: toolResult.effect,
+      authority: toolResult.authority,
+      actionReceipts: toolResult.actionReceipts,
+      content: toolResult.content,
+      artifacts: toolResult.artifacts,
+      executionId:
+        deps.request.planContext?.phase === "executing"
+          ? deps.request.planContext.executionId
+          : undefined,
+      taskId:
+        deps.request.planContext?.phase === "executing"
+          ? deps.request.planContext.activeTaskId
+          : undefined,
+    });
+    if (toolResult.materialRef) {
+      deps.finalizedMaterialRefs.set(
+        toolResult.materialRef.documentId,
+        toolResult.materialRef,
+      );
+      await deps.emit(
+        buildAgentStageEvent({
+          stage: "generation",
+          status: "completed",
+          callId: toolResult.callId,
+          toolName: toolResult.name,
+          toolLabel,
+          materialRef: toolResult.materialRef,
+        }),
+      );
+      await deps.emit({
+        type: "material_finalized",
+        materialRef: toolResult.materialRef,
+        materialKind: toolResult.materialKind,
+        materialTitle: toolResult.materialTitle,
+        callId: toolResult.callId,
+      });
+    }
+    // A batch announces its items one by one. They are deliberately not
+    // `material_finalized`: fifty note bodies are recovered from the
+    // batch's own durable rows, not from the turn's material ledger.
+    for (const item of toolResult.batchItems || []) {
+      // A pending row is one this run has not written yet: not a
+      // completion and not a failure, and the stage vocabulary has no
+      // third outcome. It reports no stage rather than a wrong one; the
+      // row itself still says the note is not written.
+      if (item.status !== "pending")
+        await deps.emit(
+          buildAgentStageEvent({
+            stage: "zotero_action",
+            status: item.status === "saved" ? "completed" : "failed",
+            callId: toolResult.callId,
+            toolName: toolResult.name,
+            toolLabel,
+            batchId: item.batchId,
+            itemKey: item.itemKey,
+            materialRef: item.materialRef,
+          }),
+        );
+      await deps.emit({
+        type: "batch_item_outcome",
+        batchId: item.batchId,
+        itemKey: item.itemKey,
+        materialRef: item.materialRef,
+        status: item.status,
+        written: item.written,
+        noteId: item.noteId,
+        error: item.error,
+        callId: toolResult.callId,
+      });
+    }
+    await deps.actionContractSession.recordToolReceipts(
+      toolResult.actionReceipts,
+    );
+    await deps.activePlanSession.recordToolResult({
+      toolName: toolResult.name,
+      executionClass: executedCall.toolDefinition?.spec.executionClass,
+      input: executedCall.input,
+      result: toolResult,
+      artifacts: toolResult.artifacts,
+      runId: deps.runId,
+    });
+    return executedCall;
+  };
+  const buildToolDelivery = async (
+    toolResult: AgentToolResult,
+    callId: string,
+    toolDefinition?: import("../types").AgentToolDefinition<any, any>,
+    contentOverride?: unknown,
+    extraFollowupMessages: AgentModelMessage[] = [],
+  ): Promise<ToolWorkflowDelivery> => {
+    const followupMessage = toolDefinition?.buildFollowupMessage
+      ? await toolDefinition.buildFollowupMessage(toolResult, {
+          ...deps.context,
+          currentAnswerText: deps.getCurrentAnswerText(),
+        })
+      : await buildArtifactFollowupMessage(toolResult, {
+          contentInputs: resolveCapabilitiesContentInputs(
+            deps.adapterCapabilities,
+          ),
+          modelName: deps.request.model,
+        });
+    const filteredFollowupMessage = filterFollowupMessageForCapabilities(
+      followupMessage,
+      deps.adapterCapabilities,
+      deps.request.model,
+    );
+    const followupMessages = extraFollowupMessages
+      .map((message) =>
+        filterFollowupMessageForCapabilities(
+          message,
+          deps.adapterCapabilities,
+          deps.request.model,
+        ),
+      )
+      .filter((message): message is AgentModelMessage => Boolean(message));
+    if (filteredFollowupMessage) {
+      followupMessages.push(filteredFollowupMessage);
+    }
+    const rawContent = contentOverride ?? toolResult.content;
+    const contentWithReceipt =
+      rawContent && typeof rawContent === "object" && !Array.isArray(rawContent)
+        ? {
+            ...(rawContent as Record<string, unknown>),
+            actionReceipts: toolResult.actionReceipts,
+          }
+        : {
+            content: rawContent,
+            actionReceipts: toolResult.actionReceipts,
+          };
+    return {
+      callId,
+      name: toolResult.name,
+      content: {
+        ...contentWithReceipt,
+        ...(deps.activePlanSession.workflowProgress()
+          ? { planProgress: deps.activePlanSession.workflowProgress() }
+          : {}),
+      },
+      followupMessages,
+    };
+  };
+  const executeToolWorkflow = async (
+    call: AgentToolCall,
+    round: number,
+    options: {
+      modelCallId?: string;
+      preparedAction?: PreparedActionCall;
+      suppressModelDelivery?: boolean;
+      inheritedApproval?: AgentInheritedApproval;
+      checkpointedWorkflow?: boolean;
+    } = {},
+  ): Promise<ToolWorkflowOutcome> => {
+    if (deps.signal?.aborted) throw new Error("Aborted");
+    if (!deps.writeAllowed()) {
+      return {
+        failed: true,
+        stopRun: true,
+        finalText: "Conversation lifecycle changed before execution.",
+        toolResult: {
+          callId: call.id,
+          name: call.name,
+          ok: false,
+          actionReceipts: [
+            createUnverifiedReceipt({
+              reason: "Conversation lifecycle changed before execution.",
+            }),
+          ],
+          content: {
+            error:
+              "Conversation lifecycle changed before this tool could execute.",
+          },
+        },
+      };
+    }
+    // A provider may batch a prerequisite read and a bound action. Recheck
+    // readiness at this tool boundary, using the host's canonical arguments
+    // while preserving the provider call ID solely for result delivery.
+    let preparedAction = options.preparedAction;
+    if (!preparedAction && options.modelCallId && !options.inheritedApproval) {
+      const next = await deps.registry.getNextWorkflowStep(
+        deps.request,
+        deps.activePlanSession.activeWorkflowObligationIds(),
+      );
+      if (next.kind === "action" && next.prepared.call.name === call.name)
+        preparedAction = next.prepared;
+    }
+    if (preparedAction) call = preparedAction.call;
+    const executedCall = await executePreparedToolCall(call, round, {
+      inheritedApproval: options.inheritedApproval,
+      checkpointedWorkflow:
+        Boolean(preparedAction) || options.checkpointedWorkflow,
+    });
+    const { toolResult, toolDefinition, input, documentEvidenceRefs } =
+      executedCall;
+    const deliveryCallId = options.modelCallId || call.id;
+    const contentForModel = documentEvidenceRefs?.length
+      ? toolResult.content &&
+        typeof toolResult.content === "object" &&
+        !Array.isArray(toolResult.content)
+        ? {
+            ...(toolResult.content as Record<string, unknown>),
+            documentEvidenceRefs,
+          }
+        : { content: toolResult.content, documentEvidenceRefs }
+      : undefined;
+
+    if (preparedAction) {
+      const verified =
+        toolResult.ok &&
+        toolResult.actionReceipts.some(
+          (receipt) =>
+            receipt.obligationId === preparedAction.obligationId &&
+            receipt.verification === "verified" &&
+            ["applied", "already_satisfied"].includes(receipt.status),
+        );
+      if (!verified) {
+        const failure =
+          readToolError(toolResult) ||
+          "The requested state change could not be verified. Remaining actions have not been executed; recorded progress has been retained.";
+        return {
+          toolResult,
+          failed: true,
+          stopRun: true,
+          finalText: failure,
+          delivery: options.suppressModelDelivery
+            ? undefined
+            : await buildToolDelivery(
+                toolResult,
+                deliveryCallId,
+                toolDefinition,
+                { error: failure, result: toolResult.content },
+              ),
+        };
+      }
+      deps.workflowSummaries.push(preparedAction.summary);
+    }
+
+    if (toolResult.ok && toolDefinition?.resolveTerminalResult) {
+      const terminal = await toolDefinition.resolveTerminalResult(
+        input as never,
+        toolResult,
+        { ...deps.context, currentAnswerText: deps.getCurrentAnswerText() },
+      );
+      if (terminal) {
+        if (terminal.documentId) {
+          deps.setFinalizedMaterial({
+            documentId: terminal.documentId,
+            finalText: terminal.finalText,
+          });
+          const actionDecision = await deps.actionContractSession.evaluateFinal(
+            {
+              canCorrect: true,
+            },
+          );
+          const planDecision = await deps.activePlanSession.evaluateFinal({
+            canCorrect: true,
+          });
+          if (
+            actionDecision.kind !== "accept" ||
+            planDecision.kind !== "accept"
+          ) {
+            const remainingWork =
+              actionDecision.kind === "correct"
+                ? actionDecision.correction
+                : actionDecision.kind === "fail"
+                  ? actionDecision.failure
+                  : planDecision.kind === "correct"
+                    ? planDecision.correction
+                    : planDecision.kind === "fail"
+                      ? planDecision.failure
+                      : "";
+            return {
+              toolResult,
+              delivery: options.suppressModelDelivery
+                ? undefined
+                : await buildToolDelivery(
+                    toolResult,
+                    deliveryCallId,
+                    toolDefinition,
+                    {
+                      content: contentForModel || toolResult.content,
+                      remainingWork,
+                      finalizedDocumentId: terminal.documentId,
+                      instruction:
+                        "The material is finalized and preserved. Complete the remaining authorized actions using this finalized payload; do not regenerate the document.",
+                    },
+                  ),
+            };
+          }
+        }
+        return {
+          toolResult,
+          delivery: options.suppressModelDelivery
+            ? undefined
+            : await buildToolDelivery(
+                toolResult,
+                deliveryCallId,
+                toolDefinition,
+                contentForModel,
+              ),
+          stopRun: true,
+          finalText: terminal.finalText,
+          documentId: terminal.documentId || terminal.planDocumentId,
+          preserveToolOnlyTranscript:
+            terminal.providerTranscript === "tool_only",
+        };
+      }
+    }
+
+    if (
+      toolResult.ok &&
+      toolDefinition?.createResultReviewAction &&
+      toolDefinition.resolveResultReview
+    ) {
+      const currentResult = toolResult;
+      const currentInput = input;
+      while (true) {
+        const reviewAction = await toolDefinition.createResultReviewAction(
+          currentInput as never,
+          currentResult,
+          {
+            ...deps.context,
+            currentAnswerText: deps.getCurrentAnswerText(),
+          },
+        );
+        if (!reviewAction) {
+          if (options.suppressModelDelivery) {
+            return { toolResult: currentResult };
+          }
+          return {
+            toolResult: currentResult,
+            delivery: await buildToolDelivery(
+              currentResult,
+              deliveryCallId,
+              toolDefinition,
+              contentForModel,
+            ),
+          };
+        }
+
+        const { resolution } = await deps.requestActionResolution(reviewAction);
+        if (deps.signal?.aborted || !deps.writeAllowed()) {
+          return { toolResult: currentResult };
+        }
+        const reviewOutcome = await toolDefinition.resolveResultReview(
+          currentInput as never,
+          currentResult,
+          resolution,
+          {
+            ...deps.context,
+            currentAnswerText: deps.getCurrentAnswerText(),
+          },
+        );
+
+        if (reviewOutcome.kind === "deliver") {
+          // Completion follows the latest review continuation, including a
+          // request for more papers that has not triggered another search.
+          const reviewRecord = deps.toolExecutionRecords.findLast(
+            (record) => record.name === currentResult.name,
+          );
+          if (reviewRecord && reviewOutcome.toolMessageContent !== undefined) {
+            reviewRecord.content = reviewOutcome.toolMessageContent;
+          }
+          return options.suppressModelDelivery
+            ? { toolResult: currentResult }
+            : {
+                toolResult: currentResult,
+                delivery: await buildToolDelivery(
+                  currentResult,
+                  deliveryCallId,
+                  toolDefinition,
+                  reviewOutcome.toolMessageContent,
+                  reviewOutcome.followupMessages || [],
+                ),
+              };
+        }
+
+        if (reviewOutcome.kind === "stop") {
+          return {
+            toolResult: currentResult,
+            stopRun: true,
+            finalText: reviewOutcome.finalText,
+          };
+        }
+
+        const chainedCall = buildSyntheticToolCall(
+          reviewOutcome.call.name,
+          reviewOutcome.call.arguments,
+        );
+        const inheritedApproval = reviewOutcome.call.inheritedApproval
+          ? {
+              ...reviewOutcome.call.inheritedApproval,
+              approvedCallDigest: buildActionCallDigest(
+                chainedCall.name,
+                chainedCall.arguments,
+              ),
+            }
+          : undefined;
+        const chainedOutcome = await executeToolWorkflow(chainedCall, round, {
+          modelCallId: deliveryCallId,
+          suppressModelDelivery: Boolean(reviewOutcome.terminalText),
+          inheritedApproval,
+        });
+        if (reviewOutcome.terminalText) {
+          const finalText = chainedOutcome.toolResult.ok
+            ? reviewOutcome.terminalText.onSuccess
+            : isUserDeniedToolResult(chainedOutcome.toolResult)
+              ? reviewOutcome.terminalText.onDenied
+              : reviewOutcome.terminalText.onError;
+          return {
+            toolResult: chainedOutcome.toolResult,
+            stopRun: true,
+            finalText,
+          };
+        }
+        return chainedOutcome;
+      }
+    }
+
+    if (options.suppressModelDelivery) {
+      return { toolResult };
+    }
+    return {
+      toolResult,
+      delivery: await buildToolDelivery(
+        toolResult,
+        deliveryCallId,
+        toolDefinition,
+        contentForModel,
+      ),
+    };
+  };
+
+  return { executePreparedToolCall, buildToolDelivery, executeToolWorkflow };
+}

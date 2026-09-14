@@ -14,7 +14,7 @@ import { estimateTextTokens } from "../src/utils/modelInputCap";
 
 const STOCK_SKILL_WORKFLOW_MARKERS: Record<string, string[]> = {
   "analyze-figures.md": [
-    "shared semantic intent",
+    "direct tool loop",
     "When crop extraction fails",
     "Requested persistence",
   ],
@@ -88,7 +88,7 @@ describe("instruction harness inventory", function () {
     const prompt = AGENT_PERSONA_INSTRUCTIONS.join("\n");
     assert.include(
       prompt,
-      "literature_review to present discovery results (its selection card appears in safe mode or when the user asks to choose; discovery never imports on its own in any mode)",
+      "literature_review to present a requested discovery shortlist (calling it always opens the paper selection card; discovery never imports on its own in any mode)",
     );
     assert.include(prompt, "library_import only for explicit import requests");
     assert.notInclude(prompt, "only for imports, note saving");

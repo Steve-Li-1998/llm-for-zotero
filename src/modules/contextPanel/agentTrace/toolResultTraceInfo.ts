@@ -2,7 +2,7 @@ import type {
   AgentRunEventRecord,
   AgentTraceDetail,
 } from "../../../agent/types";
-import { sanitizeText } from "../textUtils";
+import { sanitizeText } from "../../../utils/textSanitization";
 
 type ToolResultPayload = Extract<
   AgentRunEventRecord["payload"],
@@ -183,8 +183,16 @@ function buildTraceResultPreview(content: string): string | null {
   return preview || null;
 }
 
+/**
+ * What a tool result adds to the row that asked for it.
+ *
+ * `rowSuffix` is offered whenever the result is text the tool numbered by
+ * line, which is what makes a range meaningful; the caller applies it only to
+ * a row that would otherwise say nothing but the tool's name. Reading the
+ * shape of the result rather than the name of the tool is what lets a file
+ * reader the registry has never heard of still report what it read.
+ */
 export function buildToolResultTraceInfo(
-  toolName: string,
   result: ToolResultPayload | undefined,
 ): ToolResultTraceInfo | null {
   if (!result) return null;
@@ -196,9 +204,7 @@ export function buildToolResultTraceInfo(
     );
     if (rangeLabel) {
       pushTraceDetail(details, "Result range", rangeLabel);
-      if (toolName === "Read") {
-        rowSuffix = rangeLabel.toLowerCase();
-      }
+      rowSuffix = rangeLabel.toLowerCase();
     }
     pushTraceDetail(
       details,

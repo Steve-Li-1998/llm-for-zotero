@@ -39,7 +39,7 @@ import {
   collectAttachmentHashesFromMessages,
   findTurnPairByTimestamps,
 } from "./turnMessageUtils";
-import { removeConversationAttachmentFiles } from "./attachmentStorage";
+import { removeConversationAttachmentFiles } from "../../services/attachmentStorage";
 import {
   buildClaudeScope,
   invalidateClaudeConversationSession,

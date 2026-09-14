@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   orderQuoteValidationBatchByViewportPriority,
   resolveQuoteValidationIdleTimeouts,
-} from "../src/modules/contextPanel/chat";
+} from "../src/modules/contextPanel/quoteValidation/scheduling";
 import type { Message } from "../src/modules/contextPanel/types";
 
 function assistant(label: string): Message {
@@ -102,10 +102,10 @@ describe("quote validation scheduling", function () {
 
 describe("quote source warming bounds", function () {
   it("stops warming before it can evict its own page-text cache", function () {
-    const chatSource = readFileSync(
+    const sourceEvidenceSource = readFileSync(
       resolve(
         dirname(fileURLToPath(import.meta.url)),
-        "../src/modules/contextPanel/chat.ts",
+        "../src/modules/contextPanel/quoteValidation/sourceEvidence.ts",
       ),
       "utf8",
     );
@@ -117,7 +117,9 @@ describe("quote source warming bounds", function () {
       "utf8",
     );
     const warmLimit = Number(
-      /const MAX_WARMED_QUOTE_SOURCE_PAPERS = (\d+)/.exec(chatSource)?.[1],
+      /const MAX_WARMED_QUOTE_SOURCE_PAPERS = (\d+)/.exec(
+        sourceEvidenceSource,
+      )?.[1],
     );
     const cacheLimit = Number(
       /const MAX_PAGE_TEXT_CACHE_ENTRIES = (\d+)/.exec(locatorSource)?.[1],
@@ -132,6 +134,9 @@ describe("quote source warming bounds", function () {
     );
     // A library-chat answer can carry many evidence papers; the warm loop must
     // apply the bound rather than iterating everything it is handed.
-    assert.include(chatSource, "MAX_WARMED_QUOTE_SOURCE_PAPERS,\n  );");
+    assert.include(
+      sourceEvidenceSource,
+      "MAX_WARMED_QUOTE_SOURCE_PAPERS,\n  );",
+    );
   });
 });

@@ -481,6 +481,44 @@ describe("agent prompt budget", function () {
     assert.notInclude(JSON.stringify(modelFacing), "Q_orphan_1");
   });
 
+  /**
+   * Host state the model should see once is marked transient. The transcript
+   * compactor already refuses to fold such a message into a durable summary;
+   * the prompt budget builds its own checkpoint and must refuse it too, or a
+   * compacted turn would keep telling the model to save material that has
+   * since been written.
+   */
+  it("never folds a transient host message into the history checkpoint", function () {
+    const blockHeader = "Finalized material available (not saved as a note):";
+    const messages: AgentModelMessage[] = [
+      { role: "system", content: "Use tools." },
+      { role: "user", content: "Old context ".repeat(10_000) },
+      { role: "assistant", content: "Old answer." },
+      {
+        role: "user",
+        transient: true,
+        content: `${blockHeader}\ndocumentId=doc-1 version=1 hash=sha256:guide title="Representational drift" status=finalized`,
+      },
+      { role: "user", content: "Save that as a note." },
+    ];
+    const result = enforceAgentPromptBudget({
+      messages,
+      model: "claude-haiku-4-5",
+      inputTokenCap: 4_000,
+    });
+    assert.isTrue(result.changed);
+    assert.include(
+      String(result.messages[1].content),
+      "Agent context checkpoint",
+      "the older turns were reduced to a checkpoint",
+    );
+    assert.notInclude(
+      result.messages.map((message) => String(message.content)).join("\n"),
+      blockHeader,
+      "a transient message must not survive compaction in any form",
+    );
+  });
+
   it("adds handles to history checkpoints for dropped older tool results", function () {
     const messages: AgentModelMessage[] = [
       { role: "system", content: "Use tools." },

@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { executePreparedNoteChange } from "../src/agent/tools/write/preparedNoteChange";
 import { executeNoteCreation } from "../src/agent/services/noteCreation";
@@ -6,8 +7,8 @@ import {
   listJournalActions,
 } from "../src/agent/store/changeJournal";
 import { canonicalNoteHtml, noteHtmlMatches } from "../src/utils/noteHtml";
-import { renderRawNoteHtml } from "../src/modules/contextPanel/notes";
-import { persistVerifiedNoteHtml } from "../src/modules/contextPanel/notePersistence";
+import { renderRawNoteHtml } from "../src/services/notes/noteRendering";
+import { persistVerifiedNoteHtml } from "../src/services/notePersistence";
 
 describe("workflow: verified note writing pipeline", function () {
   this.timeout(60000);

@@ -6,6 +6,7 @@ import {
   LibraryMutationService,
   type TrashItemsOperation,
 } from "../../services/libraryMutationService";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import type { AgentWriteToolDefinition } from "../../types";
 import { fail, normalizePositiveIntArray, ok, validateObject } from "../shared";
@@ -27,6 +28,8 @@ export function createTrashItemsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["trash_items"],
     spec: {
       name: "trash_items",
       description: "Move Zotero items to the trash.",
@@ -43,7 +46,7 @@ export function createTrashItemsTool(
         },
       },
       executionClass: "external_effect",
-      requiresConfirmation: true,
+      workCategory: "zotero_action",
     },
 
     presentation: {

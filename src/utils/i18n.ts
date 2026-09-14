@@ -21,6 +21,12 @@ const zhCN: Record<string, string> = {
 
   // ── Chat panel UI ───────────────────────────────────────────────────────
   "LLM-for-Zotero": "LLM-for-Zotero",
+  "Sidebar layout": "侧栏布局",
+  "Independent (default)": "独立（默认）",
+  Stacked: "堆叠",
+  "Show chat in its own sidebar or alongside Zotero’s other item sections. Changes apply immediately.":
+    "将对话显示在独立侧栏中，或与 Zotero 的其他条目面板堆叠显示。更改立即生效。",
+
   "Start a new chat": "开始新对话",
   "Conversation history": "对话历史",
   "Conversation query navigator": "对话问题导航",
@@ -388,12 +394,12 @@ const zhCN: Record<string, string> = {
   "Permission mode": "权限模式",
   safe: "安全",
   yolo: "全自动",
-  "Requested new notes are created directly. Other writes, commands, scripts, and network actions are shown for review first. Literature discovery shows a selection card.":
-    "直接创建用户请求的新笔记。其他写入、命令、脚本和网络操作会先显示以供审核。文献发现会显示选择卡片。",
-  "Requested actions run without review. Existing-note edits are applied and then shown as a diff. The agent asks only for genuine ambiguity in the request or for dangerous shell commands.":
-    "请求的操作无需审核即可执行。对现有笔记的编辑会先应用，再以差异形式展示。仅在请求确有歧义或涉及危险的 shell 命令时，Agent 才会询问。",
-  "The agent acts on its own judgment without asking and may take actions beyond the literal request. Explicit prohibitions, protected items, the database, plan integrity checks, chat-only memory, and the paper selection card before importing discovered papers remain enforced. Also applies to plugin tools called by Claude Code or Codex.":
-    "Agent 自行判断并执行，不再询问，且可以执行超出字面请求的操作。明确的禁止事项、受保护条目、数据库、计划完整性检查、仅限对话的记忆，以及导入已发现论文前的论文选择卡片仍然生效。同样适用于 Claude Code 或 Codex 调用的插件工具。",
+  "Every external write, including new-note creation, is shown for review before it runs. Reads do not require review.":
+    "所有外部写入（包括创建新笔记）在执行前都会显示以供审核。读取操作无需审核。",
+  "Reads, ordinary writes and recoverable changes run automatically. Other actions receive model review; confirmation is requested only for unclear intent, excessive risk, or unavailable review.":
+    "读取、常规写入和可恢复更改会自动执行。其他操作由模型审核；仅在意图不明确、风险过高或审核不可用时请求确认。",
+  "The Original Agent acts without permission prompts or approval-model calls, including ambiguous or dangerous actions. Explicit restrictions, requested review workflows, execution integrity and required paper selection remain enforced. Claude Code, Codex, and external MCP callers keep their own permission controls.":
+    "原生 Agent 执行操作时不会请求权限确认或调用审批模型，包括有歧义或危险的操作。明确限制、用户要求的审核流程、执行完整性及必要的论文选择仍然有效。Claude Code、Codex 和外部 MCP 调用方保留各自的权限控制。",
   "This setting controls every Original Agent action, including Zotero changes, local files, commands, scripts, and network tools. Claude Code and Codex keep their own independent native permission profiles. Reversible Original Agent changes are recorded and can be reverted from Agent history.":
     "此设置控制原生 Agent 的所有操作，包括 Zotero 更改、本地文件、命令、脚本和网络工具。Claude Code 和 Codex 保留各自独立的原生权限配置。原生 Agent 的可撤销更改会被记录，并可从 Agent 历史记录中撤销。",
   "Tavily Web Search": "Tavily 网页搜索",
@@ -721,6 +727,8 @@ const zhCN: Record<string, string> = {
     "预设使用 MiniMax 推荐的 Anthropic 兼容端点。",
   "Preset uses GLM's Claude-compatible endpoint for agent tool use.":
     "预设使用 GLM 面向 Agent 工具调用的 Claude 兼容端点。",
+  "Gateway for a curated set of models from several vendors, billed on one key.":
+    "多家服务商精选模型的聚合网关，统一使用一个密钥计费。",
   "Preset uses DeepSeek's Anthropic-compatible endpoint for reliable agent tool use.":
     "预设使用 DeepSeek 面向稳定 Agent 工具调用的 Anthropic 兼容端点。",
   "Preset uses xAI's official Responses endpoint.":
@@ -922,6 +930,101 @@ const zhCN: Record<string, string> = {
   "Managed block updated": "托管块已更新",
   "Failed to update CLAUDE.md": "更新 CLAUDE.md 失败",
 
+  // ── Agent tab: collapsible runtime rows ────────────────────────────
+  "Three runtimes can answer in the chat panel. Turn on the ones you want; the runtime you pick in the chat header answers a given turn.":
+    "聊天面板中可以有三种运行时来回答。开启你需要的运行时；实际回答的是你在聊天标题栏中选择的那一个。",
+  Runtimes: "运行时",
+  "Original Agent": "原生 Agent",
+  "Built in · Beta": "内置 · 测试版",
+  'The agent that ships with the plugin. Turning it on adds the "Agent (beta)" toggle to the chat context bar, which runs the multi-step assistant inside Zotero. Its library permissions are independent from the permission controls for Claude Code and Codex.':
+    "插件自带的 Agent。开启后会在聊天上下文栏显示“Agent（测试版）”切换按钮，多步骤助手将完全在 Zotero 内运行。它的文献库权限与 Claude Code 和 Codex 的权限控制彼此独立。",
+  Permissions: "权限",
+  "Web search": "网页搜索",
+  "Runs the Codex CLI as a local app server. Run":
+    "以本地 app server 方式运行 Codex CLI。启用前请先运行",
+  "before turning it on. Codex controls tool approval through its own permission profile. When enabled, Zotero adds a Codex button to the chat header. Codex and Claude Code can both be enabled; only the selected runtime is active.":
+    "。Codex 通过自己的权限配置控制工具审批。启用后，Zotero 会在聊天标题栏添加 Codex 按钮。Codex 和 Claude Code 可以同时启用；只有所选的运行时会生效。",
+  "Permission profile": "权限配置",
+  "The profile comes from Codex's own configuration. Change it in Codex; Zotero reads it so you can see what the runtime is allowed to do.":
+    "该配置来自 Codex 自身的配置文件。请在 Codex 中修改；Zotero 只是读取它，让你看到该运行时被允许做什么。",
+  Advanced: "高级",
+  "Codex CLI path": "Codex CLI 路径",
+  "Leave blank to search your PATH.": "留空则从 PATH 中查找。",
+  "Runs the embedded Claude runtime against your library. When enabled, Zotero adds a Claude Code button to the chat header; you enter Claude Code mode from there, not from settings. Codex and Claude Code can both be enabled; only the selected runtime is active.":
+    "在你的文献库上运行内嵌的 Claude 运行时。启用后，Zotero 会在聊天标题栏添加 Claude Code 按钮；你从那里进入 Claude Code 模式，而不是在设置中切换。Codex 和 Claude Code 可以同时启用；只有所选的运行时会生效。",
+  "Default model": "默认模型",
+  "Default reasoning": "默认推理",
+  "The mode comes from your Claude Code settings. Change it in Claude Code; Zotero reads it so you can see what the runtime is allowed to do.":
+    "该模式来自你的 Claude Code 设置。请在 Claude Code 中修改；Zotero 只是读取它，让你看到该运行时被允许做什么。",
+  Conversation: "对话",
+  Streaming: "流式输出",
+  "Show answers as they stream": "边生成边显示回答",
+  "Shows Claude answers chunk by chunk while they stream, instead of waiting until the final answer is assembled.":
+    "流式输出时逐块显示 Claude 回答，而不是等最终回答组装完成后再显示。",
+  "Auto-compact": "自动压缩",
+  "Compact long conversations automatically": "自动压缩较长的对话",
+  Sends: "会发送",
+  "before a new Claude turn once context usage crosses this threshold.":
+    "，时机是上下文用量超过此阈值后、新的 Claude 回合开始之前。",
+  "Zotero sends Claude requests to this local bridge service. Only change it if you run the bridge yourself.":
+    "Zotero 会把 Claude 请求发送到这个本地 bridge 服务。只有你自己运行 bridge 时才需要修改。",
+  "Where Claude loads its settings from. Most users should keep":
+    "Claude 从哪里加载设置。大多数用户应保持",
+  ", which loads user + project + local with priority local > project > user.":
+    "，即加载用户 + 项目 + 本地配置，优先级为本地 > 项目 > 用户。",
+  "loads just your machine-wide Claude settings;":
+    "只加载你机器全局的 Claude 设置；",
+  "loads just the Zotero-managed shared and per-conversation settings.":
+    "只加载 Zotero 托管的共享设置和单次对话设置。",
+  "Trace log": "跟踪日志",
+  "Save runtime traces": "保存运行时跟踪",
+  "Records Claude runtime traces to a local file for debugging.":
+    "将 Claude 运行时跟踪记录到本地文件，便于调试。",
+  "Runtime CLAUDE.md": "运行时 CLAUDE.md",
+  "This is the text injected between": "此处是注入到以下两段标记之间的文本：",
+  ". Existing files are preserved and Update only refreshes that managed block. If you are not already comfortable editing Claude Code project instructions, leave this unchanged.":
+    "中。已有文件会保留，点击更新只会刷新该托管块。如果你还不熟悉编辑 Claude Code 项目指令，请保持此项不变。",
+  "Shared by every runtime": "所有运行时共用",
+  "Notes directory": "笔记目录",
+  "A local directory for saving notes as files. Note format and templates are managed through skills — type":
+    "用于把笔记保存为文件的本地目录。笔记格式和模板由 skills 管理 — 在聊天中输入",
+  Directory: "目录",
+  "Default folder": "默认文件夹",
+  "Attachments folder": "附件文件夹",
+  "Test write access": "测试写入权限",
+  "Enable Original Agent": "启用原生 Agent",
+  "Enable Codex": "启用 Codex",
+  "Enable Claude Code": "启用 Claude Code",
+
+  // ── Agent tab: runtime rows, Codex model catalog, merged MCP panel ──
+  "Web search on": "网页搜索已开启",
+  "Web search off": "网页搜索未开启",
+  Notes: "笔记",
+  "Not set": "未设置",
+  "%n models available.": "有 %n 个可用模型。",
+  "Built in": "内置",
+  "Codex CLI": "Codex CLI",
+  "Claude Code CLI": "Claude Code CLI",
+  Safe: "安全",
+  Yolo: "全自动",
+  Refresh: "刷新",
+  "Loading models…": "正在加载模型…",
+  "Customized model": "自定义模型",
+  "Models are read from your installed Codex CLI. Choose Customized to enter a model ID by hand.":
+    "模型列表读取自你已安装的 Codex CLI。选择“自定义”可手动输入模型 ID。",
+  "Reading models…": "正在读取模型…",
+  "Could not read models from the Codex CLI. Use Customized to enter one manually.":
+    "无法从 Codex CLI 读取模型列表。请选择“自定义”手动输入。",
+  "Loading available models…": "正在加载可用模型…",
+  "Could not load models. Use Customized to enter one manually.":
+    "无法加载模型列表。请选择“自定义”手动输入。",
+  "Choose a model reported by Claude Code. Select Customized to enter an alias, exact model ID, or provider-specific value. Per-response output limit: Managed by runtime.":
+    "从 Claude Code 报告的模型中选择。选择“自定义”可输入别名、精确的模型 ID 或服务商特定值。单次回复输出上限：由运行时管理。",
+  "Zotero MCP": "Zotero MCP",
+  "Built-in runtimes": "内置运行时",
+  "A curated local MCP server that exposes Zotero library and PDF reading plus write operations. The calling client controls approval with its own permission settings. Zotero validates operations, records recovery data, and verifies changes without duplicate permission prompts.":
+    "一个精选的本地 MCP 服务器，提供 Zotero 文献库与 PDF 的读取以及写入操作。审批由调用方客户端按其自身权限设置控制。Zotero 会校验操作、记录可恢复数据并验证修改结果，且不会重复弹出权限提示。",
+
   // Notes and embedding preferences
   "Notes Directory": "笔记目录",
   "Configure a local directory for saving notes as files. Note format and templates are managed through skills — type":
@@ -1108,7 +1211,7 @@ export function getPaperChatStartPageHtml(): string {
         <div class="llm-start-page-desc">
           <p>论文对话回答关于当前活跃论文的问题。论文将在你提问前预加载到上下文中。</p>
           <p>内联添加上下文：<strong>文本</strong>、<strong>截图</strong>或 <strong>@论文</strong>。左键点击论文标签发送 PDF；右键点击切换全文/检索模式。</p>
-          <p>使用文献库对话请点击顶部的<strong>在新窗口中打开</strong>按钮。</p>
+          <p>使用文献库对话请通过顶部的对话模式控件切换。</p>
         </div>
       </div>
     `;
@@ -1120,7 +1223,7 @@ export function getPaperChatStartPageHtml(): string {
       <div class="llm-start-page-desc">
         <p>Paper chat answers questions about your current active paper. The paper will be pre-loaded into context before your first question.</p>
         <p>Add context inline: <strong>text</strong>, <strong>screenshots</strong>, or <strong>@papers</strong>. Left-click a paper chip to send its PDF; right-click to toggle between full-text and retrieval mode.</p>
-        <p>For library chat, click the <strong>Open in Window</strong> button at the top.</p>
+        <p>For library chat, use the chat mode control at the top.</p>
       </div>
     </div>
   `;

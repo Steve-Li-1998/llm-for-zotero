@@ -4,9 +4,9 @@ import { addSelectedTextContext } from "../../contextResolution";
 import {
   clampNumber,
   getSelectedTextWithinBubble,
-  sanitizeText,
   setStatus,
 } from "../../textUtils";
+import { sanitizeText } from "../../../../utils/textSanitization";
 
 type AssistantSelectionPopupDeps = {
   body: Element;

@@ -1,6 +1,8 @@
 import { createElement } from "../../../../utils/domHelpers";
 import { t } from "../../../../utils/i18n";
+import { createHistoryActivityIndicator } from "../../historyActivity";
 import type { ConversationSystem } from "../../../../shared/types";
+import { isConversationKeyForKind } from "../../../../shared/conversationKeySpace";
 import {
   loadTruncatedConversationIndexMatches,
   searchConversationIndexWithStatus,
@@ -363,8 +365,14 @@ export function createHistoryLifecycleController(
     basePaperItem = nextItem;
     return true;
   };
-  const captureOwnedPanelOperation = (operation: string) => {
-    if (!item || !requireCurrentPanelOwnership(deps.body, item, operation)) {
+  const captureOwnedPanelOperation = (
+    operation: string,
+    allowEmpty = false,
+  ) => {
+    if (
+      (!item && !allowEmpty) ||
+      !requireCurrentPanelOwnership(deps.body, item, operation)
+    ) {
       return null;
     }
     const lease = capturePanelOperationLease(deps.body);
@@ -1411,6 +1419,13 @@ export function createHistoryLifecycleController(
           "span",
           "llm-history-item-title",
         );
+        titleRow.appendChild(
+          createHistoryActivityIndicator(
+            body.ownerDocument as Document,
+            entry.conversationKey,
+            t("Working"),
+          ),
+        );
         const displayTitle = formatHistoryRowDisplayTitle(entry.title);
         titleSpan.title = entry.title;
         const searchResult = searchResultsByKey.get(entry.conversationKey);
@@ -1660,7 +1675,11 @@ export function createHistoryLifecycleController(
 
   const refreshGlobalHistoryHeader = async () => {
     if (!historyBar || !titleStatic || !item) {
-      if (titleStatic) titleStatic.style.display = "";
+      if (titleStatic) {
+        titleStatic.style.display = body.closest(".llm-dedicated-chat-pane")
+          ? "none"
+          : "";
+      }
       if (historyBar) historyBar.style.display = "none";
       closeHistoryNewMenu();
       closeHistoryMenu();
@@ -2211,7 +2230,6 @@ export function createHistoryLifecycleController(
     nextConversationKey: number,
   ): Promise<boolean> => {
     if (
-      !item ||
       !requireCurrentPanelOwnership(body, null, "switch-global-conversation")
     ) {
       return false;
@@ -3598,8 +3616,11 @@ export function createHistoryLifecycleController(
   ): Promise<boolean> => {
     const { excludeConversationKey, forceFresh } =
       normalizeCreateConversationOptions(options);
-    if (!item || isNoteSession()) return false;
-    const ownership = captureOwnedPanelOperation("new-global-conversation");
+    if (isNoteSession()) return false;
+    const ownership = captureOwnedPanelOperation(
+      "new-global-conversation",
+      true,
+    );
     if (!ownership) return false;
     closeHistoryNewMenu();
     const libraryID = getCurrentLibraryID();
@@ -3617,26 +3638,45 @@ export function createHistoryLifecycleController(
     let targetConversationKey = 0;
     let reuseReason: "active-draft" | "latest-draft" | null = null;
     const system = getConversationSystem();
+    // The conversation on screen may belong to another runtime: entering Codex
+    // or Claude Code from a library chat runs this with the upstream chat still
+    // mounted. Only a key from the target runtime's own key space may be
+    // offered as that runtime's current draft — reusing a foreign key would
+    // mount the new runtime on the other runtime's conversation, and the
+    // panel's ownership check would then refuse every event aimed at it.
+    const currentGlobalConversationKeyForSystem = (
+      targetSystem: ConversationSystem,
+    ): number => {
+      if (!isGlobalMode()) return 0;
+      const mountedItem = item;
+      if (!mountedItem) return 0;
+      const key = Math.floor(Number(getConversationKey(mountedItem) || 0));
+      if (!Number.isFinite(key) || key <= 0) return 0;
+      return isConversationKeyForKind(targetSystem, "global", key) ? key : 0;
+    };
     const currentCandidate = (() => {
       if (system === "claude_code") {
-        return isGlobalMode()
-          ? getConversationKey(item)
-          : Number(
-              activeClaudeGlobalConversationByLibrary.get(
-                buildClaudeLibraryStateKey(libraryID),
-              ) || 0,
-            );
+        return (
+          currentGlobalConversationKeyForSystem("claude_code") ||
+          Number(
+            activeClaudeGlobalConversationByLibrary.get(
+              buildClaudeLibraryStateKey(libraryID),
+            ) || 0,
+          )
+        );
       }
       if (system === "codex") {
-        return isGlobalMode()
-          ? getConversationKey(item)
-          : Number(
-              activeCodexGlobalConversationByLibrary.get(
-                buildCodexLibraryStateKey(libraryID),
-              ) || 0,
-            );
+        return (
+          currentGlobalConversationKeyForSystem("codex") ||
+          Number(
+            activeCodexGlobalConversationByLibrary.get(
+              buildCodexLibraryStateKey(libraryID),
+            ) || 0,
+          )
+        );
       }
-      return isGlobalMode() &&
+      return item &&
+        isGlobalMode() &&
         isUpstreamGlobalConversationKey(Number(getConversationKey(item) || 0))
         ? getConversationKey(item)
         : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
@@ -4216,7 +4256,7 @@ export function createHistoryLifecycleController(
     modeChipBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!item || isNoteSession() || isWebChatMode()) return;
+      if (isNoteSession() || isWebChatMode()) return;
       if (isGlobalMode()) {
         void switchPaperConversation();
         return;

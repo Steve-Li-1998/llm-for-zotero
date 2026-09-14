@@ -14,7 +14,7 @@ import {
 import type { ScopeValidationFailure } from "../contracts/actionContract";
 import type { AgentActionContract } from "../contracts/types";
 import type { ActionProposal } from "../authorization/types";
-import type { PlanRuntimeContext } from "./types";
+import type { PlanEffectSpecification, PlanRuntimeContext } from "./types";
 import type { PlanExecutionLedger, PlanProvider, TaskEvidence } from "./types";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import {
@@ -215,19 +215,48 @@ export class PlanAmendmentService {
   assertContractRevisionHardBoundaries(params: {
     priorActionContract?: AgentActionContract;
     replacementActionContract?: AgentActionContract;
+    priorEffectSpecification?: PlanEffectSpecification;
+    replacementEffectSpecification?: PlanEffectSpecification;
     replacementHasEffects: boolean;
   }): void {
-    const constraints = params.priorActionContract?.hardConstraints || [];
+    const constraints = [
+      ...(params.priorActionContract?.hardConstraints || []),
+      ...(params.priorEffectSpecification?.constraints || []),
+      ...(params.priorEffectSpecification?.effects.flatMap(
+        (effect) => effect.restrictions,
+      ) || []),
+      ...(params.priorEffectSpecification?.deferredEffects.flatMap(
+        (effect) => effect.restrictions,
+      ) || []),
+    ];
     if (!params.replacementHasEffects || !constraints.length) return;
-    if (constraints.some((constraint) => constraint.kind === "no_write")) {
+    if (
+      params.priorActionContract?.hardConstraints?.some(
+        (constraint) => constraint.kind === "no_write",
+      ) ||
+      constraints.some(
+        (constraint) =>
+          constraint.kind === "deny_effects" &&
+          constraint.effects.includes("create") &&
+          constraint.effects.includes("modify") &&
+          constraint.effects.includes("delete"),
+      )
+    ) {
       throw new Error(
         "The successor Plan cannot add effects because the approved execution has an explicit no-write prohibition.",
       );
     }
     const replacementConstraints = new Set(
-      (params.replacementActionContract?.hardConstraints || []).map((entry) =>
-        canonicalJson(entry),
-      ),
+      [
+        ...(params.replacementActionContract?.hardConstraints || []),
+        ...(params.replacementEffectSpecification?.constraints || []),
+        ...(params.replacementEffectSpecification?.effects.flatMap(
+          (effect) => effect.restrictions,
+        ) || []),
+        ...(params.replacementEffectSpecification?.deferredEffects.flatMap(
+          (effect) => effect.restrictions,
+        ) || []),
+      ].map((entry) => canonicalJson(entry)),
     );
     const removed = constraints.find(
       (constraint) => !replacementConstraints.has(canonicalJson(constraint)),

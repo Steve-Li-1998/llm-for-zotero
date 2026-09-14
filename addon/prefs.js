@@ -1,4 +1,5 @@
 pref("enable", true);
+pref("sidebarLayout", "stacked");
 pref("standaloneSidebarWidth", 220);
 pref("input", "This is input");
 pref("apiBase", "");
@@ -39,6 +40,10 @@ pref("codexAppServerPath", "");
 pref("codexAppServerConversationModeMap", "");
 pref("codexAppServerZoteroMcpToolsEnabled", true);
 pref("externalMcpWritesEnabled", false);
+pref("externalMcpFilesEnabled", false);
+pref("externalMcpCommandsEnabled", false);
+pref("externalMcpReadDirectories", "[]");
+pref("externalMcpWriteDirectories", "[]");
 pref("codexAppServerNativeApprovalsEnabled", false);
 pref("codexAppServerApprovalsReviewer", "user");
 pref("codexAppServerPermissionProfile", ":read-only");

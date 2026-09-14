@@ -13,8 +13,11 @@ import {
   formatPaperSourceLabel,
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,
-} from "./paperAttribution";
-import { mergeQuoteCitations, normalizeQuoteCitations } from "./quoteCitations";
+} from "../../services/paperContent/paperAttribution";
+import {
+  mergeQuoteCitations,
+  normalizeQuoteCitations,
+} from "../../services/quotes/quoteCitations";
 import { getMessageCitationPaperContexts } from "./citationContexts";
 import { bindDocumentQuotesForDisplay } from "./documentQuoteDisplay";
 import { bindDocumentCitationGroupsForDisplay } from "../../agent/documents/citationService";
@@ -152,6 +155,67 @@ export function buildDocumentCitationContext(
   };
 }
 
+/** Roots whose display repair already ran; never repair the same one twice. */
+const citationStyleRegistryRepairRoots = new WeakSet<object>();
+
+/**
+ * Zotero loads its citation style registry inside its own startup step, a few
+ * seconds after the window is usable, and the display binding above is
+ * synchronous. A document rendered in that window therefore shows its grouped
+ * citations raw. Load the registry once, then re-render the still-mounted
+ * document so the group becomes "(Alpha, 2020; Beta, 2021)" with its links.
+ */
+export function scheduleCitationStyleRegistryRepair(params: {
+  document: PlanDocument;
+  root: { isConnected: boolean };
+  rerender: () => void;
+}): boolean {
+  const hasGroupedCluster = params.document.citationBundle.clusters.some(
+    (cluster) => cluster.sources.length > 1,
+  );
+  if (!hasGroupedCluster) return false;
+  const styles = (
+    globalThis as unknown as {
+      Zotero?: {
+        Styles?: { initialized?: () => boolean; init?: () => unknown };
+      };
+    }
+  ).Zotero?.Styles;
+  if (typeof styles?.init !== "function") return false;
+  let initialized = false;
+  try {
+    initialized = styles.initialized?.() === true;
+  } catch (_err) {
+    initialized = false;
+  }
+  if (initialized) return false;
+  // One attempt per root: if the registry never reports itself ready, the
+  // repaired render must not schedule another load forever.
+  if (citationStyleRegistryRepairRoots.has(params.root)) return false;
+  citationStyleRegistryRepairRoots.add(params.root);
+  const report = (error: unknown) => {
+    try {
+      ztoolkit.log(
+        "LLM document citation group display repair unavailable",
+        error,
+      );
+    } catch (_err) {
+      /* ztoolkit is absent outside the plugin runtime. */
+    }
+  };
+  try {
+    void Promise.resolve(styles.init())
+      .then(() => {
+        if (params.root.isConnected) params.rerender();
+      })
+      .catch(report);
+  } catch (error) {
+    report(error);
+    return false;
+  }
+  return true;
+}
+
 export function renderPlanDocumentContent(params: {
   doc: Document;
   root: HTMLElement;
@@ -173,6 +237,11 @@ export function renderPlanDocumentContent(params: {
       params.doc,
     );
   decoratePlanDocumentCitations({ ...params, root: content });
+  scheduleCitationStyleRegistryRepair({
+    document: params.document,
+    root: params.root,
+    rerender: () => renderPlanDocumentContent(params),
+  });
 }
 
 export function getPlanDocumentItemTitle(
@@ -297,9 +366,13 @@ function attachSourceNavigation(
   link.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    void navigatePlanDocumentCitationSource(source).finally(() =>
-      afterNavigate?.(),
-    );
+    // Mirror the quote citation button's completion marker so observers can
+    // tell a started navigation from a finished one.
+    link.dataset.loading = "true";
+    void navigatePlanDocumentCitationSource(source).finally(() => {
+      link.dataset.loading = "false";
+      afterNavigate?.();
+    });
   });
 }
 

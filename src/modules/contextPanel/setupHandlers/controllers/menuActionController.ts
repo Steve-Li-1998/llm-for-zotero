@@ -12,7 +12,7 @@ import {
   createNoteFromChatHistory,
   createStandaloneNoteFromChatHistory,
 } from "../../notes";
-import { isGlobalPortalItem } from "../../portalScope";
+import { isGlobalPortalItem } from "../../../../services/context/portalItems";
 import { isClaudeGlobalPortalItem } from "../../../../claudeCode/portal";
 import { positionMenuBelowButton } from "../../menuPositioning";
 import { renderMermaidSourceToSvg } from "../../renderedMarkdown";

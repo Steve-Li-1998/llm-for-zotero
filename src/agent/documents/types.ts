@@ -13,7 +13,10 @@ export type DocumentSpec = Readonly<{
     | "comparison"
     | "report"
     | "guide"
-    | "custom";
+    | "custom"
+    // One note body of a batch. Host-only: the model never submits this kind,
+    // it authors the bodies and the batch tool finalizes each one.
+    | "note";
   title: string;
   requiredSections: readonly string[];
   requiresReferences: boolean;
@@ -257,6 +260,10 @@ export type PlanDocumentOutboxRecord = Readonly<{
 
 export type SubmitPlanDocumentInput = Readonly<{
   materialOutputId?: string;
+  /** Direct-agent document shape. Approved Plans continue to use their frozen spec. */
+  documentKind?: DocumentSpec["kind"];
+  /** Use research_grounded when claims depend on retrieved literature evidence. */
+  integrityPolicy?: DocumentIntegrityPolicy;
   title: string;
   markdown: string;
   citations: readonly PlanCitationCluster[];

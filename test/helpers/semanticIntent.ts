@@ -129,35 +129,3 @@ export function actionContractFixture(
     intent,
   });
 }
-
-/** Declared semantic fixture transport for runtime tests; no request-language interpretation. */
-export const declaredSemanticInterpreter: Pick<
-  import("../../src/agent/model/semanticIntentService").SemanticIntentService,
-  "interpret"
-> = {
-  async interpret(request) {
-    const { semanticInputDigest } =
-      await import("../../src/agent/model/semanticTransport");
-    const classifiedIntent = request.classifiedIntent;
-    if (!classifiedIntent?.semantic)
-      return {
-        classifiedIntent: null,
-        skillIds: [],
-        degraded: true,
-        failureReason: "not_configured",
-      };
-    return {
-      classifiedIntent: {
-        ...classifiedIntent,
-        semantic: {
-          ...classifiedIntent.semantic,
-          inputDigest: await semanticInputDigest(request),
-        },
-      },
-      skillIds:
-        request.skillRoutingReceipt?.skills.map((skill) => skill.id) || [],
-      routingReceipt: request.skillRoutingReceipt,
-      degraded: false,
-    };
-  },
-};

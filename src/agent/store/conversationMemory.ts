@@ -17,11 +17,11 @@ import {
  * available, so memory survives UI reloads.
  */
 
-type TurnMemory = {
+export type AgentTurnMemory = Readonly<{
   question: string;
-  toolsUsed: string[];
+  toolsUsed: readonly string[];
   answerExcerpt: string;
-};
+}>;
 
 type ZoteroDb = {
   queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
@@ -29,10 +29,10 @@ type ZoteroDb = {
 
 const MEMORY_TABLE = "llm_for_zotero_agent_memory";
 const MAX_MEMORY_TURNS = 6;
-const QUESTION_EXCERPT_LEN = 200;
+export const AGENT_MEMORY_QUESTION_EXCERPT_LENGTH = 200;
 const ANSWER_EXCERPT_LEN = 350;
 
-const store = new Map<number, TurnMemory[]>();
+const store = new Map<number, AgentTurnMemory[]>();
 let initPromise: Promise<boolean> | null = null;
 
 function getDb(): ZoteroDb | null {
@@ -89,22 +89,24 @@ function clipTurnMemory(
   question: string,
   toolsUsed: string[],
   finalAnswer: string,
-): TurnMemory {
+): AgentTurnMemory {
   return {
-    question: question.trim().slice(0, QUESTION_EXCERPT_LEN),
+    question: question.trim().slice(0, AGENT_MEMORY_QUESTION_EXCERPT_LENGTH),
     toolsUsed: [...new Set(toolsUsed)],
     answerExcerpt: finalAnswer.trim().slice(0, ANSWER_EXCERPT_LEN),
   };
 }
 
-function formatMemoryBlock(turns: TurnMemory[]): string {
+export function formatAgentMemoryBlock(
+  turns: readonly AgentTurnMemory[],
+): string {
   if (!turns.length) return "";
   const lines: string[] = [
     "Conversation continuity notes (not a substitute for preserved evidence):",
   ];
   for (const turn of turns) {
     lines.push(
-      `- User asked: "${turn.question}${turn.question.length >= QUESTION_EXCERPT_LEN ? "…" : ""}"`,
+      `- User asked: "${turn.question}${turn.question.length >= AGENT_MEMORY_QUESTION_EXCERPT_LENGTH ? "…" : ""}"`,
     );
     if (turn.toolsUsed.length) {
       lines.push(`  Tools used: ${turn.toolsUsed.join(", ")}`);
@@ -118,7 +120,7 @@ function formatMemoryBlock(turns: TurnMemory[]): string {
 
 async function loadConversationMemory(
   conversationKey: number,
-): Promise<TurnMemory[]> {
+): Promise<AgentTurnMemory[]> {
   const dbReady = await ensureConversationMemoryStore();
   const db = getDb();
   if (!dbReady || !db) return [];
@@ -221,14 +223,14 @@ export async function recordAgentTurn(
 }
 
 /**
- * Returns a formatted block summarising what the agent found in prior turns,
- * or an empty string when no memory exists for the conversation.
+ * Loads recent findings independently of the retained prompt history, so
+ * prompt compaction never deletes the continuity fallback.
  */
-export async function buildAgentMemoryBlock(
+export async function loadAgentTurnMemory(
   conversationKey: number,
-): Promise<string> {
+): Promise<readonly AgentTurnMemory[]> {
   const key = normalizeConversationKey(conversationKey);
-  if (!key) return "";
+  if (!key) return [];
   let turns = store.get(key);
   if (!turns?.length) {
     const expectedGeneration = getConversationWriteGeneration(key);
@@ -238,13 +240,13 @@ export async function buildAgentMemoryBlock(
       areConversationWritesFrozen(key) ||
       !isConversationWriteGenerationCurrent(key, expectedGeneration)
     ) {
-      return "";
+      return [];
     }
     if (turns.length) {
       store.set(key, turns);
     }
   }
-  return formatMemoryBlock(turns || []);
+  return turns || [];
 }
 
 export async function clearAgentMemory(conversationKey: number): Promise<void> {

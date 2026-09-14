@@ -2,8 +2,8 @@ import { assert } from "chai";
 import {
   buildQuoteSourceIndex,
   finalizeAssistantQuoteCitations,
-} from "../src/modules/contextPanel/quoteCitations";
-import { buildFindControllerQuoteQueries } from "../src/modules/contextPanel/quoteTextSearch";
+} from "../src/services/quotes/quoteCitations";
+import { buildFindControllerQuoteQueries } from "../src/services/quotes/quoteTextSearch";
 
 const SOURCE_LABEL = "(Synthetic et al., 2026)";
 const CONTEXT_ITEM_ID = 1001;

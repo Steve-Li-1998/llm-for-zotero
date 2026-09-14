@@ -54,7 +54,7 @@ function readSourceFiles(): Array<{ path: string; content: string }> {
 }
 
 describe("tool guidance contracts", function () {
-  it("derives collection execution guidance from the resolved contract", function () {
+  it("resolves collection identities without treating search results as authority", function () {
     const registry = createBuiltInToolRegistry({
       zoteroGateway: {} as never,
       pdfService: {} as never,
@@ -65,7 +65,8 @@ describe("tool guidance contracts", function () {
       .listToolDefinitions()
       .find((tool) => tool.spec.name === "library_search")!.guidance!
       .instruction;
-    assert.include(guidance, "constraints.collectionMode");
+    assert.include(guidance, "never grant permission");
+    assert.include(guidance, "ask the user instead of guessing");
     assert.notInclude(guidance, "When the user asks to MOVE");
     assert.notInclude(guidance, "let the confirmation card collect");
     const update = registry
@@ -73,8 +74,9 @@ describe("tool guidance contracts", function () {
       .find((tool) => tool.spec.name === "library_update")!;
     const schema = JSON.stringify(update.spec.inputSchema);
     assert.notInclude(schema, "whenever the user says");
-    assert.include(schema, "constraints.collectionMode");
-    assert.include(schema, "sourceCollectionId");
+    assert.notInclude(schema, "constraints.collectionMode");
+    assert.include(schema, '"mode"');
+    assert.include(schema, '"from"');
   });
 
   it("keeps library retrieve reference lists aligned with coverage wording", function () {
@@ -187,7 +189,6 @@ describe("tool guidance contracts", function () {
       shortcut,
       "Do not invent structure unsupported by the paper",
     );
-    assert.notInclude(shortcut, "Generate a fenced SVG diagram");
   });
 
   it("keeps ordinary paper QA guidance on paper_read instead of direct MinerU file_io", function () {

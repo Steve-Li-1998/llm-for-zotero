@@ -52,28 +52,10 @@ export function getReasoningLevelDisplayLabel(
   modelName: string,
   options: ReasoningOption[],
 ): string {
-  const option = options.find((entry) => entry.level === level);
-  if (option?.label) {
-    return option.label;
-  }
-  if (level !== "default") {
-    return level;
-  }
-  if (provider === "deepseek") {
-    return "enabled";
-  }
-  if (provider === "kimi") {
-    return "model";
-  }
+  // The level id is the name. Provider-specific synonyms ("enabled", "model")
+  // used to be substituted here, which made the chat menu and the model editor
+  // disagree about what a level is called.
+  void provider;
   void modelName;
-  return "default";
-}
-
-export function isReasoningDisplayLabelActive(label: string): boolean {
-  const normalized = label.trim().toLowerCase();
-  return (
-    normalized !== "off" &&
-    normalized !== "disabled" &&
-    normalized !== "not supported"
-  );
+  return options.find((entry) => entry.level === level)?.label || level;
 }

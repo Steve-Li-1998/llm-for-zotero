@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { describeLibraryMutationInput } from "../src/agent/contracts/actionContract";
 import type { ActionExecutionContext } from "../src/agent/actions";
 import { autoTagAction } from "../src/agent/actions/autoTag";
 import { stateChangeInvocationPlan } from "../src/agent/authorization/invocationPlan";
@@ -30,6 +31,7 @@ function createStubTool<TInput extends Record<string, unknown>, TResult>(
     },
     ...(spec.executionClass === "external_effect"
       ? {
+          effectOperations: ["settings_update" as const],
           planInvocation: async () =>
             stateChangeInvocationPlan({
               domains: ["zotero_library"],
@@ -124,6 +126,7 @@ function registerReviewApplyTagsTool(
   }) => void,
 ): void {
   registry.register({
+    effectOperations: ["apply_tags"],
     spec: {
       name: "apply_tags",
       description: "apply tags",
@@ -628,6 +631,7 @@ describe("autoTag action", function () {
     const registry = new AgentToolRegistry();
 
     registry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "apply_tags",
         description: "apply tags",
@@ -771,6 +775,8 @@ describe("autoTag action", function () {
   it("tells the user when the model was unreachable instead of reporting no tags", async function () {
     const registry = new AgentToolRegistry();
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["apply_tags"],
       spec: {
         name: "apply_tags",
         description: "apply tags",

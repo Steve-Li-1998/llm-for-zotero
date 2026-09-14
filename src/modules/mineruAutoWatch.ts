@@ -12,8 +12,8 @@ import {
 import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
-} from "./contextPanel/mineruCache";
-import { invalidateCachedContextText } from "./contextPanel/pdfContext";
+} from "../services/mineru/mineruCache";
+import { invalidateCachedContextText } from "../services/paperContent/pdfContext";
 import {
   setItemProcessing,
   setItemCached,
@@ -25,7 +25,7 @@ import {
   cleanupMineruArtifactsForRemovedAttachment,
   getMineruAvailabilityForAttachment,
   publishMineruCachePackageForAttachment,
-} from "./contextPanel/mineruSync";
+} from "../services/mineru/sync";
 import { getMineruParseEligibility } from "./mineruParseEligibility";
 
 type QueueEntry = {

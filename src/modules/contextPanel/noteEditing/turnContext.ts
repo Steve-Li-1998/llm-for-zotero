@@ -1,5 +1,5 @@
 import type { ActiveNoteContext, PaperContextRef } from "../../../shared/types";
-import type { NoteEditingScope } from "./scope";
+import type { NoteEditingScope } from "../../../services/notes/scope";
 
 export type NoteEditingTurnContext = {
   activeNoteContext?: ActiveNoteContext;

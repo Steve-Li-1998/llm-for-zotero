@@ -1,17 +1,20 @@
-import { el, iconBtn } from "./domHelpers";
+import { createElement, iconBtn } from "./domHelpers";
 
-export const PROVIDER_MODEL_CONTROL_STYLE =
-  "flex: 1; min-width: 0; padding: 6px 10px; font-size: 13px;" +
-  " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
-  " box-sizing: border-box; background: Field; color: FieldText;";
+/**
+ * Provider cards render with the same `.llm-pref-*` stylesheet the Agent tab
+ * uses (see the style block in preferences.xhtml), so these blueprints hand
+ * back classed elements rather than inline style strings. Nothing here
+ * declares appearance; changing how a model row looks is a stylesheet edit.
+ */
 
-const PROVIDER_MODEL_STATUS_STYLE =
-  "font-size: 11.5px; display: none; margin-top: 3px; line-height: 1.45;" +
-  " white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;";
+/** Class for a full-width model control (text input or catalog dropdown). */
+export const PROVIDER_MODEL_INPUT_CLASS = "llm-pref-input";
+export const PROVIDER_MODEL_SELECT_CLASS = "llm-pref-select";
+/** Wrapper that lets a dropdown and its manual-entry input share one slot. */
+export const PROVIDER_MODEL_SLOT_CLASS = "llm-pref-model-control-slot";
 
 export function createProviderModelSectionBlueprint(params: {
   doc: Document;
-  sectionLabelStyle: string;
   title: string;
   addTitle: string;
 }): {
@@ -19,18 +22,12 @@ export function createProviderModelSectionBlueprint(params: {
   header: HTMLDivElement;
   addButton: HTMLButtonElement;
 } {
-  const section = el(
-    params.doc,
-    "div",
-    "display: flex; flex-direction: column; gap: 6px;",
-  );
-  const header = el(
-    params.doc,
-    "div",
-    "display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px;",
-  );
+  const section = createElement(params.doc, "div", "llm-pref-section");
+  const header = createElement(params.doc, "div", "llm-pref-section-head");
   header.appendChild(
-    el(params.doc, "span", params.sectionLabelStyle, params.title),
+    createElement(params.doc, "span", "llm-pref-section-title", {
+      textContent: params.title,
+    }),
   );
   const addButton = iconBtn(params.doc, "+", params.addTitle);
   addButton.style.color = "var(--color-accent, #2563eb)";
@@ -41,7 +38,6 @@ export function createProviderModelSectionBlueprint(params: {
 
 export function createProviderModelRowBlueprint(params: {
   doc: Document;
-  outlineButtonStyle: string;
   testLabel: string;
 }): {
   row: HTMLDivElement;
@@ -49,36 +45,14 @@ export function createProviderModelRowBlueprint(params: {
   testButton: HTMLButtonElement;
   status: HTMLSpanElement;
 } {
-  const row = el(
-    params.doc,
-    "div",
-    "display: flex; flex-direction: column; gap: 0;",
-  );
-  const controls = el(
-    params.doc,
-    "div",
-    "display: flex; align-items: center; gap: 5px;",
-  );
-  const testButton = el(
-    params.doc,
-    "button",
-    params.outlineButtonStyle,
-    params.testLabel,
-  ) as HTMLButtonElement;
-  testButton.type = "button";
-  const status = el(
-    params.doc,
-    "span",
-    PROVIDER_MODEL_STATUS_STYLE,
-  ) as HTMLSpanElement;
+  const row = createElement(params.doc, "div", "llm-pref-model-row");
+  const controls = createElement(params.doc, "div", "llm-pref-model-controls");
+  const testButton = createElement(params.doc, "button", "llm-pref-button", {
+    type: "button",
+    textContent: params.testLabel,
+  });
+  const status = createElement(params.doc, "span", "llm-pref-status");
+  status.style.display = "none";
   row.appendChild(controls);
   return { row, controls, testButton, status };
-}
-
-export function createProviderCardSectionDivider(doc: Document): HTMLHRElement {
-  return el(
-    doc,
-    "hr",
-    "border: none; border-top: 1px solid var(--stroke-secondary, #c8c8c8); margin: 0;",
-  ) as HTMLHRElement;
 }

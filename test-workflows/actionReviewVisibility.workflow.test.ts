@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { createSearchLiteratureReviewAction } from "../src/agent/reviewCards";
 import type { AgentToolContext } from "../src/agent/types";

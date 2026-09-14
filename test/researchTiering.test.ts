@@ -194,7 +194,7 @@ describe("tiering inside the research loop", function () {
 
   it("gives every paper a core tier with a decorated manifest when the corpus fits the link view", async function () {
     const h = await setup(4);
-    const inventory = await h.run(
+    const { content: inventory } = await h.run(
       { operation: "inventory_scope" },
       {
         runtimeContextBudget: {
@@ -246,7 +246,7 @@ describe("tiering inside the research loop", function () {
 
   it("makes tiering mandatory when the corpus cannot be held in view and issues tiered read plans", async function () {
     const h = await setup(8);
-    const inventory = await h.run(
+    const { content: inventory } = await h.run(
       { operation: "inventory_scope" },
       {
         runtimeContextBudget: {
@@ -356,9 +356,11 @@ describe("tiering inside the research loop", function () {
 
   it("refines comparison slots but protects identity slots and filled slots", async function () {
     const h = await setup(2);
-    const inventory = await h.run({ operation: "inventory_scope" });
+    const { content: inventory } = await h.run({
+      operation: "inventory_scope",
+    });
     const slots = inventory.frame.slots;
-    const revised = await h.run({
+    const { content: revised } = await h.run({
       operation: "set_frame",
       slots: [
         ...slots,

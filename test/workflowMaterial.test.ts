@@ -120,6 +120,7 @@ describe("generated workflow material", function () {
     const id = materialDocumentId(r, output.id);
     r.metadata = { sourceMessageTimestamp: 500 };
     assert.equal(materialDocumentId(r, output.id), id);
+    assert.equal(id, "material:semantic:test:summary");
     assert.notEqual(materialDocumentId(r, "another-output"), id);
   });
   it("cannot report completion with a missing generated output even after the move succeeds", function () {

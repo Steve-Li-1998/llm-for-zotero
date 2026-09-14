@@ -7,7 +7,7 @@ import {
   queryHasExplicitSectionPreference,
   scoreSectionPreference,
 } from "../src/shared/libraryChatEvidencePolicy";
-import type { PaperContextCandidate } from "../src/modules/contextPanel/types";
+import type { PaperContextCandidate } from "../src/services/paperContent/types";
 
 function candidate(input: {
   chunkIndex: number;

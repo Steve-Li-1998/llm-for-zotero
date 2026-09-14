@@ -20,11 +20,16 @@ export type PaperEvidenceProgress = {
   readBudget?: number;
 };
 
-/** Default when the turn declares no reading requirement: drain the source. */
 const EXHAUSTIVE_STOP_POLICY: ReadStopPolicy = {
   coverage: "exhaustive",
   readBudget: Number.POSITIVE_INFINITY,
 };
+
+function stopPolicyForReadMode(mode: string): ReadStopPolicy {
+  if (mode === "overview") return { coverage: "overview", readBudget: 1 };
+  if (mode === "targeted") return { coverage: "targeted", readBudget: 2 };
+  return EXHAUSTIVE_STOP_POLICY;
+}
 
 export type PaperEvidenceReference = {
   displayLabel?: string;
@@ -477,7 +482,7 @@ export class PaperEvidenceFrontier {
   private readonly seenOccurrences = new Map<string, StoredOccurrence>();
   private readonly occurrencesByContentHash = new Map<string, Set<string>>();
   private readonly cachedCalls = new Map<string, CachedCall>();
-  private readonly stopPolicy: ReadStopPolicy;
+  private readonly stopPolicy?: ReadStopPolicy;
   private readonly planExecuting: boolean;
   private readsThisTurn = 0;
 
@@ -488,7 +493,7 @@ export class PaperEvidenceFrontier {
       planExecuting?: boolean;
     } = {},
   ) {
-    this.stopPolicy = options.evidencePolicy || EXHAUSTIVE_STOP_POLICY;
+    this.stopPolicy = options.evidencePolicy || undefined;
     this.planExecuting = options.planExecuting === true;
   }
 
@@ -532,7 +537,8 @@ export class PaperEvidenceFrontier {
       newOccurrenceIds: [],
       repeatedOccurrenceIds,
       cumulativeOccurrenceCount: this.seenOccurrences.size,
-      stopPolicy: this.stopPolicy,
+      stopPolicy:
+        this.stopPolicy || stopPolicyForReadMode(paperReadMode(params.input)),
       readsThisTurn: this.readsThisTurn,
       planExecuting: this.planExecuting,
     });
@@ -659,7 +665,7 @@ export class PaperEvidenceFrontier {
         .filter((entry): entry is string => Boolean(entry)),
       repeatedOccurrenceIds,
       cumulativeOccurrenceCount: this.seenOccurrences.size,
-      stopPolicy: this.stopPolicy,
+      stopPolicy: this.stopPolicy || stopPolicyForReadMode(mode),
       readsThisTurn: this.readsThisTurn,
       planExecuting: this.planExecuting,
     });

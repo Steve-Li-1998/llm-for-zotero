@@ -69,7 +69,7 @@ export function createCiteExportTool(
         },
       },
       executionClass: "read",
-      requiresConfirmation: false,
+      workCategory: "retrieval",
     },
 
     presentation: {
@@ -174,6 +174,13 @@ export function createCiteExportTool(
         });
         return { ...result, translatorId: input.translatorId };
       }
+      // App readiness does not await the style registry, and the formatter
+      // below is synchronous: without this it throws "Styles not yet loaded"
+      // for the first seconds of a session. Native init() joins any existing
+      // initialization promise, including the bundled style update.
+      await (
+        Zotero as unknown as { Styles?: { init?: () => Promise<void> } }
+      ).Styles?.init?.();
       return zoteroGateway.formatBibliography({
         itemIds: input.itemIds || [],
         styleId: input.styleId,

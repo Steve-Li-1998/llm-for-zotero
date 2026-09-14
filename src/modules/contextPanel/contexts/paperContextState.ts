@@ -24,9 +24,9 @@ import {
   selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
 } from "../state";
-import { buildPaperKey } from "../pdfContext";
-import { normalizePaperContextRefs } from "../normalizers";
-import { sanitizeText } from "../textUtils";
+import { buildPaperKey } from "../../../services/paperContent/pdfContext";
+import { normalizePaperContextRefs } from "../../../services/context/normalizers";
+import { sanitizeText } from "../../../utils/textSanitization";
 
 /** Builds the flat composite key for override maps. */
 function overrideKey(itemId: number, paperContext: PaperContextRef): string {

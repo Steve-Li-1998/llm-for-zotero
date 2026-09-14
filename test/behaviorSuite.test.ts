@@ -37,10 +37,13 @@ describe("manually invoked behavior suite contract", function () {
     assert.notInclude(journey, "deliverPendingPlanDocumentMessage");
     assert.notInclude(journey, "markPlanDocumentDelivered");
   });
-  it("requires direct note creation in every mode, without turning the suite into a release gate", function () {
+  it("requires the settled note permission behavior without turning the suite into a release gate", function () {
     for (const mode of ["safe", "auto", "yolo"] as const) {
       const note = catalog.find((row) => row.id === `modes.${mode}.note`)!;
-      assert.include(note.acceptance, "without confirmation");
+      assert.include(
+        note.acceptance,
+        mode === "safe" ? "after Safe review" : "without confirmation",
+      );
       assert.include(note.acceptance, "saved-note card");
       assert.exists(confirmationDecision(mode, "none", "review", true).failure);
     }
@@ -308,6 +311,9 @@ describe("manually invoked behavior suite contract", function () {
       confirmationDecision("safe", "cancel", "approval").approve,
       false,
     );
+    assert.deepEqual(confirmationDecision("auto", "approval", "approval"), {
+      approve: true,
+    });
     assert.equal(
       confirmationDecision("yolo", "review", "approval").approve,
       false,

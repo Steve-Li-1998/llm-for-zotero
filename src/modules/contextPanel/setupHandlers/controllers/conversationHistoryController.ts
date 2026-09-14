@@ -1,6 +1,6 @@
 import type { ConversationSystem } from "../../../../shared/types";
-import { resolveContextAttachmentSupportFromMetadata } from "../../contextAttachmentSupport";
-import { sanitizeText } from "../../textUtils";
+import { resolveContextAttachmentSupportFromMetadata } from "../../../../services/paperContent/contextAttachmentSupport";
+import { sanitizeText } from "../../../../utils/textSanitization";
 
 export const GLOBAL_HISTORY_TITLE_MAX_LENGTH = 64;
 export const HISTORY_ROW_TITLE_MAX_LENGTH = 42;

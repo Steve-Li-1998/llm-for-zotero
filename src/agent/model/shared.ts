@@ -134,7 +134,7 @@ export function encodeBytesBase64(bytes: Uint8Array): string {
 
 export async function readFileRefAsBase64(storedPath: string): Promise<string> {
   const { readAttachmentBytes } =
-    await import("../../modules/contextPanel/attachmentStorage");
+    await import("../../services/attachmentStorage");
   const bytes = await readAttachmentBytes(storedPath);
   return encodeBytesBase64(bytes);
 }

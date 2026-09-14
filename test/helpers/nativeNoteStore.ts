@@ -53,9 +53,12 @@ export function installNativeNoteStore(
     }
     async saveTx() {
       this.id ||= next++;
+      // Observed before the write is committed, so a test that throws from
+      // onSave reproduces a native save that never reached the database:
+      // the stored copy a forced reload returns is still the old one.
+      options.onSave?.(this);
       this.stored = this.html;
       notes.set(this.id, this);
-      options.onSave?.(this);
       return this.id;
     }
   }

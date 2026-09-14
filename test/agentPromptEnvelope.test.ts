@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   buildAgentInitialMessages,
+  buildAgentPromptInstructionInventory,
   composeAgentModelInput,
   renderAgentPromptEnvelope,
 } from "../src/agent/model/messageBuilder";
@@ -8,6 +9,10 @@ import type { PlanExecutionLedger } from "../src/agent/plans/types";
 import { COVERAGE_DISCLOSURE_REQUIREMENT } from "../src/agent/documents/draftValidation";
 import type { AgentModelMessage } from "../src/agent/types";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import {
+  clearAgentMemory,
+  recordAgentTurn,
+} from "../src/agent/store/conversationMemory";
 import { classifiedFixture, semanticFixture } from "./helpers/semanticIntent";
 
 function messageText(message: AgentModelMessage): string {
@@ -18,6 +23,265 @@ function messageText(message: AgentModelMessage): string {
 }
 
 describe("agent prompt envelope", function () {
+  describe("conversation continuity", function () {
+    const conversationKey = 810001;
+    const question = "Summarize this paper";
+    const answer = `The main finding is retained. ${"Detailed evidence. ".repeat(30)}Exact final sentence.`;
+    const transcript: AgentModelMessage[] = [
+      { role: "user", content: `User request:\n${question}` },
+      {
+        role: "tool",
+        tool_call_id: "read-1",
+        name: "paper_read",
+        content: '{"text":"Source passage","quoteId":"Q1"}',
+      },
+      { role: "assistant", content: answer },
+    ];
+
+    beforeEach(async function () {
+      await clearAgentMemory(conversationKey);
+      await recordAgentTurn(conversationKey, question, ["paper_read"], answer);
+    });
+
+    afterEach(async function () {
+      await clearAgentMemory(conversationKey);
+    });
+
+    function request(userText = "Explain that finding") {
+      return resolvedAgentRequest({
+        conversationKey,
+        mode: "agent",
+        model: "test-model",
+        userText,
+        history: transcript,
+      });
+    }
+
+    it("omits duplicated notes on follow-up and preserves exact answers and evidence for saving", async function () {
+      const followup = await buildAgentInitialMessages(request(), [], []);
+      assert.notInclude(
+        messageText(followup.at(-1)!),
+        "Conversation continuity notes",
+      );
+      assert.equal(
+        followup.find((message) => message.role === "assistant")?.content,
+        answer,
+      );
+
+      const savingTranscript: AgentModelMessage[] = [
+        ...transcript,
+        { role: "user", content: "Explain that finding" },
+        { role: "assistant", content: "The effect persists across sessions." },
+      ];
+      await recordAgentTurn(
+        conversationKey,
+        "Explain that finding",
+        [],
+        "The effect persists across sessions.",
+      );
+      const saving = await buildAgentInitialMessages(
+        request("Save that answer as a note"),
+        [],
+        [],
+        undefined,
+        {
+          transcriptMessages: savingTranscript,
+        },
+      );
+      assert.notInclude(
+        messageText(saving.at(-1)!),
+        "Conversation continuity notes",
+      );
+      assert.deepEqual(
+        JSON.parse(
+          JSON.stringify(saving.slice(-savingTranscript.length - 1, -1)),
+        ),
+        savingTranscript,
+      );
+      assert.include(messageText(saving.at(-1)!), "Save that answer as a note");
+    });
+
+    it("restores notes when recomposition removes history without changing the rendered snapshot", async function () {
+      const rendered = await renderAgentPromptEnvelope(request(), [], []);
+      const full = composeAgentModelInput(rendered.envelope, {
+        transcriptMessages: transcript,
+      });
+      assert.notInclude(
+        messageText(full.at(-1)!),
+        "Conversation continuity notes",
+      );
+      await clearAgentMemory(conversationKey);
+      const compacted = composeAgentModelInput(rendered.envelope, {
+        transcriptMessages: [],
+        postTurnMessages: [
+          {
+            role: "user",
+            content: "Agent semantic continuation checkpoint: continue safely.",
+          },
+        ],
+      });
+      assert.include(
+        messageText(compacted.at(-2)!),
+        "Conversation continuity notes",
+      );
+      assert.include(messageText(compacted.at(-2)!), answer.slice(0, 350));
+      assert.deepEqual(
+        composeAgentModelInput(rendered.envelope, {
+          transcriptMessages: transcript,
+        }),
+        full,
+      );
+      await recordAgentTurn(conversationKey, question, ["paper_read"], answer);
+      const explicitEmpty = await buildAgentInitialMessages(
+        request(),
+        [],
+        [],
+        undefined,
+        { transcriptMessages: [] },
+      );
+      assert.include(
+        messageText(explicitEmpty.at(-1)!),
+        "Conversation continuity notes",
+      );
+    });
+
+    it("matches clipped long questions and counts only the notes actually sent", async function () {
+      await clearAgentMemory(conversationKey);
+      const longQuestion = `${"Explain these results. ".repeat(20)}Include limitations.`;
+      await recordAgentTurn(conversationKey, longQuestion, [], answer);
+      const history: AgentModelMessage[] = [
+        { role: "user", content: `User request:\n${longQuestion}` },
+        { role: "assistant", content: answer },
+      ];
+      const rendered = await renderAgentPromptEnvelope(request(), [], []);
+      const full = composeAgentModelInput(rendered.envelope, {
+        transcriptMessages: history,
+      });
+      assert.notInclude(
+        messageText(full.at(-1)!),
+        "Conversation continuity notes",
+      );
+      const fullInventory = buildAgentPromptInstructionInventory(
+        rendered,
+        full,
+        history,
+      );
+      const compacted = composeAgentModelInput(rendered.envelope);
+      const compactedInventory = buildAgentPromptInstructionInventory(
+        rendered,
+        compacted,
+        [],
+      );
+      await clearAgentMemory(conversationKey);
+      const empty = await renderAgentPromptEnvelope(request(), [], []);
+      const emptyInventory = buildAgentPromptInstructionInventory(
+        empty,
+        composeAgentModelInput(empty.envelope, { transcriptMessages: history }),
+        history,
+      );
+      assert.equal(
+        fullInventory.turnResourceTokens,
+        emptyInventory.turnResourceTokens,
+      );
+      assert.isAbove(
+        compactedInventory.turnResourceTokens,
+        fullInventory.turnResourceTokens,
+      );
+    });
+
+    it("retains only notes for turns no longer represented in the prompt", async function () {
+      await recordAgentTurn(
+        conversationKey,
+        "An older omitted question",
+        [],
+        "An older finding",
+      );
+      const messages = await buildAgentInitialMessages(request(), [], []);
+      const turn = messageText(messages.at(-1)!);
+      assert.include(turn, 'User asked: "An older omitted question"');
+      assert.notInclude(turn, `User asked: "${question}"`);
+    });
+
+    it("requires the matching user and answer in the same retained turn", async function () {
+      const histories: AgentModelMessage[][] = [
+        [transcript[0]],
+        [transcript[2]],
+        [
+          transcript[0],
+          { role: "user", content: "Different question" },
+          transcript[2],
+        ],
+        [{ role: "user", content: question, transient: true }, transcript[2]],
+        [
+          {
+            role: "user",
+            content: question,
+            retainedTool: { name: "paper_read", callId: "read-1" },
+          },
+          transcript[2],
+        ],
+        [transcript[0], { ...transcript[1], content: answer }],
+        [
+          {
+            role: "user",
+            content: `Agent semantic continuation checkpoint:\n${question}`,
+          },
+          transcript[2],
+        ],
+      ];
+      for (const history of histories) {
+        const messages = await buildAgentInitialMessages(
+          request(),
+          [],
+          [],
+          undefined,
+          { transcriptMessages: history },
+        );
+        assert.include(
+          messageText(messages.at(-1)!),
+          "Conversation continuity notes",
+          JSON.stringify(history),
+        );
+      }
+    });
+
+    it("handles multimodal history and keeps current images intact when restoring notes", async function () {
+      const multimodal = transcript.map((message) => ({
+        ...message,
+        content: [{ type: "text" as const, text: messageText(message) }],
+      })) as AgentModelMessage[];
+      const rendered = await renderAgentPromptEnvelope(
+        { ...request(), screenshots: ["data:image/png;base64,AA"] },
+        [],
+        [],
+        undefined,
+        {
+          contentInputs: {
+            images: true,
+            pdfDocuments: false,
+            nativeFiles: false,
+          },
+        },
+      );
+      const full = composeAgentModelInput(rendered.envelope, {
+        transcriptMessages: multimodal,
+      });
+      assert.notInclude(
+        messageText(full.at(-1)!),
+        "Conversation continuity notes",
+      );
+      const compacted = composeAgentModelInput(rendered.envelope);
+      assert.include(
+        messageText(compacted.at(-1)!),
+        "Conversation continuity notes",
+      );
+      assert.deepEqual(
+        (compacted.at(-1)!.content as unknown[]).slice(1),
+        (full.at(-1)!.content as unknown[]).slice(1),
+      );
+    });
+  });
+
   it("tells the model that host-verifiable research and document tasks advance without task_update", async function () {
     const ledger: PlanExecutionLedger = {
       version: 1,
@@ -489,7 +753,10 @@ describe("agent prompt envelope", function () {
     it("tells the agent the current mode and how much to ask", async function () {
       const yolo = await promptText("yolo", ["Assumed append."]);
       assert.include(yolo, "Permission mode: yolo");
-      assert.include(yolo, "Do not ask for confirmation or clarification");
+      assert.include(
+        yolo,
+        "The host does not run an approval model or ask for permission",
+      );
       // The guidance must not read as unlimited authority: the rails that
       // still block in yolo belong in the same sentence.
       assert.include(yolo, "chat-only memory");
@@ -497,13 +764,17 @@ describe("agent prompt envelope", function () {
         yolo,
         "importing discovered papers without the user's selection",
       );
-      assert.include(yolo, "Interpretation assumptions: Assumed append.");
+      assert.notInclude(yolo, "Interpretation assumptions");
       const auto = await promptText("auto");
       assert.include(auto, "Permission mode: auto");
-      assert.include(auto, "only for genuine ambiguity");
+      assert.include(
+        auto,
+        "The host makes a bounded model review for other actions",
+      );
       const safe = await promptText("safe");
       assert.include(safe, "Permission mode: safe");
-      assert.include(safe, "do not ask for permission in text");
+      assert.include(safe, "Call the concrete tool");
+      assert.include(safe, "host owns the review UI");
       assert.notInclude(safe, "Interpretation assumptions");
     });
   });

@@ -28,20 +28,6 @@ describe("bridge settings UI behavior", function () {
     assert.deepEqual(events, ["commit", "commit"]);
   });
 
-  it("renders compact model input mode controls in advanced settings", function () {
-    const preferenceScript = readFileSync(
-      "src/modules/preferenceScript.ts",
-      "utf8",
-    );
-
-    assert.include(preferenceScript, "getModelInputModeOptionsForRuntime");
-    assert.include(preferenceScript, "INPUT_MODE_SELECT_SM_STYLE");
-    assert.include(preferenceScript, 't("Input mode")');
-    assert.include(preferenceScript, "inputModeOptions.length > 0");
-    assert.include(preferenceScript, "normalizeModelInputModeForRuntime");
-    assert.include(preferenceScript, "width: 108px");
-  });
-
   it("translates model input mode preference strings in Chinese locale", function () {
     const globalWithZotero = globalThis as typeof globalThis & {
       Zotero?: { locale?: string };
@@ -84,20 +70,22 @@ describe("bridge settings UI behavior", function () {
     try {
       assert.equal(t("Original Agent Mode"), "原生 Agent 模式");
       assert.equal(t("Permission mode"), "权限模式");
+      const options = getOriginalPermissionOptions();
+      const safe = options.find(
+        (option) => option.selectionKey === "original:safe",
+      )!;
       assert.equal(
-        t(
-          "Requested actions run without review. Existing-note edits are applied and then shown as a diff. The agent asks only for genuine ambiguity in the request or for dangerous shell commands.",
-        ),
-        "请求的操作无需审核即可执行。对现有笔记的编辑会先应用，再以差异形式展示。仅在请求确有歧义或涉及危险的 shell 命令时，Agent 才会询问。",
+        t(safe.description),
+        "所有外部写入（包括创建新笔记）在执行前都会显示以供审核。读取操作无需审核。",
       );
       // Reading the English text from the option catalog keeps the Chinese
       // string from silently falling back to English when the copy changes.
-      const yolo = getOriginalPermissionOptions().find(
+      const yolo = options.find(
         (option) => option.selectionKey === "original:yolo",
       )!;
       assert.equal(
         t(yolo.description),
-        "Agent 自行判断并执行，不再询问，且可以执行超出字面请求的操作。明确的禁止事项、受保护条目、数据库、计划完整性检查、仅限对话的记忆，以及导入已发现论文前的论文选择卡片仍然生效。同样适用于 Claude Code 或 Codex 调用的插件工具。",
+        "原生 Agent 执行操作时不会请求权限确认或调用审批模型，包括有歧义或危险的操作。明确限制、用户要求的审核流程、执行完整性及必要的论文选择仍然有效。Claude Code、Codex 和外部 MCP 调用方保留各自的权限控制。",
       );
     } finally {
       if (previousZotero) {

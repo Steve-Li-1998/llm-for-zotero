@@ -1,4 +1,4 @@
-import { isPdfContextAttachment } from "./contextAttachmentSupport";
+import { isPdfContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import { scrollToSelectedTextInReader } from "./livePdfSelectionLocator";
 import type { SelectedTextContext } from "./types";
 

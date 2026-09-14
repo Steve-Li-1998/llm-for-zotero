@@ -1,4 +1,4 @@
-import { getMineruAvailabilityForAttachmentId } from "./contextPanel/mineruSync";
+import { getMineruAvailabilityForAttachmentId } from "../services/mineru/sync";
 
 type ProcessingStatus = "idle" | "processing" | "failed" | "cached";
 

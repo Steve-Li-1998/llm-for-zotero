@@ -1,10 +1,9 @@
 import { ActionContractService } from "../src/agent/contracts/actionContract";
-import {
-  classifiedFixture,
-  semanticFixture,
-  actionContractFixture,
-} from "./helpers/semanticIntent";
+import { actionContractFixture } from "./helpers/semanticIntent";
 import { assert } from "chai";
+import { DatabaseSync } from "node:sqlite";
+import { createSubmitDocumentTool } from "../src/agent/tools/plan/submitPlanDocument";
+import { initPlanDocumentStore } from "../src/agent/documents/store";
 import {
   addZoteroMcpToolActivityObserver,
   getOrCreateZoteroMcpBearerToken,
@@ -19,8 +18,14 @@ import {
 } from "../src/agent/mcp/server";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
-import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
+import type {
+  AgentActionOperation,
+  AgentToolContext,
+  AgentToolDefinition,
+} from "../src/agent/types";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
+import { createFileIOTool } from "../src/agent/tools/write/fileIO";
+import { createResearchUpdateTool } from "../src/agent/tools/plan/researchUpdate";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import {
   readOnlyInvocationPlan,
@@ -53,6 +58,13 @@ function testWriteDescriptor(name: string) {
   ];
 }
 
+/** The operations testWriteDescriptor can produce for a given fixture name. */
+function testWriteOperations(name: string): AgentActionOperation[] {
+  return name === "zotero_script"
+    ? ["zotero_script_execute"]
+    : ["settings_update"];
+}
+
 function createReadTool(name: string): AgentToolDefinition<unknown, unknown> {
   return {
     spec: {
@@ -60,6 +72,7 @@ function createReadTool(name: string): AgentToolDefinition<unknown, unknown> {
       description: `Read tool ${name}`,
       inputSchema: { type: "object", additionalProperties: true },
       executionClass: "read",
+      workCategory: "retrieval",
       requiresConfirmation: false,
     },
     validate: (args) => ({ ok: true, value: args ?? {} }),
@@ -69,11 +82,13 @@ function createReadTool(name: string): AgentToolDefinition<unknown, unknown> {
 
 function createWriteTool(name: string): AgentToolDefinition<unknown, unknown> {
   return {
+    effectOperations: testWriteOperations(name),
     spec: {
       name,
       description: `Write tool ${name}`,
       inputSchema: { type: "object", additionalProperties: true },
       executionClass: "external_effect",
+      workCategory: "zotero_action",
       requiresConfirmation: true,
     },
     validate: (args) => ({ ok: true, value: args ?? {} }),
@@ -170,6 +185,479 @@ describe("Zotero MCP server", function () {
       originalZotero;
   });
 
+  it("carries the host execution context into scoped MCP tool calls", async function () {
+    const executionContext = {
+      version: 1 as const,
+      executionId: "codex-execution-445",
+      conversationKey: 445,
+      conversationGeneration: 0,
+      chatLibraryID: 1,
+      permissionOwner: "external_runtime" as const,
+      workspaceSnapshot: {
+        selectedPapers: [],
+        selectedCollections: [],
+      },
+      configuredAccess: { libraryIDs: [1], outputDirectories: [] },
+    };
+    let observed: AgentToolContext["request"]["executionContext"];
+    const registry = new AgentToolRegistry();
+    const tool = createReadTool("library_read");
+    tool.execute = async (_input, context) => {
+      observed = context.request.executionContext;
+      return { ok: true };
+    };
+    registry.register(tool);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 445,
+      conversationGeneration: 0,
+      libraryID: 1,
+      kind: "global",
+      runtimeAuthority: "codex",
+      executionContext,
+    });
+
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scope.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 445,
+          method: "tools/call",
+          params: { name: "library_read", arguments: {} },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      assert.equal(payload.result.isError, undefined, JSON.stringify(payload));
+      assert.equal(observed?.executionId, executionContext.executionId);
+      assert.deepEqual(observed?.configuredAccess.fileAccess, {
+        readFiles: [],
+        writeFiles: [],
+        readDirectories: [],
+        writeDirectories: [],
+      });
+      assert.isFalse(observed?.configuredAccess.hostCommandExecution);
+    } finally {
+      scope.clear();
+    }
+  });
+
+  it("retains native-runtime document evidence across scoped MCP calls", async function () {
+    const items = new Map<number, Record<string, unknown>>([
+      [11, { id: 11, key: "PAPER001", libraryID: 1 }],
+      [
+        22,
+        {
+          id: 22,
+          key: "ATTACH01",
+          libraryID: 1,
+          parentID: 11,
+        },
+      ],
+    ]);
+    (
+      globalThis.Zotero.Items as unknown as { get: (id: number) => unknown }
+    ).get = (id: number) => items.get(id) || null;
+
+    const artifact = {
+      kind: "image" as const,
+      mimeType: "image/png",
+      storedPath: "/cache/figure-1.png",
+      contentHash: `sha256:${"a".repeat(64)}`,
+      pageIndex: 2,
+      pageLabel: "3",
+    };
+    const registry = new AgentToolRegistry();
+    const paperRead = createReadTool("paper_read");
+    paperRead.execute = async () => ({
+      content: {
+        mode: "figures",
+        figures: [
+          {
+            cropPath: artifact.storedPath,
+            pageIndex: artifact.pageIndex,
+            sourceFingerprint: `sha256:${"b".repeat(64)}`,
+            paperContext: { itemId: 11, contextItemId: 22 },
+          },
+        ],
+      },
+      artifacts: [artifact],
+    });
+    let observedReadEvidence: AgentToolContext["request"]["documentReadObservations"];
+    let observedArtifacts: AgentToolContext["request"]["documentArtifactObservations"];
+    const probe = createReadTool("library_read");
+    probe.execute = async (_input, context) => {
+      observedReadEvidence = context.request.documentReadObservations;
+      observedArtifacts = context.request.documentArtifactObservations;
+      return { observed: true };
+    };
+    registry.register(paperRead);
+    registry.register(probe);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 446,
+      conversationGeneration: 0,
+      libraryID: 1,
+      kind: "global",
+      runtimeAuthority: "codex",
+    });
+    const call = async (
+      id: number,
+      name: string,
+      args: Record<string, unknown>,
+    ) => {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      assert.isUndefined(payload.result?.isError, response[2]);
+    };
+
+    try {
+      await call(1, "paper_read", {
+        mode: "figures",
+        target: { itemId: 11, contextItemId: 22 },
+      });
+      await call(2, "library_read", {});
+      assert.equal(observedReadEvidence?.length, 1);
+      assert.include(observedReadEvidence?.[0].capabilities || [], "figure");
+      assert.equal(observedArtifacts?.length, 1);
+      assert.include(observedArtifacts?.[0] || {}, artifact);
+    } finally {
+      scoped.clear();
+    }
+  });
+
+  it("reads scoped task files and writes verified exports through shared file_io", async function () {
+    const originalIO = (globalThis as any).IOUtils;
+    const files = new Map<string, Uint8Array>([
+      ["/cache/paper/full.md", new TextEncoder().encode("Paper evidence")],
+      ["/vault/note.md", new TextEncoder().encode("Existing note")],
+    ]);
+    (globalThis as any).IOUtils = {
+      exists: async (path: string) =>
+        files.has(path) ||
+        ["/", "/cache", "/cache/paper", "/vault", "/other"].includes(path),
+      read: async (path: string) => {
+        const bytes = files.get(path);
+        if (!bytes) throw new Error("File not found");
+        return bytes;
+      },
+      write: async (path: string, bytes: Uint8Array) => {
+        files.set(path, new Uint8Array(bytes));
+      },
+      makeDirectory: async () => undefined,
+    };
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    registry.register(createFileIOTool());
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    let reviews = 0;
+    const scoped = registerScopedZoteroMcpScope({
+      runtimeAuthority: "codex",
+      conversationKey: 450,
+      libraryID: 1,
+      kind: "global",
+      executionContext: {
+        version: 1,
+        executionId: "file-io-450",
+        conversationKey: 450,
+        conversationGeneration: 0,
+        chatLibraryID: 1,
+        permissionOwner: "external_runtime",
+        workspaceSnapshot: { selectedPapers: [], selectedCollections: [] },
+        configuredAccess: {
+          libraryIDs: [1],
+          outputDirectories: ["/vault"],
+          fileAccess: {
+            readFiles: ["/cache/paper/full.md"],
+            writeFiles: [],
+            readDirectories: ["/vault"],
+            writeDirectories: ["/vault"],
+          },
+          hostCommandExecution: false,
+        },
+      },
+      requestInteraction: async () => {
+        reviews++;
+        return { approved: true };
+      },
+    });
+    const call = async (id: number, args: Record<string, unknown>) => {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "file_io", arguments: args },
+        },
+      });
+      return JSON.parse(response[2]).result;
+    };
+    try {
+      const read = await call(1, {
+        action: "read",
+        filePath: "/cache/paper/full.md",
+      });
+      assert.isUndefined(read.isError, JSON.stringify(read));
+      assert.equal(
+        JSON.parse(read.content[0].text).result.text,
+        "Paper evidence",
+      );
+
+      const write = await call(2, {
+        action: "write",
+        filePath: "/vault/note.md",
+        content: "Verified note",
+      });
+      assert.isUndefined(write.isError, JSON.stringify(write));
+      const written = JSON.parse(write.content[0].text);
+      assert.equal(written.actionReceipts[0].verification, "verified");
+      assert.equal(
+        new TextDecoder().decode(files.get("/vault/note.md")),
+        "Verified note",
+      );
+      assert.equal(reviews, 0, "granted access must not add a host review");
+
+      const expanded = await call(3, {
+        action: "write",
+        filePath: "/other/approved-once.md",
+        content: "Expanded",
+      });
+      assert.isUndefined(expanded.isError, JSON.stringify(expanded));
+      const repeatedExpansion = await call(4, {
+        action: "write",
+        filePath: "/other/approved-once.md",
+        content: "Expanded again",
+      });
+      assert.isUndefined(
+        repeatedExpansion.isError,
+        JSON.stringify(repeatedExpansion),
+      );
+      assert.equal(reviews, 1, "one exact access expansion is retained");
+    } finally {
+      scoped.clear();
+      (globalThis as any).IOUtils = originalIO;
+    }
+  });
+
+  it("allows standalone file reads without enabling standalone writes", async function () {
+    prefStore.set(
+      "extensions.zotero.llmforzotero.externalMcpFilesEnabled",
+      true,
+    );
+    prefStore.set(
+      "extensions.zotero.llmforzotero.externalMcpReadDirectories",
+      JSON.stringify(["/allowed"]),
+    );
+    const originalIO = (globalThis as any).IOUtils;
+    (globalThis as any).IOUtils = {
+      exists: async (path: string) =>
+        ["/", "/allowed", "/allowed/source.md"].includes(path),
+      read: async () => new TextEncoder().encode("Standalone evidence"),
+    };
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    registry.register(createFileIOTool());
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const call = async (id: number, args: Record<string, unknown>) => {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "file_io", arguments: args },
+        },
+      });
+      return JSON.parse(response[2]).result;
+    };
+    try {
+      const read = await call(1, {
+        action: "read",
+        filePath: "/allowed/source.md",
+      });
+      assert.isUndefined(read.isError, JSON.stringify(read));
+      assert.equal(
+        JSON.parse(read.content[0].text).result.text,
+        "Standalone evidence",
+      );
+      const write = await call(2, {
+        action: "write",
+        filePath: "/allowed/output.md",
+        content: "Blocked",
+      });
+      assert.isTrue(write.isError);
+      assert.include(
+        write.content[0].text,
+        "Standalone MCP writes are disabled",
+      );
+    } finally {
+      (globalThis as any).IOUtils = originalIO;
+    }
+  });
+
+  it("allows a read-only standalone command with command access but writes disabled", async function () {
+    prefStore.set(
+      "extensions.zotero.llmforzotero.externalMcpCommandsEnabled",
+      true,
+    );
+    let executed = 0;
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    const tool = createWriteTool("run_command");
+    tool.planInvocation = async () =>
+      readOnlyInvocationPlan({
+        mechanism: "shell",
+        domains: ["local_execution"],
+        reason: "The command only inspects host state.",
+      });
+    tool.execute = async () => {
+      executed++;
+      return { content: { stdout: "evidence" }, effect: "none" };
+    };
+    registry.register(tool);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+
+    const response = await invokeMcpEndpoint({
+      token: getOrCreateZoteroMcpBearerToken(),
+      body: {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "run_command",
+          arguments: { command: "pwd" },
+        },
+      },
+    });
+    const result = JSON.parse(response[2]).result;
+    assert.isUndefined(result.isError, JSON.stringify(result));
+    assert.equal(executed, 1);
+  });
+
+  it("requires the MCP host-command opt-in for an integrated Codex call", async function () {
+    let executed = 0;
+    let reviews = 0;
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    const tool = createWriteTool("run_command");
+    tool.planInvocation = async () =>
+      readOnlyInvocationPlan({
+        mechanism: "shell",
+        domains: ["local_execution"],
+        reason: "The command only inspects host state.",
+      });
+    tool.execute = async () => {
+      executed++;
+      return { content: { stdout: "evidence" }, effect: "none" };
+    };
+    registry.register(tool);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope({
+      runtimeAuthority: "codex",
+      conversationKey: 451,
+      libraryID: 1,
+      kind: "global",
+      requestInteraction: async () => {
+        reviews++;
+        return { approved: true };
+      },
+    });
+
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: {
+            name: "run_command",
+            arguments: { command: "pwd" },
+          },
+        },
+      });
+      const result = JSON.parse(response[2]).result;
+      assert.isTrue(result.isError, JSON.stringify(result));
+      assert.include(
+        result.content[0].text,
+        "MCP host command execution is disabled",
+      );
+      assert.equal(executed, 0);
+      assert.equal(reviews, 0);
+    } finally {
+      scoped.clear();
+    }
+  });
+
+  it("revalidates the MCP host-command opt-in immediately before execution", async function () {
+    const commandPref =
+      "extensions.zotero.llmforzotero.externalMcpCommandsEnabled";
+    prefStore.set(commandPref, true);
+    let executed = 0;
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    const tool = createWriteTool("run_command");
+    tool.planInvocation = async () => {
+      prefStore.set(commandPref, false);
+      return readOnlyInvocationPlan({
+        mechanism: "shell",
+        domains: ["local_execution"],
+        reason: "The command only inspects host state.",
+      });
+    };
+    tool.execute = async () => {
+      executed++;
+      return { content: { stdout: "evidence" }, effect: "none" };
+    };
+    registry.register(tool);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope({
+      runtimeAuthority: "codex",
+      conversationKey: 452,
+      libraryID: 1,
+      kind: "global",
+    });
+
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: {
+            name: "run_command",
+            arguments: { command: "pwd" },
+          },
+        },
+      });
+      const result = JSON.parse(response[2]).result;
+      assert.isTrue(result.isError, JSON.stringify(result));
+      assert.equal(executed, 0);
+    } finally {
+      scoped.clear();
+    }
+  });
+
   for (const mode of ["safe", "auto", "yolo"]) {
     for (const integrated of [false, true]) {
       for (const name of [
@@ -203,6 +691,11 @@ describe("Zotero MCP server", function () {
             assert.equal(context.executionAuthority, "external_runtime");
             assert.isNotEmpty(context.runId);
             assert.equal(context.request.libraryID, 1);
+            assert.equal(
+              context.request.executionContext?.permissionOwner,
+              "external_runtime",
+            );
+            assert.equal(context.request.executionContext?.chatLibraryID, 1);
             return { content: { applied: true }, effect: "applied" };
           };
           registry.register(tool);
@@ -485,7 +978,11 @@ describe("Zotero MCP server", function () {
         contexts.map((value) => value.libraryID),
         [1, 2],
       );
-      assert.notEqual(contexts[0].runId, contexts[1].runId);
+      assert.equal(
+        contexts[0].runId,
+        contexts[1].runId,
+        "Both writes belong to the same scope-less session",
+      );
       assert.isTrue(
         contexts.every(
           (value) => value.conversationKey === 0 && value.userText === "",
@@ -494,6 +991,148 @@ describe("Zotero MCP server", function () {
     } finally {
       release();
       unrelated.clear();
+    }
+  });
+
+  it("gives a scope-less client one run identity for the server's lifetime", async function () {
+    const observed: Array<string | undefined> = [];
+    const registry = new AgentToolRegistry();
+    const tool = createReadTool("library_read");
+    tool.execute = async (_input, context) => {
+      observed.push(context.runId);
+      return { ok: true };
+    };
+    registry.register(tool);
+    const call = (id: number, scopeToken?: string) =>
+      invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: scopeToken
+          ? { [ZOTERO_MCP_SCOPE_HEADER]: scopeToken }
+          : undefined,
+        // Distinct arguments keep the read-dedupe cache out of the way.
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "library_read", arguments: { call: id } },
+        },
+      });
+
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    for (const response of [await call(1), await call(2)])
+      assert.isUndefined(JSON.parse(response[2]).result.isError, response[2]);
+    assert.isNotEmpty(observed[0]);
+    assert.equal(
+      observed[1],
+      observed[0],
+      "A document finalized in one call must still be owned by the run that saves it in the next",
+    );
+
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 4460,
+      libraryID: 1,
+      kind: "global",
+      runtimeAuthority: "codex",
+      runId: "scoped-run",
+    });
+    try {
+      await call(3, scope.token);
+      assert.equal(observed[2], "scoped-run");
+    } finally {
+      scope.clear();
+    }
+
+    unregisterMcpServer();
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    await call(4);
+    assert.notEqual(
+      observed[3],
+      observed[0],
+      "A new server instance starts a new scope-less run",
+    );
+  });
+
+  it("lets a scope-less client finalize more than one document", async function () {
+    const zotero = globalThis.Zotero as unknown as { DB: unknown };
+    const journalDb = zotero.DB;
+    const db = new DatabaseSync(":memory:");
+    zotero.DB = {
+      queryAsync: async (sql: string, params: unknown[] = []) => {
+        const statement = db.prepare(sql);
+        const values = params.map((value) =>
+          value === undefined ? null : value,
+        ) as never[];
+        if (/^\s*(SELECT|PRAGMA|WITH)/i.test(sql))
+          return statement.all(...values);
+        statement.run(...values);
+        return [];
+      },
+      executeTransaction: async (task: () => Promise<unknown>) => {
+        db.exec("BEGIN");
+        try {
+          const result = await task();
+          db.exec("COMMIT");
+          return result;
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
+      },
+    };
+    try {
+      await initPlanDocumentStore();
+      const registry = new AgentToolRegistry();
+      registry.register(createSubmitDocumentTool({} as never));
+      registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+      const submit = async (id: number, title: string, markdown: string) => {
+        const response = await invokeMcpEndpoint({
+          token: getOrCreateZoteroMcpBearerToken(),
+          body: {
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: {
+              name: "submit_document",
+              arguments: {
+                title,
+                markdown,
+                citations: [],
+                quotes: [],
+                assets: [],
+                groundingReviewed: "passed",
+                groundingIssues: [],
+              },
+            },
+          },
+        });
+        const payload = JSON.parse(response[2]);
+        assert.isUndefined(payload.result?.isError, response[2]);
+        const body = JSON.parse(payload.result.content[0].text);
+        assert.isTrue(body.ok, response[2]);
+        return body.result as {
+          documentId: string;
+          contentHash: string;
+          visibleMarkdown: string;
+        };
+      };
+
+      const first = await submit(1, "First", "# First\n\nThe first document.");
+      const second = await submit(
+        2,
+        "Second",
+        "# Second\n\nThe second document.",
+      );
+
+      assert.notEqual(
+        second.documentId,
+        first.documentId,
+        "A second submission must not hand back the first document",
+      );
+      assert.notEqual(second.contentHash, first.contentHash);
+      assert.include(second.visibleMarkdown, "The second document.");
+    } finally {
+      zotero.DB = journalDb;
+      db.close();
     }
   });
 
@@ -577,6 +1216,7 @@ describe("Zotero MCP server", function () {
       (tool: { name: string }) => tool.name,
     );
     assert.deepEqual(names.sort(), [
+      "file_io",
       "library_delete",
       "library_search",
       "library_update",
@@ -604,6 +1244,11 @@ describe("Zotero MCP server", function () {
       destructiveHint: false,
     });
     assert.include(writeTool.description, "native runtime permission profile");
+    const fileTool = payload.result.tools.find(
+      (tool: { name: string }) => tool.name === "file_io",
+    );
+    assert.include(fileTool.description, "currently disabled");
+    assert.include(fileTool.description, "Standalone MCP filesystem access");
     const trashTool = payload.result.tools.find(
       (tool: { name: string }) => tool.name === "library_delete",
     );
@@ -614,17 +1259,19 @@ describe("Zotero MCP server", function () {
     });
   });
 
-  it("shows submit_document only for a host-required document outcome", async function () {
+  it("shows ordinary collaboration tools without a predicted outcome", async function () {
     const registry = new AgentToolRegistry(
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register(createReadTool("library_search"));
     registry.register(createReadTool("submit_document"));
+    registry.register(createReadTool("request_user_input"));
     registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
     const ordinary = registerScopedZoteroMcpScope({
       conversationKey: 7001,
       libraryID: 1,
       kind: "global",
+      requestInteraction: async () => ({ approved: false }),
     });
     const required = registerScopedZoteroMcpScope({
       conversationKey: 7002,
@@ -649,11 +1296,96 @@ describe("Zotero MCP server", function () {
           (tool: { name: string }) => tool.name,
         );
       };
-      assert.notInclude(await listedNames(ordinary.token), "submit_document");
+      assert.include(await listedNames(ordinary.token), "submit_document");
+      assert.include(await listedNames(ordinary.token), "request_user_input");
       assert.include(await listedNames(required.token), "submit_document");
     } finally {
       ordinary.clear();
       required.clear();
+    }
+  });
+
+  it("preserves workflow continuation instructions and host progress across MCP", async function () {
+    const registry = new AgentToolRegistry();
+    const tool = createReadTool("library_read");
+    const checkpoint = {
+      reason: "research_batch_durable" as const,
+      instruction: "Record the remaining manifest, then verify coverage.",
+    };
+    const event = {
+      type: "plan_execution_updated",
+      ledger: { executionId: "progress" },
+    } as any;
+    const published: unknown[] = [];
+    tool.execute = async (_input, context) => {
+      await context.publishPlanEvent?.(event);
+      return {
+        content: { durablePapers: 1 },
+        continuationCheckpoint: checkpoint,
+      };
+    };
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    registry.register(tool);
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 7003,
+      libraryID: 1,
+      kind: "global",
+      publishHostEvent: async (value) => {
+        published.push(value);
+      },
+    });
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scope.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "library_read", arguments: {} },
+        },
+      });
+      const payload = JSON.parse(
+        JSON.parse(response[2]).result.content[0].text,
+      );
+      assert.deepEqual(payload.continuationCheckpoint, checkpoint);
+      assert.deepEqual(published, [event]);
+    } finally {
+      scope.clear();
+    }
+  });
+
+  it("gives native Plan the same research procedure as the local agent", async function () {
+    const registry = new AgentToolRegistry();
+    const research = createResearchUpdateTool({} as never);
+    registry.register(research);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 7004,
+      libraryID: 1,
+      kind: "global",
+      planContext: {
+        phase: "planning",
+        planId: "procedure",
+        revision: 1,
+        nativePlanning: { attemptId: "attempt" },
+      } as any,
+    });
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scope.token },
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      });
+      const tool = JSON.parse(response[2]).result.tools.find(
+        (entry: any) => entry.name === "research_update",
+      );
+      assert.include(tool.description, research.guidance!.instruction);
+      // Codex code-mode declarations can collapse deep nested objects to
+      // `unknown`. The discoverable description must retain their contract.
+      assert.include(tool.description, JSON.stringify(tool.inputSchema));
+    } finally {
+      scope.clear();
     }
   });
 
@@ -1270,6 +2002,7 @@ describe("Zotero MCP server", function () {
       );
       for (const name of ["run_command", "file_io", "zotero_script"]) {
         registry.register({
+          effectOperations: testWriteOperations(name),
           spec: {
             name,
             description: `Native access tool ${name}`,
@@ -1404,13 +2137,14 @@ describe("Zotero MCP server", function () {
     });
   }
 
-  it("keeps local filesystem tools out of MCP while retaining Zotero scripts", async function () {
+  it("advertises shared filesystem tools while retaining Zotero scripts", async function () {
     const executed: string[] = [];
     const registry = new AgentToolRegistry(
       new ActionContractService({ getItem: () => null } as never),
     );
     for (const name of ["run_command", "file_io", "zotero_script"]) {
       registry.register({
+        effectOperations: testWriteOperations(name),
         spec: {
           name,
           description: `Native access tool ${name}`,
@@ -1448,8 +2182,8 @@ describe("Zotero MCP server", function () {
       const names = JSON.parse(listResponse[2]).result.tools.map(
         (tool: { name: string }) => tool.name,
       );
-      assert.notInclude(names, "run_command");
-      assert.notInclude(names, "file_io");
+      assert.include(names, "run_command");
+      assert.include(names, "file_io");
       assert.include(names, "zotero_script");
 
       for (const [index, [name, args]] of [
@@ -1506,6 +2240,7 @@ describe("Zotero MCP server", function () {
       arguments?: unknown;
       conversationKey?: number;
       libraryID?: number;
+      workCategory?: string;
     }> = [];
     const unregister = addZoteroMcpToolActivityObserver((event) => {
       events.push(event);
@@ -1539,6 +2274,7 @@ describe("Zotero MCP server", function () {
         arguments: event.arguments,
         conversationKey: event.conversationKey,
         libraryID: event.libraryID,
+        workCategory: event.workCategory,
       })),
       [
         {
@@ -1548,6 +2284,7 @@ describe("Zotero MCP server", function () {
           arguments: { sections: ["metadata"] },
           conversationKey: 789,
           libraryID: 999,
+          workCategory: "retrieval",
         },
         {
           requestId: "jsonrpc:tool-call-1",
@@ -1556,7 +2293,77 @@ describe("Zotero MCP server", function () {
           arguments: { sections: ["metadata"] },
           conversationKey: 789,
           libraryID: 999,
+          workCategory: "retrieval",
         },
+      ],
+    );
+  });
+
+  it("carries a declared research job onto the completed activity", async function () {
+    // The panel used to notice research progress by recognising one tool's
+    // name. The tool now declares the job its result advanced, and the row
+    // carries it, so the reader of the row needs no list of names.
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    registry.register({
+      spec: {
+        name: "research_update",
+        description: "Persist research decisions",
+        inputSchema: { type: "object", additionalProperties: true },
+        executionClass: "control",
+        workCategory: "planning",
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async () => ({
+        content: { ok: true },
+        researchJobId: "research-77",
+      }),
+    } as AgentToolDefinition<unknown, unknown>);
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-dev",
+        conversationKey: 790,
+        libraryID: 7,
+        kind: "paper",
+      },
+      { token: "research-scope-token" },
+    );
+    const events: Array<{
+      phase: "started" | "completed";
+      researchJobId?: string;
+    }> = [];
+    const unregister = addZoteroMcpToolActivityObserver((event) => {
+      events.push(event);
+    });
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: "research-call-1",
+          method: "tools/call",
+          params: { name: "research_update", arguments: { operation: "x" } },
+        },
+      });
+      assert.equal(response[0], 200);
+    } finally {
+      unregister();
+      scoped.clear();
+    }
+    assert.deepEqual(
+      events.map((event) => ({
+        phase: event.phase,
+        researchJobId: event.researchJobId,
+      })),
+      [
+        { phase: "started", researchJobId: undefined },
+        { phase: "completed", researchJobId: "research-77" },
       ],
     );
   });
@@ -1855,7 +2662,12 @@ describe("Zotero MCP server", function () {
       },
       validate: (args) => ({ ok: true, value: args ?? {} }),
       execute: async (_input, context: AgentToolContext) => ({
-        request: { turnPaperScope: context.request.turnPaperScope },
+        request: {
+          turnPaperScope: context.request.turnPaperScope,
+          readDirectories:
+            context.request.executionContext?.configuredAccess.fileAccess
+              ?.readDirectories,
+        },
       }),
     });
     registerMcpServer({
@@ -1896,6 +2708,7 @@ describe("Zotero MCP server", function () {
     };
 
     const scoped = registerScopedZoteroMcpScope({
+      runtimeAuthority: "codex",
       conversationKey: 321,
       libraryID: 7,
       kind: "global",
@@ -1940,6 +2753,11 @@ describe("Zotero MCP server", function () {
           { paper: { ...pinnedPaper, libraryID: 7 }, roles: ["pinned"] },
         ],
       );
+      assert.deepEqual(content.result.request.readDirectories, [
+        "/tmp/mineru-cache/selected",
+        "/tmp/mineru-cache/full-text",
+        "/tmp/mineru-cache/pinned",
+      ]);
     } finally {
       scoped.clear();
     }
@@ -2057,7 +2875,7 @@ describe("Zotero MCP server", function () {
     );
   });
 
-  it("accepts raw target empty object through MCP semantic validation", async function () {
+  it("uses the active paper when an empty target normalizes to omitted", async function () {
     const paper = {
       libraryID: 1,
       itemId: 71,
@@ -2101,7 +2919,6 @@ describe("Zotero MCP server", function () {
       activeItemId: paper.itemId,
       activeContextItemId: paper.contextItemId,
       userText: "Use the actual PDF/full text to explain the method.",
-      classifiedIntent: classifiedFixture({ retrievalIntent: "topic" }),
       turnPaperScope: {
         libraryID: 1,
         conversationKind: "paper",
@@ -2496,6 +3313,7 @@ describe("Zotero MCP server", function () {
       },
     });
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Update library",
@@ -2784,12 +3602,6 @@ describe("Zotero MCP server", function () {
     const scoped = registerScopedZoteroMcpScope(
       {
         profileSignature: "claude-profile",
-        classifiedIntent: classifiedFixture({
-          paperTargetIntent: "all_visible",
-          semantic: semanticFixture({
-            reading: { source: "document_text", coverage: "exhaustive" },
-          }),
-        }),
         conversationKey: 457,
         libraryID: 1,
         kind: "paper",
@@ -2902,6 +3714,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Apply tags",
@@ -2968,13 +3781,14 @@ describe("Zotero MCP server", function () {
     }
   });
 
-  it("rejects run_command and file_io at the native MCP boundary", async function () {
+  it("refuses host tools when standalone access has not been granted", async function () {
     const executed: string[] = [];
     const registry = new AgentToolRegistry(
       new ActionContractService({ getItem: () => null } as never),
     );
     for (const name of ["run_command", "file_io"]) {
       registry.register({
+        effectOperations: testWriteOperations(name),
         spec: {
           name,
           description: `Policy-controlled tool ${name}`,
@@ -3040,7 +3854,9 @@ describe("Zotero MCP server", function () {
         assert.equal(payload.result.isError, true);
         assert.include(
           payload.result.content[0].text,
-          "Zotero MCP tool is not available",
+          name === "run_command"
+            ? "MCP host command execution is disabled"
+            : "Standalone MCP file access is disabled",
         );
       }
       assert.deepEqual(executed, []);
@@ -3054,6 +3870,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "note_write",
         description: "Edit or create notes",
@@ -3164,6 +3981,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "note_write",
         description: "Edit active note",
@@ -3398,6 +4216,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_update",
         description: "Apply tags",
@@ -3467,6 +4286,7 @@ describe("Zotero MCP server", function () {
       new ActionContractService({ getItem: () => null } as never),
     );
     registry.register({
+      effectOperations: ["zotero_script_execute"],
       spec: {
         name: "zotero_script",
         description: "Run Zotero script",

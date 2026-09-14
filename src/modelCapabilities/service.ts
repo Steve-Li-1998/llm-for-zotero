@@ -170,7 +170,12 @@ function providerFromIdentity(
   );
 }
 
-function legacyReasoningProvider(
+/**
+ * The reasoning-profile family a capability provider maps onto, or null when
+ * the provider has no hand-maintained profile. Exported because the request
+ * builder and its preview must agree on this mapping.
+ */
+export function toReasoningProvider(
   provider: ModelCapabilityProvider,
 ): ReasoningProvider | null {
   if (
@@ -181,6 +186,8 @@ function legacyReasoningProvider(
     provider === "mimo" ||
     provider === "qwen" ||
     provider === "grok" ||
+    provider === "minimax" ||
+    provider === "glm" ||
     provider === "anthropic"
   ) {
     return provider;
@@ -192,7 +199,7 @@ function legacyReasoning(
   provider: ModelCapabilityProvider,
   model: string,
 ): ModelReasoningCapability {
-  const legacyProviderName = legacyReasoningProvider(provider);
+  const legacyProviderName = toReasoningProvider(provider);
   if (
     !legacyProviderName ||
     !hasKnownReasoningProfile(legacyProviderName, model)

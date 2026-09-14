@@ -10,6 +10,7 @@ describe("finalized document file export", function () {
   const originalIO = (globalThis as any).IOUtils;
   let files: Map<string, Uint8Array>;
   let document: any;
+  let documents: Map<string, any>;
   let context: any;
   beforeEach(async function () {
     const bytes = new Uint8Array([137, 80, 78, 71, 255]);
@@ -62,21 +63,34 @@ describe("finalized document file export", function () {
         },
       ],
     };
+    documents = new Map([[document.documentId, document]]);
     globalThis.Zotero = {
       DB: {
-        queryAsync: async (sql: string) => {
+        queryAsync: async (sql: string, params?: unknown[]) => {
           if (
-            sql.includes(
-              "SELECT document_id AS documentId FROM llm_for_zotero_plan_documents",
-            )
+            sql.includes("FROM llm_for_zotero_plan_documents") &&
+            sql.includes("document_id AS documentId")
           )
-            return [{ documentId: document.documentId }];
+            return [
+              {
+                documentId: document.documentId,
+                payloadJson: JSON.stringify(document),
+              },
+            ];
           if (
             sql.includes(
               "SELECT payload_json AS payloadJson FROM llm_for_zotero_plan_documents",
             )
           )
-            return [{ payloadJson: JSON.stringify(document) }];
+            return documents.has(String(params?.[0] || ""))
+              ? [
+                  {
+                    payloadJson: JSON.stringify(
+                      documents.get(String(params?.[0] || "")),
+                    ),
+                  },
+                ]
+              : [];
           return [];
         },
       },
@@ -121,6 +135,7 @@ describe("finalized document file export", function () {
     const validated = tool.validate({
       action: "write",
       filePath: "/vault/report.md",
+      documentId: document.documentId,
       content: document.visibleMarkdown,
     });
     if (!validated.ok) throw new Error(validated.error);
@@ -144,22 +159,73 @@ describe("finalized document file export", function () {
     const markdown = new TextDecoder().decode(files.get("/vault/report.md"));
     assert.include(markdown, "![Figure 1](report_assets/figure-1.png)");
     assert.equal(
-      service.finalize(undefined, prepared, {
-        ok: true,
-        effect: result.effect,
-        content: result.content,
-      })[0].verification,
+      (
+        await service.finalize(undefined, prepared, {
+          ok: true,
+          effect: result.effect,
+          content: result.content,
+        })
+      )[0].verification,
       "verified",
     );
     const corrupted = { ...(result.content as any), exportedFiles: [] };
     assert.equal(
-      service.finalize(undefined, prepared, {
-        ok: true,
-        effect: result.effect,
-        content: corrupted,
-      })[0].verification,
+      (
+        await service.finalize(undefined, prepared, {
+          ok: true,
+          effect: result.effect,
+          content: corrupted,
+        })
+      )[0].verification,
       "unverified",
     );
+  });
+  it("binds an explicit document identity and rejects a mismatched finalized payload", async function () {
+    const tool = createFileIOTool();
+    const validated = tool.validate({
+      action: "write",
+      filePath: "/vault/explicit.md",
+      documentId: document.documentId,
+      content: "A different document body",
+    });
+    if (!validated.ok) throw new Error(validated.error);
+    let error = "";
+    try {
+      await tool.execute(validated.value, context);
+    } catch (reason) {
+      error = String(reason);
+    }
+    assert.include(error, "exact visibleMarkdown");
+    assert.isFalse(files.has("/vault/explicit.md"));
+  });
+  it("exports the named document when a newer document is interleaved", async function () {
+    const first = document;
+    document = {
+      ...first,
+      documentId: "export-doc-newer",
+      visibleMarkdown: "# Newer\n\nA different finalized document.",
+      visibleHtml: "<p>A different finalized document.</p>",
+      contentHash: "sha256:newer",
+      createdAt: 2,
+      assets: [],
+    };
+    documents.set(document.documentId, document);
+    const tool = createFileIOTool();
+    const validated = tool.validate({
+      action: "write",
+      filePath: "/vault/interleaved.md",
+      documentId: first.documentId,
+      content: first.visibleMarkdown,
+    });
+    if (!validated.ok) throw new Error(validated.error);
+
+    await tool.execute(validated.value, context);
+    const markdown = new TextDecoder().decode(
+      files.get("/vault/interleaved.md"),
+    );
+    assert.include(markdown, "Verified explanation.");
+    assert.notInclude(markdown, "A different finalized document.");
+    assert.isTrue(files.has("/vault/interleaved_assets/figure-1.png"));
   });
   it("resumes a partial bundle without rewriting its verified images", async function () {
     const tool = createFileIOTool();

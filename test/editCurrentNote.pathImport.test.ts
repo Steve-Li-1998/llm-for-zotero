@@ -1,11 +1,26 @@
 import { noteHtmlMatches } from "../src/utils/noteHtml";
-import { renderRawNoteHtml } from "../src/modules/contextPanel/notes";
+import { renderRawNoteHtml } from "../src/services/notes/noteRendering";
 import { nativeNoteGateway } from "./helpers/nativeNoteGateway";
 import { assert } from "chai";
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
 import type { AgentToolContext } from "../src/agent/types";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 describe("editCurrentNote path imports", function () {
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Note mutations invalidate cached paper context, which reaches the
+    // panel's retrieval cache through a host surface bridge the plugin
+    // composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   const baseContext: AgentToolContext = {
     request: {
       conversationKey: 77,

@@ -1,9 +1,9 @@
-import { buildPaperRetrievalCandidates } from "../../modules/contextPanel/pdfContext";
+import { buildPaperRetrievalCandidates } from "../../services/paperContent/pdfContext";
 import {
   buildRetrievalQueryPlanCacheKey,
   resolveRetrievalQueryPlan,
   type RetrievalQueryPlan,
-} from "../../modules/contextPanel/retrievalQueryPlan";
+} from "../../services/retrieval/retrievalQueryPlan";
 import {
   callEmbeddings,
   checkEmbeddingAvailability,
@@ -13,7 +13,7 @@ import type { ProviderProtocol } from "../../utils/providerProtocol";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "../../modules/contextPanel/paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import type { PaperContextRef } from "../../shared/types";
 import { PdfService } from "./pdfService";
 import type { ModelProfileOverride } from "../../modelCapabilities";

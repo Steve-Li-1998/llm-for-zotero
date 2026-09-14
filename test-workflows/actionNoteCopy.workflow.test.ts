@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import {
   semanticContractFixture,
   classifiedFixture,

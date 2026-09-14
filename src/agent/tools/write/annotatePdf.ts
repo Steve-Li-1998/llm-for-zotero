@@ -60,6 +60,7 @@ export function createAnnotatePdfTool(
         destinationCollectionIds: [],
       },
     ],
+    effectOperations: ["annotation_write"],
     spec: {
       name: "annotate_pdf",
       description:
@@ -111,7 +112,7 @@ export function createAnnotatePdfTool(
         },
       },
       executionClass: "external_effect",
-      requiresConfirmation: true,
+      workCategory: "zotero_action",
     },
 
     presentation: {

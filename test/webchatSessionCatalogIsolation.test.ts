@@ -13,7 +13,10 @@ import {
   setPaperConversationTitle,
   appendMessage,
 } from "../src/utils/chatStore";
-import { resolveWebChatSessionConversation } from "../src/modules/contextPanel/webchatSessionConversation";
+import {
+  forceWebChatSessionAnchorFailuresForTests,
+  resolveWebChatSessionConversation,
+} from "../src/modules/contextPanel/webchatSessionConversation";
 import { conversationRepository } from "../src/core/conversations/repository";
 
 const PAPER_TABLE = "llm_for_zotero_paper_conversations";
@@ -108,6 +111,7 @@ describe("webchat session catalog isolation", function () {
   });
 
   afterEach(function () {
+    forceWebChatSessionAnchorFailuresForTests(0);
     harness.db.close();
     globalScope.Zotero = originalZotero;
   });
@@ -345,6 +349,35 @@ describe("webchat session catalog isolation", function () {
       paperRow(harness, userDraft!.conversationKey).webchatSession,
       0,
       "user draft stays a normal draft",
+    );
+  });
+
+  it("fails the forced number of session resolutions without creating a row", async function () {
+    forceWebChatSessionAnchorFailuresForTests(1);
+    const failed = await resolveWebChatSessionConversation({
+      libraryID: 5,
+      paperItemID: 300,
+    });
+    assert.isNull(failed, "the forced failure must report no session row");
+    assert.lengthOf(
+      harness.all(`SELECT conversation_key FROM ${PAPER_TABLE}`),
+      0,
+      "a failed resolution must not create any conversation row",
+    );
+
+    const recovered = await resolveWebChatSessionConversation({
+      libraryID: 5,
+      paperItemID: 300,
+    });
+    assert.ok(recovered, "the next resolution must succeed again");
+    assert.isAbove(recovered!.conversationKey, 0);
+    assert.isFalse(
+      recovered!.reused,
+      "the failed attempt left nothing to reuse",
+    );
+    assert.strictEqual(
+      paperRow(harness, recovered!.conversationKey).webchatSession,
+      1,
     );
   });
 

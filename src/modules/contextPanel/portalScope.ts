@@ -1,15 +1,15 @@
 import {
   createNoteConversationItem,
   getNoteConversation,
-} from "./noteEditing/conversationItem";
+} from "../../services/notes/conversationItem";
 import {
   buildDefaultUpstreamGlobalConversationKey,
   GLOBAL_CONVERSATION_KEY_BASE,
   PAPER_CONVERSATION_KEY_BASE,
   isUpstreamGlobalConversationKey,
 } from "./constants";
-import { isSupportedContextAttachment } from "./contextAttachmentSupport";
-import { normalizePositiveInt } from "./normalizers";
+import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
+import { normalizePositiveInt } from "../../services/context/normalizers";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   buildPaperStateKey,
@@ -23,11 +23,11 @@ import {
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
 } from "./state";
+import type { ActiveNoteSession } from "./types";
 import type {
-  ActiveNoteSession,
   GlobalPortalItem,
   PaperPortalItem,
-} from "./types";
+} from "../../services/context/portalItems";
 import type { ConversationSystem } from "../../shared/types";
 import {
   buildDefaultClaudeGlobalConversationKey,
@@ -84,7 +84,13 @@ import {
   resolveNoteEditingScope,
   resolveNoteEditingTitle,
   resolvePreferredNoteFocusSystem,
-} from "./noteEditing";
+} from "../../services/notes/scope";
+import {
+  isGlobalPortalItem,
+  isPaperChatBaseItem,
+  isPaperPortalItem,
+  resolvePaperPortalBaseItem,
+} from "../../services/context/portalItems";
 
 export function createGlobalPortalItem(
   libraryID: number,
@@ -110,14 +116,6 @@ export function createGlobalPortalItem(
     },
   };
   return portalItem as unknown as Zotero.Item;
-}
-
-export function isGlobalPortalItem(item: unknown): item is GlobalPortalItem {
-  if (!item || typeof item !== "object") return false;
-  const typed = item as Partial<GlobalPortalItem>;
-  if (typed.__llmGlobalPortalItem !== true) return false;
-  const normalizedId = normalizePositiveInt(typed.id);
-  return Boolean(normalizedId && normalizedId >= GLOBAL_CONVERSATION_KEY_BASE);
 }
 
 export function createPaperPortalItem(
@@ -172,38 +170,6 @@ export function createPaperPortalItem(
     },
   };
   return portalItem as unknown as Zotero.Item;
-}
-
-export function isPaperPortalItem(item: unknown): item is PaperPortalItem {
-  if (!item || typeof item !== "object") return false;
-  const typed = item as Partial<PaperPortalItem>;
-  if (typed.__llmPaperPortalItem !== true) return false;
-  const normalizedConversationKey = normalizePositiveInt(typed.id);
-  const normalizedBasePaperID = normalizePositiveInt(
-    typed.__llmPaperPortalBaseItemID,
-  );
-  return Boolean(normalizedConversationKey && normalizedBasePaperID);
-}
-
-export function getPaperPortalBaseItemID(item: unknown): number | null {
-  if (!isPaperPortalItem(item)) return null;
-  const normalized = normalizePositiveInt(item.__llmPaperPortalBaseItemID);
-  return normalized || null;
-}
-
-export function getPaperPortalSessionVersion(item: unknown): number | null {
-  if (!isPaperPortalItem(item)) return null;
-  const normalized = normalizePositiveInt(item.__llmPaperPortalSessionVersion);
-  return normalized || null;
-}
-
-export function resolvePaperPortalBaseItem(
-  item: Zotero.Item | null | undefined,
-): Zotero.Item | null {
-  const baseItemID = getPaperPortalBaseItemID(item);
-  if (!baseItemID) return null;
-  const resolved = Zotero.Items.get(baseItemID) || null;
-  return isPaperChatBaseItem(resolved) ? resolved : null;
 }
 
 export function resolveNoteParentItem(
@@ -273,16 +239,6 @@ export function resolveConversationBaseItem(
     return getNoteConversation(targetItem)?.note || targetItem;
   }
   return resolvePaperChatSourceItem(targetItem);
-}
-
-export function isPaperChatBaseItem(
-  item: Zotero.Item | null | undefined,
-): item is Zotero.Item {
-  if (!item) return false;
-  if (item.isAttachment?.()) {
-    return isSupportedContextAttachment(item);
-  }
-  return Boolean(item.isRegularItem?.());
 }
 
 export function resolvePaperChatSourceItem(
@@ -568,7 +524,21 @@ export function resolveInitialPanelItemState(
   }
   const basePaperItem = resolveConversationBaseItem(item);
   if (!basePaperItem) {
-    return { item, basePaperItem: null };
+    const libraryID = resolveLibraryIdFromItem(item);
+    const system = resolvePreferredConversationSystem({
+      item,
+      preferredSystem: options?.conversationSystem,
+    });
+    const mode =
+      options?.conversationMode ||
+      resolvePreferredConversationMode(libraryID, system);
+    return {
+      item:
+        !item && mode === "global"
+          ? resolveRememberedGlobalPanelItem(libraryID, system)
+          : item,
+      basePaperItem: null,
+    };
   }
 
   if (

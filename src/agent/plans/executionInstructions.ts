@@ -59,12 +59,17 @@ export function buildApprovedPlanExecutionInstructions(
         `${index + 1}. [${task.status}] taskId=${task.taskId}\n` +
         `   ${task.content}\n` +
         `   While active: ${task.activeForm}\n` +
-        (task.materialOutputId
+        (task.materialOutputId &&
+        !task.completionRequirements?.some(
+          (requirement) => requirement.kind === "document_published",
+        )
           ? `   Generate materialOutputId=${task.materialOutputId} with submit_document.\n`
           : "") +
         (task.actionIndexes
           ? `   Fulfill semantic actionIndexes=${JSON.stringify(task.actionIndexes)}.\n`
-          : "") +
+          : task.effectIds
+            ? `   Fulfill approved effectIds=${JSON.stringify(task.effectIds)}.\n`
+            : "") +
         `   Acceptance: ${task.acceptanceCriteria
           .map((criterion) =>
             typeof criterion === "string" ? criterion : criterion.description,

@@ -1,11 +1,11 @@
-import { createNoteConversationItem } from "../modules/contextPanel/noteEditing/conversationItem";
+import { createNoteConversationItem } from "../services/notes/conversationItem";
 declare const Zotero: any;
 
 import type {
   CodexGlobalPortalItem,
   CodexPaperPortalItem,
 } from "../modules/contextPanel/types";
-import { isSupportedContextAttachment } from "../modules/contextPanel/contextAttachmentSupport";
+import { isSupportedContextAttachment } from "../services/paperContent/contextAttachmentSupport";
 
 export function createCodexGlobalPortalItem(
   libraryID: number,

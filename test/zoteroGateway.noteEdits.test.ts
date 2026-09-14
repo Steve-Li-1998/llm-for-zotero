@@ -1,7 +1,22 @@
 import { assert } from "chai";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 describe("ZoteroGateway current note edits", function () {
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Note edits invalidate cached paper context, which reaches the panel's
+    // retrieval cache through a host surface bridge the plugin composes at
+    // startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   const originalZotero = (
     globalThis as typeof globalThis & { Zotero?: unknown }
   ).Zotero;

@@ -37,6 +37,7 @@ import type {
 } from "./types";
 import { getPlannedDocumentOrigin } from "./types";
 import { ToolInputRejection } from "../tools/execution/failure";
+import { buildPlanMaterialEvidence } from "../plans/materialEvidence";
 function coverageItem(
   item: ResearchCorpusItem,
   evidence: readonly ResearchEvidenceRecord[],
@@ -165,7 +166,12 @@ export class PlanDocumentFinalizer {
       (requirement) => requirement.kind === "document_published",
     );
     if (!integrityRequirement || !publishRequirement) {
-      throw new Error("The active task does not authorize a formal document");
+      throw new ToolInputRejection(
+        `Publication is waiting for the active task: ${task.content}. ` +
+          "Finish and persist its required evidence before submitting the document. " +
+          "For research plans, call research_update next_work, record every remaining paper with the returned frame slots and claims, then complete the research phases and finalize coverage. " +
+          "If the next active task also requires bounded_reasoning, complete it with task_update and its reasoningAssertion. The host then starts the publication task. Do not resubmit unchanged Markdown while prerequisite work is pending.",
+      );
     }
     const artifact = await loadPlanArtifact(ledger.planId, ledger.revision);
     if (
@@ -449,7 +455,11 @@ export class PlanDocumentFinalizer {
         "Document structure, citations, evidence links, and provenance passed deterministic integrity validation",
       createdAt: now,
     };
-    await persistFinalizedDocument(finalized, integrityEvidence);
+    const materialEvidence = buildPlanMaterialEvidence(task, document, now);
+    await persistFinalizedDocument(finalized, [
+      integrityEvidence,
+      ...(materialEvidence ? [materialEvidence] : []),
+    ]);
     return finalized;
   }
 }

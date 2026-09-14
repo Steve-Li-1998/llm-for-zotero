@@ -30,7 +30,8 @@ export function savedNoteIsPrimaryOutcome(
   );
 }
 
-function renderNativeNotePreview(
+/** The note's own body, as Zotero stores it, with its title lifted out. */
+export function renderNativeNotePreview(
   doc: Document,
   result: AgentSavedNoteResultCard,
   target: HTMLElement,
@@ -57,6 +58,72 @@ function renderNativeNotePreview(
   target.append(...(Array.from(source.childNodes) as Node[]));
   return displayTitle;
 }
+
+/** Where the note lives, as the citation navigator addresses it. */
+function noteCitationSource(result: AgentSavedNoteResultCard) {
+  return {
+    libraryID: result.note.libraryID,
+    itemKey: result.note.key,
+    evidenceRefs: [],
+  };
+}
+
+/**
+ * Open the saved note in Zotero, reporting a note that is gone through `status`.
+ *
+ * The card's destination link and the action row's button are the same act, so
+ * the lookup, the navigation and the failure message are written once here.
+ */
+function openSavedNote(
+  result: AgentSavedNoteResultCard,
+  status: HTMLElement,
+): void {
+  const source = noteCitationSource(result);
+  void (async () => {
+    const note = Zotero.Items.getByLibraryAndKey(
+      source.libraryID,
+      source.itemKey,
+    );
+    if (
+      !note ||
+      !note.isNote() ||
+      note.deleted ||
+      !(await navigatePlanDocumentCitationSource(source))
+    )
+      throw new Error("Note is unavailable");
+    Zotero.getMainWindow()?.focus();
+  })().catch(() => {
+    status.textContent = "Note is unavailable";
+    status.dataset.status = "error";
+  });
+}
+
+/** The saved note as an action row opens it: what it says, and the way in. */
+export function renderSavedNoteDetail(
+  doc: Document,
+  result: AgentSavedNoteResultCard,
+  status: HTMLElement,
+): HTMLElement {
+  const detail = doc.createElement("div");
+  const preview = doc.createElement("div");
+  preview.className = "llm-plan-markdown llm-note-preview";
+  renderNativeNotePreview(doc, result, preview);
+  const actions = doc.createElement("div");
+  actions.className = "llm-agent-action-row-actions";
+  const open = doc.createElement("button");
+  open.className = "llm-plan-action";
+  open.type = "button";
+  open.textContent = "Open note";
+  open.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openSavedNote(result, status);
+  });
+  actions.append(open);
+  detail.append(preview, actions);
+  return detail;
+}
+
 /** A saved outcome, outside the activity disclosure and without approval controls. */
 export function renderSavedNoteCard(
   doc: Document,
@@ -70,35 +137,14 @@ export function renderSavedNoteCard(
     status: "Saved",
     statusKind: "completed",
   });
-  const source = {
-    libraryID: result.note.libraryID,
-    itemKey: result.note.key,
-    evidenceRefs: [],
-  };
   const destination = doc.createElement("a");
   destination.className = "llm-saved-note-destination";
   destination.textContent = `Open note in ${result.destination} ↗`;
-  destination.href = planDocumentCitationSourceHref(source);
+  destination.href = planDocumentCitationSourceHref(noteCitationSource(result));
   destination.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    void (async () => {
-      const note = Zotero.Items.getByLibraryAndKey(
-        source.libraryID,
-        source.itemKey,
-      );
-      if (
-        !note ||
-        !note.isNote() ||
-        note.deleted ||
-        !(await navigatePlanDocumentCitationSource(source))
-      )
-        throw new Error("Note is unavailable");
-      Zotero.getMainWindow()?.focus();
-    })().catch(() => {
-      status.textContent = "Note is unavailable";
-      status.dataset.status = "error";
-    });
+    openSavedNote(result, status);
   });
   title.textContent = renderNativeNotePreview(doc, result, content);
   card.append(header, destination, content);

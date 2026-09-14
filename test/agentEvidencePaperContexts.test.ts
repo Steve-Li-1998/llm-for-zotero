@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import { extractPaperContextCandidatesFromToolContentForTests as extractPaperContextCandidatesFromToolContent } from "../src/modules/contextPanel/agentMode/agentEngine";
-import { normalizePaperContextRefs } from "../src/modules/contextPanel/normalizers";
+import { normalizePaperContextRefs } from "../src/services/context/normalizers";
 
 function paperRefs(content: unknown) {
   return normalizePaperContextRefs(

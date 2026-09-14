@@ -309,11 +309,9 @@ describe("provider permission modes", function () {
     );
 
     const css = readFileSync("addon/content/zoteroPane.css", "utf8");
-    assert.include(css, "max-width: 14ch");
     assert.include(css, 'data-permission-provider="original"');
     assert.include(css, 'data-selection-key="claude:auto"');
     assert.notInclude(css, "data-permission-mode");
-    assert.notInclude(css, ".llm-permission-option-level");
   });
 
   it("requires the Claude bridge capability and preserves managed availability", async function () {
@@ -608,24 +606,22 @@ describe("provider permission modes", function () {
         entry.description,
       ]),
     );
-    assert.include(
-      byKey["original:safe"],
-      "Requested new notes are created directly",
-    );
-    assert.include(byKey["original:safe"], "shown for review first");
+    assert.include(byKey["original:safe"], "including new-note creation");
+    assert.include(byKey["original:safe"], "shown for review");
     assert.notInclude(byKey["original:safe"], "filesystem reads");
-    assert.include(byKey["original:auto"], "applied and then shown as a diff");
-    assert.notInclude(byKey["original:auto"], "require review");
-    assert.include(byKey["original:yolo"], "own judgment");
-    assert.include(byKey["original:yolo"], "beyond the literal request");
-    assert.include(byKey["original:yolo"], "Claude Code or Codex");
-    // Every rail that still blocks in yolo has to be named, or the option
-    // understates what the mode leaves enforced.
-    assert.include(byKey["original:yolo"], "chat-only memory");
     assert.include(
-      byKey["original:yolo"],
-      "paper selection card before importing discovered papers",
+      byKey["original:auto"],
+      "ordinary writes and recoverable changes",
     );
+    assert.include(
+      byKey["original:auto"],
+      "Other actions receive model review",
+    );
+    assert.include(byKey["original:yolo"], "without permission prompts");
+    assert.include(byKey["original:yolo"], "ambiguous or dangerous actions");
+    assert.include(byKey["original:yolo"], "Claude Code, Codex");
+    assert.include(byKey["original:yolo"], "requested review workflows");
+    assert.include(byKey["original:yolo"], "required paper selection");
     assert.notInclude(byKey["original:yolo"], "require review");
     assert.notInclude(byKey["original:yolo"], "Only explicit prohibitions");
   });

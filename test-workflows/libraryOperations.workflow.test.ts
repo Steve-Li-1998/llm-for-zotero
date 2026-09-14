@@ -1,3 +1,4 @@
+import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { LibraryMutationService } from "../src/agent/services/libraryMutationService";
@@ -855,6 +856,9 @@ describe("library operations against real Zotero", function () {
       item.setField("publicationTitle", "Notes");
       await item.saveTx();
 
+      // The synchronous formatter needs the citation style registry, which
+      // the cite tool awaits for the caller before reaching this gateway call.
+      await (Zotero as any).Styles.init();
       const result = gateway().formatBibliography({ itemIds: [item.id] });
 
       // The whole point: this comes from Zotero, not from the model's memory.

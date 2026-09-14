@@ -7,16 +7,11 @@
  */
 import type {
   AgentToolContext,
+  AgentActionEvidence,
   AgentToolEffect,
   AgentWriteToolDefinition,
 } from "../../types";
-import {
-  ambiguousInvocationPlan,
-  prohibitedInvocationPlan,
-  readOnlyInvocationPlan,
-  stateChangeInvocationPlan,
-} from "../../authorization/invocationPlan";
-import type { ActionRiskSignal } from "../../authorization/types";
+import { prohibitedInvocationPlan } from "../../authorization/invocationPlan";
 import { getRuntimePlatformInfo } from "../../../utils/runtimePlatform";
 import {
   isLocalPathInsideOrEqual,
@@ -27,18 +22,20 @@ import { executeExternalMutation } from "../../services/externalMutationCoordina
 import { sha256Bytes } from "../../store/journalRecoveryBlobStore";
 import { fingerprintText } from "../../contracts/actionOperationEvidence";
 
-type RunCommandInput = {
-  command: string;
-  cwd?: string;
-  timeoutMs: number;
-};
-
-type ReversibleCommandWrite = {
-  kind: "file" | "directory";
-  path: string;
-  sourcePath?: string;
-  description: string;
-};
+import {
+  classifyRunCommandInvocation,
+  pathExists,
+  resolveReversibleOutputPath,
+  resolvedCommandTargets,
+  identifyCommandOutput,
+  parseCommandWriteTargets,
+  isMarkdownNotePath,
+  isRelativeCommandPath,
+  commandStartsWithDirectoryChange,
+  resolveCommandPath,
+  type RunCommandInput,
+} from "./commandAnalysis";
+export { classifyRunCommandInvocation } from "./commandAnalysis";
 
 /**
  * Resolve the absolute path of the shell executable.
@@ -70,861 +67,183 @@ async function drainPipe(pipe: any): Promise<string> {
 /**
  * Run a shell command using Mozilla's Subprocess module.
  */
-async function executeCommand(params: {
+type CommandOutcome =
+  | "succeeded"
+  | "failed"
+  | "uncertain"
+  | "timed_out"
+  | "cancelled"
+  | "launch_failed";
+
+export async function executeCommand(params: {
   command: string;
   cwd?: string;
   timeoutMs: number;
-}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  signal?: AbortSignal;
+}): Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  outcome: CommandOutcome;
+}> {
   const { command, timeoutMs } = params;
   const { shell, shellFlag } = resolveShellPath();
-
-  // Try Mozilla Subprocess.call (Zotero 7/8)
+  if (params.signal?.aborted)
+    return {
+      stdout: "",
+      stderr: "Command cancelled before launch.",
+      exitCode: -1,
+      outcome: "cancelled",
+    };
+  let subprocess: any;
+  const chromeUtils = (globalThis as any).ChromeUtils;
   try {
-    let Subprocess: any;
-    const CU = (globalThis as any).ChromeUtils;
-    if (CU?.importESModule) {
-      try {
-        const mod = CU.importESModule(
-          "resource://gre/modules/Subprocess.sys.mjs",
-        );
-        Subprocess = mod.Subprocess || mod.default || mod;
-      } catch {
-        /* fallback below */
-      }
+    if (chromeUtils?.importESModule) {
+      const mod = chromeUtils.importESModule(
+        "resource://gre/modules/Subprocess.sys.mjs",
+      );
+      subprocess = mod.Subprocess || mod.default || mod;
     }
-    if (!Subprocess && CU?.import) {
-      try {
-        const mod = CU.import("resource://gre/modules/Subprocess.jsm");
-        Subprocess = mod.Subprocess || mod;
-      } catch {
-        /* fallback below */
-      }
+  } catch {
+    /* try the older module below, before any process is launched */
+  }
+  if (!subprocess && chromeUtils?.import) {
+    try {
+      const mod = chromeUtils.import("resource://gre/modules/Subprocess.jsm");
+      subprocess = mod.Subprocess || mod;
+    } catch {
+      /* reported below */
     }
+  }
+  if (typeof subprocess?.call !== "function")
+    return {
+      stdout: "",
+      stderr:
+        "Controllable host command execution is unavailable in this Zotero environment. No command was launched.",
+      exitCode: -1,
+      outcome: "launch_failed",
+    };
 
-    if (Subprocess?.call) {
-      const info = getRuntimePlatformInfo();
-
-      if (info.platform === "windows") {
-        // Windows: Subprocess pipes don't capture cmd.exe output in Zotero's
-        // Gecko build. Redirect to a fixed temp file, then read it back.
-        const Components = (globalThis as any).Components;
-        const tempDir =
-          (globalThis as any).Services?.dirsvc?.get(
-            "TmpD",
-            Components?.interfaces?.nsIFile,
-          )?.path || "C:\\Windows\\Temp";
-        const tempOut = `${tempDir}\\zotero-llm-cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`;
-        const wrappedCommand = `( ${command} ) > "${tempOut}" 2>&1`;
-
-        const proc = await Subprocess.call({
-          command: shell,
-          arguments: [shellFlag, wrappedCommand],
-          workdir: params.cwd || undefined,
-        });
-
-        // Drain pipes (they'll be empty on Windows, but drain to avoid hangs)
-        const drainPromise = Promise.all([
-          drainPipe(proc.stdout),
-          drainPipe(proc.stderr),
-        ]);
-
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<"timeout">((resolve) => {
-          timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
-        });
-
-        const resultPromise = (async () => {
-          await drainPromise;
-          const { exitCode } = await proc.wait();
-          return exitCode;
-        })();
-
-        let race: number | "timeout";
-        try {
-          race = await Promise.race([resultPromise, timeoutPromise]);
-        } finally {
-          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-        }
-        if (race === "timeout") {
-          try {
-            proc.kill();
-          } catch {
-            /* ignore */
-          }
-          try {
-            const IO = (globalThis as any).IOUtils;
-            await IO.remove(tempOut, { ignoreAbsent: true });
-          } catch {
-            /* ignore */
-          }
-          return { stdout: "", stderr: "[Command timed out]", exitCode: -1 };
-        }
-
-        // Read captured output from temp file
-        let stdout = "";
-        try {
-          const IOUtils = (globalThis as any).IOUtils;
-          const data = await IOUtils.read(tempOut);
-          stdout = new TextDecoder("utf-8").decode(
-            data instanceof Uint8Array ? data : new Uint8Array(data),
-          );
-          await IOUtils.remove(tempOut, { ignoreAbsent: true });
-        } catch {
-          /* temp file missing or unreadable */
-        }
-
-        return { stdout, stderr: "", exitCode: race };
-      } else {
-        // macOS / Linux: pipes work normally
-        const proc = await Subprocess.call({
-          command: shell,
-          arguments: [shellFlag, command],
-          workdir: params.cwd || undefined,
-        });
-
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<"timeout">((resolve) => {
-          timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
-        });
-
-        const resultPromise = (async () => {
-          const [stdout, stderr] = await Promise.all([
-            drainPipe(proc.stdout),
-            drainPipe(proc.stderr),
-          ]);
-          const { exitCode } = await proc.wait();
-          return { stdout, stderr, exitCode };
-        })();
-
-        let raceResult:
-          | { stdout: string; stderr: string; exitCode: number }
-          | "timeout";
-        try {
-          raceResult = await Promise.race([resultPromise, timeoutPromise]);
-        } finally {
-          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-        }
-        if (raceResult === "timeout") {
-          try {
-            proc.kill();
-          } catch {
-            /* ignore */
-          }
-          const partial = await resultPromise.catch(() => ({
-            stdout: "",
-            stderr: "",
-            exitCode: -1,
-          }));
-          return {
-            stdout: partial.stdout,
-            stderr: partial.stderr + "\n[Command timed out]",
-            exitCode: -1,
-          };
-        }
-        return raceResult;
-      }
+  const info = getRuntimePlatformInfo();
+  let tempOut = "";
+  let process: any;
+  try {
+    let launchedCommand = command;
+    if (info.platform === "windows") {
+      const Components = (globalThis as any).Components;
+      const tempDir =
+        (globalThis as any).Services?.dirsvc?.get(
+          "TmpD",
+          Components?.interfaces?.nsIFile,
+        )?.path || "C:\\Windows\\Temp";
+      tempOut = `${tempDir}\\zotero-llm-cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`;
+      launchedCommand = `( ${command} ) > "${tempOut}" 2>&1`;
     }
+    process = await subprocess.call({
+      command: shell,
+      arguments: [shellFlag, launchedCommand],
+      workdir: params.cwd || undefined,
+    });
   } catch (error) {
-    Zotero.debug?.(
-      `[llm-for-zotero] Subprocess.call failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    return {
+      stdout: "",
+      stderr: `Command launch failed; no fallback execution was attempted: ${error instanceof Error ? error.message : String(error)}`,
+      exitCode: -1,
+      outcome: "launch_failed",
+    };
+  }
+  if (params.signal?.aborted) {
+    try {
+      process.kill();
+    } catch {
+      /* best effort */
+    }
+    return {
+      stdout: "",
+      stderr:
+        "Command cancelled; termination was requested, but detached descendants may still be running.",
+      exitCode: -1,
+      outcome: "cancelled",
+    };
   }
 
-  // Fallback: nsIProcess (no stdout capture)
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+  const stop = <T extends "timed_out" | "cancelled">(outcome: T): T => {
+    try {
+      process.kill();
+    } catch {
+      /* termination is best effort; the outcome states the uncertainty */
+    }
+    return outcome;
+  };
+  const timeout = new Promise<"timed_out">((resolve) => {
+    timeoutHandle = setTimeout(() => resolve(stop("timed_out")), timeoutMs);
+  });
+  const cancellation = new Promise<"cancelled">((resolve) => {
+    abortListener = () => resolve(stop("cancelled"));
+    params.signal?.addEventListener("abort", abortListener, { once: true });
+  });
+  const resultPromise = (async () => {
+    const [stdout, stderr, waited] = await Promise.all([
+      drainPipe(process.stdout),
+      drainPipe(process.stderr),
+      process.wait(),
+    ]);
+    return { stdout, stderr, exitCode: Number(waited.exitCode) };
+  })();
+  resultPromise.catch(() => undefined);
   try {
-    const Components = (globalThis as any).Components;
-    if (!Components?.classes) {
+    const settled = await Promise.race([resultPromise, timeout, cancellation]);
+    if (settled === "timed_out" || settled === "cancelled") {
       return {
         stdout: "",
-        stderr: "Shell execution is not available in this Zotero environment.",
+        stderr:
+          settled === "timed_out"
+            ? "Command timed out; termination was requested, but detached descendants may still be running."
+            : "Command cancelled; termination was requested, but detached descendants may still be running.",
         exitCode: -1,
+        outcome: settled,
       };
     }
-    const nsILocalFile = Components.classes[
-      "@mozilla.org/file/local;1"
-    ].createInstance(Components.interfaces.nsIFile);
-    nsILocalFile.initWithPath(shell);
-
-    const process = Components.classes[
-      "@mozilla.org/process/util;1"
-    ].createInstance(Components.interfaces.nsIProcess);
-    process.init(nsILocalFile);
-    process.run(true, [shellFlag, command], 2);
+    let stdout = settled.stdout;
+    if (tempOut) {
+      try {
+        const bytes = await (globalThis as any).IOUtils.read(tempOut);
+        stdout = new TextDecoder("utf-8").decode(
+          bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
+        );
+      } catch {
+        /* keep captured output */
+      }
+    }
     return {
-      stdout:
-        "(nsIProcess does not capture stdout — check output files instead)",
-      stderr: "",
-      exitCode: process.exitValue,
+      stdout,
+      stderr: settled.stderr,
+      exitCode: settled.exitCode,
+      outcome: settled.exitCode === 0 ? "succeeded" : "failed",
     };
   } catch (error) {
     return {
       stdout: "",
-      stderr: `Failed to execute command: ${error instanceof Error ? error.message : String(error)}`,
+      stderr: `Command outcome is uncertain after launch: ${error instanceof Error ? error.message : String(error)}`,
       exitCode: -1,
+      outcome: "uncertain",
     };
-  }
-}
-
-/** Downloading code and handing it directly to a shell should never auto-run. */
-const NETWORK_TO_SHELL_PATTERN =
-  /(?:(?:curl|wget)\b[\s\S]*\|\s*(?:sh|bash|zsh)\b|(?:sh|bash|zsh)\b[\s\S]*<\s*\(\s*(?:curl|wget)\b|(?:sh|bash|zsh)\b[\s\S]*(?:\$\(\s*(?:curl|wget)\b|`\s*(?:curl|wget)\b))/i;
-
-/** macOS/system automation commands can mutate external app or OS state. */
-const SYSTEM_AUTOMATION_PATTERN =
-  /(?:^|\||;|&&)\s*(?:(?:osascript|launchctl)\b|defaults\s+(?:write|delete|import|rename)\b)/i;
-
-const PACKAGE_SYSTEM_MODIFICATION_PATTERN =
-  /(?:^|\||;|&&)\s*(?:(?:npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:pip|pip3)\s+install\b|python3?\s+-m\s+pip\s+install\b|uv\s+pip\s+install\b|brew\s+(?:install|upgrade|update|uninstall)\b|(?:apt|apt-get|dnf|yum|pacman|conda|mamba)\s+(?:install|remove|update|upgrade)\b|cargo\s+install\b|gem\s+install\b|date\s+(?:-s|--set)\b|timedatectl\b|systemsetup\s+-set(?:date|time|timezone)\b)/i;
-
-const RECOGNIZED_STATE_CHANGE_COMMANDS =
-  /(?:^|\||;|&&)\s*(?:(?:touch|mkdir|cp|mv|rm|rmdir|chmod|chown|tee)\b|(?:copy|move|del|erase|ren|rename|md|mkdir|rd|rmdir)\b|git\s+(?:add|commit|push|reset|checkout|switch|clean|rebase|merge|cherry-pick|revert|rm|branch|tag)\b|git\s+diff\b[^\n;&|]*--output(?:=|\s)|(?:npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:pip|pip3)\s+install\b|python3?\s+-m\s+pip\s+install\b|uv\s+pip\s+install\b|brew\s+(?:install|upgrade|update|uninstall)\b|(?:apt|apt-get|dnf|yum|pacman|conda|mamba)\s+(?:install|remove|update|upgrade)\b|cargo\s+install\b|gem\s+install\b|date\s+(?:-s|--set)\b|timedatectl\b|systemsetup\s+-set(?:date|time|timezone)\b)/i;
-
-/** Append redirects are always an overwrite/append risk. */
-const APPEND_REDIRECT_PATTERN =
-  /(?:^|[^<])(?:\d*>>|&>>)\s*(?:"[^"]+"|'[^']+'|[^\s;&|]+)/;
-
-const OVERWRITE_REDIRECT_TARGET_PATTERN =
-  /(?:^|[^<>=])(?:\d?>|&>)(?!=)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/;
-
-const ANY_REDIRECT_TARGET_PATTERN =
-  /(?:^|[^<>=])(?:\d*>>|&>>|\d?>|&>)(?!=)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g;
-
-const TEE_TARGET_PATTERN =
-  /(?:^|[|;&])\s*tee(?:\s+-[A-Za-z]+)*\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g;
-
-async function pathExists(path: string): Promise<boolean | null> {
-  const IOUtils = (globalThis as any).IOUtils;
-  if (IOUtils?.exists) {
-    try {
-      return Boolean(await IOUtils.exists(path));
-    } catch {
-      return null;
-    }
-  }
-  const OSFile = (globalThis as any).OS?.File;
-  if (OSFile?.exists) {
-    try {
-      return Boolean(await OSFile.exists(path));
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-async function pathKind(path: string): Promise<"file" | "directory" | null> {
-  const IOUtils = (globalThis as any).IOUtils;
-  if (IOUtils?.stat) {
-    try {
-      const stat = await IOUtils.stat(path);
-      if (stat?.type === "directory") return "directory";
-      if (stat?.type === "regular" || stat?.type === "file") return "file";
-    } catch {
-      return null;
-    }
-  }
-  const OSFile = (globalThis as any).OS?.File;
-  if (OSFile?.stat) {
-    try {
-      const stat = await OSFile.stat(path);
-      if (stat?.isDir === true) return "directory";
-      if (stat) return "file";
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-function childPath(directory: string, sourcePath: string): string {
-  const sourceName = sourcePath
-    .replace(/[\\/]+$/g, "")
-    .split(/[\\/]/)
-    .pop();
-  if (!sourceName) return directory;
-  const separator =
-    directory.includes("\\") && !directory.includes("/") ? "\\" : "/";
-  return `${directory.replace(/[\\/]+$/g, "")}${separator}${sourceName}`;
-}
-
-async function resolveReversibleOutputPath(
-  write: ReversibleCommandWrite,
-  cwd: string | undefined,
-): Promise<string> {
-  const destination = resolveCommandPath(write.path, cwd);
-  if (write.sourcePath && (await pathKind(destination)) === "directory") {
-    return childPath(destination, write.sourcePath);
-  }
-  return destination;
-}
-
-async function removePathIfExists(path: string): Promise<void> {
-  const IOUtils = (globalThis as any).IOUtils;
-  if (IOUtils?.remove) {
-    await IOUtils.remove(path, { ignoreAbsent: true });
-    return;
-  }
-  const OSFile = (globalThis as any).OS?.File;
-  if (OSFile?.remove) {
-    await OSFile.remove(path, { ignoreAbsent: true });
-    return;
-  }
-  throw new Error("Path removal is not available in this Zotero environment");
-}
-
-function parseSimpleShellWords(value: string): string[] | null {
-  const words: string[] = [];
-  const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|(\S+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(value))) {
-    const token = match[1] ?? match[2] ?? match[3] ?? "";
-    if (!token) continue;
-    if (/[;&|<>]/.test(token)) return null;
-    words.push(token.replace(/\\"/g, '"'));
-  }
-  return words;
-}
-
-function hasGlobPattern(value: string): boolean {
-  return /[*?[\]{}]/.test(value);
-}
-
-function isAbsolutePath(value: string): boolean {
-  return (
-    value.startsWith("/") ||
-    /^[A-Za-z]:[\\/]/.test(value) ||
-    value.startsWith("\\\\")
-  );
-}
-
-function resolveCommandPath(path: string, cwd: string | undefined): string {
-  const normalize = (value: string): string => {
-    const slash = value.replace(/\\/g, "/");
-    const drive = slash.match(/^([A-Za-z]:)(?:\/|$)/)?.[1];
-    const unc = slash.startsWith("//");
-    const absolute = slash.startsWith("/") || Boolean(drive);
-    const prefix = drive ? `${drive}/` : unc ? "//" : absolute ? "/" : "";
-    const body = drive
-      ? slash.slice(drive.length + 1)
-      : slash.replace(/^\/+/, "");
-    const segments: string[] = [];
-    for (const segment of body.split("/")) {
-      if (!segment || segment === ".") continue;
-      if (segment === "..") {
-        if (segments.length && segments.at(-1) !== "..") segments.pop();
-        else if (!absolute) segments.push(segment);
-        continue;
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    if (abortListener)
+      params.signal?.removeEventListener("abort", abortListener);
+    if (tempOut) {
+      try {
+        await (globalThis as any).IOUtils?.remove?.(tempOut, {
+          ignoreAbsent: true,
+        });
+      } catch {
+        /* managed temporary output cleanup is best effort */
       }
-      segments.push(segment);
-    }
-    return `${prefix}${segments.join("/")}` || (absolute ? prefix : ".");
-  };
-  if (path.startsWith("~")) return path;
-  if (isAbsolutePath(path)) return normalize(path);
-  return normalize(cwd ? `${cwd.replace(/[\\/]+$/g, "")}/${path}` : path);
-}
-
-function splitPipeline(command: string): string[] | null {
-  if (/\$\(|`|\$\{|\$[A-Za-z_][A-Za-z0-9_]*|%[^%\s]+%|![^!\s]+!/.test(command))
-    return null;
-  const stages: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-  let escaped = false;
-  for (const character of command) {
-    if (escaped) {
-      current += character;
-      escaped = false;
-      continue;
-    }
-    if (character === "\\" && quote !== "'") {
-      current += character;
-      escaped = true;
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      if (quote === character) quote = null;
-      else if (!quote) quote = character;
-      current += character;
-      continue;
-    }
-    if (!quote && character === "|") {
-      if (!current.trim()) return null;
-      stages.push(current.trim());
-      current = "";
-      continue;
-    }
-    if (
-      !quote &&
-      (character === ";" || character === "&" || character === "\n")
-    ) {
-      return null;
-    }
-    current += character;
-  }
-  if (quote || escaped || !current.trim()) return null;
-  stages.push(current.trim());
-  return stages;
-}
-
-function optionAllowed(
-  value: string,
-  exact: ReadonlySet<string>,
-  prefixes: readonly string[] = [],
-): boolean {
-  return (
-    !value.startsWith("-") ||
-    exact.has(value) ||
-    prefixes.some((prefix) => value.startsWith(prefix))
-  );
-}
-
-function isRecognizedReadOnlyStage(stage: string): boolean {
-  if (/[<>]/.test(stage)) return false;
-  const words = parseSimpleShellWords(stage);
-  if (!words?.length) return false;
-  if (/[\\/]/.test(words[0])) return false;
-  const program = words[0].toLowerCase().replace(/\.exe$/, "");
-  const args = words.slice(1);
-  if (program === "pwd" || program === "echo" || program === "printf") {
-    return args.every((arg) => !arg.startsWith("-") || program !== "pwd");
-  }
-  if (program === "wc") {
-    const flags = new Set([
-      "-l",
-      "-w",
-      "-c",
-      "-m",
-      "-L",
-      "--lines",
-      "--words",
-      "--bytes",
-      "--chars",
-      "--max-line-length",
-    ]);
-    return args.every((arg) => optionAllowed(arg, flags));
-  }
-  if (program === "rg") {
-    const flags = new Set([
-      "-n",
-      "--line-number",
-      "-i",
-      "--ignore-case",
-      "-F",
-      "--fixed-strings",
-      "-w",
-      "--word-regexp",
-      "-l",
-      "--files-with-matches",
-      "-L",
-      "--files-without-match",
-      "-c",
-      "--count",
-      "--count-matches",
-      "--json",
-      "--heading",
-      "--no-heading",
-      "--hidden",
-      "--files",
-      "--stats",
-      "--version",
-      "--help",
-      "--no-ignore",
-      "--follow",
-      "-A",
-      "-B",
-      "-C",
-      "-m",
-      "-g",
-      "--glob",
-      "--type",
-      "--type-not",
-      "--max-count",
-      "--context",
-    ]);
-    return args.every((arg) =>
-      optionAllowed(arg, flags, [
-        "--glob=",
-        "--type=",
-        "--type-not=",
-        "--max-count=",
-        "--context=",
-      ]),
-    );
-  }
-  if (program === "git" && args[0] === "diff") {
-    const flags = new Set([
-      "--cached",
-      "--staged",
-      "--stat",
-      "--shortstat",
-      "--name-only",
-      "--name-status",
-      "--check",
-      "--summary",
-      "--no-color",
-      "--color",
-      "--word-diff",
-      "-w",
-      "--ignore-all-space",
-      "--ignore-space-change",
-      "--no-ext-diff",
-    ]);
-    return args
-      .slice(1)
-      .every((arg) =>
-        optionAllowed(arg, flags, ["--color=", "--word-diff=", "--unified="]),
-      );
-  }
-  const commonFlags: Record<string, ReadonlySet<string>> = {
-    cat: new Set([
-      "-A",
-      "-b",
-      "-e",
-      "-E",
-      "-n",
-      "-s",
-      "-t",
-      "-T",
-      "-u",
-      "-v",
-      "--show-all",
-      "--number-nonblank",
-      "--show-ends",
-      "--number",
-      "--squeeze-blank",
-      "--show-tabs",
-      "--show-nonprinting",
-    ]),
-    head: new Set(["-q", "-v", "-n", "-c", "--quiet", "--verbose"]),
-    tail: new Set(["-q", "-v", "-n", "-c", "--quiet", "--verbose"]),
-    ls: new Set([
-      "-a",
-      "-A",
-      "-d",
-      "-F",
-      "-h",
-      "-i",
-      "-k",
-      "-l",
-      "-n",
-      "-o",
-      "-p",
-      "-r",
-      "-R",
-      "-s",
-      "-S",
-      "-t",
-      "-U",
-      "-1",
-      "--all",
-      "--almost-all",
-      "--directory",
-      "--human-readable",
-      "--inode",
-      "--recursive",
-      "--reverse",
-      "--size",
-    ]),
-    stat: new Set(["-f", "-L", "-t", "--dereference", "--terse"]),
-    file: new Set(["-b", "-i", "-L", "--brief", "--mime", "--dereference"]),
-    du: new Set([
-      "-a",
-      "-h",
-      "-k",
-      "-s",
-      "--all",
-      "--human-readable",
-      "--summarize",
-    ]),
-    df: new Set(["-h", "-k", "-P", "-T", "--human-readable"]),
-  };
-  if (program in commonFlags) {
-    const prefixes =
-      program === "head" || program === "tail"
-        ? ["--lines=", "--bytes="]
-        : program === "ls"
-          ? ["--color=", "--sort=", "--time=", "--format="]
-          : program === "stat"
-            ? ["--format=", "--printf="]
-            : [];
-    return args.every((arg) =>
-      optionAllowed(arg, commonFlags[program], prefixes),
-    );
-  }
-  if (program === "find") {
-    const flags = new Set([
-      "-H",
-      "-L",
-      "-P",
-      "-and",
-      "-or",
-      "-not",
-      "-name",
-      "-iname",
-      "-path",
-      "-ipath",
-      "-type",
-      "-maxdepth",
-      "-mindepth",
-      "-size",
-      "-mtime",
-      "-mmin",
-      "-newer",
-      "-empty",
-      "-readable",
-      "-writable",
-      "-executable",
-      "-print",
-      "-print0",
-      "-printf",
-      "-ls",
-      "-true",
-      "-false",
-    ]);
-    return args.every(
-      (arg) =>
-        !arg.startsWith("-") || flags.has(arg) || arg === "!" || arg === "(",
-    );
-  }
-  const platform = getRuntimePlatformInfo().platform;
-  return (
-    platform === "windows" &&
-    ["dir", "type", "findstr", "where"].includes(program)
-  );
-}
-
-function resolvedCommandTargets(
-  input: Pick<RunCommandInput, "command" | "cwd">,
-): string[] {
-  const targets = parseCommandWriteTargets(input.command).map((path) =>
-    resolveCommandPath(path, input.cwd),
-  );
-  return [...new Set([...(input.cwd ? [input.cwd] : []), ...targets])];
-}
-
-function targetsProtectedBoundary(targets: string[], command: string): boolean {
-  if (
-    /\b(?:rm|rmdir)\s+(?:-[^\s]+\s+)*(?:\/|~|\$HOME|%USERPROFILE%)(?=[\s"']|$)/i.test(
-      command,
-    )
-  ) {
-    return true;
-  }
-  return targets.some((target) => {
-    const normalized = target.replace(/\\/g, "/").replace(/\/+$/g, "");
-    return (
-      normalized === "" ||
-      normalized === "/" ||
-      normalized === "~" ||
-      /^[A-Za-z]:$/.test(normalized) ||
-      ["/System", "/usr", "/bin", "/sbin", "/etc"].some(
-        (root) => normalized === root || normalized.startsWith(`${root}/`),
-      )
-    );
-  });
-}
-
-function commandRiskSignals(command: string): ActionRiskSignal[] {
-  const signals: ActionRiskSignal[] = [];
-  if (/\b(?:sudo|doas|runas)\b/i.test(command)) {
-    signals.push("privilege_escalation");
-  }
-  if (
-    PACKAGE_SYSTEM_MODIFICATION_PATTERN.test(command) ||
-    SYSTEM_AUTOMATION_PATTERN.test(command)
-  ) {
-    signals.push("package_system_modification");
-  }
-  if (isNetworkToShellCommand(command)) signals.push("download_to_shell");
-  if (
-    /\b(?:rm|rmdir)\b[^\n]*(?:-r|-rf|-fr)\b|(?:^|[;&|])\s*(?:rd|rmdir)\s+\/s\b/i.test(
-      command,
-    )
-  ) {
-    signals.push("broad_delete");
-  }
-  if (
-    /originalAgentPermissionMode|agentLibraryWriteMode|authorization|grantStore/i.test(
-      command,
-    )
-  ) {
-    signals.push("authorization_tampering");
-  }
-  return signals;
-}
-
-export async function classifyRunCommandInvocation(
-  input: Pick<RunCommandInput, "command" | "cwd">,
-) {
-  const command = input.command.trim();
-  const targets = resolvedCommandTargets(input);
-  const riskSignals = commandRiskSignals(command);
-  const stateChange =
-    RECOGNIZED_STATE_CHANGE_COMMANDS.test(command) ||
-    SYSTEM_AUTOMATION_PATTERN.test(command) ||
-    APPEND_REDIRECT_PATTERN.test(command) ||
-    Boolean(parseRedirectTarget(command));
-  if (
-    riskSignals.includes("authorization_tampering") ||
-    (stateChange && targetsProtectedBoundary(targets, command))
-  ) {
-    return prohibitedInvocationPlan({
-      mechanism: "shell",
-      domains: ["local_execution", "filesystem"],
-      effects: ["modify"],
-      targets,
-      riskSignals: [
-        ...riskSignals,
-        ...(targetsProtectedBoundary(targets, command)
-          ? (["protected_target"] as const)
-          : []),
-      ],
-      reason: "The command crosses an enforced local integrity boundary.",
-    });
-  }
-  if (stateChange) {
-    const reversibleWrite = parseReversibleCommandWrite(command);
-    const outputPath = reversibleWrite
-      ? await resolveReversibleOutputPath(reversibleWrite, input.cwd)
-      : undefined;
-    const exists = outputPath ? await pathExists(outputPath) : null;
-    const effects = /\b(?:rm|rmdir)\b/i.test(command)
-      ? (["delete"] as const)
-      : exists === false
-        ? (["create"] as const)
-        : (["modify"] as const);
-    return stateChangeInvocationPlan({
-      mechanism: "shell",
-      assurance: "statically_recognized",
-      domains: ["local_execution", "filesystem", "network"],
-      effects: [...effects],
-      targets,
-      riskSignals,
-      reversibility: reversibleWrite && exists === false ? "partial" : "none",
-      reason:
-        reversibleWrite && exists === false
-          ? "The recognized new output can be removed, but other shell effects are not proven reversible."
-          : "The command contains a recognized state-changing form whose complete inverse cannot be proven.",
-    });
-  }
-  const stages = splitPipeline(command);
-  if (stages?.every(isRecognizedReadOnlyStage)) {
-    return readOnlyInvocationPlan({
-      mechanism: "shell",
-      assurance: "statically_recognized",
-      domains: ["local_execution", "filesystem"],
-      targets,
-      reason:
-        "Every pipeline stage matches the audited read-only command grammar.",
-    });
-  }
-  return ambiguousInvocationPlan({
-    mechanism: "shell",
-    domains: ["local_execution", "filesystem", "network"],
-    effects: ["read", "create", "modify", "delete", "egress"],
-    targets,
-    riskSignals,
-    reason:
-      "The shell form contains an interpreter, expansion, executable, or flag outside the audited read-only grammar.",
-  });
-}
-
-function isNullRedirectTarget(path: string): boolean {
-  const normalized = path.replace(/\\/g, "/").toLowerCase();
-  return normalized === "/dev/null" || normalized === "nul";
-}
-
-function isMarkdownNotePath(path: string): boolean {
-  return /\.(?:md|markdown)$/i.test(path.trim());
-}
-
-function normalizeParsedCommandTarget(
-  value: string,
-  options?: { unquoted?: boolean },
-): string {
-  const path = value.trim();
-  return options?.unquoted ? path.replace(/\)+$/g, "") : path;
-}
-
-function isRelativeCommandPath(path: string): boolean {
-  const trimmed = path.trim();
-  return (
-    Boolean(trimmed) && !isAbsolutePath(trimmed) && !trimmed.startsWith("~")
-  );
-}
-
-function commandStartsWithDirectoryChange(command: string): boolean {
-  return /^(?:\(\s*)?cd(?:\s+|$)[\s\S]*(?:&&|;)/.test(command.trim());
-}
-
-function parseRedirectTarget(command: string): ReversibleCommandWrite | null {
-  const match = command.match(OVERWRITE_REDIRECT_TARGET_PATTERN);
-  if (!match) return null;
-  const path = (match[1] || match[2] || match[3] || "").trim();
-  if (!path || isNullRedirectTarget(path) || hasGlobPattern(path)) return null;
-  return {
-    kind: "file",
-    path,
-    description: `Delete created file from shell redirect: ${path}`,
-  };
-}
-
-function parseCommandWriteTargets(command: string): string[] {
-  const targets: string[] = [];
-  let match: RegExpExecArray | null;
-  const redirectPattern = new RegExp(
-    ANY_REDIRECT_TARGET_PATTERN.source,
-    ANY_REDIRECT_TARGET_PATTERN.flags,
-  );
-  while ((match = redirectPattern.exec(command)) !== null) {
-    const path = normalizeParsedCommandTarget(
-      match[1] || match[2] || match[3] || "",
-      {
-        unquoted: Boolean(match[3]),
-      },
-    );
-    if (path && !isNullRedirectTarget(path)) targets.push(path);
-  }
-
-  const teePattern = new RegExp(
-    TEE_TARGET_PATTERN.source,
-    TEE_TARGET_PATTERN.flags,
-  );
-  while ((match = teePattern.exec(command)) !== null) {
-    const path = normalizeParsedCommandTarget(
-      match[1] || match[2] || match[3] || "",
-      {
-        unquoted: Boolean(match[3]),
-      },
-    );
-    if (path && !isNullRedirectTarget(path)) targets.push(path);
-  }
-
-  const words = parseSimpleShellWords(command.trim());
-  if (words?.length) {
-    const [rawProgram, ...args] = words;
-    const program = rawProgram.toLowerCase().replace(/\.exe$/, "");
-    if (
-      (program === "cp" || program === "mv") &&
-      args.length >= 2 &&
-      !args.some((arg) => hasGlobPattern(arg))
-    ) {
-      const positional = args.filter((arg) => !arg.startsWith("-"));
-      const target = positional[positional.length - 1];
-      if (target) targets.push(target);
-    }
-    if (
-      ["rm", "rmdir", "touch", "mkdir", "md", "rd", "del"].includes(program)
-    ) {
-      targets.push(...args.filter((arg) => !arg.startsWith("-")));
-    }
-    if (["chmod", "chown"].includes(program)) {
-      targets.push(...args.slice(1).filter((arg) => !arg.startsWith("-")));
     }
   }
-
-  return Array.from(new Set(targets));
 }
 
 function getNoteWriteBypassRefusal(
@@ -964,51 +283,6 @@ function getNoteWriteBypassRefusal(
   );
 }
 
-function parseReversibleCommandWrite(
-  command: string,
-): ReversibleCommandWrite | null {
-  const trimmed = command.trim();
-  const redirect = parseRedirectTarget(trimmed);
-  if (redirect) return redirect;
-
-  const words = parseSimpleShellWords(trimmed);
-  if (!words?.length) return null;
-  const [program, ...args] = words;
-  if (program === "mkdir") {
-    const paths = args.filter((arg) => arg !== "-p");
-    if (paths.length !== 1 || hasGlobPattern(paths[0])) return null;
-    return {
-      kind: "directory",
-      path: paths[0],
-      description: `Remove created directory: ${paths[0]}`,
-    };
-  }
-  if (program === "touch" && args.length === 1 && !hasGlobPattern(args[0])) {
-    return {
-      kind: "file",
-      path: args[0],
-      description: `Delete created file: ${args[0]}`,
-    };
-  }
-  if (
-    program === "cp" &&
-    args.length === 2 &&
-    !args.some((arg) => arg.startsWith("-") || hasGlobPattern(arg))
-  ) {
-    return {
-      kind: "file",
-      path: args[1],
-      sourcePath: args[0],
-      description: `Delete copied file: ${args[1]}`,
-    };
-  }
-  return null;
-}
-
-function isNetworkToShellCommand(command: string): boolean {
-  return NETWORK_TO_SHELL_PATTERN.test(command.trim());
-}
-
 export function createRunCommandTool(): AgentWriteToolDefinition<
   RunCommandInput,
   unknown
@@ -1028,10 +302,11 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
         destinationCollectionIds: [],
       },
     ],
+    effectOperations: ["command_execute"],
     spec: {
       name: "run_command",
       description:
-        "Run a shell command on the local machine. The command string is passed directly to the native shell (cmd.exe on Windows, zsh on macOS, bash on Linux). " +
+        "Run a host shell command. cwd selects the process working directory; it does not confine filesystem access. The command string is passed directly to the native shell (cmd.exe on Windows, zsh on macOS, bash on Linux). " +
         "Use this for explicit shell tasks, data analysis scripts, conversion, or CLI tools. Not for ordinary Zotero paper/library reading when semantic Zotero tools can answer. Returns stdout, stderr, and exit code.",
       inputSchema: {
         type: "object",
@@ -1057,7 +332,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
         },
       },
       executionClass: "external_effect",
-      requiresConfirmation: true,
+      workCategory: "external_system",
     },
 
     guidance: {
@@ -1077,6 +352,17 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
 
     presentation: {
       label: "Run Command",
+      // The command itself is the row's content, so the row shows the tool's
+      // label and the block carries the text rather than saying it twice.
+      buildTraceCodeBlock: ({ args }) => {
+        const command =
+          args && typeof args === "object" && !Array.isArray(args)
+            ? (args as Record<string, unknown>).command
+            : undefined;
+        return typeof command === "string" && command.trim()
+          ? { code: command, replacesSummary: true }
+          : null;
+      },
       summaries: {
         onCall: ({ args }) => {
           const a =
@@ -1126,6 +412,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
     },
 
     async planInvocation(input, context) {
+      input.cwd ||= context.request.workingDirectory;
       if (getNoteWriteBypassRefusal(input, context)) {
         return prohibitedInvocationPlan({
           mechanism: "shell",
@@ -1170,7 +457,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
     },
 
     async execute(input, context) {
-      const reversibleWrite = parseReversibleCommandWrite(input.command);
+      const reversibleWrite = identifyCommandOutput(input.command);
       const noteWriteRefusal = getNoteWriteBypassRefusal(input, context);
       if (noteWriteRefusal) {
         return {
@@ -1189,11 +476,15 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           command: input.command,
           cwd: input.cwd,
           timeoutMs: input.timeoutMs,
+          signal: context.signal,
         });
       const formatResult = (
         commandResult: Awaited<ReturnType<typeof executeCommand>>,
         effect: AgentToolEffect,
+        actionEvidence?: AgentActionEvidence[],
       ) => {
+        if (commandResult.exitCode === 0 && input.cwd)
+          context.request.workingDirectory = input.cwd;
         const maxLen = 8000;
         const stdout =
           commandResult.stdout.length > maxLen
@@ -1211,8 +502,11 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
             stdout,
             stderr,
             command: input.command,
+            ...(input.cwd ? { cwd: input.cwd } : {}),
+            outcome: commandResult.outcome,
           },
           effect,
+          ...(actionEvidence ? { actionEvidence } : {}),
         };
       };
       if (context.invocationPlan?.impact === "read_only") {
@@ -1314,7 +608,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
           };
         },
       });
-      return formatResult(result.content, result.effect);
+      return formatResult(result.content, result.effect, result.actionEvidence);
     },
   };
 }

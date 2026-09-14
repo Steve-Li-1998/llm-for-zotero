@@ -3,7 +3,68 @@ import {
   isActionIndexList,
 } from "../contracts/workflowDependencies";
 import type { AgentActionContract } from "../contracts/types";
-import type { PlanContract, PlanStep } from "./types";
+import type { PlanContract, PlanEffectSpecification, PlanStep } from "./types";
+
+/** Validate stable v5 effect ownership without relying on semantic indexes. */
+export function validatePlanEffectBindings(
+  specification: PlanEffectSpecification,
+  steps: readonly PlanStep[],
+): void {
+  const allEffects = [
+    ...specification.effects,
+    ...specification.deferredEffects,
+  ];
+  const effects = new Map(
+    allEffects.map((effect) => [effect.effectId, effect]),
+  );
+  const owners = new Map<string, number>();
+  const stepIndexes = new Map(
+    steps.map((step, index) => [step.planStepId, index]),
+  );
+  steps.forEach((step, stepIndex) => {
+    for (const effectId of step.effectIds || []) {
+      if (!effects.has(effectId) || owners.has(effectId)) {
+        throw new Error(
+          "Each frozen effect must have one matching Plan step owner",
+        );
+      }
+      const expectedEffect =
+        effects.get(effectId)?.operation === "read_full" ? "read" : "mutation";
+      if (step.expectedEffect !== expectedEffect) {
+        throw new Error(
+          "Each concrete effect must belong to a step with its matching effect class",
+        );
+      }
+      owners.set(effectId, stepIndex);
+    }
+  });
+  if (allEffects.some((effect) => !owners.has(effect.effectId))) {
+    throw new Error("Every approved effect needs an explicit Plan step owner");
+  }
+  for (const effect of allEffects) {
+    const owner = owners.get(effect.effectId)!;
+    for (const dependency of effect.dependsOnEffectIds) {
+      const dependencyOwner = owners.get(dependency);
+      if (dependencyOwner === undefined || dependencyOwner > owner) {
+        throw new Error("Plan effect order violates a frozen dependency");
+      }
+    }
+    for (const binding of effect.materialBindings) {
+      if (!("producedByStepId" in binding)) continue;
+      const producer = stepIndexes.get(binding.producedByStepId);
+      if (
+        producer === undefined ||
+        producer >= owner ||
+        steps[producer].materialOutputId !== binding.outputId ||
+        steps[producer].expectedEffect !== "artifact"
+      ) {
+        throw new Error(
+          "A material binding must reference an earlier artifact step and its exact output",
+        );
+      }
+    }
+  }
+}
 
 /** Bind visible Plan steps to the already interpreted workflow, without reinterpreting text. */
 export function validatePlanWorkflowBindings(

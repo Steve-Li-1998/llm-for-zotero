@@ -13,6 +13,7 @@ import type {
 import {
   evaluatePreparedActionContract,
   formatReceiptStatus,
+  receiptReportsEffect,
 } from "./actionEvaluation";
 import type {
   AgentActionContract,
@@ -64,6 +65,14 @@ export class ActionContractRunSession {
   async initialize(params: {
     checkpoint: ActionContractCheckpoint | null;
   }): Promise<ActionContractInitialization> {
+    if (
+      this.request.executionContext?.permissionOwner === "original_agent" &&
+      !this.request.actionContract
+    ) {
+      this.request.actionPreparation = undefined;
+      this.request.actionProgress = undefined;
+      return { kind: "ready" };
+    }
     if (this.request.classifiedIntent?.semantic)
       await this.emit({
         type: "provider_event",
@@ -212,7 +221,10 @@ export class ActionContractRunSession {
 
   receiptStatus(): string {
     const contract = this.request.actionContract;
-    if (!contract) return "";
+    if (!contract) {
+      const directReceipts = this.receipts.filter(receiptReportsEffect);
+      return formatReceiptStatus(directReceipts);
+    }
     const relevantReceipts = this.receipts.filter((receipt) =>
       contract.obligations.some(
         (obligation) =>

@@ -290,4 +290,86 @@ describe("workflow: webchat mode switching", function () {
       assert.notEqual(upstream.conversationKey, webChatSessionKey);
     });
   });
+
+  it("waits for the stored WebChat session when another panel isolates the original paper chat", async function () {
+    await withPrefs(SWITCHING_PREFS, async () => {
+      fixture = await api.createPaperWithPdfFixture({
+        title: "WebChat Readiness Parent",
+        pdfTitle: "WebChat Readiness PDF",
+      });
+      const panel = await api.renderPanelForItem(fixture.parentItemId);
+      const original = await api.getDiagnostics(panel.panelId);
+      const originalQuery = Zotero.DB.queryAsync;
+      let releaseSessionLookup!: () => void;
+      const sessionLookupGate = new Promise<void>((resolve) => {
+        releaseSessionLookup = resolve;
+      });
+      let lookupStarted = false;
+      let selectionSettled = false;
+      let selection: ReturnType<
+        WorkflowTestApi["selectPanelModelEntry"]
+      > | null = null;
+      Zotero.DB.queryAsync = async function (sql: string, ...args: unknown[]) {
+        if (
+          sql.includes("FROM llm_for_zotero_paper_conversations") &&
+          sql.includes("COALESCE(webchat_session, 0) = 1")
+        ) {
+          lookupStarted = true;
+          await sessionLookupGate;
+        }
+        return Reflect.apply(originalQuery, Zotero.DB, [sql, ...args]);
+      } as typeof Zotero.DB.queryAsync;
+      try {
+        selection = api
+          .selectPanelModelEntry(panel.panelId, WEBCHAT_MODEL_ENTRY_ID)
+          .then((diagnostics) => {
+            selectionSettled = true;
+            return diagnostics;
+          });
+        const lookupDeadline = Date.now() + 5000;
+        while (!lookupStarted && Date.now() < lookupDeadline) {
+          await Zotero.Promise.delay(25);
+        }
+        assert.isTrue(lookupStarted, "WebChat session lookup should start");
+
+        // A second panel can isolate the ordinary paper key while the first
+        // panel is still resolving its dedicated, catalog-hidden session.
+        await api.renderPanelForItem(fixture.parentItemId);
+        const pending = await api.getDiagnostics(panel.panelId);
+        assert.isTrue(pending.webChatMode);
+        assert.equal(pending.conversationKey, original.conversationKey);
+        await Zotero.Promise.delay(75);
+        assert.isFalse(
+          selectionSettled,
+          "an isolated ordinary conversation must not count as a ready WebChat session",
+        );
+
+        releaseSessionLookup();
+        const ready = await selection;
+        assert.notEqual(ready.conversationKey, original.conversationKey);
+        assert.equal(ready.panelConversationKey, ready.conversationKey);
+        const rows = (await Zotero.DB.queryAsync(
+          "SELECT library_id AS libraryID, paper_item_id AS paperItemID, " +
+            "webchat_session AS webchatSession " +
+            "FROM llm_for_zotero_paper_conversations WHERE conversation_key = ?",
+          [ready.conversationKey],
+        )) as Array<{
+          libraryID: number;
+          paperItemID: number;
+          webchatSession: number;
+        }>;
+        assert.lengthOf(rows, 1);
+        assert.equal(rows[0].webchatSession, 1);
+        assert.equal(rows[0].paperItemID, fixture.parentItemId);
+        assert.equal(
+          rows[0].libraryID,
+          Zotero.Items.get(fixture.parentItemId).libraryID,
+        );
+      } finally {
+        Zotero.DB.queryAsync = originalQuery;
+        releaseSessionLookup();
+        await selection?.catch(() => undefined);
+      }
+    });
+  });
 });

@@ -109,7 +109,10 @@ import {
   getSelectedTextContextEntries,
   resolveContextSourceItemAsync,
 } from "./contextResolution";
-import { resolveInitialPanelItemState } from "./portalScope";
+import {
+  resolveConversationBaseItem,
+  resolveInitialPanelItemState,
+} from "./portalScope";
 import { syncNoteEditingSelectedText } from "./noteEditing/selectionController";
 import {
   decorateAssistantCitationLinks,
@@ -131,7 +134,7 @@ import {
   type WorkflowTestFinalRequestSnapshot,
 } from "./workflowTestHooks";
 import { dispatchZoteroItemsAsContext } from "./zoteroItemContextMenu";
-import { appendMessage } from "../../utils/chatStore";
+import { appendMessage, getPaperConversation } from "../../utils/chatStore";
 import { appendCodexMessage } from "../../codexAppServer/store";
 import { appendClaudeMessage } from "../../claudeCode/store";
 import {
@@ -1935,18 +1938,44 @@ async function selectPanelModelEntry(
     typeof options?.expectWebChat === "boolean"
       ? options.expectWebChat
       : getModelEntryById(entryId)?.authMode === "webchat";
+  const expectedPaper = resolveConversationBaseItem(
+    activeContextPanels.get(panel.body)?.() || panel.item,
+  );
   option.click();
   const deadline = Date.now() + 15000;
   let diagnostics = await getDiagnostics(panelId);
   while (Date.now() < deadline) {
     const key = diagnostics.conversationKey || 0;
-    const settled = expectWebChat
-      ? diagnostics.webChatMode === true &&
+    if (expectWebChat) {
+      if (
+        diagnostics.webChatMode === true &&
         webChatIsolatedConversationKeys.has(key)
-      : diagnostics.webChatMode === false &&
-        !webChatIsolatedConversationKeys.has(key) &&
-        loadedConversationKeys.has(key);
-    if (settled) return diagnostics;
+      ) {
+        // Another panel can isolate the ordinary paper key before this
+        // panel's async switch attaches its dedicated hidden session.
+        const session = await getPaperConversation(key);
+        diagnostics = await getDiagnostics(panelId);
+        if (
+          session?.webchatSession === true &&
+          session.paperItemID === expectedPaper?.id &&
+          session.libraryID === expectedPaper?.libraryID &&
+          diagnostics.webChatMode === true &&
+          diagnostics.conversationSystem === "upstream" &&
+          diagnostics.conversationKey === key &&
+          diagnostics.panelConversationKey === key &&
+          webChatIsolatedConversationKeys.has(key) &&
+          loadedConversationKeys.has(key)
+        ) {
+          return diagnostics;
+        }
+      }
+    } else if (
+      diagnostics.webChatMode === false &&
+      !webChatIsolatedConversationKeys.has(key) &&
+      loadedConversationKeys.has(key)
+    ) {
+      return diagnostics;
+    }
     await Zotero.Promise.delay(25);
     diagnostics = await getDiagnostics(panelId);
   }

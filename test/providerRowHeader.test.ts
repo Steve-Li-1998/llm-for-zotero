@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { describe, it } from "mocha";
 import { describeProviderRow } from "../src/modules/preferences/providerCards/providerRowHeader";
 import type { ModelProviderGroup } from "../src/utils/modelProviders";
+import { PROVIDER_PRESETS } from "../src/utils/providerPresets";
 
 /**
  * A provider card is now the same collapsible row the Agent tab uses, so the
@@ -33,22 +34,79 @@ function apiKeyGroup(
 }
 
 describe("provider row header", function () {
+  it("gives every branded preset its logo and leaves generic local servers unbranded", function () {
+    for (const preset of PROVIDER_PRESETS) {
+      const row = describeProviderRow(
+        apiKeyGroup({ presetIdOverride: preset.id }),
+      );
+      assert.equal(
+        row.iconModifier,
+        preset.id === "local_openai" ? "provider" : `preset-${preset.id}`,
+      );
+    }
+  });
   it("names an API-key provider by its preset and lists its models", function () {
     const row = describeProviderRow(
       apiKeyGroup({ models: [model("gpt-5.1"), model("gpt-5.1-mini")] }),
     );
 
     // The head has room for the actual names, which say far more than a count.
-    assert.equal(row.summary, "OpenAI · gpt-5.1, gpt-5.1-mini");
+    assert.equal(row.summary, "OpenAI · API · gpt-5.1, gpt-5.1-mini");
     assert.equal(row.tag, "API Key");
-    assert.equal(row.iconModifier, "provider");
+    assert.equal(row.iconModifier, "preset-openai");
     assert.isTrue(row.configured);
+  });
+
+  it("preserves customized identity even for a recognized provider URL", function () {
+    const row = describeProviderRow(
+      apiKeyGroup({ presetIdOverride: "customized" }),
+    );
+    assert.equal(row.iconModifier, "provider");
+    assert.equal(row.summary, "Customized · API · gpt-5.1");
+  });
+
+  it("updates the logo when the preset or connection mode changes", function () {
+    const group = apiKeyGroup({ presetIdOverride: "gemini" });
+    assert.equal(describeProviderRow(group).iconModifier, "preset-gemini");
+    group.presetIdOverride = "customized";
+    assert.equal(describeProviderRow(group).iconModifier, "provider");
+    group.authMode = "webchat";
+    group.models = [model("chat.deepseek.com")];
+    assert.equal(describeProviderRow(group).iconModifier, "preset-deepseek");
+    assert.equal(describeProviderRow(group).summary, "DeepSeek · WebChat");
+    group.models = [model("custom.example.com")];
+    assert.equal(describeProviderRow(group).iconModifier, "webchat");
+    assert.equal(
+      describeProviderRow(group).summary,
+      "WebChat · custom.example.com",
+    );
+  });
+
+  it("uses brand logos only when all WebChat targets identify the same provider", function () {
+    for (const [target, icon, label] of [
+      ["chatgpt.com", "preset-openai", "ChatGPT"],
+      ["chat.deepseek.com", "preset-deepseek", "DeepSeek"],
+      ["gemini.google.com", "preset-gemini", "Google Gemini"],
+    ]) {
+      const row = describeProviderRow(
+        apiKeyGroup({ authMode: "webchat", models: [model(target)] }),
+      );
+      assert.equal(row.iconModifier, icon);
+      assert.equal(row.summary, `${label} · WebChat`);
+    }
+    const mixed = describeProviderRow(
+      apiKeyGroup({
+        authMode: "webchat",
+        models: [model("chatgpt.com"), model("custom.example.com")],
+      }),
+    );
+    assert.equal(mixed.iconModifier, "webchat");
   });
 
   it("names a single model without any count", function () {
     assert.equal(
       describeProviderRow(apiKeyGroup()).summary,
-      "OpenAI · gpt-5.1",
+      "OpenAI · API · gpt-5.1",
     );
   });
 
@@ -66,7 +124,7 @@ describe("provider row header", function () {
 
     assert.match(
       row.summary,
-      /^OpenAI · claude-sonnet-5-20260401, .* \+2 more$/,
+      /^OpenAI · API · claude-sonnet-5-20260401, .* \+2 more$/,
     );
     // Short enough to stay on one line in the head's 1fr column.
     assert.isBelow(row.summary.length, 75);
@@ -84,7 +142,7 @@ describe("provider row header", function () {
 
     assert.equal(
       row.summary,
-      "OpenAI · an-extremely-long-model-identifier-that-exceeds-the-budget +1 more",
+      "OpenAI · API · an-extremely-long-model-identifier-that-exceeds-the-budget +1 more",
     );
   });
 
@@ -100,7 +158,7 @@ describe("provider row header", function () {
   it("treats a keyed provider with no model name as still unfinished", function () {
     const row = describeProviderRow(apiKeyGroup({ models: [model("")] }));
 
-    assert.equal(row.summary, "OpenAI · no models yet");
+    assert.equal(row.summary, "OpenAI · API · no models yet");
     assert.isFalse(row.configured);
   });
 

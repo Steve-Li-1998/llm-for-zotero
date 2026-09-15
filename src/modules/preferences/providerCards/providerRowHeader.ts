@@ -4,6 +4,7 @@ import {
   getProviderPreset,
   providerPresetRequiresApiKey,
   resolveProviderPresetId,
+  type SupportedProviderPresetId,
 } from "../../../utils/providerPresets";
 import { getWebChatTargetByModelName } from "../../../webchat/types";
 
@@ -15,7 +16,11 @@ import { getWebChatTargetByModelName } from "../../../webchat/types";
  */
 
 /** Suffix of the `.llm-pref-row-icon--*` class the row wears. */
-export type ProviderRowIconModifier = "provider" | "codex" | "webchat";
+export type ProviderRowIconModifier =
+  | "provider"
+  | "codex"
+  | "webchat"
+  | `preset-${Exclude<SupportedProviderPresetId, "local_openai">}`;
 
 export type ProviderRowDescription = {
   iconModifier: ProviderRowIconModifier;
@@ -55,20 +60,39 @@ function describeAuthFamily(group: ModelProviderGroup): AuthFamily {
       };
     case "copilot_auth":
       return {
-        iconModifier: "provider",
+        iconModifier: "preset-copilot",
         tag: t("GitHub Copilot"),
         name: t("GitHub Copilot"),
       };
-    case "webchat":
+    case "webchat": {
+      const targets = namedModels(group).map(getWebChatTargetByModelName);
+      const target = targets[0];
+      // A mixed or custom group has no single provider identity.
+      if (target && targets.every((entry) => entry?.id === target.id)) {
+        const iconModifier = {
+          chatgpt: "preset-openai",
+          deepseek: "preset-deepseek",
+          gemini: "preset-gemini",
+        } as const;
+        return {
+          iconModifier: iconModifier[target.id as keyof typeof iconModifier],
+          tag: t("Browser extension"),
+          name: target.label,
+        };
+      }
       return {
         iconModifier: "webchat",
         tag: t("Browser extension"),
         name: t("WebChat"),
       };
+    }
     default: {
       const presetId = resolveProviderPresetId(group);
       return {
-        iconModifier: "provider",
+        iconModifier:
+          presetId === "customized" || presetId === "local_openai"
+            ? "provider"
+            : `preset-${presetId}`,
         tag: t("API Key"),
         name:
           presetId === "customized"
@@ -156,6 +180,14 @@ export function describeProviderRow(
     return { ...family, summary: t("Not configured"), configured: false };
   }
 
+  if (group.authMode === "webchat" && family.iconModifier !== "webchat") {
+    return {
+      ...family,
+      summary: `${family.name} · ${t("WebChat")}`,
+      configured,
+    };
+  }
+
   // WebChat targets carry friendlier names than their model ids.
   const display =
     group.authMode === "webchat"
@@ -166,7 +198,7 @@ export function describeProviderRow(
 
   return {
     ...family,
-    summary: `${family.name} · ${describeModelList(display)}`,
+    summary: `${family.name}${group.authMode === "api_key" ? ` · ${t("API")}` : ""} · ${describeModelList(display)}`,
     configured,
   };
 }

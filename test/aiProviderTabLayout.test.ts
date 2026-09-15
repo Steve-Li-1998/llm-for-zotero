@@ -23,19 +23,27 @@ describe("AI Providers tab layout", function () {
     const markup = source("addon/content/preferences.xhtml");
     const flat = markup.replace(/\s+/g, " ");
 
-    // Codex reuses the same logo the Agent tab's Codex row wears, and WebChat
-    // reuses the globe from the chat context bar — no new artwork.
+    // Codex retains its existing logo. Custom API and generic WebChat
+    // retain the colors of the user-selected artwork instead of masking it.
     assert.include(
       flat,
       '.llm-pref-row-icon--codex { background-image: url("chrome://__addonRef__/content/icons/codex-logo.svg"); }',
     );
     assert.include(
       flat,
-      'url("chrome://__addonRef__/content/icons/action-mode-global.svg")',
+      'url("chrome://__addonRef__/content/icons/webchat-connection.svg")',
     );
     assert.include(
       flat,
-      'url("chrome://__addonRef__/content/icons/action-model-chip.svg")',
+      'url("chrome://__addonRef__/content/icons/custom-api.svg")',
+    );
+    assert.include(
+      flat,
+      '.llm-pref-row-icon--provider { background-image: url("chrome://__addonRef__/content/icons/custom-api.svg"); }',
+    );
+    assert.include(
+      flat,
+      '.llm-pref-row-icon--webchat { background-image: url("chrome://__addonRef__/content/icons/webchat-connection.svg"); }',
     );
     // Zotero inlines this markup into its own document, so relative URLs die.
     assert.notMatch(markup, /url\("icons\//);
@@ -43,7 +51,7 @@ describe("AI Providers tab layout", function () {
     // Mask-tinted icons sit at full strength in the row title's own colour.
     // Dimmed with an opacity they washed out against the head, and `Field`
     // is the near-black input background in dark chrome, not a light value.
-    for (const modifier of ["provider", "webchat", "notes"]) {
+    for (const modifier of ["notes"]) {
       const at = flat.indexOf(`.llm-pref-row-icon--${modifier} {`);
       assert.isAtLeast(at, 0, modifier);
       const rule = flat.slice(at, flat.indexOf("}", at));

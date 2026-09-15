@@ -2743,8 +2743,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     for (const option of Array.from(sidebarLayoutSelect.options)) {
       option.textContent = t(
         option.getAttribute("value") === "stacked"
-          ? "Stacked"
-          : "Independent (default)",
+          ? "Stacked (default)"
+          : "Independent",
       );
     }
     sidebarLayoutSelect.value = getSidebarLayout();

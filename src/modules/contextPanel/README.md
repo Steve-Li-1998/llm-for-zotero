@@ -54,6 +54,6 @@ Zotero namespaces registered pane IDs, so navigation identifies the registered h
 Native tab selection can reuse a rendered section without calling plugin hooks, so the dedicated view requests `_forceRenderAll()` after the native deck selection to reconcile the active conversation through the existing lifecycle.
 The native workflow regression covers full-height geometry, returning to item details, reader tab context changes, and Library chat staying selected until the user switches to Paper chat.
 
-Customization offers Independent (default) and Stacked layouts without rebuilding the mounted chat.
+Customization offers Independent and Stacked (default) layouts without rebuilding the mounted chat.
 Stacked restores native section headers, collapse controls, and the classic chat toolbar.
 With no library item selected, its rail icon opens the existing full-height starter page; selecting an item restores the chosen stacked layout.

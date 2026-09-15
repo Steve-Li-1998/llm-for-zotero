@@ -3211,6 +3211,30 @@
   padding: 2px 1px;
 }
 
+/* 2px panel padding plus 3px shortcut padding gives a 5px left gap. */
+:root[data-llm-sidebar-layout="independent"]
+  .llm-dedicated-chat-pane
+  .llm-shortcuts {
+  padding-left: 3px;
+}
+
+/* Keep a 5px composer gap on both sides, aligned with the shortcuts. */
+:root[data-llm-sidebar-layout="independent"]
+  .llm-dedicated-chat-pane
+  .llm-panel
+  > .llm-input-section {
+  margin-left: 3px;
+  margin-right: 3px;
+}
+
+/* Keep native button margins from consuming the shortcut row's left gap. */
+:root[data-llm-sidebar-layout="independent"]
+  .llm-dedicated-chat-pane
+  .llm-shortcuts
+  > .llm-shortcut-btn {
+  margin-left: 0;
+}
+
 .llm-shortcut-btn {
   display: inline-flex;
   align-items: center;

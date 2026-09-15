@@ -22,8 +22,8 @@ const zhCN: Record<string, string> = {
   // ── Chat panel UI ───────────────────────────────────────────────────────
   "LLM-for-Zotero": "LLM-for-Zotero",
   "Sidebar layout": "侧栏布局",
-  "Independent (default)": "独立（默认）",
-  Stacked: "堆叠",
+  Independent: "独立",
+  "Stacked (default)": "堆叠（默认）",
   "Show chat in its own sidebar or alongside Zotero’s other item sections. Changes apply immediately.":
     "将对话显示在独立侧栏中，或与 Zotero 的其他条目面板堆叠显示。更改立即生效。",
 

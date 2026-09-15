@@ -78,6 +78,42 @@ describe("workflow: dedicated native chat pane", function () {
     return details;
   }
 
+  function assertSidebarGaps(details: Element) {
+    const panel = details.querySelector(".llm-panel")!;
+    const chip = panel.querySelector(".llm-shortcuts > .llm-shortcut-btn")!;
+    assert.isAbove(
+      chip.getBoundingClientRect().width,
+      0,
+      "shortcut is visible",
+    );
+    assert.closeTo(
+      chip.getBoundingClientRect().left - panel.getBoundingClientRect().left,
+      5,
+      0.05,
+      "shortcut outer edge is 5px from the Independent sidebar boundary",
+    );
+    const composer = panel.querySelector(":scope > .llm-input-section")!;
+    assert.isAbove(
+      composer.getBoundingClientRect().width,
+      0,
+      "composer is visible",
+    );
+    assert.closeTo(
+      composer.getBoundingClientRect().left -
+        panel.getBoundingClientRect().left,
+      5,
+      0.05,
+      "composer outer edge aligns with the shortcuts at 5px",
+    );
+    assert.closeTo(
+      panel.getBoundingClientRect().right -
+        composer.getBoundingClientRect().right,
+      5,
+      0.05,
+      "composer right edge is 5px from the Independent sidebar boundary",
+    );
+  }
+
   async function captureWindow(target: any, filename: string) {
     const canvas = target.document.createElementNS(
       "http://www.w3.org/1999/xhtml",
@@ -135,6 +171,21 @@ describe("workflow: dedicated native chat pane", function () {
       (node: any) => node.getAttribute("data-pane") === paneID,
     ) as any;
   }
+
+  it("aligns shortcuts and the composer at a 5px left gap after switching sidebar layouts", async function () {
+    const details = await openChatPane();
+    assertSidebarGaps(details);
+    Zotero.Prefs.set(layoutPref, "stacked", true);
+    await until(
+      () =>
+        win.document.documentElement.getAttribute("data-llm-pane-view") ===
+        "stacked",
+      "Stacked layout applies",
+    );
+    Zotero.Prefs.set(layoutPref, "independent", true);
+    await openChatPane();
+    assertSidebarGaps(details);
+  });
 
   it("greys out the library rail with no selection and blocks activation", async function () {
     win.ZoteroPane.itemsView.selection.clearSelection();
@@ -663,6 +714,7 @@ describe("workflow: dedicated native chat pane", function () {
         String(fixtures[1].parentItemId),
       `paper B context follows its tab; selected=${win.Zotero_Tabs.selectedID}, roots=${JSON.stringify(Array.from(win.document.querySelectorAll("#llm-main")).map((node: any) => ({ ...node.dataset })))}`,
     );
+    assertSidebarGaps(activeDetails());
     win.Zotero_Tabs.select(readers[0].tabID);
     await until(
       () =>

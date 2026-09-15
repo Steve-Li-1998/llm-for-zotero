@@ -5,10 +5,6 @@ import {
   ZOTERO_MCP_ENDPOINT_PATH,
 } from "../src/agent/mcp/server";
 import {
-  areExternalMcpWritesEnabled,
-  setExternalMcpWritesEnabled,
-} from "../src/agent/mcp/prefs";
-import {
   getOriginalAgentPermissionMode,
   setOriginalAgentPermissionMode,
 } from "../src/agent/originalAgentPermissionMode";
@@ -25,9 +21,72 @@ function valuesNamed(value: any, key: string): any[] {
 
 describe("external MCP writes against native Zotero", function () {
   this.timeout(120000);
+  it("reads, writes, and runs commands without host permission opt-ins", async function () {
+    const io = (globalThis as any).IOUtils;
+    const root = `${Zotero.getTempDirectory().path}/mcp-client-owned-${Date.now()}`;
+    const path = `${root}/evidence.txt`;
+    const legacyKeys = [
+      "externalMcpWritesEnabled",
+      "externalMcpFilesEnabled",
+      "externalMcpCommandsEnabled",
+    ];
+    const prefix = "extensions.zotero.llmforzotero.";
+    const previous = legacyKeys.map((key) =>
+      Zotero.Prefs.get(prefix + key, true),
+    );
+    const call = async (name: string, args: object) => {
+      const Endpoint = Zotero.Server.Endpoints[ZOTERO_MCP_ENDPOINT_PATH];
+      const [status, , body] = await new Endpoint().init({
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${getOrCreateZoteroMcpBearerToken()}`,
+        },
+        data: {
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method: "tools/call",
+          params: { name, arguments: args },
+        },
+      });
+      assert.equal(status, 200);
+      const payload = JSON.parse(body);
+      assert.isUndefined(payload.error, body);
+      assert.isNotTrue(payload.result.isError, body);
+      return JSON.parse(payload.result.content[0].text);
+    };
+    try {
+      for (const key of legacyKeys) Zotero.Prefs.set(prefix + key, false, true);
+      await io.makeDirectory(root);
+      await io.writeUTF8(path, "Native source");
+      const read = await call("file_io", { action: "read", filePath: path });
+      assert.include(valuesNamed(read, "text"), "Native source");
+      const write = await call("file_io", {
+        action: "write",
+        filePath: path,
+        content: "Agent approved native write",
+      });
+      assert.include(valuesNamed(write, "verification"), "verified");
+      assert.equal(await io.readUTF8(path), "Agent approved native write");
+      const command = await call("run_command", {
+        command: "echo MCP_CLIENT_OWNS_PERMISSION",
+      });
+      assert.isTrue(
+        valuesNamed(command, "stdout").some((value) =>
+          String(value).includes("MCP_CLIENT_OWNS_PERMISSION"),
+        ),
+        JSON.stringify(command),
+      );
+    } finally {
+      for (const [index, key] of legacyKeys.entries()) {
+        if (previous[index] === undefined)
+          Zotero.Prefs.clear(prefix + key, true);
+        else Zotero.Prefs.set(prefix + key, previous[index], true);
+      }
+      await io.remove(root, { recursive: true, ignoreAbsent: true });
+    }
+  });
   for (const mode of ["safe", "auto", "yolo"] as const) {
     it(`executes a standalone create/import/tag/note/undo workflow in ${mode}`, async function () {
-      const previousEnabled = areExternalMcpWritesEnabled();
       const previousMode = getOriginalAgentPermissionMode();
       const items: number[] = [];
       const collections: number[] = [];
@@ -59,7 +118,6 @@ describe("external MCP writes against native Zotero", function () {
         return result;
       };
       try {
-        setExternalMcpWritesEnabled(true);
         setOriginalAgentPermissionMode(mode);
         const collectionResult = await call("collection_update", {
           action: "create",
@@ -160,7 +218,6 @@ describe("external MCP writes against native Zotero", function () {
         assert.isFalse(item.hasTag(`${suffix}-second`));
         assert.equal(item.getField("title"), suffix);
       } finally {
-        setExternalMcpWritesEnabled(previousEnabled);
         setOriginalAgentPermissionMode(previousMode);
         for (const id of items.reverse()) {
           const item = Zotero.Items.get(id);

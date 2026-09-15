@@ -844,11 +844,11 @@ Adding a verified model or effort to the remote registry does not require anothe
 Increment the registry revision, run `npm run validate:model-registry`, and publish the JSON change through the normal reviewed update process.
 This does not infer undocumented future API contracts or automatically publish model settings.
 
-### External MCP write access
+### External MCP access
 
 Standalone MCP clients can use the existing bearer-authenticated `/llm-for-zotero/mcp` endpoint while Zotero is running.
-In **Settings → llm-for-zotero → Agent → External MCP clients**, enable **Allow writes from external MCP clients** to authorize write access.
-This setting is off by default and trusts any client holding the connection credential to use the exposed write tools, including deletion and Zotero scripts.
+Authenticated clients can use the exposed library, file, and command tools without additional Zotero permission switches or directory grants.
+File and command access uses the operating-system permissions of the Zotero process.
 The connected assistant owns approval through its own permission settings; the plugin does not apply Original Agent Safe/Auto/YOLO or display a second permission prompt.
 Integrated Codex and Claude Code use their existing MCP enablement controls and the same delegated approval rule.
 

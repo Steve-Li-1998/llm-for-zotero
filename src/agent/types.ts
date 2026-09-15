@@ -916,6 +916,8 @@ export type AgentExecutionContext = Readonly<{
     libraryIDs: readonly number[];
     /** Legacy write roots retained for stored execution-context compatibility. */
     outputDirectories: readonly string[];
+    /** Host-issued MCP capability; path approval belongs to the calling agent. */
+    unrestrictedFileAccess?: boolean;
     fileAccess?: Readonly<{
       /** Exact host-resolved task files; never populated from tool arguments. */
       readFiles: readonly string[];

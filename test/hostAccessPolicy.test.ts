@@ -32,6 +32,37 @@ function context(
 }
 
 describe("host filesystem and command access", function () {
+  it("delegates MCP paths without directory or native reparse-point screening", async function () {
+    const originalIO = (globalThis as any).IOUtils;
+    (globalThis as any).IOUtils = {
+      exists: async () => true,
+      realPath: async () => {
+        throw new Error("Path screening must not run for client-owned access");
+      },
+    };
+    try {
+      for (const impact of ["read_only", "state_change"] as const) {
+        const decision = await evaluateHostAccess({
+          toolName: "file_io",
+          executionContext: context({ unrestrictedFileAccess: true }),
+          plan: {
+            mechanism: "none",
+            impact,
+            assurance: "runtime_enforced",
+            domains: ["filesystem"],
+            effects: ["read"],
+            targets: ["/outside/link/file.txt"],
+            reversibility: "full",
+            riskSignals: [],
+            reason: "Caller approved",
+          },
+        });
+        assert.equal(decision.kind, "allow");
+      }
+    } finally {
+      (globalThis as any).IOUtils = originalIO;
+    }
+  });
   it("separates exact task reads, directory writes, and command permission", async function () {
     assert.equal(
       (

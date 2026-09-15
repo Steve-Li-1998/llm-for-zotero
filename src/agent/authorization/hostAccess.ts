@@ -235,10 +235,21 @@ export async function evaluateHostAccess(params: {
           kind: "expand",
           targets: [],
           reason:
-            "Host command execution is not enabled for this caller. Enable the separate MCP host-command permission or approve this exact command expansion.",
+            "Host command execution is not enabled for this caller. Approve this exact command expansion.",
         };
   }
   if (params.toolName !== "file_io") return { kind: "allow" };
+  if (
+    params.executionContext.configuredAccess.unrestrictedFileAccess === true
+  ) {
+    return params.plan.targets.every(isAbsoluteLocalPath)
+      ? { kind: "allow" }
+      : {
+          kind: "block",
+          targets: params.plan.targets,
+          reason: "File targets must be absolute local paths.",
+        };
+  }
   const resolvedTargets = await Promise.all(
     params.plan.targets.map(resolveAccessPath),
   );

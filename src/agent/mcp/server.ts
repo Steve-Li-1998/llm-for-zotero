@@ -1,10 +1,3 @@
-import {
-  areExternalMcpCommandsEnabled,
-  areExternalMcpFilesEnabled,
-  areExternalMcpWritesEnabled,
-  getExternalMcpReadDirectories,
-  getExternalMcpWriteDirectories,
-} from "./prefs";
 import { resolveAgentToolPresentationLabel } from "../toolPresentation";
 import { createJournalId } from "../store/changeJournal";
 import { createAbortController } from "../../utils/apiHelpers";
@@ -1401,27 +1394,11 @@ function isMcpToolVisibleInScope(
   return getZoteroMcpDirectPdfToolNames().includes(tool.name);
 }
 
-function describeMcpHostAccess(
-  toolName: string,
-  scope: ZoteroMcpActiveScope | null,
-): string | undefined {
-  const standalone = !scope?.runtimeAuthority;
-  if (toolName === "file_io") {
-    if (standalone) {
-      return areExternalMcpFilesEnabled()
-        ? `Standalone MCP filesystem access is enabled for the configured read and write locations. Mutating calls also require standalone MCP writes, which are ${areExternalMcpWritesEnabled() ? "enabled" : "disabled"}.`
-        : "Standalone MCP filesystem access is currently disabled. Enable it and configure explicit read or write locations in Zotero preferences.";
-    }
-    return "File access is limited to the configured notes directory, exact host-resolved attachments, and each current paper's own cache directory. Zotero reviews an exact read, write, or export bundle when that scope must expand.";
-  }
-  if (toolName === "run_command") {
-    if (standalone) {
-      return `Standalone MCP host command execution is ${areExternalMcpCommandsEnabled() ? "enabled" : "currently disabled"}. Mutating commands also require standalone MCP writes.`;
-    }
-    return areExternalMcpCommandsEnabled()
-      ? "MCP host command execution is enabled in Zotero for this execution."
-      : 'MCP host command execution is currently disabled. Enable "Allow MCP clients to run commands on this computer" in Zotero preferences.';
-  }
+function describeMcpHostAccess(toolName: string): string | undefined {
+  if (toolName === "file_io")
+    return "File access is available for all paths accessible to Zotero. The calling agent owns approval and path permissions; Zotero validates operations and verifies supported changes.";
+  if (toolName === "run_command")
+    return "Commands execute on the Zotero host. The calling agent owns approval and command permissions.";
   return undefined;
 }
 
@@ -1446,7 +1423,7 @@ function handleToolsList(
             CURATED_PLAN_TOOL_NAMES.has(name)
               ? toolRegistry.getTool(name)?.guidance?.instruction
               : undefined,
-            describeMcpHostAccess(name, scope),
+            describeMcpHostAccess(name),
             // Codex code-mode discovery renders deeply nested input types as
             // `unknown`. Keep the complete contract discoverable there too;
             // otherwise native Plan has to guess evidence and scope shapes.
@@ -1579,7 +1556,7 @@ function decorateMcpToolDescription(
     toolName === "zotero_script"
       ? "The calling agent owns approval for zotero_script. Zotero applies its facade, integrity, and recovery checks. Write scripts must call env.snapshot(item) before mutating existing items, env.recordCreatedItem(item) after creating items, or env.addInverse(data) for supported custom changes so durable recovery can describe the operation."
       : mutability === "write"
-        ? "The calling agent owns write approval through its native runtime permission profile or external client settings; Original Agent permission modes do not apply. Standalone writes require the external MCP write setting. Zotero validates and verifies operations before reporting success. For Zotero note requests, call note_write instead of returning note-ready text in chat."
+        ? "The calling agent owns write approval through its native runtime permission profile or external client settings; Original Agent permission modes do not apply. Zotero validates and verifies operations before reporting success. For Zotero note requests, call note_write instead of returning note-ready text in chat."
         : "";
   return [
     description,
@@ -1903,7 +1880,6 @@ function createToolContext(
   const activePaper = getActiveTurnPaper(request.turnPaperScope);
   const notesDirectory = getNotesDirectoryConfig();
   const standalone = !scope?.runtimeAuthority;
-  const standaloneFilesEnabled = !standalone || areExternalMcpFilesEnabled();
   const taskReadFiles = standalone
     ? []
     : (request.localDocuments || []).map(
@@ -1914,22 +1890,12 @@ function createToolContext(
     : request.turnPaperScope.papers.flatMap(({ paper }) =>
         paper.mineruCacheDir ? [paper.mineruCacheDir] : [],
       );
-  const configuredReadDirectories = standaloneFilesEnabled
-    ? [
-        ...(notesDirectory?.directoryPath
-          ? [notesDirectory.directoryPath]
-          : []),
-        ...taskReadDirectories,
-        ...getExternalMcpReadDirectories(),
-      ]
-    : [];
-  const configuredWriteDirectories = standaloneFilesEnabled
-    ? [
-        ...(notesDirectory?.directoryPath
-          ? [notesDirectory.directoryPath]
-          : []),
-        ...getExternalMcpWriteDirectories(),
-      ]
+  const configuredReadDirectories = [
+    ...(notesDirectory?.directoryPath ? [notesDirectory.directoryPath] : []),
+    ...taskReadDirectories,
+  ];
+  const configuredWriteDirectories = notesDirectory?.directoryPath
+    ? [notesDirectory.directoryPath]
     : [];
   request.executionContext ||= {
     version: 1,
@@ -1983,7 +1949,7 @@ function createToolContext(
         readDirectories: configuredReadDirectories,
         writeDirectories: configuredWriteDirectories,
       },
-      hostCommandExecution: areExternalMcpCommandsEnabled(),
+      hostCommandExecution: true,
     },
     ...(request.planContext?.phase === "executing"
       ? {
@@ -2001,6 +1967,8 @@ function createToolContext(
     permissionOwner: "external_runtime",
     configuredAccess: {
       ...priorAccess,
+      // Authenticated MCP callers own file and command permission decisions.
+      unrestrictedFileAccess: true,
       outputDirectories: [
         ...new Set([
           ...(!standalone ? priorAccess.outputDirectories || [] : []),
@@ -2038,7 +2006,7 @@ function createToolContext(
           ]),
         ],
       },
-      hostCommandExecution: areExternalMcpCommandsEnabled(),
+      hostCommandExecution: true,
     },
   };
   return {
@@ -2054,49 +2022,6 @@ function createToolContext(
     modelName: scope?.model || "external-mcp",
     modelProviderLabel:
       exhaustiveReadBackend === "codex_responses" ? "Codex" : "External MCP",
-  };
-}
-
-function retainScopedHostAccessGrant(params: {
-  scope: ZoteroMcpActiveScope | null;
-  toolName: string;
-  plan: import("../types").AgentInvocationPlan;
-}): void {
-  const executionContext = params.scope?.executionContext;
-  if (!executionContext || !params.scope?.runtimeAuthority) return;
-  const configured = executionContext.configuredAccess;
-  const fileAccess = configured.fileAccess || {
-    readFiles: [],
-    writeFiles: [],
-    readDirectories: configured.outputDirectories || [],
-    writeDirectories: configured.outputDirectories || [],
-  };
-  params.scope.executionContext = {
-    ...executionContext,
-    configuredAccess: {
-      ...configured,
-      fileAccess: {
-        ...fileAccess,
-        readFiles:
-          params.toolName === "file_io" && params.plan.impact === "read_only"
-            ? [...new Set([...fileAccess.readFiles, ...params.plan.targets])]
-            : fileAccess.readFiles,
-        writeFiles:
-          params.toolName === "file_io" && params.plan.impact !== "read_only"
-            ? [
-                ...new Set([
-                  ...(fileAccess.writeFiles || []),
-                  ...params.plan.targets,
-                  ...params.plan.targets.map((target) => `${target}.tmp`),
-                ]),
-              ]
-            : fileAccess.writeFiles || [],
-      },
-      hostCommandExecution:
-        params.toolName === "run_command"
-          ? true
-          : configured.hostCommandExecution,
-    },
   };
 }
 
@@ -2366,30 +2291,6 @@ async function handleToolsCall(
       ? Number(scope?.conversationGeneration)
       : getConversationWriteGeneration(scopeConversationKey)
     : 0;
-  const standalone = !scope?.runtimeAuthority;
-  const validatedForGate = tool.validate(scopeArgs.toolArgs);
-  const validatedRecord =
-    validatedForGate.ok &&
-    validatedForGate.value &&
-    typeof validatedForGate.value === "object"
-      ? (validatedForGate.value as Record<string, unknown>)
-      : {};
-  const standaloneFileRead =
-    name === "file_io" && validatedRecord.action === "read";
-  const standaloneFileAccessDenied =
-    standalone && name === "file_io" && !areExternalMcpFilesEnabled();
-  const mcpCommandDenied =
-    name === "run_command" && !areExternalMcpCommandsEnabled();
-  if (standaloneFileAccessDenied || mcpCommandDenied) {
-    const error = standaloneFileAccessDenied
-      ? 'Standalone MCP file access is disabled. Enable "Allow standalone MCP filesystem access" and configure permitted directories in Zotero preferences.'
-      : 'MCP host command execution is disabled. Enable "Allow MCP clients to run commands on this computer" in Zotero preferences.';
-    completeActivity({ ok: false, error });
-    return {
-      content: [{ type: "text", text: JSON.stringify({ ok: false, error }) }],
-      isError: true,
-    };
-  }
   const nativeFilesystemViolation = getRawPdfNativeFilesystemViolation({
     toolName: name,
     scope,
@@ -2483,30 +2384,6 @@ async function handleToolsCall(
       callScope,
       deps.zoteroGateway,
     );
-    const hostToolPlan =
-      (name === "file_io" || name === "run_command") && validatedForGate.ok
-        ? await tool.planInvocation!(validatedForGate.value, toolContext)
-        : null;
-    const standaloneCommandReadOnly =
-      standalone &&
-      name === "run_command" &&
-      hostToolPlan?.impact === "read_only";
-    const standaloneInvocationReadOnly =
-      standaloneFileRead || standaloneCommandReadOnly;
-    if (
-      standalone &&
-      tool.spec.executionClass === "external_effect" &&
-      !standaloneInvocationReadOnly &&
-      !areExternalMcpWritesEnabled()
-    ) {
-      const error =
-        'Standalone MCP writes are disabled. Enable "Allow writes from external MCP clients" in Zotero preferences.';
-      completeActivity({ ok: false, error });
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: false, error }) }],
-        isError: true,
-      };
-    }
     toolContext.publishPlanEvent = scope?.publishHostEvent;
     toolContext.checkpointActionProgress = async () => {
       const request = toolContext.request;
@@ -2555,19 +2432,6 @@ async function handleToolsCall(
         callerKind: "mcp",
         isExecutionAllowed: () => {
           return (
-            (tool.spec.executionClass !== "external_effect" ||
-              (name === "file_io"
-                ? Boolean(scope?.runtimeAuthority) ||
-                  (areExternalMcpFilesEnabled() &&
-                    (standaloneInvocationReadOnly ||
-                      areExternalMcpWritesEnabled()))
-                : name === "run_command"
-                  ? areExternalMcpCommandsEnabled() &&
-                    (Boolean(scope?.runtimeAuthority) ||
-                      standaloneInvocationReadOnly ||
-                      areExternalMcpWritesEnabled())
-                  : Boolean(scope?.runtimeAuthority) ||
-                    areExternalMcpWritesEnabled())) &&
             (!scopeConversationKey ||
               (!areConversationWritesFrozen(scopeConversationKey) &&
                 isConversationWriteGenerationCurrent(
@@ -2585,8 +2449,6 @@ async function handleToolsCall(
       },
     );
 
-    let approvedHostAccessPlan: import("../types").AgentInvocationPlan | null =
-      null;
     while (prepared.kind === "confirmation") {
       if (!scope?.requestInteraction) {
         const error =
@@ -2595,26 +2457,12 @@ async function handleToolsCall(
         return { content: [{ type: "text", text: error }], isError: true };
       }
       const resolution = await scope.requestInteraction(prepared.action);
-      if (resolution.approved && hostToolPlan) {
-        approvedHostAccessPlan = hostToolPlan;
-      }
       prepared = resolution.approved
         ? await prepared.execute(resolution)
         : {
             kind: "result" as const,
             execution: await prepared.deny(resolution.data),
           };
-    }
-    if (
-      approvedHostAccessPlan &&
-      isScopedMcpCallCurrent(headers, scope) &&
-      !scope?.signal?.aborted
-    ) {
-      retainScopedHostAccessGrant({
-        scope: resolveCurrentScopedMcpCall(headers, scope),
-        toolName: name,
-        plan: approvedHostAccessPlan,
-      });
     }
     if (scope) {
       scope.actionContract = toolContext.request.actionContract;

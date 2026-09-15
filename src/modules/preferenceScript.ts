@@ -2,18 +2,6 @@ import {
   getSidebarLayout,
   SIDEBAR_LAYOUT_PREF,
 } from "./contextPanel/sidebarLayout";
-import {
-  areExternalMcpCommandsEnabled,
-  areExternalMcpFilesEnabled,
-  areExternalMcpWritesEnabled,
-  getExternalMcpReadDirectories,
-  getExternalMcpWriteDirectories,
-  setExternalMcpCommandsEnabled,
-  setExternalMcpFilesEnabled,
-  setExternalMcpReadDirectories,
-  setExternalMcpWritesEnabled,
-  setExternalMcpWriteDirectories,
-} from "../agent/mcp/prefs";
 import { config } from "../../package.json";
 import { t } from "../utils/i18n";
 import { WEBCHAT_TARGETS } from "../webchat/types";
@@ -3013,58 +3001,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
     }
   }
-
-  const externalMcpWritesInput = doc.querySelector(
-    `#${config.addonRef}-external-mcp-writes`,
-  ) as HTMLInputElement | null;
-  if (externalMcpWritesInput) {
-    externalMcpWritesInput.checked = areExternalMcpWritesEnabled();
-    externalMcpWritesInput.addEventListener("change", () => {
-      setExternalMcpWritesEnabled(externalMcpWritesInput.checked);
-    });
-  }
-  const externalMcpFilesInput = doc.querySelector(
-    `#${config.addonRef}-external-mcp-files`,
-  ) as HTMLInputElement | null;
-  if (externalMcpFilesInput) {
-    externalMcpFilesInput.checked = areExternalMcpFilesEnabled();
-    externalMcpFilesInput.addEventListener("change", () => {
-      setExternalMcpFilesEnabled(externalMcpFilesInput.checked);
-    });
-  }
-  const externalMcpCommandsInput = doc.querySelector(
-    `#${config.addonRef}-external-mcp-commands`,
-  ) as HTMLInputElement | null;
-  if (externalMcpCommandsInput) {
-    externalMcpCommandsInput.checked = areExternalMcpCommandsEnabled();
-    externalMcpCommandsInput.addEventListener("change", () => {
-      setExternalMcpCommandsEnabled(externalMcpCommandsInput.checked);
-    });
-  }
-  const bindDirectoryList = (
-    id: string,
-    initial: readonly string[],
-    save: (values: string[]) => void,
-  ) => {
-    const input = doc.querySelector(
-      `#${config.addonRef}-${id}`,
-    ) as HTMLTextAreaElement | null;
-    if (!input) return;
-    input.value = initial.join("\n");
-    input.addEventListener("change", () => {
-      save(input.value.split(/\r?\n/));
-    });
-  };
-  bindDirectoryList(
-    "external-mcp-read-directories",
-    getExternalMcpReadDirectories(),
-    setExternalMcpReadDirectories,
-  );
-  bindDirectoryList(
-    "external-mcp-write-directories",
-    getExternalMcpWriteDirectories(),
-    setExternalMcpWriteDirectories,
-  );
 
   // Every collapsed Agent row carries a summary line, so the tab answers "how
   // is this set up?" without opening anything. The real implementation is

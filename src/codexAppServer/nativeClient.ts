@@ -1855,8 +1855,8 @@ export function buildZoteroEnvironmentManifest(params: {
       getZoteroMcpServerName(scope.profileSignature),
       "run_command",
     )}. Use this exact profile-scoped server name for every Zotero MCP tool.`,
-    "- file_io is limited to the configured notes directory, exact host-resolved attachments, and each current paper's own cache directory. Zotero reviews only an exact access expansion.",
-    "- run_command requires the separately enabled Zotero MCP host-command permission. Native Codex or Claude permission settings do not grant that host capability.",
+    "- file_io can access all paths accessible to Zotero. Apply your own approval and path-access policy before calling it; Zotero validates operations and verifies supported changes.",
+    "- run_command executes on the Zotero host. Apply your own approval and command-permission policy before calling it.",
     ...(params.rawPdfMode
       ? [
           "- Raw PDF content: read only the exact current-turn local paths with native shell or file capabilities. Never use paper_read, MinerU, extracted-text context, sibling attachments, or paths from earlier turns as a substitute.",

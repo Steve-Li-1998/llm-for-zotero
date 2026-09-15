@@ -73,7 +73,7 @@ describe("Agent preference tab layout", function () {
     assert.notInclude(panel, 'value="claude_bridge"');
   });
 
-  it("keeps shared tools and the library-wide opt-in outside the runtime rows", function () {
+  it("keeps shared tools outside runtime rows without duplicate permission controls", function () {
     const panel = agentPanel();
     const claudeCard = panel.indexOf('id="__addonRef__-claude-code-card"');
     const sharedTools = panel.indexOf('id="__addonRef__-shared-runtime-tools"');
@@ -81,21 +81,14 @@ describe("Agent preference tab layout", function () {
       'id="__addonRef__-codex-app-server-mcp-enable"',
     );
     const notesRow = panel.indexOf('data-llm-agent-row="notes"');
-    const externalMcp = panel.indexOf(
-      'id="__addonRef__-external-mcp-settings"',
-    );
 
     assert.isAtLeast(claudeCard, 0);
     // Zotero MCP tools govern both native runtimes, so the control cannot live
     // inside — and disappear with — the Codex row.
     assert.isAbove(notesRow, claudeCard);
     assert.isAbove(sharedTools, notesRow);
-    // Both MCP clients — the built-in runtimes and external ones — are
-    // configured in the same panel rather than in two places on the tab.
     assert.isAbove(mcpToggle, sharedTools);
-    assert.isAbove(externalMcp, mcpToggle);
-    const sharedPanel = panel.slice(sharedTools);
-    assert.include(sharedPanel, 'id="__addonRef__-external-mcp-writes"');
+    assert.notInclude(panel, 'id="__addonRef__-external-mcp-settings"');
   });
 
   it("folds runtime detail into a per-row advanced drawer", function () {

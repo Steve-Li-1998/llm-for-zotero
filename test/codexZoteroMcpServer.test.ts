@@ -237,7 +237,7 @@ describe("Zotero MCP server", function () {
         readDirectories: [],
         writeDirectories: [],
       });
-      assert.isFalse(observed?.configuredAccess.hostCommandExecution);
+      assert.isTrue(observed?.configuredAccess.hostCommandExecution);
     } finally {
       scope.clear();
     }
@@ -445,27 +445,33 @@ describe("Zotero MCP server", function () {
         repeatedExpansion.isError,
         JSON.stringify(repeatedExpansion),
       );
-      assert.equal(reviews, 1, "one exact access expansion is retained");
+      assert.equal(reviews, 0, "the calling agent owns path approval");
     } finally {
       scoped.clear();
       (globalThis as any).IOUtils = originalIO;
     }
   });
 
-  it("allows standalone file reads without enabling standalone writes", async function () {
+  it("allows standalone reads and verified writes without any Zotero permission opt-in", async function () {
     prefStore.set(
       "extensions.zotero.llmforzotero.externalMcpFilesEnabled",
-      true,
+      false,
     );
     prefStore.set(
       "extensions.zotero.llmforzotero.externalMcpReadDirectories",
-      JSON.stringify(["/allowed"]),
+      JSON.stringify(["/legacy-only"]),
     );
     const originalIO = (globalThis as any).IOUtils;
+    const files = new Map<string, Uint8Array>([
+      ["/allowed/source.md", new TextEncoder().encode("Standalone evidence")],
+    ]);
     (globalThis as any).IOUtils = {
       exists: async (path: string) =>
-        ["/", "/allowed", "/allowed/source.md"].includes(path),
-      read: async () => new TextEncoder().encode("Standalone evidence"),
+        files.has(path) || ["/", "/allowed"].includes(path),
+      read: async (path: string) => files.get(path),
+      write: async (path: string, bytes: Uint8Array) =>
+        files.set(path, new Uint8Array(bytes)),
+      makeDirectory: async () => undefined,
     };
     const registry = new AgentToolRegistry(
       new ActionContractService({ getItem: () => null } as never),
@@ -497,12 +503,16 @@ describe("Zotero MCP server", function () {
       const write = await call(2, {
         action: "write",
         filePath: "/allowed/output.md",
-        content: "Blocked",
+        content: "Agent approved",
       });
-      assert.isTrue(write.isError);
-      assert.include(
-        write.content[0].text,
-        "Standalone MCP writes are disabled",
+      assert.isUndefined(write.isError, JSON.stringify(write));
+      assert.equal(
+        JSON.parse(write.content[0].text).actionReceipts[0].verification,
+        "verified",
+      );
+      assert.equal(
+        new TextDecoder().decode(files.get("/allowed/output.md")),
+        "Agent approved",
       );
     } finally {
       (globalThis as any).IOUtils = originalIO;
@@ -512,7 +522,7 @@ describe("Zotero MCP server", function () {
   it("allows a read-only standalone command with command access but writes disabled", async function () {
     prefStore.set(
       "extensions.zotero.llmforzotero.externalMcpCommandsEnabled",
-      true,
+      false,
     );
     let executed = 0;
     const registry = new AgentToolRegistry(
@@ -549,7 +559,7 @@ describe("Zotero MCP server", function () {
     assert.equal(executed, 1);
   });
 
-  it("requires the MCP host-command opt-in for an integrated Codex call", async function () {
+  it("delegates integrated Codex commands without a Zotero opt-in", async function () {
     let executed = 0;
     let reviews = 0;
     const registry = new AgentToolRegistry(
@@ -594,19 +604,15 @@ describe("Zotero MCP server", function () {
         },
       });
       const result = JSON.parse(response[2]).result;
-      assert.isTrue(result.isError, JSON.stringify(result));
-      assert.include(
-        result.content[0].text,
-        "MCP host command execution is disabled",
-      );
-      assert.equal(executed, 0);
+      assert.isUndefined(result.isError, JSON.stringify(result));
+      assert.equal(executed, 1);
       assert.equal(reviews, 0);
     } finally {
       scoped.clear();
     }
   });
 
-  it("revalidates the MCP host-command opt-in immediately before execution", async function () {
+  it("ignores obsolete command permissions changed during preparation", async function () {
     const commandPref =
       "extensions.zotero.llmforzotero.externalMcpCommandsEnabled";
     prefStore.set(commandPref, true);
@@ -651,8 +657,8 @@ describe("Zotero MCP server", function () {
         },
       });
       const result = JSON.parse(response[2]).result;
-      assert.isTrue(result.isError, JSON.stringify(result));
-      assert.equal(executed, 0);
+      assert.isUndefined(result.isError, JSON.stringify(result));
+      assert.equal(executed, 1);
     } finally {
       scoped.clear();
     }
@@ -676,7 +682,7 @@ describe("Zotero MCP server", function () {
           );
           prefStore.set(
             "extensions.zotero.llmforzotero.externalMcpWritesEnabled",
-            !integrated,
+            false,
           );
           let executed = 0;
           const registry = new AgentToolRegistry(
@@ -748,7 +754,6 @@ describe("Zotero MCP server", function () {
   for (const scenario of [
     "audit failure",
     "changed payload",
-    "disabled while preparing",
     "planning turn",
     "aborted turn",
     "partial effect",
@@ -769,11 +774,6 @@ describe("Zotero MCP server", function () {
       tool.planInvocation = async () => {
         assessments++;
         if (scenario === "aborted turn") scoped?.clear();
-        if (scenario === "disabled while preparing")
-          prefStore.set(
-            "extensions.zotero.llmforzotero.externalMcpWritesEnabled",
-            false,
-          );
         return stateChangeInvocationPlan({
           domains: ["zotero_library"],
           effects: ["create"],
@@ -1136,11 +1136,15 @@ describe("Zotero MCP server", function () {
     }
   });
 
-  it("keeps standalone writes disabled until explicitly enabled", async function () {
-    const registry = new AgentToolRegistry();
+  it("executes standalone writes without an opt-in", async function () {
+    const registry = new AgentToolRegistry(
+      new ActionContractService({ getItem: () => null } as never),
+    );
+    let executed = 0;
     const tool = createWriteTool("collection_update");
     tool.execute = async () => {
-      throw new Error("Must not execute");
+      executed++;
+      return { content: { applied: true }, effect: "applied" };
     };
     registry.register(tool);
     registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
@@ -1156,10 +1160,8 @@ describe("Zotero MCP server", function () {
         },
       },
     });
-    assert.include(
-      JSON.parse(response[2]).result.content[0].text,
-      "Allow writes from external MCP clients",
-    );
+    assert.isUndefined(JSON.parse(response[2]).result.isError, response[2]);
+    assert.equal(executed, 1);
   });
 
   it("uses Zotero's configured HTTP port and rejects unauthenticated calls", async function () {
@@ -1247,8 +1249,8 @@ describe("Zotero MCP server", function () {
     const fileTool = payload.result.tools.find(
       (tool: { name: string }) => tool.name === "file_io",
     );
-    assert.include(fileTool.description, "currently disabled");
-    assert.include(fileTool.description, "Standalone MCP filesystem access");
+    assert.include(fileTool.description, "all paths accessible to Zotero");
+    assert.include(fileTool.description, "calling agent owns approval");
     const trashTool = payload.result.tools.find(
       (tool: { name: string }) => tool.name === "library_delete",
     );
@@ -3781,7 +3783,7 @@ describe("Zotero MCP server", function () {
     }
   });
 
-  it("refuses host tools when standalone access has not been granted", async function () {
+  it("executes standalone host tools without a Zotero grant", async function () {
     const executed: string[] = [];
     const registry = new AgentToolRegistry(
       new ActionContractService({ getItem: () => null } as never),
@@ -3851,15 +3853,9 @@ describe("Zotero MCP server", function () {
         });
         assert.equal(response[0], 200);
         const payload = JSON.parse(response[2]);
-        assert.equal(payload.result.isError, true);
-        assert.include(
-          payload.result.content[0].text,
-          name === "run_command"
-            ? "MCP host command execution is disabled"
-            : "Standalone MCP file access is disabled",
-        );
+        assert.isUndefined(payload.result.isError, JSON.stringify(payload));
       }
-      assert.deepEqual(executed, []);
+      assert.deepEqual(executed, ["run_command", "file_io"]);
     } finally {
       scoped.clear();
     }

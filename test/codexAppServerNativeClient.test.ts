@@ -2431,8 +2431,15 @@ describe("Codex app-server native client", function () {
       manifest,
       "tools.mcp__llm_for_zotero_profile_visible_test__run_command",
     );
-    assert.include(manifest, "configured notes directory");
-    assert.include(manifest, "Zotero MCP host-command permission");
+    assert.include(manifest, "all paths accessible to Zotero");
+    assert.notInclude(
+      manifest,
+      "Zotero reviews only an exact access expansion",
+    );
+    assert.include(
+      manifest,
+      "Apply your own approval and command-permission policy",
+    );
     assert.include(manifest, "facts or actions absent from context");
     assert.include(manifest, PAPER_CITATION_CONTRACT);
     assert.equal(manifest.split(PAPER_CITATION_CONTRACT).length - 1, 1);

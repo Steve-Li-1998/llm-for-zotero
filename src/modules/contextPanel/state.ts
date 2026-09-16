@@ -646,17 +646,6 @@ export function setInlineEditSavedDraft(text: string): void {
  * memory leaks across hot-reloads.
  */
 export function clearAllState(): void {
-  // Disconnect any ResizeObservers stored on panel bodies before clearing.
-  for (const [panelBody] of activeContextPanels) {
-    const obs = (panelBody as any).__llmResizeObservers as
-      | ResizeObserver[]
-      | undefined;
-    if (obs) {
-      for (const o of obs) o.disconnect();
-      delete (panelBody as any).__llmResizeObservers;
-    }
-  }
-
   chatHistory.clear();
   conversationForkLinks.clear();
   loadedConversationKeys.clear();

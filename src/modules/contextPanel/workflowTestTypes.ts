@@ -2,6 +2,7 @@ import type { ResolvedContextSource, SendQuestionOptions } from "./types";
 import type { ConversationSystem, QuoteCitation } from "../../shared/types";
 import type { WorkflowTestFinalRequestSnapshot } from "./workflowTestHooks";
 import type { RuntimeConversationSystem } from "./runtimeSystemControls";
+import type { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
 
 export type WorkflowTestFixture = {
   parentItemId: number;
@@ -423,6 +424,7 @@ export type WorkflowTestCrossPaperHistoryIsolationResult = {
 };
 
 export type WorkflowTestApi = {
+  planRetrievalQuery: typeof resolveRetrievalQueryPlan;
   checkProviderConversationTransport: (params: {
     conversationKey: number;
     model: string;

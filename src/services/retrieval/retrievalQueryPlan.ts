@@ -277,6 +277,7 @@ export async function generateRetrievalProbeReformulation(params: {
       providerProtocol: params.providerProtocol,
       profileOverride: params.profileOverride,
       jsonBudget: 200,
+      outputTokenLimit: { mode: "auto" },
       temperature: 0,
       signal: params.signal,
       timeoutMs: params.timeoutMs || RETRIEVAL_PROBE_REFORMULATION_TIMEOUT_MS,
@@ -372,6 +373,7 @@ export async function generateRetrievalQueryPlanWithModel(params: {
         providerProtocol: params.providerProtocol,
         profileOverride: params.profileOverride,
         jsonBudget: 260,
+        outputTokenLimit: { mode: "auto" },
         temperature: 0,
         signal: params.signal,
         timeoutMs: params.timeoutMs || RETRIEVAL_QUERY_PLAN_TIMEOUT_MS,
@@ -381,10 +383,10 @@ export async function generateRetrievalQueryPlanWithModel(params: {
         ],
       });
       if (!result.ok) {
-        // A blank response is exactly what the second attempt exists for —
-        // re-prompting often lands the JSON. Every other reason is either
-        // terminal or would just burn another timeout.
+        // Retry a blank completed response. Repeating an exhausted Auto
+        // request would use the same provider limit and waste another timeout.
         if (result.reason === "empty") continue;
+        logUtilityLLMFailure("Retrieval query planning skipped", result);
         throw new Error(
           `Retrieval planner ${describeUtilityLLMFailure(result)}`,
         );

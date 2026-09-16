@@ -88,6 +88,8 @@ export type UtilityLLMParams = {
   reasoning?: ReasoningConfig;
   /** The caller's useful JSON output, excluding any reasoning reserve. */
   jsonBudget: number;
+  /** Use Auto when the expected JSON size must not cap hidden reasoning. */
+  outputTokenLimit?: ChatParams["outputTokenLimit"];
   /** Minimum capacity for configured reasoning; does not alter its effort level. */
   reasoningReserveTokens?: number;
   temperature?: number;
@@ -404,8 +406,12 @@ export async function callUtilityLLM(
         )
       : 0;
   const requiredBudget = jsonBudget + reasoningReserve;
+  const outputTokenLimit = params.outputTokenLimit || {
+    mode: "custom" as const,
+    tokens: requiredBudget,
+  };
   const outputPolicy = resolveOutputRequestPolicy({
-    setting: { mode: "custom", tokens: requiredBudget },
+    setting: outputTokenLimit,
     model,
     apiBase: params.apiBase,
     protocol:
@@ -417,13 +423,11 @@ export async function callUtilityLLM(
     authMode: params.authMode,
     profileOverride: params.profileOverride,
   });
-  const maxTokens =
-    outputPolicy.mode === "numeric" ? outputPolicy.tokens : requiredBudget;
-  if (maxTokens < requiredBudget) {
+  if (outputPolicy.mode === "numeric" && outputPolicy.tokens < requiredBudget) {
     return {
       ok: false,
       reason: "budget_unavailable",
-      detail: `${model} caps output at ${maxTokens} tokens, below the ${requiredBudget} this call needs (${jsonBudget} JSON + ${reasoningReserve} reasoning reserve)`,
+      detail: `${model} caps output at ${outputPolicy.tokens} tokens, below the ${requiredBudget} this call needs (${jsonBudget} JSON + ${reasoningReserve} reasoning reserve)`,
     };
   }
 
@@ -438,7 +442,7 @@ export async function callUtilityLLM(
       profileOverride: params.profileOverride,
       reasoning: plan.reasoning,
       temperature: params.temperature ?? 0,
-      outputTokenLimit: { mode: "custom", tokens: maxTokens },
+      outputTokenLimit,
       parentSignal: params.signal,
       timeoutMs: params.timeoutMs,
       systemMessages: params.systemMessages,
@@ -451,7 +455,11 @@ export async function callUtilityLLM(
       return {
         ok: false,
         reason: "output_limit",
-        detail: `Structured utility call exhausted its ${maxTokens}-token output budget.`,
+        detail: `Structured utility call exhausted its ${
+          outputPolicy.mode === "numeric"
+            ? `${outputPolicy.tokens}-token`
+            : "provider-managed"
+        } output budget.`,
       };
     }
     const text =
@@ -462,7 +470,11 @@ export async function callUtilityLLM(
       return {
         ok: false,
         reason: "empty",
-        detail: `${model} returned no text within ${maxTokens} tokens`,
+        detail: `${model} returned no text within ${
+          outputPolicy.mode === "numeric"
+            ? `${outputPolicy.tokens} tokens`
+            : "the provider-managed output budget"
+        }`,
       };
     }
     return { ok: true, text };

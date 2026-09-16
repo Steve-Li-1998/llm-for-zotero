@@ -1,4 +1,5 @@
 import { callLLM, callLLMStream } from "../../utils/llmClient";
+import { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
 import { createAgentModelAdapter } from "../../agent/model/factory";
 import { resolveAgentRuntimeRequest } from "../../agent/context/resolvedAgentRequest";
 import { createProviderRequestScope } from "../../utils/providerTransport";
@@ -5272,6 +5273,7 @@ export function installWorkflowTestHarness(targetAddon: {
 }): void {
   if (__env__ !== "test" && __env__ !== "development") return;
   targetAddon.api.workflowTest = {
+    planRetrievalQuery: resolveRetrievalQueryPlan,
     async checkProviderConversationTransport(input) {
       const params = {
         ...input,

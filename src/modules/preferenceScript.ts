@@ -1,3 +1,4 @@
+import { createProviderRequestScope } from "../utils/providerTransport";
 import {
   getSidebarLayout,
   SIDEBAR_LAYOUT_PREF,
@@ -2539,7 +2540,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             }
 
             const fetchFn = ztoolkit.getGlobal("fetch") as typeof fetch;
+            const requestScope = createProviderRequestScope();
             const result = await runProviderConnectionTest({
+              requestScope,
               fetchFn,
               protocol: providerProtocol,
               authMode,
@@ -2553,6 +2556,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             statusLine.textContent = t("Testing custom settings…");
             statusLine.style.color = "";
             const settingsChecks = await runProviderSettingsChecks({
+              requestScope,
               fetchFn,
               protocol: providerProtocol,
               authMode,

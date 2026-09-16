@@ -1,3 +1,7 @@
+import { callLLM, callLLMStream } from "../../utils/llmClient";
+import { createAgentModelAdapter } from "../../agent/model/factory";
+import { resolveAgentRuntimeRequest } from "../../agent/context/resolvedAgentRequest";
+import { createProviderRequestScope } from "../../utils/providerTransport";
 import { waitForElementGeometrySettled } from "./workflowLayout";
 import { getChatScrollSnapshot } from "./chatScrollSnapshots";
 import {
@@ -5268,6 +5272,44 @@ export function installWorkflowTestHarness(targetAddon: {
 }): void {
   if (__env__ !== "test" && __env__ !== "development") return;
   targetAddon.api.workflowTest = {
+    async checkProviderConversationTransport(input) {
+      const params = {
+        ...input,
+        prompt: "Say OK",
+        requestScope: createProviderRequestScope(input.conversationKey),
+      };
+      const chat = await callLLM(params);
+      const stream = await callLLMStream(params, () => undefined);
+      const request = resolveAgentRuntimeRequest({
+        ...input,
+        mode: "agent",
+        userText: "Say OK",
+        libraryID: Zotero.Libraries.userLibraryID,
+        conversationKind: "global",
+      });
+      const adapter = createAgentModelAdapter(request);
+      const step = {
+        request,
+        messages: [{ role: "user" as const, content: "Say OK" }],
+        tools: [],
+      };
+      const agent = await adapter.runStep(step);
+      const continuation = await adapter.runStep({
+        ...step,
+        continuationMessages: step.messages,
+      });
+      if (agent.kind !== "final" || continuation.kind !== "final") {
+        throw new Error(
+          "Provider transport probe did not produce a final answer",
+        );
+      }
+      return {
+        chat: chat.text,
+        stream: stream.text,
+        agent: agent.text,
+        continuation: continuation.text,
+      };
+    },
     mountPublicationTrace: (documentId, text) => {
       const doc = Zotero.getMainWindow().document;
       const root = renderAgentTrace({

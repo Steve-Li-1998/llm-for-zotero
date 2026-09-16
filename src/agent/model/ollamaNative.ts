@@ -258,6 +258,7 @@ export class OllamaNativeAgentAdapter implements AgentModelAdapter {
     );
     const response = await postWithReasoningFallback({
       url,
+      scope: { conversationKey: request.conversationKey },
       auth,
       modelName: request.model,
       initialReasoning: request.reasoning,

@@ -15,6 +15,45 @@ export default zotero({
       },
     },
     {
+      files: ["src/agent/model/**/*.ts", "src/utils/providerConnectionTest.ts"],
+      rules: {
+        "no-restricted-syntax": [
+          "error",
+          {
+            selector: "CallExpression[callee.name=/^(fetch|fetchFn)$/]",
+            message:
+              "Model requests must use sendProviderRequest so provider requirements cannot be bypassed.",
+          },
+          {
+            selector:
+              "CallExpression[callee.type='CallExpression'][callee.callee.name='getFetch']",
+            message:
+              "Model requests must use sendProviderRequest so provider requirements cannot be bypassed.",
+          },
+          {
+            selector:
+              "CallExpression[callee.type='MemberExpression'][callee.property.name=/^(fetch|fetchFn)$/]",
+            message:
+              "Model requests must use sendProviderRequest so provider requirements cannot be bypassed.",
+          },
+        ],
+      },
+    },
+    {
+      files: ["src/utils/llmClient.ts"],
+      rules: {
+        "no-restricted-syntax": [
+          "error",
+          {
+            selector:
+              "FunctionDeclaration[id.name=/^(callLLM|callLLMStream|callNativeProtocol|postWithTemperatureFallback|postWithReasoningFallback)$/] CallExpression[callee.type='CallExpression'][callee.callee.name='getFetch']",
+            message:
+              "Model inference must pass through sendProviderRequest, including retries.",
+          },
+        ],
+      },
+    },
+    {
       // Chrome scripts loaded directly by the standalone XHTML documents. They
       // run in a privileged window, not through the bundler.
       files: ["addon/content/**/*.js"],

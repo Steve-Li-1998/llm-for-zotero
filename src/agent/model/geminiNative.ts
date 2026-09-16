@@ -14,7 +14,8 @@ import {
 import { resolveGeminiTemperature } from "../../utils/normalization";
 import { withGeminiThoughtSummaries } from "../../utils/reasoningProfiles";
 import {
-  buildProviderTransportHeaders,
+  buildProviderAuthHeaders,
+  sendProviderRequest,
   resolveProviderTransportEndpoint,
 } from "../../utils/providerTransport";
 import type {
@@ -792,14 +793,19 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
         model: request.model || "",
         stream,
       });
-      const response = await getFetch()(url, {
-        method: "POST",
-        headers: buildProviderTransportHeaders({
-          protocol: "gemini_native",
-          apiKey: request.apiKey || "",
-        }),
-        body: JSON.stringify(payload),
-        signal: params.signal,
+      const response = await sendProviderRequest({
+        url,
+        scope: { conversationKey: request.conversationKey },
+        fetchFn: getFetch(),
+        init: {
+          method: "POST",
+          headers: buildProviderAuthHeaders({
+            protocol: "gemini_native",
+            apiKey: request.apiKey || "",
+          }),
+          body: JSON.stringify(payload),
+          signal: params.signal,
+        },
       });
       if (!response.ok) {
         throw new Error(

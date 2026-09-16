@@ -79,14 +79,17 @@ import {
   detectProviderPreset,
   getProviderPreset,
   isGrokApiBase,
-  providerSupportsResponsesEndpoint,
+  providerSupportsFileUploads,
 } from "./providerPresets";
 import {
   inferLegacyProviderProtocol,
   type ProviderProtocol,
 } from "./providerProtocol";
 import {
-  buildProviderTransportHeaders,
+  buildProviderAuthHeaders,
+  sendProviderRequest,
+  createProviderRequestScope,
+  type ProviderRequestScope,
   resolveAnthropicMessagesEndpoint,
   resolveGeminiNativeEndpoint,
   resolveOllamaNativeEndpoint,
@@ -188,12 +191,8 @@ export type ChatParams = {
   contextCache?: ContextCachePlan;
   /** Session-only opaque state for resuming an incomplete provider response. */
   continuationState?: unknown;
-  /**
-   * Stable, opaque id for the conversation this request belongs to. Only
-   * providers that route on one ever see it; everyone else gets no extra
-   * header. Absent for one-off utility calls, which have no conversation.
-   */
-  sessionId?: string;
+  /** Conversation or standalone operation identity, preserved across retries. */
+  requestScope?: ProviderRequestScope;
   /**
    * User-authored capability overrides for the selected model. Threaded through
    * so capability resolution, token clamping and the request body all see the
@@ -3616,6 +3615,7 @@ async function postWithTemperatureFallback(params: {
   payload: Record<string, unknown>;
   signal?: AbortSignal;
   headers?: Record<string, string>;
+  scope: ProviderRequestScope;
 }) {
   const policyKey = getTemperaturePolicyKey(params.url, params.payload);
   const hasTemperature = Object.prototype.hasOwnProperty.call(
@@ -3623,13 +3623,18 @@ async function postWithTemperatureFallback(params: {
     "temperature",
   );
   const send = (bodyPayload: Record<string, unknown>, auth: RequestAuthState) =>
-    getFetch()(params.url, {
-      method: "POST",
-      headers:
-        params.headers ??
-        buildAuthHeaders(auth.token, auth.mode, auth.codex?.accountId),
-      body: JSON.stringify(bodyPayload),
-      signal: params.signal,
+    sendProviderRequest({
+      url: params.url,
+      scope: params.scope,
+      fetchFn: getFetch(),
+      init: {
+        method: "POST",
+        headers:
+          params.headers ??
+          buildAuthHeaders(auth.token, auth.mode, auth.codex?.accountId),
+        body: JSON.stringify(bodyPayload),
+        signal: params.signal,
+      },
     });
 
   let requestPayload = params.payload;
@@ -3817,6 +3822,7 @@ export function getAnthropicMessagesReasoningRecoverySelection(params: {
 
 export async function postWithReasoningFallback(params: {
   url: string;
+  scope: ProviderRequestScope;
   auth: RequestAuthState;
   modelName?: string;
   initialReasoning: ReasoningSelection | undefined;
@@ -3843,6 +3849,7 @@ export async function postWithReasoningFallback(params: {
     try {
       return await postWithTemperatureFallback({
         url: params.url,
+        scope: params.scope,
         auth: params.auth,
         payload,
         signal: params.signal,
@@ -4017,8 +4024,7 @@ async function callNativeProtocol(params: {
   /** ollama_native only: runtime context window to allocate. */
   numCtx?: number;
   profileOverride?: ModelProfileOverride;
-  /** Stable per-conversation id for providers that route on one. */
-  sessionId?: string;
+  requestScope: ProviderRequestScope;
 }): Promise<ModelTurnOutcome> {
   const {
     protocol,
@@ -4040,11 +4046,9 @@ async function callNativeProtocol(params: {
       : protocol === "ollama_native"
         ? resolveOllamaNativeEndpoint(apiBase)
         : resolveGeminiNativeEndpoint({ apiBase, model, stream: isStreaming });
-  const headers = buildProviderTransportHeaders({
+  const headers = buildProviderAuthHeaders({
     protocol,
     apiKey,
-    apiBase,
-    sessionId: params.sessionId,
   });
   const pdfParts: Array<{ base64: string }> = [];
   if (
@@ -4125,6 +4129,7 @@ async function callNativeProtocol(params: {
           });
   const res = await postWithReasoningFallback({
     url,
+    scope: params.requestScope,
     auth: { mode: "api_key", token: apiKey },
     headers,
     modelName: model,
@@ -4193,6 +4198,8 @@ async function callNativeProtocol(params: {
  * Call LLM API (non-streaming)
  */
 export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
+  const requestScope = params.requestScope ?? createProviderRequestScope();
+  params = { ...params, requestScope };
   await preflightRequestModelCapabilities(params);
   const prepared = prepareChatRequest(params);
   const {
@@ -4224,7 +4231,7 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
       protocol: providerProtocol,
       apiBase,
       apiKey,
-      sessionId: params.sessionId,
+      requestScope,
       model,
       messages,
       outputPolicy,
@@ -4262,8 +4269,7 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
     providerProtocol === "codex_responses";
   // Only upload files via /v1/files for providers that actually host that endpoint.
   // Third-party relays using responses_api get inline base64 instead (via buildResponsesInput).
-  const canUploadFiles =
-    useResponses && providerSupportsResponsesEndpoint(apiBase);
+  const canUploadFiles = useResponses && providerSupportsFileUploads(apiBase);
   const responseFileIds = canUploadFiles
     ? await uploadFilesForResponses({
         apiBase,
@@ -4291,12 +4297,10 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
     stream: false,
     authMode,
   });
-  const requestHeaders = buildProviderTransportHeaders({
+  const requestHeaders = buildProviderAuthHeaders({
     protocol: providerProtocol,
     apiKey: auth.token,
     authMode,
-    apiBase,
-    sessionId: params.sessionId,
   });
   const buildPayload = createChatPayloadBuilder({
     model,
@@ -4317,6 +4321,7 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
   });
   const res = await postWithReasoningFallback({
     url,
+    scope: requestScope,
     auth,
     headers: requestHeaders,
     modelName: model,
@@ -4350,6 +4355,8 @@ export async function callLLMStream(
   onReasoning?: (event: ReasoningEvent) => void,
   onUsage?: (usage: UsageStats) => void,
 ): Promise<ModelTurnOutcome> {
+  const requestScope = params.requestScope ?? createProviderRequestScope();
+  params = { ...params, requestScope };
   await preflightRequestModelCapabilities(params);
   const prepared = prepareChatRequest(params);
   const {
@@ -4381,7 +4388,7 @@ export async function callLLMStream(
       protocol: providerProtocol,
       apiBase,
       apiKey,
-      sessionId: params.sessionId,
+      requestScope,
       model,
       messages,
       outputPolicy,
@@ -4428,8 +4435,7 @@ export async function callLLMStream(
     providerProtocol === "codex_responses";
   // Only upload files via /v1/files for providers that actually host that endpoint.
   // Third-party relays using responses_api get inline base64 instead (via buildResponsesInput).
-  const canUploadFiles =
-    useResponses && providerSupportsResponsesEndpoint(apiBase);
+  const canUploadFiles = useResponses && providerSupportsFileUploads(apiBase);
   const responseFileIds = canUploadFiles
     ? await uploadFilesForResponses({
         apiBase,
@@ -4457,12 +4463,10 @@ export async function callLLMStream(
     stream: true,
     authMode,
   });
-  const requestHeaders = buildProviderTransportHeaders({
+  const requestHeaders = buildProviderAuthHeaders({
     protocol: providerProtocol,
     apiKey: auth.token,
     authMode,
-    apiBase,
-    sessionId: params.sessionId,
   });
   const buildPayload = createChatPayloadBuilder({
     model,
@@ -4482,6 +4486,7 @@ export async function callLLMStream(
   });
   const res = await postWithReasoningFallback({
     url,
+    scope: requestScope,
     auth,
     ...(authMode === "codex_auth" ? {} : { headers: requestHeaders }),
     modelName: model,

@@ -14,6 +14,7 @@ export type CoalescedFrameScheduler = {
   schedule: () => void;
   flush: () => void;
   cancel: () => void;
+  dispose: () => void;
   isPending: () => boolean;
 };
 
@@ -23,6 +24,7 @@ export function createCoalescedFrameScheduler(
   options: CoalescedFrameSchedulerOptions,
 ): CoalescedFrameScheduler {
   let pending = false;
+  let disposed = false;
   let frameHandle: number | null = null;
   let timeoutHandle: number | null = null;
 
@@ -43,7 +45,7 @@ export function createCoalescedFrameScheduler(
   };
 
   const runNow = () => {
-    if (!pending) return;
+    if (disposed || !pending) return;
     clearScheduledHandle();
     pending = false;
     options.run();
@@ -51,7 +53,7 @@ export function createCoalescedFrameScheduler(
 
   return {
     schedule: () => {
-      if (pending) return;
+      if (disposed || pending) return;
       pending = true;
       const win = options.getWindow();
       if (win?.requestAnimationFrame) {
@@ -88,6 +90,11 @@ export function createCoalescedFrameScheduler(
     },
     cancel: () => {
       if (!pending) return;
+      clearScheduledHandle();
+      pending = false;
+    },
+    dispose: () => {
+      disposed = true;
       clearScheduledHandle();
       pending = false;
     },

@@ -64,9 +64,14 @@ export async function exerciseStreamingReplay(
   const doc = body.ownerDocument;
   const win = doc.defaultView!;
   const box = body.querySelector<HTMLDivElement>("#llm-chat-box")!;
-  // A visible, sized native viewport is required for timing and focus evidence.
-  body.style.left = "0";
-  body.style.zIndex = "99999";
+  // Synthetic harness panels start offscreen. Real sidebar/standalone hosts
+  // must keep their native sizing, visibility and stacking throughout replay.
+  const previousStyle = body.getAttribute("style");
+  const syntheticHost = body.hasAttribute("data-llm-workflow-test");
+  if (syntheticHost) {
+    body.style.left = "0";
+    body.style.zIndex = "99999";
+  }
   const key = getConversationKey(item);
   const runId = `stream-replay-${Date.now()}`;
   const history: Message[] = [];
@@ -598,6 +603,9 @@ export async function exerciseStreamingReplay(
     finishRequest(key, requestId);
     message.streaming = false;
     agentRunTraceCache.delete(runId);
-    body.style.left = "-10000px";
+    if (syntheticHost) {
+      if (previousStyle === null) body.removeAttribute("style");
+      else body.setAttribute("style", previousStyle);
+    }
   }
 }

@@ -28,7 +28,12 @@ import {
   runStartupPreferenceMigrations,
 } from "./utils/migrations";
 import { createZToolkit } from "./utils/ztoolkit";
-import { clearAllState, initFontScale } from "./modules/contextPanel/state";
+import {
+  activeContextPanels,
+  clearAllState,
+  initFontScale,
+} from "./modules/contextPanel/state";
+import { disposeSetupHandlers } from "./modules/contextPanel/setupHandlers";
 import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps";
 import { closeAllAddonDialogs } from "./utils/dialogRegistry";
 import {
@@ -477,6 +482,9 @@ function registerPrefsPane() {
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
+  for (const [body] of activeContextPanels) {
+    if (body.ownerDocument === win.document) disposeSetupHandlers(body);
+  }
   dedicatedChatPaneDisposers.get(win)?.();
   dedicatedChatPaneDisposers.delete(win);
   unregisterNoteEditingSelectionTracking(win);
@@ -488,6 +496,10 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 }
 
 async function onShutdown(): Promise<void> {
+  // Dispose while hosts are still registered, before unregisterAll removes
+  // their DOM and clearAllState forgets them. Detached callbacks must not run
+  // against the next plugin instance during a hot reload.
+  for (const [body] of activeContextPanels) disposeSetupHandlers(body);
   for (const dispose of dedicatedChatPaneDisposers.values()) dispose();
   dedicatedChatPaneDisposers.clear();
   zoteroChangeDispatcher.unregisterNativeObserver();

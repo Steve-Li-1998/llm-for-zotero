@@ -510,6 +510,11 @@ export type WorkflowTestApi = {
     historyTurns: number;
     chunks: number;
   }) => Promise<import("./streamingReplay").StreamingReplayResult>;
+  exerciseNativeStreamingReplay: (input: {
+    surface: "embedded" | "standalone";
+    historyTurns: number;
+    chunks: number;
+  }) => Promise<import("./streamingReplay").StreamingReplayResult>;
   exerciseBackgroundAgentPublication: (input: {
     panelId: string;
     paperBItemId: number;

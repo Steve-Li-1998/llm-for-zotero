@@ -5344,6 +5344,39 @@ export function installWorkflowTestHarness(targetAddon: {
       exercisePlanHistoryReplay(getPanel(input.panelId), input),
     exerciseStreamingReplay: (input) =>
       exerciseStreamingReplay(getPanel(input.panelId), input),
+    exerciseNativeStreamingReplay: async (input) => {
+      assertWorkflowTestEnabled();
+      const win =
+        input.surface === "standalone"
+          ? getStandaloneWindowForTest()
+          : Zotero.getMainWindow();
+      const doc = win?.document;
+      const host =
+        input.surface === "standalone"
+          ? doc?.querySelector(".llm-standalone-content")
+          : doc &&
+            (getReaderContextPanelForTab(
+              doc,
+              (win as Window & { Zotero_Tabs?: { selectedID?: string } })
+                ?.Zotero_Tabs?.selectedID,
+            ) ||
+              doc.getElementById("zotero-item-details"));
+      const root = host?.querySelector<HTMLElement>("#llm-main");
+      const body = root?.parentElement;
+      const item = body && activeContextPanels.get(body)?.();
+      if (
+        !root?.isConnected ||
+        !root.getBoundingClientRect().height ||
+        !body ||
+        !item
+      ) {
+        throw new Error(
+          "Native streaming replay requires a visible mounted chat panel",
+        );
+      }
+      await ensureConversationLoaded(item);
+      return exerciseStreamingReplay({ body, item }, input);
+    },
     exerciseAgentDeliveryReplay: (input) =>
       exerciseAgentDeliveryReplay(
         getPanel(input.panelId),

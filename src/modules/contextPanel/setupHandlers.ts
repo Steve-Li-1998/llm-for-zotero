@@ -803,6 +803,8 @@ export function setupHandlers(
     return;
   }
 
+  const panelLifecycle = new PanelLifecycle();
+
   const isStandalonePanel = panelRoot.dataset.standalone === "true";
   const chatShell = body.querySelector(
     "#llm-chat-shell",
@@ -878,23 +880,6 @@ export function setupHandlers(
       registeredQueuedFollowUpThreadKey;
     registerQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
   };
-
-  // Disconnect previous ResizeObservers to prevent accumulation across
-  // successive setupHandlers calls (each call creates fresh observers).
-  const prevObservers = (body as any).__llmResizeObservers as
-    | ResizeObserver[]
-    | undefined;
-  if (prevObservers) {
-    for (const obs of prevObservers) obs.disconnect();
-    delete (body as any).__llmResizeObservers;
-  }
-  const prevResizeSchedulers = (body as any).__llmResizeSchedulers as
-    | Array<{ cancel?: () => void }>
-    | undefined;
-  if (prevResizeSchedulers) {
-    for (const scheduler of prevResizeSchedulers) scheduler.cancel?.();
-    delete (body as any).__llmResizeSchedulers;
-  }
 
   let renderQueuedFollowUpInputs: () => void = () => {};
   let scheduleQueuedFollowUpDrain: () => void = () => {};
@@ -2317,22 +2302,20 @@ export function setupHandlers(
   const responsiveLayoutScheduler = createCoalescedFrameScheduler({
     getWindow: () => body.ownerDocument?.defaultView || null,
     run: () => {
+      if (!panelRoot.isConnected) return;
       const panelWidth = getRoundedPanelWidth();
+      if (panelWidth <= 0) return;
       withScrollGuard(chatBox, conversationKey, () => {
         applyResponsiveActionButtonsLayout();
         updateHeaderSpacing(headerTop);
-        if (
-          panelWidth <= 0 ||
-          panelWidth !== lastUserContextAlignmentPanelWidth
-        ) {
+        if (panelWidth !== lastUserContextAlignmentPanelWidth) {
           syncUserContextAlignmentWidths(body);
-          if (panelWidth > 0) {
-            lastUserContextAlignmentPanelWidth = panelWidth;
-          }
+          lastUserContextAlignmentPanelWidth = panelWidth;
         }
       });
     },
   });
+  panelLifecycle.add(responsiveLayoutScheduler.dispose);
   const scheduleResponsiveLayoutSync = () => {
     responsiveLayoutScheduler.schedule();
   };
@@ -4630,6 +4613,7 @@ export function setupHandlers(
     ? observeHistoryActivity(historyMenu)
     : null;
   const runPanelStateRefreshNow = () => {
+    if (!panelRoot.isConnected) return;
     const previousHeight = measureContextPreviewHeight();
     if (!item) {
       runWithChatScrollGuard(syncConversationPanelState);
@@ -4649,6 +4633,7 @@ export function setupHandlers(
     getWindow: () => body.ownerDocument?.defaultView || null,
     run: runPanelStateRefreshNow,
   });
+  panelLifecycle.add(panelStateRefreshScheduler.dispose);
   const schedulePanelStateRefresh = () => {
     panelStateRefreshScheduler.schedule();
   };
@@ -5761,7 +5746,6 @@ export function setupHandlers(
   // explicitly ordered, so it calls the handle returned by add() at the exact
   // position the feature's undo used to sit; dispose() is the safety net for
   // any feature that is registered but not listed there.
-  const panelLifecycle = new PanelLifecycle();
   const webChatFeature = createWebChatFeature({
     isWebChatMode: () => isWebChatMode(),
     hasExistingWebChatSession: () => hasExistingWebChatSessionForCurrentItem(),
@@ -6424,13 +6408,12 @@ export function setupHandlers(
   });
   const ResizeObserverCtor = body.ownerDocument?.defaultView?.ResizeObserver;
   if (ResizeObserverCtor && panelRoot && modelBtn) {
-    const newObservers: ResizeObserver[] = [];
     const ro = new ResizeObserverCtor(() => {
       // Keep layout mutations on the guarded scheduler so resize callbacks
       // stay cheap during sidebar drags.
       scheduleResponsiveLayoutSync();
     });
-    newObservers.push(ro);
+    panelLifecycle.add(() => ro.disconnect());
     ro.observe(panelRoot);
     if (actionsRow) ro.observe(actionsRow);
     if (actionsLeft) ro.observe(actionsLeft);
@@ -6441,10 +6424,6 @@ export function setupHandlers(
       ) || [],
     ))
       ro.observe(element as Element);
-    // Store observers on body so they can be disconnected on next
-    // setupHandlers call (prevents accumulation across tab switches).
-    (body as any).__llmResizeObservers = newObservers;
-    (body as any).__llmResizeSchedulers = [responsiveLayoutScheduler];
   }
 
   function getSelectedProfile() {
@@ -8227,7 +8206,7 @@ export function setupHandlers(
   };
   setupHandlersCleanupByBody.set(body, cleanupSetupHandlers);
   disconnectObserverCleanup = observeElementDisconnected(
-    body,
+    panelRoot,
     cleanupSetupHandlers,
   );
   panelRoot.dataset.handlersInitialized = thisGen;

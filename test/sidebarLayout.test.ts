@@ -26,6 +26,23 @@ describe("sidebar layout preference", function () {
     assert.equal(defaults.get("sidebarLayout"), "stacked");
   });
 
+  it("labels Stacked as default in settings and translations", function () {
+    const markup = readFileSync("addon/content/preferences.xhtml", "utf8");
+    const script = readFileSync("src/modules/preferenceScript.ts", "utf8");
+    const translations = readFileSync("src/utils/i18n.ts", "utf8");
+    assert.include(
+      markup,
+      '<html:option value="stacked">Stacked (default)</html:option>',
+    );
+    assert.include(
+      markup,
+      '<html:option value="independent">Independent</html:option>',
+    );
+    assert.include(script, '"Stacked (default)"');
+    assert.notInclude(script, '"Independent (default)"');
+    assert.include(translations, '"Stacked (default)": "堆叠（默认）"');
+  });
+
   for (const value of [
     undefined,
     null,

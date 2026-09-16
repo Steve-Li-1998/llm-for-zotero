@@ -66,6 +66,8 @@ type PaperReadInput = {
   target?: PdfTarget;
   targets?: PdfTarget[];
   query?: string;
+  figureLabels?: string[];
+  includeSupplementary?: boolean;
   queryVariants?: string[];
   sections?: string[];
   pages?: number[];
@@ -937,6 +939,13 @@ export function createPaperReadTool(
             items: PAPER_TARGET_SELECTOR_SCHEMA,
           },
           query: { type: "string" },
+          figureLabels: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "For figures mode: exact labels such as Figure 1 or Supplementary Figure S2; [] selects all main figures.",
+          },
+          includeSupplementary: { type: "boolean" },
           queryVariants: {
             type: "array",
             items: { type: "string" },
@@ -1062,6 +1071,23 @@ export function createPaperReadTool(
         return fail("Expected an object");
       }
       const mode = normalizeMode(args.mode);
+      if (
+        args.figureLabels !== undefined &&
+        (!Array.isArray(args.figureLabels) ||
+          args.figureLabels.some(
+            (label) => typeof label !== "string" || !label.trim(),
+          ))
+      ) {
+        return fail(
+          "figureLabels must be an array of non-empty labels, or [] for all figures.",
+        );
+      }
+      if (
+        args.includeSupplementary !== undefined &&
+        typeof args.includeSupplementary !== "boolean"
+      ) {
+        return fail("includeSupplementary must be a boolean.");
+      }
       const maxTargets =
         mode === "overview"
           ? MAX_FULL_TARGETS
@@ -1095,6 +1121,13 @@ export function createPaperReadTool(
             ? [...targetSyntax.selectors]
             : undefined,
         query: normalizeString(args.query),
+        figureLabels: Array.isArray(args.figureLabels)
+          ? (args.figureLabels as string[]).map((label) => label.trim())
+          : undefined,
+        includeSupplementary:
+          typeof args.includeSupplementary === "boolean"
+            ? args.includeSupplementary
+            : undefined,
         queryVariants: normalizeStringArray(args.queryVariants),
         sections: normalizeStringArray(args.sections),
         pages: normalizePages(args.pages),

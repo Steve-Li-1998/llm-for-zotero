@@ -271,6 +271,58 @@ describe("workflow: one action card for a mixed turn", function () {
           1,
         );
       }
+      const longEvents = Array.from({ length: 32 }, (_, index) => {
+        const event = JSON.parse(JSON.stringify(events[0]));
+        event.seq = index + 1;
+        event.payload.callId = `command-${index}`;
+        event.payload.actionReceipts = [
+          {
+            ...event.payload.actionReceipts[0],
+            id: `command-${index}`,
+            proposalId: `command-${index}`,
+          },
+        ];
+        return event;
+      });
+      for (const width of [900, 520]) {
+        await workflow.resizeStandaloneWindow(width, 700);
+        await workflow.seedStandaloneConversation([
+          {
+            role: "assistant",
+            text: "Finished the requested workflow.",
+            runMode: "agent",
+            streaming: false,
+            pendingAgentTraceEvents: longEvents,
+          },
+        ]);
+        const card = win.document.querySelector<HTMLElement>(
+          ".llm-agent-action-summary-card",
+        )!;
+        const list = card.querySelector<HTMLElement>(
+          ".llm-agent-action-summary-list",
+        )!;
+        const toggle = card.querySelector<HTMLButtonElement>(
+          ".llm-agent-action-summary-toggle",
+        )!;
+        assert.exists(toggle);
+        assert.equal(toggle.getAttribute("aria-controls"), list.id);
+        assert.isTrue(list.hidden);
+        assert.equal(win.getComputedStyle(list).display, "none");
+        const collapsedHeight = card.getBoundingClientRect().height;
+        assert.isBelow(
+          collapsedHeight,
+          120,
+          "32 actions start as a compact header",
+        );
+        toggle.focus();
+        assert.strictEqual(win.document.activeElement, toggle);
+        toggle.click();
+        assert.equal(toggle.getAttribute("aria-expanded"), "true");
+        assert.isAbove(list.getBoundingClientRect().height, 300);
+        toggle.click();
+        assert.isTrue(list.hidden);
+        assert.closeTo(card.getBoundingClientRect().height, collapsedHeight, 1);
+      }
     } finally {
       await workflow.closeStandalone();
       await parent.eraseTx();

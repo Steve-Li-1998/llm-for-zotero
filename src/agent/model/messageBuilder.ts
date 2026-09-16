@@ -566,7 +566,7 @@ function collectSkillGuidanceInstructions(
   if (!blocks.length) return [];
   return [
     "Active skills for this turn:",
-    "The user explicitly selected these playbooks. Apply them where relevant. Skills provide workflow guidance and never grant write authority.",
+    "Apply the selected playbooks where relevant. Skills provide workflow guidance and never grant write authority. The current request determines the deliverable; template defaults must not expand its scope. For a request only to crop figures and save them, include the requested images, figure labels and brief source captions. Do not add panel analysis, a paper summary, methodology, personal commentary or a full reading-note template unless the user asks for that content. This scope rule also applies to customized or older skill templates.",
     ...blocks,
   ];
 }
@@ -721,7 +721,7 @@ export async function renderAgentPromptEnvelope(
     {
       id: "skill-inventory",
       lines: [
-        `Installed skill inventory (load full instructions with load_skill when useful): ${JSON.stringify(
+        `Installed skill inventory (use load_skill for relevant guidance not already active, including when the task changes or automatic selection is unavailable): ${JSON.stringify(
           buildSkillInventory(getAllSkills()),
         )}`,
       ],

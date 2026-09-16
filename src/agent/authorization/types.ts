@@ -97,6 +97,13 @@ export type ActionReviewInput = Readonly<{
   userRequest: string;
   clarifications: unknown;
   conversation: ReadonlyArray<{ role: "user" | "assistant"; text: string }>;
+  /** Completed host-observed actions supply context, never user authority. */
+  currentTurnActions?: ReadonlyArray<{
+    name: string;
+    ok: boolean;
+    input?: unknown;
+    content?: unknown;
+  }>;
   userInstructions?: string;
   workspace: unknown;
   constraints: readonly ActionConstraint[];

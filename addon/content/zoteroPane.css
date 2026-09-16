@@ -9172,6 +9172,14 @@ label.llm-search-results-item:hover {
   min-height: 20px;
 }
 
+.llm-agent-action-summary-list[hidden] {
+  display: none;
+}
+
+.llm-agent-action-summary-toggle {
+  white-space: nowrap;
+}
+
 .llm-agent-action-summary-card[data-mode="action"] .llm-plan-heading {
   align-items: center;
 }

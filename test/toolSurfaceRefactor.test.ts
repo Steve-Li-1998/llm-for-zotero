@@ -1793,6 +1793,27 @@ describe("semantic tool surface", function () {
     );
   });
 
+  it("paper_read rejects malformed figure labels instead of expanding them into all figures", function () {
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    for (const figureLabels of ["Figure 2", [42], [""], ["Figure 2", null]]) {
+      assert.isFalse(tool.validate({ mode: "figures", figureLabels }).ok);
+    }
+    for (const figureLabels of [
+      [],
+      ["Figure 2", "Figure 4b"],
+      ["Supplementary Figure 3"],
+    ]) {
+      const result = tool.validate({ mode: "figures", figureLabels });
+      assert.isTrue(result.ok);
+      if (result.ok) assert.deepEqual(result.value.figureLabels, figureLabels);
+    }
+  });
+
   it("paper_read figures hydrates MinerU cache metadata from the Zotero attachment", async function () {
     const scopedPaperContext = {
       itemId: 11,

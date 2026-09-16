@@ -26,6 +26,23 @@ const contract = (
 ): Contract => ({ id, journey, mode, smoke, acceptance, dependsOn, evidence });
 
 export const catalog: Contract[] = [
+  ...(["auto", "yolo"] as const).map((mode) =>
+    contract(
+      `figures.crop-note.${mode}`,
+      "figures",
+      mode,
+      false,
+      "The Geva crop-to-note request loads semantic skills before tools, uses the bundled Python extractor on the active PDF despite a misleading sibling, creates one native note with byte-identical images, and asks for no confirmation.",
+    ),
+  ),
+  contract(
+    "figures.auto-script",
+    "figures",
+    "auto",
+    false,
+    "A requested temporary Python image-inspection script is written and executed through real Auto review without confirmation or Zotero mutations.",
+    ["figures.crop-note.auto"],
+  ),
   contract(
     "conversation.delivery",
     "conversation",

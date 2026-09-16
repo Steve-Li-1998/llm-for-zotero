@@ -115,12 +115,12 @@ export function getBuiltinSkillInstructionById(
 }
 
 /**
- * Resolves explicit and stored skill bindings for legacy Plan artifacts.
- * Fresh ordinary turns use forced skills and `load_skill` instead.
+ * Resolves explicit choices with semantic skill-only selections or stored Plan bindings.
+ * The main model can load additional guidance through `load_skill` during a turn.
  *
  * Sources of activation, unioned:
  *   1. `forcedSkillIds` — explicit user selection from the slash menu.
- *   2. A validated stored routing record passed in via `classifiedIds`.
+ *   2. Automatic or stored skill IDs passed in via `classifiedIds`.
  */
 export function getMatchedSkillIds(
   request: SkillRoutingRequest &

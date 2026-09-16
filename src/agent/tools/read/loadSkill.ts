@@ -84,10 +84,17 @@ export function createLoadSkillTool(
       const loaded = await loadSkill(skill, getShippedInstruction(skill.id));
       if (context?.request) {
         const records = context.request.loadedSkillRecords || [];
+        const alreadyLoaded = records.some(
+          (record) =>
+            record.id === loaded.loadedSkill.id &&
+            record.instructionFingerprint ===
+              loaded.loadedSkill.instructionFingerprint,
+        );
         context.request.loadedSkillRecords = [
           ...records.filter((record) => record.id !== loaded.loadedSkill.id),
           loaded.loadedSkill,
         ];
+        if (!alreadyLoaded) await context.publishSkillActivation?.(skill.id);
       }
       return {
         found: true,

@@ -27,6 +27,7 @@ export type LibraryPaperTarget = {
 export type LibraryItemTargetAttachment = {
   contextItemId: number;
   title: string;
+  filename?: string;
   contentType: string;
   /** For PDF attachments: Zotero full-text indexing state. Omitted for non-PDFs. */
   indexingState?:

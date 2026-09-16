@@ -109,6 +109,32 @@ describe("Auto and YOLO command authorization workflow", function () {
     assert.equal(reviews[0].input.command, executions[0]);
   });
 
+  it("reviews an intermediate crop command with the script and preceding tool evidence", async function () {
+    context.request.userText =
+      "Crop the requested figure and save it in my Zotero note.";
+    const completed = [
+      {
+        name: "file_io",
+        ok: true,
+        input: {
+          action: "write",
+          filePath: "/tmp/bands.py",
+          content:
+            "from pathlib import Path\nprint(Path('/tmp/p3.pgm').stat().st_size)",
+        },
+        content: { success: true, filePath: "/tmp/bands.py" },
+      },
+    ];
+    context.readCurrentTurnActions = () => completed;
+    const result = await prepare(
+      "cd /tmp && python3 /tmp/bands.py /tmp/p3.pgm",
+    );
+    assert.equal(result.kind, "result");
+    assert.deepEqual(reviews[0].currentTurnActions, completed);
+    assert.equal(reviews[0].userRequest, context.request.userText);
+    assert.lengthOf(reviews, 1);
+  });
+
   it("shows the reviewer's concrete reason when intent is unclear", async function () {
     verdict = {
       decision: "confirm",

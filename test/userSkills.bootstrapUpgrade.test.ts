@@ -381,8 +381,9 @@ describe("user skill bootstrap upgrades", function () {
       canonicalWriteNote,
       "Path pattern: `{papertitle}/{papertitle}.md`",
     );
-    // Version 13 distinguishes saving existing content from authoring a note.
-    assert.equal(parseSkill(canonicalWriteNote).version, 13);
+    // Version 15 also preserves narrow figure-only note requests.
+    assert.equal(parseSkill(canonicalWriteNote).version, 15);
+    assert.include(canonicalWriteNote, "narrowly scoped note");
     assert.include(canonicalWriteNote, "`sourceMessageId`");
     assert.include(canonicalWriteNote, "returned `documentId`");
   });

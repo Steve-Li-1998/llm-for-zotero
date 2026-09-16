@@ -22,6 +22,9 @@ import {
 // the panel is rewired to the model directly.
 export { buildAgentActionSummaryCard } from "./actionCardModel";
 
+let nextActionListId = 0;
+const INLINE_ACTION_LIMIT = 4;
+
 /**
  * How the card is drawn beyond its rows.
  *
@@ -131,7 +134,7 @@ export function renderActionSummaryCard(
     options.header?.extraClass ? ` ${options.header.extraClass}` : ""
   }`;
   container.dataset.mode = options.mode || "action";
-  const { header, title, status } = createDocumentCardLayout(
+  const { header, title, status, actions } = createDocumentCardLayout(
     doc,
     options.header || {
       title: "What this turn did",
@@ -148,6 +151,21 @@ export function renderActionSummaryCard(
   container.appendChild(header);
   const list = doc.createElement("ul");
   list.className = "llm-agent-action-summary-list";
+  if (options.mode !== "note" && card.entries.length > INLINE_ACTION_LIMIT) {
+    list.id = `llm-action-summary-list-${++nextActionListId}`;
+    const toggle = doc.createElement("button");
+    toggle.className = "llm-plan-action llm-agent-action-summary-toggle";
+    toggle.type = "button";
+    toggle.setAttribute("aria-controls", list.id);
+    const setExpanded = (expanded: boolean) => {
+      list.hidden = !expanded;
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.textContent = expanded ? "Hide actions" : "Show actions";
+    };
+    setExpanded(false);
+    toggle.addEventListener("click", () => setExpanded(list.hidden));
+    actions.appendChild(toggle);
+  }
   for (const entry of card.entries) {
     const item = doc.createElement("li");
     const renderDetail = entry.detail ? options.renderDetail : undefined;

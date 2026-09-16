@@ -103,6 +103,27 @@ describe("attachment capability", function () {
   }
 
   describe("listing a paper's files", function () {
+    it("distinguishes two PDFs with the same display title by their native filenames", async function () {
+      makePaper({ id: 1, attachmentIds: [2, 3] });
+      for (const [id, filename] of [
+        [2, "Geva - Time and experience.pdf"],
+        [3, "Lee and Brandon - Commentary.pdf"],
+      ] as const) {
+        makeAttachment({
+          id,
+          parentID: 1,
+          title: "PDF",
+          filename,
+          contentType: "application/pdf",
+        });
+      }
+      installZotero();
+      const infos = await capability().getAllChildAttachmentInfos(1);
+      assert.deepEqual(
+        infos.map((info) => info.filename),
+        ["Geva - Time and experience.pdf", "Lee and Brandon - Commentary.pdf"],
+      );
+    });
     it("describes each child attachment and reads the index state of the PDFs", async function () {
       makePaper({ id: 1, attachmentIds: [2, 3] });
       makeAttachment({

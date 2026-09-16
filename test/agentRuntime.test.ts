@@ -1042,6 +1042,77 @@ describe("AgentRuntime", function () {
     }
   });
 
+  it("loads semantic skill choices before the first main-model step without creating action authority", async function () {
+    const restoreDb = installMockDb();
+    setUserSkills(
+      Object.values(BUILTIN_SKILL_FILES).map((raw) => parseSkill(raw)),
+    );
+    const events: AgentEvent[] = [];
+    let selected = false;
+    let observed = false;
+    try {
+      const adapter = new MockAdapter([], {
+        streaming: false,
+        toolCalls: true,
+        multimodal: false,
+      });
+      adapter.runStep = async (params) => {
+        assert.isTrue(selected);
+        assert.includeMembers(
+          params.request.loadedSkillRecords!.map((skill) => skill.id),
+          ["analyze-figures", "write-note"],
+        );
+        assert.isUndefined(params.request.classifiedIntent);
+        assert.isUndefined(params.request.actionContract);
+        const prompt = JSON.stringify(params);
+        assert.include(prompt, "bundled Python source-PDF extractor");
+        assert.include(prompt, "narrowly scoped note");
+        assert.includeMembers(
+          events.filter((e) => e.type === "status").map((e) => e.text),
+          ["Skill activated: analyze-figures", "Skill activated: write-note"],
+        );
+        observed = true;
+        return {
+          kind: "final",
+          text: "Ready",
+          assistantMessage: { role: "assistant", content: "Ready" },
+        };
+      };
+      const runtime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () => adapter,
+        skillSelector: async () => {
+          selected = true;
+          return {
+            status: "selected",
+            skillIds: ["analyze-figures", "write-note"],
+          };
+        },
+      });
+      await runtime.runTurn({
+        request: {
+          conversationKey: 90012,
+          libraryID: 1,
+          mode: "agent",
+          userText: "Save a crop in a note",
+          model: "test",
+          apiKey: "test",
+          apiBase: "",
+          selectedPaperContexts: [
+            { itemId: 10, contextItemId: 11, title: "Paper" },
+          ],
+        },
+        onEvent: (event) => {
+          events.push(event);
+        },
+      });
+      assert.isTrue(observed);
+    } finally {
+      setUserSkills([]);
+      restoreDb();
+    }
+  });
+
   it("emits explicitly forced slash skills when automatic routing is unavailable", async function () {
     const restoreDb = installMockDb();
     setUserSkills(

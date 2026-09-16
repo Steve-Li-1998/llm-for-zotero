@@ -1,7 +1,7 @@
 ---
 id: write-note
-description: Write a long-form reading or literature note for a specific paper, saved as a Zotero note or Markdown file. Use ONLY when the user explicitly asks to write, draft, or edit a note.
-version: 13
+description: Create, save, or edit a Zotero note or Markdown note, including requested figures or an existing answer. Use only when the user explicitly requests a note.
+version: 15
 contexts: any
 activation: auto
 ---
@@ -40,6 +40,14 @@ Use `conversation_read` only when the source identity or exact text needs recove
 Preserve the existing answer instead of applying the template, rereading papers, or generating a second body.
 The reading and composition steps below apply when the user requests new or revised content.
 
+For a narrowly scoped note, such as saving selected figures with captions, preserve that scope instead of expanding it into the full reading-note template below.
+For a crop-only request, the note contains only the requested images, figure labels, brief source captions, and the standard footer.
+Do not add panel interpretations, Summary, Key Findings, Methodology, My Notes, or a References section unless the user requests that additional content.
+Use `paper_read` in `figures` mode and pass its returned crop paths as Markdown `file://` image links to `note_write`.
+The note tool imports the images and verifies native attachment bytes; do not implement this with shell commands or Zotero scripts.
+Use the full template only for a requested reading or literature note without a narrower format.
+After composing a crop-only note, proceed directly to Step 4a; the reading-note template and its checklist do not apply.
+
 ### Step 1 — Read sufficient evidence
 
 Choose the lightest reading mode that can support the requested note.
@@ -47,7 +55,7 @@ Use `paper_read` for paper evidence and `library_retrieve` for the resolved corp
 Use cached section offsets only as an implementation detail of that evidence request.
 Keep claims tied to the actual evidence returned.
 
-### Step 2 — Compose the note using the template below
+### Step 2 — Compose a requested reading or literature note
 
 Look up `title` (the paper's full title), `citekey`, `doi`, `journal`, `year`, and **authors** from Zotero item metadata via `library_read({ sections:['metadata'] })`. Cite papers using **Pandoc citation syntax** `[@citekey]` **only when `citekey` is non-empty**. If `citekey` is missing or empty (common when Better BibTeX is not installed), reference papers in prose instead (`First-Author et al. (Year)`) and rely on the full citation in the `## References` section. **Never emit `[@]`** — an empty citation is a bug.
 
@@ -57,9 +65,10 @@ For **file-based notes** (`file_io`): include the full template with YAML frontm
 
 ## Note template
 
-### Template for paper notes
+### Template for full paper reading notes
 
-Use this template **exactly**.
+Use this template exactly for full reading notes.
+Requests to save existing material or selected figures use their requested content instead.
 
 **FRONTMATTER LOCK**: the 7 fields listed below (`title`, `citekey`, `doi`, `year`, `journal`, `created`, `tags`) are the COMPLETE AND EXCLUSIVE list. You are FORBIDDEN from adding any other field. Explicitly forbidden (non-exhaustive): `authors`, `note_type`, `figure`, `abstract`, `source`, `url`, `keywords`, `added`, `updated`, `status`, `rating`. If you want to record author names, figure labels, abstracts, or any other metadata, put them in the **body text** of the note, not in frontmatter. Do not invent new fields under any circumstance.
 

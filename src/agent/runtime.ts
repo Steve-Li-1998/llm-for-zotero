@@ -156,12 +156,14 @@ import type {
   ResolvedAgentRuntimeRequest,
 } from "./types";
 import { buildAgentStageEvent } from "./stageEvents";
+import { selectAutomaticSkills } from "./model/automaticSkillSelection";
 
 type AgentRuntimeDeps = {
   registry: AgentToolRegistry;
   adapterFactory: (request: ResolvedAgentRuntimeRequest) => AgentModelAdapter;
   paperContextResolver?: AgentRequestPaperContextResolver;
   now?: () => number;
+  skillSelector?: typeof selectAutomaticSkills;
 };
 
 type PendingConfirmation = {
@@ -196,6 +198,7 @@ export class AgentRuntime {
   private readonly adapterFactory: AgentRuntimeDeps["adapterFactory"];
   private readonly paperContextResolver?: AgentRequestPaperContextResolver;
   private readonly now: () => number;
+  private readonly skillSelector: typeof selectAutomaticSkills;
   private readonly pendingConfirmations = new Map<
     string,
     PendingConfirmation
@@ -206,6 +209,7 @@ export class AgentRuntime {
     this.adapterFactory = deps.adapterFactory;
     this.paperContextResolver = deps.paperContextResolver;
     this.now = deps.now || (() => Date.now());
+    this.skillSelector = deps.skillSelector || selectAutomaticSkills;
   }
 
   listTools() {
@@ -485,8 +489,19 @@ export class AgentRuntime {
         modelName: request.model || "unknown",
         modelProviderLabel: request.modelProviderLabel,
         signal: params.signal,
+        readCurrentTurnActions: () =>
+          toolExecutionRecords
+            .slice(-8)
+            .map(({ name, ok, input, content }) => ({
+              name,
+              ok,
+              input,
+              content,
+            })),
         checkpointActionProgress: () => actionContractSession.checkpoint(),
         publishPlanEvent: emitPlanEvent,
+        publishSkillActivation: (id) =>
+          emit({ type: "status", text: `Skill activated: ${id}` }),
         publishExecutionCheckpoint: (checkpoint) =>
           emit({ type: "execution_checkpoint", checkpoint }),
         loadApprovedPlanEffectContext: async () => {
@@ -510,9 +525,8 @@ export class AgentRuntime {
         request.conversationKey,
       );
       setToolResultReadAvailability(request, false);
-      // Approved Plans retain their frozen skill binding. Ordinary turns go
-      // directly to the main model with user-selected skills; the host does
-      // not predict actions or run a model router first.
+      // Approved Plans retain their frozen skill binding. Ordinary turns select
+      // guidance before the main model; skill routing never predicts actions.
       let turnIntent: {
         skillIds: string[];
         classifiedIntent: AgentRuntimeRequest["classifiedIntent"] | null;
@@ -557,8 +571,18 @@ export class AgentRuntime {
         request.actionPreparation = undefined;
         request.classifiedIntent = undefined;
         request.skillRoutingReceipt = undefined;
+        const started = this.now();
+        const selected = adapter.supportsTools(request)
+          ? await this.skillSelector(request, getAllSkills(), params.signal)
+          : { skillIds: [], status: "selected" as const };
+        if (adapter.supportsTools(request))
+          await emit({
+            type: "provider_event",
+            providerType: "agent_skill_selection",
+            payload: { ...selected, elapsedMs: this.now() - started },
+          });
         turnIntent = {
-          skillIds: request.forcedSkillIds || [],
+          skillIds: selected.skillIds,
           classifiedIntent: null,
           degraded: false,
         };
@@ -571,7 +595,7 @@ export class AgentRuntime {
         request.loadedSkillRecords = (
           await Promise.all(
             getAllSkills()
-              .filter((skill) => forcedSkillIds.has(skill.id))
+              .filter((skill) => matchedSkills.includes(skill.id))
               .map(async (skill) => ({
                 ...(
                   await loadSkill(
@@ -579,7 +603,9 @@ export class AgentRuntime {
                     getBuiltinSkillInstructionById(skill.id),
                   )
                 ).loadedSkill,
-                source: "forced" as const,
+                source: forcedSkillIds.has(skill.id)
+                  ? ("forced" as const)
+                  : ("loaded" as const),
               })),
           )
         ).sort((left, right) => left.id.localeCompare(right.id));

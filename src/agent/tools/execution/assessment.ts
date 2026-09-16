@@ -347,6 +347,7 @@ export class InvocationAssessor {
           {
             input,
             userRequest: request.userText,
+            currentTurnActions: context.readCurrentTurnActions?.(),
             clarifications: request.clarificationHistory || [],
             conversation: (request.history || [])
               .filter(

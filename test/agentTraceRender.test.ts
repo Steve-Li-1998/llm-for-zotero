@@ -12084,6 +12084,38 @@ describe("action card row detail wiring", function () {
   };
 
   /** Render the card, recording every `status` element a row detail was given. */
+  it("folds a long action list until the reader expands it, including a restored card", function () {
+    const longCard = {
+      ...card,
+      actionCount: 32,
+      entries: Array.from({ length: 32 }, () => card.entries[0]),
+    };
+    for (const recorded of [longCard, JSON.parse(JSON.stringify(longCard))]) {
+      const node = renderActionSummaryCard(
+        noteDocument,
+        recorded,
+      ) as unknown as FakeElement;
+      const list = node.findByClass("llm-agent-action-summary-list")!;
+      const toggle = node.findByClass("llm-agent-action-summary-toggle")!;
+      assert.exists(toggle);
+      assert.isTrue(list.hidden);
+      assert.equal(toggle.getAttribute("aria-expanded"), "false");
+      toggle.dispatchFakeEvent("click");
+      assert.isFalse(list.hidden);
+      assert.equal(toggle.getAttribute("aria-expanded"), "true");
+      toggle.dispatchFakeEvent("click");
+      assert.isTrue(list.hidden);
+    }
+    const short = renderActionSummaryCard(
+      noteDocument,
+      card,
+    ) as unknown as FakeElement;
+    assert.isNull(short.findByClass("llm-agent-action-summary-toggle"));
+    assert.isNotTrue(
+      short.findByClass("llm-agent-action-summary-list")!.hidden,
+    );
+  });
+
   function renderWithSpy(mode: "action" | "note") {
     const given: FakeElement[] = [];
     const node = renderActionSummaryCard(noteDocument, card, {

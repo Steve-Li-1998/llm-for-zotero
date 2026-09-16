@@ -133,6 +133,26 @@ Complete instructions.`);
 });
 
 describe("load_skill tool", function () {
+  it("announces a later main-model activation once and keeps its complete instructions", async function () {
+    const activations: string[] = [];
+    const tool = createLoadSkillTool({ getSkills: () => [skill()] });
+    const context = {
+      request: { loadedSkillRecords: [] },
+      publishSkillActivation: async (id: string) => {
+        activations.push(id);
+      },
+    };
+    for (let index = 0; index < 2; index++) {
+      const result = (await tool.execute(
+        { id: "write-note" },
+        context as never,
+      )) as LoadSkillResult;
+      assert.isTrue(result.found);
+      if (result.found) assert.equal(result.instructions, skill().instruction);
+    }
+    assert.deepEqual(activations, ["write-note"]);
+    assert.lengthOf(context.request.loadedSkillRecords, 1);
+  });
   it("rejects fields outside its portable input schema", function () {
     const tool = createLoadSkillTool({ getSkills: () => [skill()] });
     assert.isFalse(

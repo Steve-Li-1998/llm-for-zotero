@@ -1278,6 +1278,10 @@ export type AgentJournalActionScope = {
 };
 
 export type AgentToolContext = {
+  /** Reuse the running loop's completed actions when reviewing intermediate work. */
+  readCurrentTurnActions?: () => import("./authorization/types").ActionReviewInput["currentTurnActions"];
+  /** Announce instructions loaded during the current run through its durable trace. */
+  publishSkillActivation?: (id: string) => Promise<void>;
   /** Host-injected Auto reviewer, shared by normal and nested operation assessment. */
   reviewAction?: import("./authorization/types").ActionReviewer;
   /** Host-owned authority; never decoded from model or MCP tool arguments. */

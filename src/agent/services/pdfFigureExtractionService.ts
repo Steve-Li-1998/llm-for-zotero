@@ -31,6 +31,8 @@ const FIGURE_EXTRACTION_RENDER_SCALE = 1.8;
 
 type FigureExtractionInput = {
   query?: string;
+  figureLabels?: string[];
+  includeSupplementary?: boolean;
   pages?: number[];
   target?: PdfTarget;
 };
@@ -65,16 +67,27 @@ type FigureCropPageService = PdfPageService & {
 };
 
 /**
- * Native MCP callers own their semantic request, but the host still owns the
- * figure selector. Resolve it from the immutable turn text rather than from a
- * model-supplied tool query. Original Agent calls continue to require their
- * classified semantic intent.
+ * Ordinary Agent and MCP calls use the same concrete read selectors.
+ * Frozen Plan selections are resolved by the caller before this fallback.
+ * Queries remain supported for existing clients; no preliminary classifier
+ * is required to read a figure.
  */
-function resolveExternalRuntimeFigureSelection(
+function resolveDirectFigureSelection(
+  input: FigureExtractionInput,
   context: AgentToolContext,
 ): SemanticDecisions["figures"] | undefined {
-  if (context.authorization?.kind !== "external_runtime") return undefined;
-  const userText = normalizeText(context.request.userText);
+  if (input.figureLabels) {
+    return {
+      labels: input.figureLabels,
+      kind: "figures",
+      includeSupplementary:
+        input.includeSupplementary ??
+        input.figureLabels.some((label) =>
+          /supplement|extended\s+data|\bS\d/i.test(label),
+        ),
+    };
+  }
+  const userText = normalizeText(input.query || context.request.userText);
   if (!/\b(?:fig(?:ure)?s?|images?)\b/i.test(userText)) return undefined;
 
   const labels = new Set<string>();
@@ -95,9 +108,9 @@ function resolveExternalRuntimeFigureSelection(
   return {
     labels: [...labels],
     kind: "figures",
-    includeSupplementary: /\b(?:supplement(?:ary|al)|extended\s+data)\b/i.test(
-      userText,
-    ),
+    includeSupplementary:
+      input.includeSupplementary ??
+      /\b(?:supplement(?:ary|al)|extended\s+data|S\d)\b/i.test(userText),
   };
 }
 
@@ -532,7 +545,7 @@ export class PdfFigureExtractionService {
     const selection =
       params.selection ||
       params.context.request.classifiedIntent?.semantic?.figures ||
-      resolveExternalRuntimeFigureSelection(params.context);
+      resolveDirectFigureSelection(params.input, params.context);
     const query = params.input.query || selection?.labels.join(", ") || "";
     if (!selection)
       return {
@@ -542,7 +555,7 @@ export class PdfFigureExtractionService {
         figures: [],
         artifacts: [],
         warnings: [
-          "Figure selection is unresolved. Prepare semantic figure intent before extracting crops.",
+          "Figure selection is unresolved. Supply figureLabels (for example ['Figure 1'], or [] for all figures) or name the figure in query.",
         ],
       };
     const figures: Array<

@@ -105,6 +105,33 @@ describe("bounded action review", function () {
     assert.isTrue(result.unavailable);
     assert.equal(calls, 0);
   });
+
+  it("bounds historical observations without losing the exact action or user restrictions", async function () {
+    let transmitted: any;
+    const reviewer = createActionReviewer(request, async (params) => {
+      transmitted = JSON.parse(params.prompt);
+      return {
+        ok: true,
+        text: '{"decision":"execute","reason":"Requested intermediate step."}',
+      };
+    });
+    const input = {
+      ...facts(),
+      userRequest: "Crop a figure; preserve the source PDF.",
+      currentTurnActions: Array.from({ length: 8 }, () => ({
+        name: "file_io",
+        ok: true,
+        input: { content: "x".repeat(10000) },
+        content: "y".repeat(10000),
+      })),
+    };
+    const result = await reviewer(input);
+    assert.equal(result.decision, "execute");
+    assert.equal(transmitted.input.command, "python3 /tmp/convert.py");
+    assert.equal(transmitted.userRequest, input.userRequest);
+    assert.isAbove(transmitted.omittedCurrentTurnActions, 0);
+    assert.isBelow(JSON.stringify(transmitted).length, 32000);
+  });
   it("reuses a verdict only while action, intent and workspace facts agree", async function () {
     let calls = 0;
     const service = new ActionAuthorizationService(async () => {

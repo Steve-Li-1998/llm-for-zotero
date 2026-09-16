@@ -32,7 +32,8 @@ describe("direct Agent model tool surface", function () {
       [],
     );
 
-    assert.isAtMost(serializedToolCharacters, 20_000);
+    // Includes concrete figure selectors and the native image-embedding contract.
+    assert.isAtMost(serializedToolCharacters, 21_000);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
       32_000,

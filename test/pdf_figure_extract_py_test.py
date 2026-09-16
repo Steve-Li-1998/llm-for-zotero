@@ -97,6 +97,45 @@ class CaptionWindowTests(unittest.TestCase):
             ],
         ]
 
+    def test_publisher_report_header_is_not_figure_evidence(self):
+        page = {
+            "width": 820.0, "height": 1180.0, "images": [],
+            "texts": [self.text_box(146, 80, 11, 22, "ll"), self.text_box(700, 104, 71, 22, "Report"), self.text_box(142, 154, 10, 12, "A")],
+        }
+        target = self.extractor.Target("Figure 1", 3, self.extractor.Rect(142, 445, 630, 12), "Figure 1. Experimental design.", "pdf-text")
+        image = self.image([(16, 66, 210, 113), (690, 72, 800, 126), (142, 154, 152, 166), (155, 175, 780, 430)])
+        candidate = self.extractor.choose_caption_region_candidate(image, page, target, [target])
+        self.assertIsNotNone(candidate)
+        self.assertGreater(candidate.rect.top, 126, "The publisher header must be outside the crop")
+        self.assertLessEqual(candidate.rect.top, 154, "The figure panel label must survive")
+        self.assertGreater(candidate.rect.left, 125, "Header logos must not leave a wide empty margin")
+        self.assertGreaterEqual(candidate.rect.right, 780)
+
+    def test_cross_page_ink_crop_keeps_panel_and_axis_labels_without_masthead(self):
+        page = {
+            "width": 820.0, "height": 1180.0, "images": [],
+            "texts": [self.text_box(80, 104, 71, 22, "Report"), self.text_box(749, 80, 11, 22, "ll"), self.text_box(155, 154, 10, 12, "A"), self.text_box(240, 1040, 90, 12, "Days difference")],
+        }
+        target = self.extractor.Target("Figure 3", 6, None, "Figure 3. Correlations.", "pdf-text")
+        image = self.image([(690, 66, 819, 110), (200, 180, 760, 1030), (155, 154, 165, 166), (240, 1040, 330, 1052)])
+        candidate = self.extractor.choose_ink_candidate(image, page, target)
+        self.assertIsNotNone(candidate)
+        self.assertGreater(candidate.rect.top, 126)
+        self.assertLessEqual(candidate.rect.top, 154)
+        self.assertLessEqual(candidate.rect.left, 155)
+        self.assertGreaterEqual(candidate.rect.bottom, 1052)
+
+    def test_ink_confidence_distinguishes_diagram_labels_from_body_paragraphs(self):
+        target = self.extractor.Target("Figure 3", 6, None, "Figure 3.", "pdf-text")
+        page = {"width": 200, "height": 200, "texts": [self.text_box(20, 20, 25, 20, "Time")]}
+        rect = self.extractor.Rect(10, 10, 100, 100)
+        figure = self.extractor.score_candidate("rendered-ink", rect, 2, [], page, target)
+        self.assertNotIn("substantial non-caption text overlap", figure.warnings)
+        page["texts"] = [self.text_box(20, 20, 90, 10, "This is a long paragraph of body text from the paper.")]
+        paragraph = self.extractor.score_candidate("rendered-ink", rect, 2, [], page, target)
+        self.assertIn("paragraph-like text overlap", paragraph.warnings)
+        self.assertLess(paragraph.confidence, figure.confidence)
+
     def test_column_region_rescues_weak_full_width_candidate(self):
         page = {
             "width": 820.0,

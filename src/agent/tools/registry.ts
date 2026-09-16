@@ -121,7 +121,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   library_retrieve:
     "Retrieve ranked paper evidence from a library scope with explicit coverage.",
   paper_read:
-    "Read papers by overview, targeted, full, figures, visual, or visible-page mode.",
+    "Read papers by overview, targeted, full, figures, visual, or visible-page mode. For figure crops use mode:figures and figureLabels (e.g. ['Figure 1']); extracts from the source PDF without requiring MinerU. Preserve the active attachment; a sibling PDF's cache is not the same source.",
   literature_search:
     "Search scholarly sources and save candidates; import only on request.",
   literature_review:
@@ -132,7 +132,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   conversation_read:
     "Read exact chat history. Omit messageId to list; set it to read. Continue with offset or textOffset=nextTextOffset.",
   note_write:
-    "Write a Zotero note. sourceMessageId reuses an exact answer; documentId reuses finalized material.",
+    "Write a Zotero note. sourceMessageId reuses an exact answer; documentId reuses finalized material. Markdown file:// images from paper_read figure crops are imported and verified as embedded images; do not reimplement embedding with scripts.",
   note_write_batch:
     "Write notes to explicitly identified items as one checkpointed batch; resumeBatchId continues an interrupted one.",
   saved_search_update: "Create, replace, or delete a Zotero saved search.",

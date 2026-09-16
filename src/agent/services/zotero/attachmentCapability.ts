@@ -79,6 +79,7 @@ export class AttachmentCapability {
       results.push({
         contextItemId: att.id,
         title: resolveAnyAttachmentTitle(att, i, allAtts.length),
+        filename: normalizeText(att.attachmentFilename) || undefined,
         contentType,
         indexingState,
         mineruCacheDir,

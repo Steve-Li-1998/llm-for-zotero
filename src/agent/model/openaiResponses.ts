@@ -1,3 +1,4 @@
+import { providerSupportsFileUploads } from "../../utils/providerPresets";
 import {
   buildReasoningPayload,
   buildPromptCachePayloadHints,
@@ -37,6 +38,11 @@ async function uploadFilePart(
   request: AgentRuntimeRequest,
   signal?: AbortSignal,
 ) {
+  if (!providerSupportsFileUploads(request.apiBase || "")) {
+    throw new Error(
+      "This provider does not support file uploads; use rendered document content.",
+    );
+  }
   const fileIds = await uploadFilesForResponses({
     apiBase: request.apiBase || "",
     apiKey: request.apiKey || "",
@@ -122,6 +128,7 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
     );
     const response = await postWithReasoningFallback({
       url,
+      scope: { conversationKey: request.conversationKey },
       auth,
       modelName: request.model,
       initialReasoning: request.reasoning,

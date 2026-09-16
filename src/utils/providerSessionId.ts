@@ -65,9 +65,8 @@ export function resetProviderSessionIdCacheForTests(): void {
 async function digest(value: string): Promise<string> {
   const cryptoObject = (globalThis as { crypto?: Crypto }).crypto;
   if (!cryptoObject?.subtle) {
-    // Without WebCrypto there is no way to derive a stable opaque id. A random
-    // one per call would tell the provider every turn is a new conversation,
-    // which is worse than sending nothing, so the caller sends nothing.
+    // Never substitute a fresh id for an existing conversation. The dispatch
+    // boundary rejects a provider-required session when derivation is unavailable.
     return "";
   }
   const bytes = new TextEncoder().encode(value);
@@ -82,10 +81,8 @@ async function digest(value: string): Promise<string> {
 
 /**
  * The session id for a conversation, or undefined when there is no
- * conversation to identify — a one-off utility call, or a panel with no item
- * selected. Callers omit the header entirely in that case rather than invent
- * an id, since a fresh id per request is exactly the pattern these providers
- * are asking clients to stop.
+ * conversation to identify. Standalone operations use their own scope instead;
+ * the transport must not send a provider-required header with an empty value.
  */
 export async function resolveProviderSessionId(
   conversationKey: number | string | null | undefined,
@@ -101,4 +98,9 @@ export async function resolveProviderSessionId(
   if (!derived) return undefined;
   sessionIdCache.set(key, derived);
   return derived;
+}
+
+/** A standalone test or utility run is its own session, shared by its retries. */
+export function createProviderOperationId(): string {
+  return randomHex(16);
 }

@@ -8,8 +8,7 @@ import {
   disposePlanProgress,
   renderPlanProgress,
 } from "./agentTrace/planProgressView";
-import { resolveProviderSessionId } from "../../utils/providerSessionId";
-import { providerWantsSessionId } from "../../utils/providerTransport";
+import { createProviderRequestScope } from "../../utils/providerTransport";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { HTML_NS } from "../../utils/domHelpers";
 import {
@@ -6805,11 +6804,7 @@ export async function retryLatestAssistantResponse(
       profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
-      // Derived only for the providers that ask for one, so nobody else mints
-      // the salt it comes from (#439).
-      sessionId: providerWantsSessionId(effectiveRequestConfig.apiBase)
-        ? await resolveProviderSessionId(conversationKey)
-        : undefined,
+      requestScope: createProviderRequestScope(conversationKey),
     };
     const { finalPrepared, systemMessages, workflowTestIntercepted } =
       await prepareFinalContextPlanChatRequest({
@@ -9793,11 +9788,7 @@ export async function sendQuestion(
       profileOverride: effectiveRequestConfig.advanced?.profileOverride,
       inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
-      // Derived only for the providers that ask for one, so nobody else mints
-      // the salt it comes from (#439).
-      sessionId: providerWantsSessionId(effectiveRequestConfig.apiBase)
-        ? await resolveProviderSessionId(conversationKey)
-        : undefined,
+      requestScope: createProviderRequestScope(conversationKey),
     };
     const { finalPrepared, systemMessages, workflowTestIntercepted } =
       await prepareFinalContextPlanChatRequest({

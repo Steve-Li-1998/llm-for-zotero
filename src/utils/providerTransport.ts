@@ -6,6 +6,10 @@ import {
   resolveOllamaNativeApiRoot,
   resolveOllamaNativeEndpoint,
 } from "./apiHelpers";
+import {
+  createProviderOperationId,
+  resolveProviderSessionId,
+} from "./providerSessionId";
 import { version } from "../../package.json";
 import type { ModelProviderAuthMode } from "./modelProviders";
 import { detectProviderPreset } from "./providerPresets";
@@ -274,92 +278,97 @@ export function resolveProviderTransportEndpoint(params: {
   });
 }
 
-/**
- * Headers a provider needs beyond authentication.
- *
- * Some gateways route on an envelope value rather than on the request body:
- * OpenCode Zen wants a stable session id per conversation so consecutive turns
- * reuse one backend's prompt cache, and asks clients to name themselves rather
- * than appear as a generic SDK (#439). These are contributed here so the
- * knowledge lives with the provider, not spread through the call sites.
- *
- * Anything a provider contributes is applied *under* the authentication
- * headers, so a preset can never replace the header that carries the key.
- */
-/**
- * Whether this endpoint asks for a per-conversation session id.
- *
- * Callers check before deriving one, so a user who never touches such a
- * provider never mints the salt the id is derived from.
- */
-export function providerWantsSessionId(apiBase: string | undefined): boolean {
-  return Boolean(apiBase) && detectProviderPreset(apiBase!) === "opencode";
+/** Identity belongs to a conversation or to one standalone operation, never a retry. */
+export type ProviderRequestScope =
+  | { conversationKey: number | string }
+  | { operationId: string };
+
+export function createProviderRequestScope(
+  conversationKey?: number | string | null,
+): ProviderRequestScope {
+  if (
+    conversationKey !== undefined &&
+    conversationKey !== null &&
+    String(conversationKey).trim()
+  ) {
+    return { conversationKey };
+  }
+  return { operationId: createProviderOperationId() };
 }
 
-function providerExtraHeaders(params: {
-  apiBase?: string;
-  sessionId?: string;
-}): Record<string, string> {
-  if (!providerWantsSessionId(params.apiBase)) return {};
-  const headers: Record<string, string> = {
-    "User-Agent": `llm-for-zotero/${version}`,
-  };
-  // No conversation means no session to be stable across, and a fresh id per
-  // request is the pattern the header exists to replace — so send nothing.
-  if (params.sessionId) headers["x-opencode-session"] = params.sessionId;
-  return headers;
+/**
+ * Shared HTTP dispatch boundary for configurable model inference. Requirements
+ * are applied to the actual destination, after protocol/auth headers are built.
+ * Callers cannot opt out by forgetting to identify the provider or its headers.
+ */
+export async function sendProviderRequest(params: {
+  url: string;
+  scope: ProviderRequestScope;
+  fetchFn: typeof fetch;
+  init: RequestInit;
+}): Promise<Response> {
+  if (detectProviderPreset(params.url) !== "opencode") {
+    return params.fetchFn(params.url, params.init);
+  }
+  const sessionId =
+    "conversationKey" in params.scope
+      ? await resolveProviderSessionId(params.scope.conversationKey)
+      : params.scope.operationId;
+  if (!sessionId?.trim()) {
+    throw new Error(
+      "OpenCode requires a stable request session; no request was sent.",
+    );
+  }
+  // Preserve authentication and protocol headers, but always own routing headers.
+  const headers = Object.fromEntries(
+    new Headers(params.init.headers).entries(),
+  );
+  headers["x-opencode-session"] = sessionId;
+  headers["user-agent"] = `llm-for-zotero/${version}`;
+  return params.fetchFn(params.url, { ...params.init, headers });
 }
 
-export function buildProviderTransportHeaders(params: {
+export function buildProviderAuthHeaders(params: {
   protocol: ProviderProtocol;
   apiKey: string;
   authMode?: ModelProviderAuthMode;
-  /** Used only to decide which provider's extra headers apply. */
-  apiBase?: string;
-  /** Stable per-conversation id, for providers that route on one. */
-  sessionId?: string;
 }): Record<string, string> {
-  const extra = providerExtraHeaders(params);
-  const withExtra = (headers: Record<string, string>) => ({
-    ...extra,
-    ...headers,
-  });
   if (
     params.protocol === "codex_responses" ||
     params.protocol === "responses_api" ||
     params.protocol === "openai_chat_compat"
   ) {
     if (params.authMode === "copilot_auth") {
-      return withExtra({
+      return {
         "Content-Type": "application/json",
         Authorization: `Bearer ${params.apiKey}`,
         "Copilot-Integration-Id": "vscode-chat",
         "Editor-Version": "vscode/1.96.0",
         "Editor-Plugin-Version": "copilot-chat/0.24.2",
         "Openai-Intent": "conversation-panel",
-      });
+      };
     }
-    return withExtra(buildHeaders(params.apiKey));
+    return buildHeaders(params.apiKey);
   }
   if (params.protocol === "anthropic_messages") {
-    return withExtra({
+    return {
       "Content-Type": "application/json",
       "x-api-key": params.apiKey,
       "anthropic-version": ANTHROPIC_VERSION,
-    });
+    };
   }
   if (params.protocol === "ollama_native") {
     // Ollama serves unauthenticated; a key is only present when the user has
     // put it behind a reverse proxy, so send the header only when set.
     return params.apiKey
-      ? withExtra({
+      ? {
           "Content-Type": "application/json",
           Authorization: `Bearer ${params.apiKey}`,
-        })
-      : withExtra({ "Content-Type": "application/json" });
+        }
+      : { "Content-Type": "application/json" };
   }
-  return withExtra({
+  return {
     "Content-Type": "application/json",
     "x-goog-api-key": params.apiKey,
-  });
+  };
 }

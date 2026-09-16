@@ -423,6 +423,21 @@ export type WorkflowTestCrossPaperHistoryIsolationResult = {
 };
 
 export type WorkflowTestApi = {
+  checkProviderConversationTransport: (params: {
+    conversationKey: number;
+    model: string;
+    apiBase: string;
+    apiKey: string;
+    providerProtocol:
+      | "openai_chat_compat"
+      | "anthropic_messages"
+      | "responses_api";
+  }) => Promise<{
+    chat: string;
+    stream: string;
+    agent: string;
+    continuation: string;
+  }>;
   mountPublicationTrace(
     documentId: string,
     text: string,

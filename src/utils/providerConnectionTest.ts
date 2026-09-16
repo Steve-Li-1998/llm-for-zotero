@@ -12,7 +12,10 @@ import {
   type ProviderProtocol,
 } from "./providerProtocol";
 import {
-  buildProviderTransportHeaders,
+  buildProviderAuthHeaders,
+  sendProviderRequest,
+  createProviderRequestScope,
+  type ProviderRequestScope,
   resolveProviderTransportEndpoint,
 } from "./providerTransport";
 import { createAgentModelAdapter } from "../agent/model/factory";
@@ -465,6 +468,7 @@ export async function runCodexDirectConnectionTest(
 }
 
 export async function runProviderConnectionTest(params: {
+  requestScope?: ProviderRequestScope;
   fetchFn: typeof fetch;
   protocol: ProviderProtocol;
   authMode: ModelProviderAuthMode;
@@ -483,14 +487,19 @@ export async function runProviderConnectionTest(params: {
     stream: expectsSse,
     authMode: params.authMode,
   });
-  const response = await params.fetchFn(url, {
-    method: "POST",
-    headers: buildProviderTransportHeaders({
-      protocol: params.protocol,
-      apiKey: params.apiKey,
-      authMode: params.authMode,
-    }),
-    body: JSON.stringify(body),
+  const response = await sendProviderRequest({
+    url,
+    scope: params.requestScope ?? createProviderRequestScope(),
+    fetchFn: params.fetchFn,
+    init: {
+      method: "POST",
+      headers: buildProviderAuthHeaders({
+        protocol: params.protocol,
+        apiKey: params.apiKey,
+        authMode: params.authMode,
+      }),
+      body: JSON.stringify(body),
+    },
   });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${await response.text()}`);
@@ -591,6 +600,7 @@ function truncateErrorText(text: string): string {
 
 /** POST one probe request with a body patch; report pass/fail, never throw. */
 async function postConnectionProbe(params: {
+  requestScope: ProviderRequestScope;
   fetchFn: typeof fetch;
   protocol: ProviderProtocol;
   authMode: ModelProviderAuthMode;
@@ -611,14 +621,19 @@ async function postConnectionProbe(params: {
     authMode: params.authMode,
   });
   try {
-    const response = await params.fetchFn(url, {
-      method: "POST",
-      headers: buildProviderTransportHeaders({
-        protocol: params.protocol,
-        apiKey: params.apiKey,
-        authMode: params.authMode,
-      }),
-      body: JSON.stringify(mergeBodyPatch(body, params.patch)),
+    const response = await sendProviderRequest({
+      url,
+      scope: params.requestScope,
+      fetchFn: params.fetchFn,
+      init: {
+        method: "POST",
+        headers: buildProviderAuthHeaders({
+          protocol: params.protocol,
+          apiKey: params.apiKey,
+          authMode: params.authMode,
+        }),
+        body: JSON.stringify(mergeBodyPatch(body, params.patch)),
+      },
     });
     const rawText = await response.text();
     if (!response.ok) {
@@ -658,6 +673,7 @@ async function postConnectionProbe(params: {
  * every level read as broken.
  */
 export async function runProviderSettingsChecks(params: {
+  requestScope?: ProviderRequestScope;
   fetchFn: typeof fetch;
   protocol: ProviderProtocol;
   authMode: ModelProviderAuthMode;
@@ -670,9 +686,10 @@ export async function runProviderSettingsChecks(params: {
   if (!override || !profileOverrideAppliesTo(override, params.modelName)) {
     return [];
   }
+  const requestScope = params.requestScope ?? createProviderRequestScope();
   const checks: ConnectionSettingsCheck[] = [];
   const probe = (patch: Record<string, unknown>) =>
-    postConnectionProbe({ ...params, patch });
+    postConnectionProbe({ ...params, requestScope, patch });
 
   const extraBody = resolveUserExtraBody(override, params.modelName);
   let extraUsable = false;

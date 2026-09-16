@@ -7,7 +7,7 @@ import {
 } from "../../utils/llmClient";
 import { normalizeTemperature } from "../../utils/normalization";
 import {
-  buildProviderTransportHeaders,
+  buildProviderAuthHeaders,
   resolveProviderTransportEndpoint,
 } from "../../utils/providerTransport";
 import type {
@@ -806,8 +806,9 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
     });
     const response = await postWithReasoningFallback({
       url,
+      scope: { conversationKey: request.conversationKey },
       auth: { mode: "api_key", token: request.apiKey || "" },
-      headers: buildProviderTransportHeaders({
+      headers: buildProviderAuthHeaders({
         protocol: "anthropic_messages",
         apiKey: request.apiKey || "",
       }),

@@ -1696,13 +1696,15 @@ export function buildManifest(
     sectionId: `s${index}`,
     path: section.heading,
   }));
-  // A lone leading `#` is the paper title, not a section every path repeats.
-  const titleIndex =
-    sections.length > 0 &&
-    sections[0].level === 1 &&
-    sections.filter((section) => section.level === 1).length === 1
-      ? 0
-      : -1;
+  // The title block is every level-1 heading before the first deeper section:
+  // an institute banner, the paper title. They are front matter, not sections
+  // every path repeats. A paper written entirely in level-1 headings has no
+  // title block, so its headings keep their own paths.
+  const firstDeeperIndex = sections.findIndex((section) => section.level >= 2);
+  const titleIndexes = new Set<number>();
+  for (let i = 0; i < firstDeeperIndex; i += 1) {
+    if (sections[i].level === 1) titleIndexes.add(i);
+  }
   for (let i = 0; i < sections.length; i++) {
     const section = sections[i];
     for (let j = i - 1; j >= 0; j--) {
@@ -1714,7 +1716,7 @@ export function buildManifest(
     const chain = [section.heading];
     let ancestor = section.parentIndex;
     while (ancestor !== undefined) {
-      if (ancestor !== titleIndex) chain.push(sections[ancestor].heading);
+      if (!titleIndexes.has(ancestor)) chain.push(sections[ancestor].heading);
       ancestor = sections[ancestor].parentIndex;
     }
     section.path = chain.reverse().join(" › ");
@@ -1803,6 +1805,46 @@ export async function readMineruContentListFromDir(
 }
 
 /**
+ * Figures and tables a rebuild could not recover. They come from the content
+ * list, which is pruned with the other non-durable artifacts once the cache is
+ * finalized, so a later rebuild would otherwise drop every figure the stored
+ * manifest knows. Same rule as the figure blocks: carry forward only when the
+ * rebuild found none and the stored manifest had some. Section records are
+ * reattached by exact heading text, first unmatched occurrence; a heading the
+ * rebuild no longer has keeps its records in the flat lists only.
+ */
+function carryForwardManifestFigures(
+  rebuilt: MineruManifest,
+  previous: MineruManifest | null,
+): MineruManifest {
+  if (rebuilt.allFigures.length || rebuilt.allTables.length) return rebuilt;
+  if (!previous?.allFigures?.length && !previous?.allTables?.length) {
+    return rebuilt;
+  }
+  const storedByHeading = new Map<string, ManifestSection[]>();
+  for (const section of previous.sections || []) {
+    const occurrences = storedByHeading.get(section.heading) || [];
+    occurrences.push(section);
+    storedByHeading.set(section.heading, occurrences);
+  }
+  return {
+    ...rebuilt,
+    sections: rebuilt.sections.map((section) => {
+      const stored = storedByHeading.get(section.heading)?.shift();
+      if (!stored) return section;
+      return {
+        ...section,
+        figures: stored.figures || [],
+        tables: stored.tables || [],
+        equationCount: stored.equationCount || 0,
+      };
+    }),
+    allFigures: previous.allFigures || [],
+    allTables: previous.allTables || [],
+  };
+}
+
+/**
  * Build and write manifest.json for a cached paper.
  * Reads full.md and content_list.json from the cache directory.
  */
@@ -1824,7 +1866,7 @@ export async function buildAndWriteManifest(
   // full.md no longer embeds the source images once a cache is finalized, so a
   // rebuild cannot recover figure blocks the stored manifest already knows.
   const manifest: MineruManifest = {
-    ...rebuilt,
+    ...carryForwardManifestFigures(rebuilt, previous),
     ...(rebuilt.figureBlocks?.length || !previous?.figureBlocks?.length
       ? {}
       : { figureBlocks: previous.figureBlocks }),

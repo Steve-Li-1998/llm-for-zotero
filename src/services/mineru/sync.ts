@@ -339,9 +339,29 @@ function hashBytes(hash: number, bytes: Uint8Array): number {
   return next;
 }
 
+function isMineruManifestEntryPath(relativePath: string): boolean {
+  const normalized = normalizePackagePath(relativePath);
+  if (!normalized) return false;
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] === "manifest.json";
+}
+
+/**
+ * Content hash of a MinerU cache. `manifest.json` is excluded: it is derived
+ * from `full.md` plus the content list and is rebuilt whenever the plugin's
+ * manifest format changes, so hashing it would report every synced cache as
+ * divergent after an upgrade — deleting the local cache, restoring the stale
+ * package and republishing a new attachment for every paper.
+ *
+ * `includeDerivedManifest` reproduces the older formula, so packages published
+ * by a previous version still validate.
+ */
 function computeCacheEntriesContentHash(
   entries: Record<string, Uint8Array>,
-  options: { includeSourceProvenance?: boolean } = {},
+  options: {
+    includeSourceProvenance?: boolean;
+    includeDerivedManifest?: boolean;
+  } = {},
 ): string {
   const encoder = new TextEncoder();
   let hash = 0x811c9dc5;
@@ -351,6 +371,8 @@ function computeCacheEntriesContentHash(
     if (
       normalizedPath === MINERU_SYNC_METADATA_FILE ||
       normalizedPath === MINERU_LOCAL_SYNC_STATE_FILE ||
+      (!options.includeDerivedManifest &&
+        isMineruManifestEntryPath(normalizedPath)) ||
       (!options.includeSourceProvenance &&
         isMineruSourceProvenanceEntryPath(normalizedPath))
     ) {
@@ -926,23 +948,26 @@ function extractPackageFiles(
     );
 
     const contentHash = computeCacheEntriesContentHash(hashEntries);
-    const legacyContentHash = computeCacheEntriesContentHash(hashEntries, {
-      includeSourceProvenance: true,
-    });
-    const rawLegacyContentHash = computeCacheEntriesContentHash(
-      rawHashEntries,
-      {
-        includeSourceProvenance: true,
-      },
-    );
-    const rawContentHash = computeCacheEntriesContentHash(rawHashEntries);
+    // A stored hash may come from any formula this plugin has shipped: over
+    // the finalized or the raw entries, with or without source provenance,
+    // with or without the derived manifest. Any of them proves the package.
+    const acceptedHashes = new Set<string>();
+    for (const entrySet of [hashEntries, rawHashEntries]) {
+      for (const includeSourceProvenance of [false, true]) {
+        for (const includeDerivedManifest of [false, true]) {
+          acceptedHashes.add(
+            computeCacheEntriesContentHash(entrySet, {
+              includeSourceProvenance,
+              includeDerivedManifest,
+            }),
+          );
+        }
+      }
+    }
     if (
       typeof metadata.cacheContentHash === "string" &&
       metadata.cacheContentHash.trim() &&
-      metadata.cacheContentHash !== contentHash &&
-      metadata.cacheContentHash !== legacyContentHash &&
-      metadata.cacheContentHash !== rawContentHash &&
-      metadata.cacheContentHash !== rawLegacyContentHash
+      !acceptedHashes.has(metadata.cacheContentHash)
     ) {
       return null;
     }

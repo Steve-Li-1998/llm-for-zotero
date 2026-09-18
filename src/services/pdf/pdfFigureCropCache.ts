@@ -125,8 +125,42 @@ export function buildPdfFigureCropStableHash(value: string): string {
   return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
+/** The manifest fields a figure crop actually depends on. */
+type FigureCropRelevantManifest = {
+  figureBlocks?: unknown;
+  allFigures?: unknown;
+  allTables?: unknown;
+  totalPages?: unknown;
+  sections?: unknown;
+};
+
+/**
+ * Freshness key for a paper's figure crops: the figure inventory the crop
+ * pipeline reads, and nothing else. Section levels, heading paths and the
+ * parse-health block describe prose structure, so a manifest rebuild that adds
+ * or reshapes them must not throw away every crop of every paper.
+ */
 export function buildPdfFigureCropManifestHash(manifest: unknown): string {
-  return buildPdfFigureCropStableHash(JSON.stringify(manifest || {}));
+  const source = (manifest || {}) as FigureCropRelevantManifest;
+  const sections = Array.isArray(source.sections) ? source.sections : [];
+  return buildPdfFigureCropStableHash(
+    JSON.stringify({
+      figureBlocks: source.figureBlocks ?? null,
+      allFigures: source.allFigures ?? null,
+      allTables: source.allTables ?? null,
+      totalPages: source.totalPages ?? null,
+      sections: sections.map((section) => {
+        const entry = (section || {}) as {
+          figures?: unknown;
+          tables?: unknown;
+        };
+        return {
+          figures: entry.figures ?? null,
+          tables: entry.tables ?? null,
+        };
+      }),
+    }),
+  );
 }
 
 export function buildPdfFigureCropPdfFingerprint(

@@ -1425,6 +1425,73 @@ describe("mineruSync", function () {
     assert.equal(await readCachedMineruMd(pdf.id), "# Synced source");
   });
 
+  it("keeps a local cache whose manifest was rebuilt in place", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdf = createAttachment({
+      id: 292,
+      key: "PDFMANIFESTREBUILD",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "manifest-rebuild.pdf",
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    setMineruSyncEnabled(true);
+
+    await writeMineruCacheFiles(pdf.id, "# Synced source\n\nBody text.", [
+      { relativePath: "content_list.json", data: bytes("[]") },
+    ]);
+    const zipBytes = await buildMineruSyncPackageBytes(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.exists(zipBytes);
+    attachPackage({
+      io,
+      items,
+      parent,
+      id: 293,
+      key: "PKGMANIFESTREBUILD",
+      sourceKey: "PDFMANIFESTREBUILD",
+      bytes: zipBytes!,
+    });
+
+    // A newer plugin version rebuilds manifest.json in place: same full.md,
+    // different derived bytes.
+    const manifestPath = `${getMineruItemDir(pdf.id)}/manifest.json`;
+    const storedManifest = io.files.get(manifestPath);
+    assert.exists(storedManifest, "the published cache has a manifest");
+    const rebuiltManifest = {
+      ...JSON.parse(decoder.decode(storedManifest!)),
+      structure: {
+        version: 2,
+        headingCounts: { h1: 1, h2: 0, h3: 0 },
+        sectionsBuilt: 1,
+        labelledChars: 12,
+      },
+    };
+    io.files.set(manifestPath, bytes(JSON.stringify(rebuiltManifest)));
+    assert.notEqual(
+      decoder.decode(io.files.get(manifestPath)!),
+      decoder.decode(storedManifest!),
+      "the manifest bytes really changed",
+    );
+
+    const repaired = await repairSyncedMineruCacheForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.equal(repaired.status, "already_cached");
+    assert.equal(repaired.localContentHash, repaired.packageContentHash);
+    assert.equal(
+      decoder.decode(io.files.get(manifestPath)!),
+      JSON.stringify(rebuiltManifest),
+      "the local cache was not deleted and restored from the package",
+    );
+  });
+
   it("uses the latest synced package and prunes older duplicates during repair", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();

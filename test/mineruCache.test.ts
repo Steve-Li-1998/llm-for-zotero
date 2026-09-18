@@ -5,6 +5,7 @@ import {
   buildPdfFigureCropManifestHash,
 } from "../src/services/pdf/pdfFigureCropCache";
 import {
+  buildAndWriteManifest,
   buildManifest,
   ensureManifest,
   finalizeMineruCacheFiles,
@@ -276,6 +277,201 @@ describe("mineruCache", function () {
       labelledChars: md.length - md.indexOf("# Paper title"),
     });
     assert.doesNotThrow(() => validateMineruManifest(md, manifest));
+  });
+
+  it("excludes a title block of several level-1 headings from section paths", function () {
+    // Paper 4458 opens with an institute banner and then the paper title,
+    // both level 1, before the first numbered section.
+    const md = [
+      "# Weierstraß-Institut für Angewandte Analysis und Stochastik",
+      "preprint line",
+      "# Numerics of thin-film free boundary problems",
+      "author line",
+      "## 1 Introduction",
+      "text",
+      "## 2 Algorithm",
+      "text",
+      "### 2.1 Weak form",
+      "text",
+    ].join("\n\n");
+    const manifest = buildManifest(md, []);
+
+    assert.deepEqual(
+      manifest.sections.map((section) => section.path),
+      [
+        "Weierstraß-Institut für Angewandte Analysis und Stochastik",
+        "Numerics of thin-film free boundary problems",
+        "1 Introduction",
+        "2 Algorithm",
+        "2 Algorithm › 2.1 Weak form",
+      ],
+    );
+  });
+
+  it("keeps a stored manifest's figures when a rebuild has no content list", async function () {
+    const memory = setupMemoryIO();
+    const md = [
+      "# Paper title",
+      "intro line",
+      "## 1 Introduction",
+      "text",
+      "## 2 Algorithm",
+      "Figure 1 shows the mesh.",
+    ].join("\n\n");
+    await writeMineruCacheFiles(78, md, []);
+    const figure = {
+      label: "Figure 1",
+      baseLabel: "Figure 1",
+      path: "images/fig1.png",
+      caption: "Figure 1. The adaptive mesh.",
+      page: 3,
+    };
+    const table = {
+      label: "Table 1",
+      baseLabel: "Table 1",
+      path: "images/tbl1.png",
+      caption: "Table 1. Runtimes.",
+      page: 4,
+    };
+    const stored = {
+      sections: [
+        {
+          heading: "Paper title",
+          level: 1,
+          sectionId: "s0",
+          path: "Paper title",
+          charStart: 0,
+          charEnd: md.length,
+          figures: [],
+          tables: [],
+          equationCount: 0,
+        },
+        {
+          heading: "2 Algorithm",
+          level: 2,
+          sectionId: "s1",
+          path: "2 Algorithm",
+          charStart: md.indexOf("## 2 Algorithm"),
+          charEnd: md.length,
+          figures: [figure],
+          tables: [table],
+          equationCount: 7,
+        },
+      ],
+      allFigures: [{ ...figure, section: "2 Algorithm" }],
+      allTables: [{ ...table, section: "2 Algorithm" }],
+      totalChars: md.length,
+      structure: {
+        version: 2 as const,
+        headingCounts: { h1: 1, h2: 2, h3: 0 },
+        sectionsBuilt: 2,
+        labelledChars: md.length,
+      },
+    };
+    memory.files.set(
+      `${getMineruItemDir(78)}/manifest.json`,
+      bytes(JSON.stringify(stored)),
+    );
+
+    const rebuilt = await buildAndWriteManifest(78);
+    assert.exists(rebuilt);
+    assert.deepEqual(rebuilt!.allFigures, stored.allFigures);
+    assert.deepEqual(rebuilt!.allTables, stored.allTables);
+    const algorithm = rebuilt!.sections.find(
+      (section) => section.heading === "2 Algorithm",
+    );
+    assert.deepEqual(algorithm?.figures, [figure]);
+    assert.deepEqual(algorithm?.tables, [table]);
+    assert.equal(algorithm?.equationCount, 7);
+    const introduction = rebuilt!.sections.find(
+      (section) => section.heading === "1 Introduction",
+    );
+    assert.deepEqual(
+      introduction?.figures,
+      [],
+      "unmatched sections stay empty",
+    );
+  });
+
+  it("hashes only the figure fields of a manifest for the crop cache", function () {
+    const manifest = {
+      sections: [
+        {
+          heading: "2 Algorithm",
+          level: 2,
+          sectionId: "s1",
+          path: "2 Algorithm",
+          charStart: 10,
+          charEnd: 40,
+          figures: [
+            {
+              label: "Figure 1",
+              baseLabel: "Figure 1",
+              path: "images/fig1.png",
+              caption: "Figure 1. Mesh.",
+              page: 2,
+            },
+          ],
+          tables: [],
+          equationCount: 0,
+        },
+      ],
+      allFigures: [
+        {
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          path: "images/fig1.png",
+          caption: "Figure 1. Mesh.",
+          page: 2,
+          section: "2 Algorithm",
+        },
+      ],
+      allTables: [],
+      totalPages: 12,
+      totalChars: 400,
+    };
+    const baseline = buildPdfFigureCropManifestHash(manifest);
+
+    const withStructure = {
+      ...manifest,
+      structure: {
+        version: 2,
+        headingCounts: { h1: 1, h2: 1, h3: 0 },
+        sectionsBuilt: 2,
+        labelledChars: 400,
+      },
+    };
+    assert.equal(
+      buildPdfFigureCropManifestHash(withStructure),
+      baseline,
+      "a structure block is not figure geometry",
+    );
+
+    const withRenamedPath = {
+      ...manifest,
+      sections: [
+        {
+          ...manifest.sections[0],
+          level: 3,
+          path: "2 Algorithm › 2.1 Weak form",
+        },
+      ],
+    };
+    assert.equal(
+      buildPdfFigureCropManifestHash(withRenamedPath),
+      baseline,
+      "section levels and heading paths are not figure geometry",
+    );
+
+    const withMovedFigure = {
+      ...manifest,
+      allFigures: [{ ...manifest.allFigures[0], path: "images/fig1-new.png" }],
+    };
+    assert.notEqual(
+      buildPdfFigureCropManifestHash(withMovedFigure),
+      baseline,
+      "a figure's image path is figure geometry",
+    );
   });
 
   it("rebuilds a stored manifest that predates structure version 2", async function () {

@@ -294,24 +294,31 @@ describe("bounded section prior", function () {
         sectionLabel: "2 Numerical algorithm",
       },
       {
-        text: `Gamma delta appear together here as well. ${LONG_BODY}`,
+        text: `Gamma delta epsilon appear together here as well. ${LONG_BODY}`,
         chunkKind: "body",
         kindSource: "manifest",
         sectionIndex: 1,
         sectionLabel: "3 Examples",
       },
       {
+        text: `Gamma delta are paired once in this paragraph. ${LONG_BODY}`,
+        chunkKind: "body",
+        kindSource: "manifest",
+        sectionIndex: 2,
+        sectionLabel: "4 Examples in 2D",
+      },
+      {
         text: `Gamma gamma closes the argument in summary. ${LONG_BODY}`,
         chunkKind: "conclusion",
         kindSource: "manifest",
-        sectionIndex: 2,
+        sectionIndex: 3,
         sectionLabel: "5 Conclusion",
       },
       {
         text: `Gamma is mentioned once in this closing paragraph. ${LONG_BODY}`,
         chunkKind: "conclusion",
         kindSource: "heuristic",
-        sectionIndex: 3,
+        sectionIndex: 4,
         sectionLabel: "Closing remarks",
       },
     ]);
@@ -321,34 +328,82 @@ describe("bounded section prior", function () {
       context,
       "gamma delta epsilon",
       undefined,
-      { topK: 4, mode: "evidence", disableEmbeddings: true },
+      { topK: 5, mode: "evidence", disableEmbeddings: true },
     );
 
     const order = indexesOf(candidates);
     const byIndex = new Map(
       candidates.map((candidate) => [candidate.chunkIndex, candidate]),
     );
-    assert.equal(byIndex.get(2)?.why?.priorShift, -2);
-    assert.equal(byIndex.get(3)?.why?.priorShift, 0);
+    // The fixture is only meaningful if the fused order is 0,1,2,3,4.
+    for (const chunkIndex of [0, 1, 2, 3, 4]) {
+      assert.equal(
+        byIndex.get(chunkIndex)?.why?.bm25Rank,
+        chunkIndex + 1,
+        `chunk ${chunkIndex} is the fused rank ${chunkIndex + 1} hit`,
+      );
+    }
+    assert.equal(byIndex.get(3)?.why?.priorShift, -2);
+    assert.equal(byIndex.get(4)?.why?.priorShift, 0);
     assert.equal(
       order[0],
       0,
       "a two-rank prior cannot displace the best lexical match",
     );
     assert.isBelow(
+      order.indexOf(3),
       order.indexOf(2),
-      order.indexOf(1),
-      "the manifest conclusion moves up two ranks",
+      "the manifest conclusion at fused rank 4 moves up to adjusted rank 2",
     );
     assert.isAbove(
       order.indexOf(3),
       order.indexOf(1),
-      "a heuristic kind never moves",
+      "and no further: the fused rank-2 hit keeps the tie",
     );
+    assert.equal(order[order.length - 1], 4, "a heuristic kind never moves");
     assert.isTrue(
       candidates.every(
         (candidate) => typeof candidate.why?.bm25Rank === "number",
       ),
+    );
+  });
+
+  it("keeps the fused rank-1 chunk first when the next chunk is boosted", async function () {
+    const context = buildStructuredContext([
+      {
+        text: `Gamma delta epsilon gamma delta epsilon together. ${LONG_BODY}`,
+        chunkKind: "body",
+        kindSource: "manifest",
+        sectionIndex: 0,
+        sectionLabel: "2 Numerical algorithm",
+      },
+      {
+        text: `Gamma delta epsilon close the argument in summary. ${LONG_BODY}`,
+        chunkKind: "conclusion",
+        kindSource: "manifest",
+        sectionIndex: 1,
+        sectionLabel: "5 Conclusion",
+      },
+    ]);
+
+    const candidates = await buildPaperRetrievalCandidates(
+      PAPER,
+      context,
+      "gamma delta epsilon",
+      undefined,
+      { topK: 2, mode: "evidence", disableEmbeddings: true },
+    );
+
+    const byIndex = new Map(
+      candidates.map((candidate) => [candidate.chunkIndex, candidate]),
+    );
+    assert.equal(byIndex.get(0)?.why?.bm25Rank, 1);
+    assert.equal(byIndex.get(1)?.why?.bm25Rank, 2);
+    assert.equal(byIndex.get(1)?.why?.priorShift, -2);
+    assert.deepEqual(
+      indexesOf(candidates),
+      [0, 1],
+      "the boosted conclusion cannot take the top slot from the best match",
     );
   });
 

@@ -2701,12 +2701,15 @@ export async function buildPaperRetrievalCandidates(
         : highConfidenceNeighborIndexes.has(candidate.chunkIndex)
           ? -1
           : 0;
-    adjustedRank.set(
-      candidate,
-      (fusedRank.get(candidate) || 0) +
-        (Number.isFinite(priorShift) ? priorShift : demoteRankShift) +
-        referenceShift,
-    );
+    const rank = fusedRank.get(candidate) || 0;
+    // A prior may improve a rank, never overtake the best lexical match: a
+    // boosted chunk stops at rank 2 unless it already won the fusion.
+    const priorRank = !Number.isFinite(priorShift)
+      ? rank + demoteRankShift
+      : priorShift < 0
+        ? Math.max(rank + priorShift, rank > 1 ? 2 : 1)
+        : rank + priorShift;
+    adjustedRank.set(candidate, priorRank + referenceShift);
     referenceTier.set(
       candidate,
       candidate.referenceConfidence === "high" ? 0 : 1,

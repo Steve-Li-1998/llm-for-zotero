@@ -58,6 +58,7 @@ import type {
   PaperContextCandidate,
   PdfChunkMeta,
   PdfChunkKind,
+  RetrievalExplanation,
 } from "./types";
 import type {
   PaperContentSourceMode,
@@ -2180,110 +2181,305 @@ type QueryIntent =
   | "visual"
   | "general";
 
-/** Section boost profiles keyed by query intent. */
+/**
+ * Section priors keyed by query intent. Only the *sign* of a prior survives:
+ * a boosted kind moves up a fixed two ranks, a demoted kind moves to the end.
+ * `introduction`, `body` and `unknown` never move — a prior may break a tie,
+ * it may not decide the order (reciprocal-rank fusion spans ~0.03 in total,
+ * so the old additive constants of 0.8–1.5 overruled relevance outright).
+ */
 const SECTION_BOOST_PROFILES: Record<
   QueryIntent,
-  Partial<Record<PdfChunkKind, number>>
+  { boost: PdfChunkKind[]; demote: PdfChunkKind[] }
 > = {
   general: {
-    abstract: 0.9,
-    results: 1.2,
-    discussion: 0.95,
-    conclusion: 0.8,
-    introduction: 0.2,
-    methods: -0.2,
-    "figure-caption": -1.1,
-    "table-caption": -1.1,
-    appendix: -1.6,
-    references: -2.4,
-    body: 0.1,
+    boost: ["abstract", "results", "discussion", "conclusion"],
+    demote: ["figure-caption", "table-caption", "appendix", "references"],
   },
   factual: {
-    results: 1.5,
-    methods: 0.8,
-    abstract: 0.5,
-    discussion: 0.4,
-    "figure-caption": -0.8,
-    "table-caption": -0.8,
-    appendix: -1.4,
-    references: -2.4,
+    boost: ["results", "methods", "abstract", "discussion"],
+    demote: ["figure-caption", "table-caption", "appendix", "references"],
   },
   conceptual: {
-    discussion: 1.4,
-    abstract: 1.0,
-    results: 0.8,
-    introduction: 0.6,
-    "figure-caption": -0.8,
-    "table-caption": -0.8,
-    appendix: -1.4,
-    references: -2.4,
+    boost: ["discussion", "abstract", "results"],
+    demote: ["figure-caption", "table-caption", "appendix", "references"],
   },
   methodological: {
-    methods: 1.5,
-    abstract: 0.4,
-    results: 0.3,
-    appendix: 0.2,
-    "figure-caption": -0.5,
-    "table-caption": -0.5,
-    references: -2.0,
+    boost: ["methods", "abstract", "results"],
+    // The old profile gave `appendix` a positive weight for method questions.
+    demote: ["figure-caption", "table-caption", "references"],
   },
   comparative: {
-    results: 1.4,
-    discussion: 1.2,
-    abstract: 0.6,
-    methods: 0.2,
-    "figure-caption": -0.5,
-    "table-caption": -0.5,
-    appendix: -1.2,
-    references: -2.0,
+    boost: ["results", "discussion", "abstract"],
+    demote: ["figure-caption", "table-caption", "appendix", "references"],
   },
   citation: {
-    references: 1.0,
-    introduction: 0.8,
-    discussion: 0.6,
-    abstract: 0.3,
-    "figure-caption": -0.8,
-    "table-caption": -0.8,
-    appendix: -0.5,
+    boost: ["references", "discussion", "abstract"],
+    demote: ["figure-caption", "table-caption", "appendix"],
   },
   visual: {
-    "figure-caption": 0.8,
-    "table-caption": 0.8,
-    results: 0.6,
-    methods: 0.2,
-    appendix: -1.0,
-    references: -2.0,
+    boost: ["figure-caption", "table-caption", "results"],
+    demote: ["appendix", "references"],
   },
 };
 
-function scoreEvidenceHeuristics(params: {
-  candidate: PaperContextCandidate;
+/** Ranks a boosted section kind can climb. */
+const SECTION_PRIOR_RANK_SHIFT = -2;
+/** Chunks shorter than this are evidence-poor whatever their section says. */
+const MIN_EVIDENCE_WORD_COUNT = 12;
+
+/**
+ * Bounded section prior: a rank shift, not a score. Demoted chunks report
+ * `Number.POSITIVE_INFINITY` and sort to the end; they stay candidates so a
+ * reference-locked read can still pull a caption or a reference entry back.
+ */
+function priorShiftFor(params: {
+  chunkText: string;
+  chunkKind?: PdfChunkKind;
+  kindSource?: "manifest" | "heuristic";
   intent?: QueryIntent;
 }): number {
-  const { candidate } = params;
-  const chunkText = normalizeEvidenceText(candidate.chunkText);
+  const chunkText = normalizeEvidenceText(params.chunkText);
   const wordCount = chunkText ? chunkText.split(/\s+/).length : 0;
+  if (wordCount < MIN_EVIDENCE_WORD_COUNT) return Number.POSITIVE_INFINITY;
+  if (looksLikeCitationList(chunkText)) return Number.POSITIVE_INFINITY;
 
-  const intent = params.intent || "general";
-  const profile = SECTION_BOOST_PROFILES[intent];
-  let score = profile[candidate.chunkKind as PdfChunkKind] ?? -0.1;
+  const profile = SECTION_BOOST_PROFILES[params.intent || "general"];
+  const kind = params.chunkKind as PdfChunkKind | undefined;
+  if (!kind) return 0;
+  if (profile.demote.includes(kind)) return Number.POSITIVE_INFINITY;
+  if (profile.boost.includes(kind) && params.kindSource === "manifest") {
+    return SECTION_PRIOR_RANK_SHIFT;
+  }
+  return 0;
+}
 
-  if (wordCount > 0 && wordCount < 7) {
-    score -= 0.7;
-  } else if (wordCount > 0 && wordCount < 12) {
-    score -= 0.25;
+// ── Structure stage ──────────────────────────────────────────────────────────
+
+export type RetrievalSectionSummary = {
+  sectionId: string;
+  title: string;
+  index: number;
+};
+
+function sectionIdForIndex(sectionIndex: number): string {
+  return `s${sectionIndex}`;
+}
+
+function isDemotedCandidate(candidate: PaperContextCandidate): boolean {
+  return candidate.why?.priorShift === Number.POSITIVE_INFINITY;
+}
+
+function setStructureRule(
+  candidate: PaperContextCandidate,
+  rule: NonNullable<RetrievalExplanation["structureRule"]>,
+): void {
+  if (!candidate.why) return;
+  candidate.why.structureRule = rule;
+}
+
+/**
+ * Pick the delivered set out of the ranked list: relevance order first, then
+ * the four structure rules of the design (heading match, per-section cap,
+ * neighbour expansion, section-diverse fallback). Pure, so the rules can be
+ * unit-tested without a PdfContext.
+ *
+ * `ranked` must already be ordered (fused rank plus bounded prior). Candidates
+ * without a `sectionIndex` (PDF-worker text has no headings) skip the
+ * section-based rules but still take part in neighbour expansion.
+ */
+export function selectStructuredCandidates(params: {
+  ranked: PaperContextCandidate[];
+  topK: number;
+  queryTerms: string[];
+  sections: ReadonlyArray<RetrievalSectionSummary>;
+  sectionIds?: string[];
+  hasSignal: boolean;
+}): PaperContextCandidate[] {
+  const topK = Math.max(1, Math.floor(params.topK));
+  const requestedSectionIds = (params.sectionIds || []).filter(Boolean);
+  let pool = params.ranked;
+  if (requestedSectionIds.length) {
+    const wanted = new Set(requestedSectionIds);
+    const restricted = params.ranked.filter(
+      (candidate) =>
+        candidate.sectionIndex !== undefined &&
+        wanted.has(sectionIdForIndex(candidate.sectionIndex)),
+    );
+    // Unknown ids are ignored; an empty pool falls back to the whole document.
+    if (restricted.length) pool = restricted;
+  }
+  if (!pool.length) return [];
+
+  const poolOrder = new Map(
+    pool.map((candidate, index) => [candidate, index] as const),
+  );
+  const sectioned = pool.filter(
+    (candidate) => candidate.sectionIndex !== undefined,
+  );
+
+  if (!params.hasSignal && sectioned.length) {
+    return selectSectionDiverseFallback(pool, topK);
   }
 
-  if (looksLikeCitationList(chunkText)) {
-    score -= 1.3;
+  const selected: PaperContextCandidate[] = [];
+  const chosen = new Set<PaperContextCandidate>();
+  const reserved = new Set<PaperContextCandidate>();
+  const perSection = new Map<number, number>();
+  const take = (candidate: PaperContextCandidate): void => {
+    if (chosen.has(candidate)) return;
+    chosen.add(candidate);
+    selected.push(candidate);
+    if (candidate.sectionIndex !== undefined) {
+      perSection.set(
+        candidate.sectionIndex,
+        (perSection.get(candidate.sectionIndex) || 0) + 1,
+      );
+    }
+  };
+
+  // (i) Heading match — up to two named sections keep a slot.
+  const queryTokens = new Set(
+    params.queryTerms
+      .flatMap((term) => tokenizeRetrievalText(term))
+      .filter(Boolean),
+  );
+  const requestedIdSet = new Set(requestedSectionIds);
+  const named = params.sections
+    .map((section) => {
+      const titleTokens = tokenizeRetrievalText(section.title || "");
+      const shared = new Set(
+        titleTokens.filter((token) => queryTokens.has(token)),
+      ).size;
+      const addressed = requestedIdSet.has(section.sectionId);
+      return { section, shared, addressed };
+    })
+    .filter((entry) => entry.shared > 0 || entry.addressed)
+    .sort((a, b) => b.shared - a.shared || a.section.index - b.section.index)
+    .slice(0, 2);
+  for (const entry of named) {
+    const best = pool.find(
+      (candidate) => candidate.sectionIndex === entry.section.index,
+    );
+    if (!best || chosen.has(best) || selected.length >= topK) continue;
+    take(best);
+    reserved.add(best);
+    setStructureRule(best, "heading_match");
   }
-  if (candidate.leadingNoiseRemoved && wordCount < 16) {
-    score -= 0.15;
+
+  // (ii) Rank order, bounded by the per-section cap.
+  const cap = Math.max(1, Math.ceil(topK / 3));
+  let pendingCapSkip = false;
+  for (const candidate of pool) {
+    if (selected.length >= topK) break;
+    if (chosen.has(candidate)) continue;
+    if (
+      candidate.sectionIndex !== undefined &&
+      (perSection.get(candidate.sectionIndex) || 0) >= cap
+    ) {
+      pendingCapSkip = true;
+      continue;
+    }
+    take(candidate);
+    if (pendingCapSkip) {
+      setStructureRule(candidate, "section_cap");
+      pendingCapSkip = false;
+    }
   }
-  if (!candidate.anchorText) {
-    score -= 0.25;
+
+  // (iii) Neighbour expansion for wide reads.
+  if (topK >= 6) {
+    const head = pool[0];
+    const neighbour = pool.find(
+      (candidate) =>
+        candidate.chunkIndex === head.chunkIndex + 1 &&
+        candidate.sectionIndex === head.sectionIndex &&
+        !chosen.has(candidate),
+    );
+    if (neighbour) {
+      if (selected.length >= topK) {
+        const replaceIndex = selected.findLastIndex(
+          (candidate) => !reserved.has(candidate),
+        );
+        if (replaceIndex >= 0) {
+          chosen.delete(selected[replaceIndex]);
+          selected.splice(replaceIndex, 1);
+          take(neighbour);
+          setStructureRule(neighbour, "neighbour");
+        }
+      } else {
+        take(neighbour);
+        setStructureRule(neighbour, "neighbour");
+      }
+    }
   }
-  return score;
+
+  // Relevance order is the delivered order; the rules decide membership.
+  return selected.sort(
+    (a, b) => (poolOrder.get(a) ?? 0) - (poolOrder.get(b) ?? 0),
+  );
+}
+
+/**
+ * Nothing matched lexically and no embeddings ran: deliver one chunk per
+ * section in document order instead of the front of the document.
+ */
+function selectSectionDiverseFallback(
+  pool: PaperContextCandidate[],
+  topK: number,
+): PaperContextCandidate[] {
+  const bySection = new Map<number, PaperContextCandidate[]>();
+  for (const candidate of pool) {
+    if (candidate.sectionIndex === undefined) continue;
+    const bucket = bySection.get(candidate.sectionIndex);
+    if (bucket) bucket.push(candidate);
+    else bySection.set(candidate.sectionIndex, [candidate]);
+  }
+  const selected: PaperContextCandidate[] = [];
+  const chosen = new Set<PaperContextCandidate>();
+  for (const sectionIndex of [...bySection.keys()].sort((a, b) => a - b)) {
+    if (selected.length >= topK) break;
+    const bucket = [...(bySection.get(sectionIndex) || [])].sort(
+      (a, b) => a.chunkIndex - b.chunkIndex,
+    );
+    const pick = bucket.find((candidate) => !isDemotedCandidate(candidate));
+    const chunk = pick || bucket[0];
+    if (!chunk) continue;
+    chosen.add(chunk);
+    selected.push(chunk);
+  }
+  if (selected.length < topK) {
+    const rest = pool
+      .filter((candidate) => !chosen.has(candidate))
+      .sort((a, b) => a.chunkIndex - b.chunkIndex);
+    for (const candidate of rest) {
+      if (selected.length >= topK) break;
+      chosen.add(candidate);
+      selected.push(candidate);
+    }
+  }
+  for (const candidate of selected) {
+    setStructureRule(candidate, "section_diverse_fallback");
+  }
+  return selected;
+}
+
+/** Sections of a document, derived from the chunk metadata. */
+function buildSectionSummaries(
+  chunkMeta: PdfChunkMeta[],
+): RetrievalSectionSummary[] {
+  const byIndex = new Map<number, RetrievalSectionSummary>();
+  for (const meta of chunkMeta) {
+    if (meta?.sectionIndex === undefined || byIndex.has(meta.sectionIndex)) {
+      continue;
+    }
+    byIndex.set(meta.sectionIndex, {
+      sectionId: sectionIdForIndex(meta.sectionIndex),
+      title: meta.sectionLabel || "",
+      index: meta.sectionIndex,
+    });
+  }
+  return [...byIndex.values()].sort((a, b) => a.index - b.index);
 }
 
 export async function buildPaperRetrievalCandidates(
@@ -2303,6 +2499,8 @@ export async function buildPaperRetrievalCandidates(
     queryPlan?: RetrievalQueryPlan;
     /** Chunk indexes that must remain available for locked retrieval selection. */
     preferredChunkIndexes?: number[];
+    /** Restrict candidates to these section ids (`s<n>`) before ranking. */
+    sectionIds?: string[];
   },
   compatibilityOptions?: {
     topK?: number;
@@ -2315,6 +2513,8 @@ export async function buildPaperRetrievalCandidates(
     queryPlan?: RetrievalQueryPlan;
     /** Chunk indexes that must remain available for locked retrieval selection. */
     preferredChunkIndexes?: number[];
+    /** Restrict candidates to these section ids (`s<n>`) before ranking. */
+    sectionIds?: string[];
   },
 ): Promise<PaperContextCandidate[]> {
   if (!pdfContext) return [];
@@ -2324,7 +2524,8 @@ export async function buildPaperRetrievalCandidates(
     "mode" in (apiOverridesOrOptions || {}) ||
     "precomputedQueryEmbedding" in (apiOverridesOrOptions || {}) ||
     "queryPlan" in (apiOverridesOrOptions || {}) ||
-    "preferredChunkIndexes" in (apiOverridesOrOptions || {})
+    "preferredChunkIndexes" in (apiOverridesOrOptions || {}) ||
+    "sectionIds" in (apiOverridesOrOptions || {})
       ? apiOverridesOrOptions
       : undefined);
   const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
@@ -2411,7 +2612,9 @@ export async function buildPaperRetrievalCandidates(
   // normalization sensitivity and fixed weight tuning.
   const retrievalMode = options?.mode || "general";
 
-  const scored = chunkStats.map((chunk, idx) => {
+  const intent = queryPlan?.retrievalPurpose;
+
+  const candidates = chunkStats.map((chunk, idx) => {
     const bm25Score = bm25Scores[idx] || 0;
     const embeddingScore = rawEmbeddingScores
       ? rawEmbeddingScores[idx] || 0
@@ -2435,6 +2638,8 @@ export async function buildPaperRetrievalCandidates(
       chunkIndex: chunk.index,
       chunkText: chunks[chunk.index],
       sectionLabel: meta?.sectionLabel,
+      sectionIndex: meta?.sectionIndex,
+      sectionPath: meta?.sectionPath,
       chunkKind: meta?.chunkKind,
       anchorText: meta?.anchorText,
       leadingNoiseRemoved: meta?.leadingNoiseRemoved,
@@ -2453,55 +2658,100 @@ export async function buildPaperRetrievalCandidates(
         ? matchedQueryVariants
         : undefined,
       referenceConfidence: referenceConfidenceByChunk.get(chunk.index),
+      why: {
+        bm25Rank: bm25Rank[idx],
+        embeddingRank: embedRank ? embedRank[idx] : undefined,
+        // A general read never reorders by section: the prior exists to break
+        // ties inside an evidence read, nothing more.
+        priorShift:
+          retrievalMode === "evidence"
+            ? priorShiftFor({
+                chunkText: chunks[chunk.index],
+                chunkKind: meta?.chunkKind,
+                kindSource: meta?.kindSource,
+                intent,
+              })
+            : 0,
+        kindSource: meta?.kindSource,
+      },
     };
-    const referenceBoost =
-      candidate.referenceConfidence === "high"
-        ? 10
-        : candidate.referenceConfidence === "medium"
-          ? 0.75
-          : highConfidenceNeighborIndexes.has(chunk.index)
-            ? 0.35
-            : 0;
-    const evidenceScore =
-      retrievalMode === "evidence"
-        ? hybridScore +
-          scoreEvidenceHeuristics({
-            candidate,
-            intent: queryPlan?.retrievalPurpose,
-          }) +
-          referenceBoost
-        : hybridScore + referenceBoost;
-    candidate.evidenceScore = evidenceScore;
-    return {
+    return candidate;
+  });
+
+  // Stage 3 — bounded prior. The fused rank moves by at most two ranks; a
+  // demoted chunk goes behind every other chunk but stays a candidate, so a
+  // reference-locked read can still pull it back.
+  const demoteRankShift = candidates.length + 1;
+  const fusedRank = new Map<PaperContextCandidate, number>();
+  [...candidates]
+    .sort(
+      (a, b) => b.hybridScore - a.hybridScore || a.chunkIndex - b.chunkIndex,
+    )
+    .forEach((candidate, index) => fusedRank.set(candidate, index + 1));
+
+  const adjustedRank = new Map<PaperContextCandidate, number>();
+  const referenceTier = new Map<PaperContextCandidate, number>();
+  for (const candidate of candidates) {
+    const priorShift = candidate.why?.priorShift ?? 0;
+    // A document reference the query named outranks the section prior: a
+    // high-confidence match is the read, medium and neighbours only move up.
+    const referenceShift =
+      candidate.referenceConfidence === "medium"
+        ? -2
+        : highConfidenceNeighborIndexes.has(candidate.chunkIndex)
+          ? -1
+          : 0;
+    adjustedRank.set(
       candidate,
-      score: evidenceScore,
-    };
-  });
+      (fusedRank.get(candidate) || 0) +
+        (Number.isFinite(priorShift) ? priorShift : demoteRankShift) +
+        referenceShift,
+    );
+    referenceTier.set(
+      candidate,
+      candidate.referenceConfidence === "high" ? 0 : 1,
+    );
+  }
+  const byAdjustedRank = (
+    a: PaperContextCandidate,
+    b: PaperContextCandidate,
+  ): number =>
+    (referenceTier.get(a) || 0) - (referenceTier.get(b) || 0) ||
+    (adjustedRank.get(a) || 0) - (adjustedRank.get(b) || 0) ||
+    (fusedRank.get(a) || 0) - (fusedRank.get(b) || 0);
+  const ranked = [...candidates].sort(byAdjustedRank);
 
-  scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return a.candidate.chunkIndex - b.candidate.chunkIndex;
+  // Stage 2 — structure.
+  const selected = selectStructuredCandidates({
+    ranked,
+    topK,
+    queryTerms: terms,
+    sections: buildSectionSummaries(chunkMeta),
+    sectionIds: options?.sectionIds,
+    hasSignal: bm25Scores.some((score) => score > 0) || embedRank !== null,
   });
+  const selectionOrder = new Map(
+    selected.map((candidate, index) => [candidate, index] as const),
+  );
 
-  const selected = scored.slice(0, topK);
   const preferredChunkIndexes = new Set(
     (options?.preferredChunkIndexes || [])
       .map((index) => Number(index))
       .filter((index) => Number.isFinite(index) && index >= 0)
       .map((index) => Math.floor(index)),
   );
-  for (const preferredEntry of scored.filter((entry) =>
-    preferredChunkIndexes.has(entry.candidate.chunkIndex),
+  for (const preferred of ranked.filter((candidate) =>
+    preferredChunkIndexes.has(candidate.chunkIndex),
   )) {
-    if (!selected.includes(preferredEntry)) selected.push(preferredEntry);
+    if (!selected.includes(preferred)) selected.push(preferred);
   }
-  const requiredReferenceEntries = scored.filter(
-    (entry) =>
-      entry.candidate.referenceConfidence === "high" ||
-      highConfidenceNeighborIndexes.has(entry.candidate.chunkIndex),
+  const requiredReferenceEntries = ranked.filter(
+    (candidate) =>
+      candidate.referenceConfidence === "high" ||
+      highConfidenceNeighborIndexes.has(candidate.chunkIndex),
   );
   const requiredReferenceIndexes = new Set(
-    requiredReferenceEntries.map((entry) => entry.candidate.chunkIndex),
+    requiredReferenceEntries.map((candidate) => candidate.chunkIndex),
   );
   for (const referenceEntry of requiredReferenceEntries) {
     if (selected.includes(referenceEntry)) continue;
@@ -2509,7 +2759,7 @@ export async function buildPaperRetrievalCandidates(
       selected.push(referenceEntry);
     } else {
       const replaceIndex = selected.findLastIndex(
-        (entry) => !requiredReferenceIndexes.has(entry.candidate.chunkIndex),
+        (candidate) => !requiredReferenceIndexes.has(candidate.chunkIndex),
       );
       if (replaceIndex >= 0) {
         selected[replaceIndex] = referenceEntry;
@@ -2518,39 +2768,41 @@ export async function buildPaperRetrievalCandidates(
       }
     }
   }
-  selected.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return a.candidate.chunkIndex - b.candidate.chunkIndex;
-  });
   if (
     retrievalMode === "evidence" &&
     selected.length &&
-    !selected.some((entry) =>
-      isBodyEvidenceSection(
-        entry.candidate.sectionLabel,
-        entry.candidate.chunkKind,
-      ),
+    !selected.some((candidate) =>
+      isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind),
     )
   ) {
-    const bodyEntry = scored.find((entry) =>
-      isBodyEvidenceSection(
-        entry.candidate.sectionLabel,
-        entry.candidate.chunkKind,
-      ),
+    const bodyEntry = ranked.find((candidate) =>
+      isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind),
     );
     if (bodyEntry && !selected.includes(bodyEntry)) {
       const replaceIndex = selected.findLastIndex(
-        (entry) => !requiredReferenceIndexes.has(entry.candidate.chunkIndex),
+        (candidate) => !requiredReferenceIndexes.has(candidate.chunkIndex),
       );
       if (replaceIndex >= 0) selected[replaceIndex] = bodyEntry;
-      selected.sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        return a.candidate.chunkIndex - b.candidate.chunkIndex;
-      });
     }
   }
 
-  return selected.map((entry) => entry.candidate);
+  // Delivered order: reference locks first, then the structure stage's order,
+  // then anything added afterwards. `evidenceScore` is the reciprocal of the
+  // final rank so cross-paper merging stays rank-based.
+  const lateAddition = Number.MAX_SAFE_INTEGER;
+  selected.sort(
+    (a, b) =>
+      (referenceTier.get(a) || 0) - (referenceTier.get(b) || 0) ||
+      (selectionOrder.get(a) ?? lateAddition) -
+        (selectionOrder.get(b) ?? lateAddition) ||
+      (adjustedRank.get(a) || 0) - (adjustedRank.get(b) || 0) ||
+      a.chunkIndex - b.chunkIndex,
+  );
+  selected.forEach((candidate, index) => {
+    candidate.evidenceScore = 1 / (RRF_K + index + 1);
+  });
+
+  return selected;
 }
 
 function buildEvidenceQuoteText(

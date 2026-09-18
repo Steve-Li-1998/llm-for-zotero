@@ -365,13 +365,21 @@ function printInventory(
   }
 }
 
+function formatPriorShift(shift: number | undefined): string {
+  if (shift === undefined) return "n/a";
+  if (!Number.isFinite(shift)) return "demoted";
+  return shift > 0 ? `+${shift}` : String(shift);
+}
+
 function explainRow(row: RankedChunk): string {
-  const sectionBoost = row.evidenceScore - row.hybridScore;
   const parts = [
     `bm25 ${row.bm25Score.toFixed(3)}`,
+    `rank ${row.why ? row.why.bm25Rank : "?"}`,
     `fused ${row.hybridScore.toFixed(4)}`,
-    `section ${sectionBoost >= 0 ? "+" : ""}${sectionBoost.toFixed(2)} (${row.chunkKind || "-"})`,
+    `prior ${formatPriorShift(row.why?.priorShift)} (${row.chunkKind || "-"}/${row.why?.kindSource || "-"})`,
   ];
+  if (row.why?.embeddingRank) parts.push(`embedRank ${row.why.embeddingRank}`);
+  if (row.why?.structureRule) parts.push(`rule ${row.why.structureRule}`);
   if (row.embeddingScore) parts.push(`cosine ${row.embeddingScore.toFixed(3)}`);
   if (row.matchedQueryVariant) {
     parts.push(`matched "${truncate(row.matchedQueryVariant, 28).trim()}"`);

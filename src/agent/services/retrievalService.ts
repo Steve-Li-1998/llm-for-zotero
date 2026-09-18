@@ -1,4 +1,5 @@
 import { buildPaperRetrievalCandidates } from "../../services/paperContent/pdfContext";
+import type { RetrievalExplanation } from "../../services/paperContent/types";
 import {
   buildRetrievalQueryPlanCacheKey,
   resolveRetrievalQueryPlan,
@@ -22,6 +23,7 @@ type RetrievalResult = {
   paperContext: PaperContextRef;
   chunkIndex: number;
   sectionLabel?: string;
+  sectionPath?: string;
   chunkKind?: string;
   citationLabel: string;
   sourceLabel: string;
@@ -32,6 +34,8 @@ type RetrievalResult = {
   sourceFingerprint?: string;
   pageStart?: number;
   pageEnd?: number;
+  /** Why this chunk was retrieved: input ranks, section prior, structure rule. */
+  why?: RetrievalExplanation;
 };
 
 function dedupePaperContexts(
@@ -189,6 +193,7 @@ export class RetrievalService {
         paperContext,
         chunkIndex: candidate.chunkIndex,
         sectionLabel: candidate.sectionLabel,
+        sectionPath: candidate.sectionPath,
         chunkKind: candidate.chunkKind,
         citationLabel: formatPaperCitationLabel(paperContext),
         sourceLabel: formatPaperSourceLabel(paperContext),
@@ -199,6 +204,7 @@ export class RetrievalService {
         sourceFingerprint: candidate.sourceFingerprint,
         pageStart: candidate.pageStart,
         pageEnd: candidate.pageEnd,
+        why: candidate.why,
       }));
       this.evidenceCache.set(cacheKey, paperResults);
       results.push(...paperResults);

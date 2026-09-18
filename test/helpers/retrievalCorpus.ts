@@ -19,7 +19,10 @@ import {
 import { pdfTextCache } from "../../src/services/paperContent/contextCache";
 import { buildRetrievalQueryPlan } from "../../src/services/retrieval/retrievalQueryPlan";
 import type { PaperContextRef } from "../../src/modules/contextPanel/types";
-import type { PdfContext } from "../../src/services/paperContent/types";
+import type {
+  PdfContext,
+  RetrievalExplanation,
+} from "../../src/services/paperContent/types";
 
 const encoder = new TextEncoder();
 
@@ -297,6 +300,8 @@ export type RankedChunk = {
   chunkIndex: number;
   chunkKind?: string;
   sectionLabel?: string;
+  sectionPath?: string;
+  why?: RetrievalExplanation;
   evidenceScore: number;
   hybridScore: number;
   bm25Score: number;
@@ -330,6 +335,8 @@ export async function rankChunksForQuery(params: {
     chunkIndex: candidate.chunkIndex,
     chunkKind: candidate.chunkKind,
     sectionLabel: candidate.sectionLabel,
+    sectionPath: candidate.sectionPath,
+    why: candidate.why,
     evidenceScore: candidate.evidenceScore,
     hybridScore: candidate.hybridScore,
     bm25Score: candidate.bm25Score,

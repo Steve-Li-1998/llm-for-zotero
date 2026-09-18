@@ -6,6 +6,7 @@ import {
 } from "../src/services/pdf/pdfFigureCropCache";
 import {
   buildManifest,
+  ensureManifest,
   finalizeMineruCacheFiles,
   validateMineruManifest,
   getManifestFigureBaseLabel,
@@ -229,6 +230,137 @@ describe("mineruCache", function () {
         md.slice(section.charStart, section.charEnd),
         /^# Introduction/,
       );
+  });
+
+  it("builds sections from ## and ### headings with levels and paths", function () {
+    const md = [
+      "# Paper title",
+      "intro line",
+      "## 1 Introduction",
+      "text",
+      "## 2 Algorithm",
+      "text",
+      "### 2.1 Weak form",
+      "text",
+      "### 2.2 Kinematic condition",
+      "text",
+      "## 3 Conclusion",
+      "done",
+    ].join("\n\n");
+    const manifest = buildManifest(md, [
+      { type: "text", text_level: 1, text: "Paper title", page_idx: 0 },
+      { type: "text", text_level: 2, text: "2 Algorithm", page_idx: 1 },
+      {
+        type: "text",
+        text_level: 3,
+        text: "2.2 Kinematic condition",
+        page_idx: 2,
+      },
+    ]);
+    assert.isUndefined(manifest.noSections);
+    assert.deepEqual(
+      manifest.sections.map((s) => s.level),
+      [1, 2, 2, 3, 3, 2],
+    );
+    assert.equal(
+      manifest.sections[4].path,
+      "2 Algorithm › 2.2 Kinematic condition",
+    );
+    assert.equal(manifest.sections[4].parentIndex, 2);
+    assert.equal(manifest.sections[4].page, 2);
+    assert.equal(manifest.sections[4].sectionId, "s4");
+    assert.deepEqual(manifest.structure, {
+      version: 2,
+      headingCounts: { h1: 1, h2: 3, h3: 2 },
+      sectionsBuilt: 6,
+      labelledChars: md.length - md.indexOf("# Paper title"),
+    });
+    assert.doesNotThrow(() => validateMineruManifest(md, manifest));
+  });
+
+  it("rebuilds a stored manifest that predates structure version 2", async function () {
+    const memory = setupMemoryIO();
+    const md = [
+      "# Paper title",
+      "intro line",
+      "## 1 Introduction",
+      "text",
+      "## 2 Algorithm",
+      "text",
+      "### 2.1 Weak form",
+      "text",
+      "## 3 Conclusion",
+      "done",
+    ].join("\n\n");
+    await writeMineruCacheFiles(77, md, [
+      {
+        relativePath: "content_list.json",
+        data: bytes(
+          JSON.stringify([
+            { type: "text", text_level: 1, text: "Paper title", page_idx: 0 },
+            { type: "text", text_level: 2, text: "2 Algorithm", page_idx: 1 },
+          ]),
+        ),
+      },
+    ]);
+    const legacyManifest = {
+      sections: [
+        {
+          heading: "Paper title",
+          charStart: 0,
+          charEnd: md.length,
+          figures: [],
+          tables: [],
+          equationCount: 0,
+        },
+      ],
+      allFigures: [],
+      allTables: [],
+      figureBlocks: [
+        {
+          blockId: "block-1",
+          kind: "figure",
+          imagePaths: ["images/fig1.png"],
+          markdownStart: 0,
+          markdownEnd: 10,
+          contextStart: 0,
+          contextEnd: 20,
+          labelHints: ["Figure 1"],
+          captionHints: ["Figure 1. Overview."],
+          sectionHeading: "2 Algorithm",
+          confidence: "high",
+          ambiguous: false,
+        },
+      ],
+      totalChars: md.length,
+      noSections: true,
+    };
+    memory.files.set(
+      `${getMineruItemDir(77)}/manifest.json`,
+      bytes(JSON.stringify(legacyManifest)),
+    );
+
+    const stored = await readManifest(77);
+    assert.equal(stored?.sections.length, 1, "legacy manifests stay readable");
+    assert.isUndefined(stored?.structure);
+
+    const rebuilt = await ensureManifest(77);
+    assert.equal(rebuilt?.structure?.version, 2);
+    assert.isAbove(rebuilt!.sections.length, 2);
+    assert.isUndefined(rebuilt?.noSections);
+    assert.deepEqual(
+      rebuilt?.figureBlocks,
+      legacyManifest.figureBlocks as typeof rebuilt.figureBlocks,
+      "a rebuild keeps figure blocks the stripped full.md can no longer yield",
+    );
+
+    const persisted = await readManifest(77);
+    assert.equal(persisted?.structure?.version, 2);
+    assert.deepEqual(
+      persisted?.sections.map((s) => s.level),
+      [1, 2, 2, 3, 2],
+    );
+    assert.equal(persisted?.sections[2].page, 1);
   });
 
   describe("manifest figure grouping", function () {

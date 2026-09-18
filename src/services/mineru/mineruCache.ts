@@ -1264,10 +1264,17 @@ export function validateMineruManifest(
       section.charEnd > md.length ||
       md
         .slice(section.charStart, section.charEnd)
-        .match(/^#\s+(.+)/)?.[1]
+        .match(/^#{1,3}\s+(.+)/)?.[1]
         .trim() !== section.heading
     )
       throw new Error("Invalid MinerU manifest section offsets");
+    // Manifests written before heading levels existed carry no level at all.
+    const level = (section as { level?: number }).level;
+    if (
+      level !== undefined &&
+      (!Number.isInteger(level) || level < 1 || level > 3)
+    )
+      throw new Error("Invalid MinerU manifest section level");
     previousEnd = section.charEnd;
   }
   for (const entry of [
@@ -1421,14 +1428,35 @@ export type ManifestTable = {
   page?: number;
 };
 
+/** Manifests built before this version only knew `#` headings. */
+export const MANIFEST_STRUCTURE_VERSION = 2;
+
+export type ManifestSectionLevel = 1 | 2 | 3;
+
 export type ManifestSection = {
   heading: string;
+  /** Markdown heading depth: `#` → 1, `##` → 2, `###` → 3. */
+  level: ManifestSectionLevel;
+  /** Stable handle for this section inside the manifest (`s0`, `s1`, …). */
+  sectionId: string;
+  /** Index of the enclosing section in `sections`, when there is one. */
+  parentIndex?: number;
+  /** Heading chain down to this section, e.g. `2 Algorithm › 2.1 Weak form`. */
+  path: string;
   page?: number;
   charStart: number;
   charEnd: number;
   figures: ManifestFigure[];
   tables: ManifestTable[];
   equationCount: number;
+};
+
+/** How much structure a parse actually yielded, for diagnostics. */
+export type MineruManifestStructure = {
+  version: typeof MANIFEST_STRUCTURE_VERSION;
+  headingCounts: { h1: number; h2: number; h3: number };
+  sectionsBuilt: number;
+  labelledChars: number;
 };
 
 export type MineruManifest = {
@@ -1439,6 +1467,8 @@ export type MineruManifest = {
   totalPages?: number;
   totalChars: number;
   noSections?: boolean;
+  /** Absent on manifests written before {@link MANIFEST_STRUCTURE_VERSION}. */
+  structure?: MineruManifestStructure;
 };
 
 function getManifestPath(id: number): string {
@@ -1503,13 +1533,23 @@ export function buildManifest(
   });
 
   // ── Step 1: Extract section offsets from full.md ──
-  const headingPattern = /^#\s+(.+)$/gm;
-  const mdHeadings: { heading: string; charStart: number }[] = [];
+  // MinerU marks the paper title `#` and its sections `##`/`###`, so all three
+  // depths are real sections.
+  const headingPattern = /^(#{1,3})\s+(.+)$/gm;
+  const mdHeadings: {
+    heading: string;
+    level: ManifestSectionLevel;
+    charStart: number;
+  }[] = [];
   let match: RegExpExecArray | null;
   while ((match = headingPattern.exec(mdContent)) !== null) {
-    const heading = match[1].trim();
+    const heading = match[2].trim();
     if (!isNoiseHeading(heading)) {
-      mdHeadings.push({ heading, charStart: match.index });
+      mdHeadings.push({
+        heading,
+        level: match[1].length as ManifestSectionLevel,
+        charStart: match.index,
+      });
     }
   }
 
@@ -1533,7 +1573,9 @@ export function buildManifest(
 
     if (
       entry.type === "text" &&
-      entry.text_level === 1 &&
+      entry.text_level !== undefined &&
+      entry.text_level >= 1 &&
+      entry.text_level <= 3 &&
       entry.text &&
       !isNoiseHeading(entry.text)
     ) {
@@ -1593,9 +1635,15 @@ export function buildManifest(
     clSectionByHeading.set(cls.heading, occurrences);
   }
 
-  const sections: ManifestSection[] = [];
+  // Hierarchy fields are assigned after the merge step, so ids and parents
+  // always describe the sections the manifest actually ships.
+  type DraftSection = Omit<
+    ManifestSection,
+    "sectionId" | "parentIndex" | "path"
+  >;
+  const drafts: DraftSection[] = [];
   for (let i = 0; i < mdHeadings.length; i++) {
-    const { heading, charStart } = mdHeadings[i];
+    const { heading, level, charStart } = mdHeadings[i];
     const charEnd =
       i + 1 < mdHeadings.length
         ? mdHeadings[i + 1].charStart
@@ -1603,8 +1651,9 @@ export function buildManifest(
 
     const cls = clSectionByHeading.get(heading)?.shift();
 
-    sections.push({
+    drafts.push({
       heading,
+      level,
       page: cls?.page,
       charStart,
       charEnd,
@@ -1615,9 +1664,9 @@ export function buildManifest(
   }
 
   // If too many sections (50+), merge adjacent small ones (< 500 chars)
-  if (sections.length > 50) {
-    const merged: ManifestSection[] = [];
-    for (const section of sections) {
+  if (drafts.length > 50) {
+    const merged: DraftSection[] = [];
+    for (const section of drafts) {
       const prevSection = merged.length > 0 ? merged[merged.length - 1] : null;
       if (
         prevSection &&
@@ -1637,8 +1686,38 @@ export function buildManifest(
         });
       }
     }
-    sections.length = 0;
-    sections.push(...merged);
+    drafts.length = 0;
+    drafts.push(...merged);
+  }
+
+  // ── Step 4: Assign section ids, parents and heading paths ──
+  const sections: ManifestSection[] = drafts.map((section, index) => ({
+    ...section,
+    sectionId: `s${index}`,
+    path: section.heading,
+  }));
+  // A lone leading `#` is the paper title, not a section every path repeats.
+  const titleIndex =
+    sections.length > 0 &&
+    sections[0].level === 1 &&
+    sections.filter((section) => section.level === 1).length === 1
+      ? 0
+      : -1;
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    for (let j = i - 1; j >= 0; j--) {
+      if (sections[j].level < section.level) {
+        section.parentIndex = j;
+        break;
+      }
+    }
+    const chain = [section.heading];
+    let ancestor = section.parentIndex;
+    while (ancestor !== undefined) {
+      if (ancestor !== titleIndex) chain.push(sections[ancestor].heading);
+      ancestor = sections[ancestor].parentIndex;
+    }
+    section.path = chain.reverse().join(" › ");
   }
 
   // Build flat figure/table lists
@@ -1653,6 +1732,13 @@ export function buildManifest(
     }
   }
 
+  const headingCounts = { h1: 0, h2: 0, h3: 0 };
+  for (const heading of mdHeadings) {
+    if (heading.level === 1) headingCounts.h1 += 1;
+    else if (heading.level === 2) headingCounts.h2 += 1;
+    else headingCounts.h3 += 1;
+  }
+
   return {
     sections,
     allFigures,
@@ -1661,6 +1747,14 @@ export function buildManifest(
     totalPages: pageCount ?? (totalPages || undefined),
     totalChars: mdContent.length,
     ...(sections.length <= 2 ? { noSections: true } : {}),
+    structure: {
+      version: MANIFEST_STRUCTURE_VERSION,
+      headingCounts,
+      sectionsBuilt: sections.length,
+      labelledChars: sections.length
+        ? mdContent.length - sections[0].charStart
+        : 0,
+    },
   };
 }
 
@@ -1725,11 +1819,16 @@ export async function buildAndWriteManifest(
 
   const contentList = await readMineruContentListFromDir(itemDir);
 
-  const manifest = buildManifest(
-    mdContent,
-    contentList,
-    (await readManifest(id))?.totalPages,
-  );
+  const previous = await readManifest(id);
+  const rebuilt = buildManifest(mdContent, contentList, previous?.totalPages);
+  // full.md no longer embeds the source images once a cache is finalized, so a
+  // rebuild cannot recover figure blocks the stored manifest already knows.
+  const manifest: MineruManifest = {
+    ...rebuilt,
+    ...(rebuilt.figureBlocks?.length || !previous?.figureBlocks?.length
+      ? {}
+      : { figureBlocks: previous.figureBlocks }),
+  };
 
   // Write manifest.json
   const manifestPath = getManifestPath(id);
@@ -1820,14 +1919,20 @@ export async function readManifest(id: number): Promise<MineruManifest | null> {
 
 /**
  * Get or build the manifest for a cached paper.
- * Reads from disk if available, otherwise builds and writes it.
+ * Reads from disk if available, otherwise builds and writes it. A manifest
+ * written before {@link MANIFEST_STRUCTURE_VERSION} predates `##`/`###`
+ * headings, so it is rebuilt lazily on first use — and kept as-is when the
+ * cache cannot be re-read.
  */
 export async function ensureManifest(
   id: number,
 ): Promise<MineruManifest | null> {
   const existing = await readManifest(id);
-  if (existing) return existing;
-  return buildAndWriteManifest(id);
+  if (existing?.structure?.version === MANIFEST_STRUCTURE_VERSION)
+    return existing;
+  if (await hasPendingCacheWrite(id)) return existing;
+  if (!(await pathExists(getMineruMdPath(id)))) return existing;
+  return (await buildAndWriteManifest(id)) ?? existing;
 }
 
 export async function invalidateMineruMd(id: number): Promise<void> {

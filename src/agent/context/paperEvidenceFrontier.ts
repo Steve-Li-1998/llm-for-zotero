@@ -161,6 +161,9 @@ function normalizeCallInput(input: unknown): unknown {
     query: normalizedString(record.query),
     queryVariants: normalizedStringArray(record.queryVariants).sort(),
     sections: normalizedStringArray(record.sections).sort(),
+    // A read restricted to section ids is a different call from the
+    // whole-document read with the same query.
+    sectionIds: normalizedStringArray(record.sectionIds).sort(),
     pages,
     neighborPages: normalizedInteger(record.neighborPages),
     maxChars: normalizedInteger(record.maxChars),

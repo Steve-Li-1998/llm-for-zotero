@@ -332,6 +332,41 @@ describe("PaperEvidenceFrontier", function () {
     );
   });
 
+  it("distinguishes a section-restricted read from the whole-document read", async function () {
+    const frontier = new PaperEvidenceFrontier();
+    const wholeDocument = {
+      mode: "targeted",
+      query: "method",
+      target: { itemId: 1, contextItemId: 11 },
+    };
+    await frontier.processResult({
+      input: wholeDocument,
+      content: {
+        mode: "targeted",
+        results: [passage({ chunkIndex: 3 })],
+      },
+      toolCallId: "read-1",
+      resourceSignature: "turn-source",
+    });
+
+    assert.isNull(
+      await frontier.readCached({
+        input: { ...wholeDocument, sectionIds: ["s4"] },
+        toolCallId: "read-2",
+        resourceSignature: "turn-source",
+      }),
+      "a section-restricted read is a different call",
+    );
+    assert.isNotNull(
+      await frontier.readCached({
+        input: wholeDocument,
+        toolCallId: "read-3",
+        resourceSignature: "turn-source",
+      }),
+      "the same whole-document read is still reused",
+    );
+  });
+
   it("delivers only new passages from a mixed new and repeated result", async function () {
     const frontier = new PaperEvidenceFrontier();
     const repeated = passage({ chunkIndex: 1 });

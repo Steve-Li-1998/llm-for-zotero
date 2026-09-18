@@ -55,6 +55,8 @@ import { isMineruEnabled } from "../../utils/mineruConfig";
 import type {
   PdfContext,
   ChunkStat,
+  DocumentOutline,
+  DocumentOutlineSection,
   PaperContextCandidate,
   PdfChunkMeta,
   PdfChunkKind,
@@ -2480,6 +2482,56 @@ function buildSectionSummaries(
     });
   }
   return [...byIndex.values()].sort((a, b) => a.index - b.index);
+}
+
+/**
+ * The section list of a document, derived from the chunk metadata: one entry
+ * per `sectionIndex`, with the chunk range and character count that tell the
+ * model how much text a section holds before it asks to read it.
+ *
+ * Pure: the MinerU parse-health block is passed in by the caller (the tool
+ * reads it through `ensureManifest`) rather than read from disk here.
+ */
+export function buildDocumentOutline(
+  ctx: PdfContext | undefined,
+  structure?: MineruManifest["structure"],
+): DocumentOutline {
+  const chunkMeta = Array.isArray(ctx?.chunkMeta) ? ctx.chunkMeta : [];
+  const byIndex = new Map<number, DocumentOutlineSection>();
+  for (const meta of chunkMeta) {
+    if (!meta || meta.sectionIndex === undefined) continue;
+    const chunkIndex = Number.isFinite(meta.chunkIndex)
+      ? Math.floor(meta.chunkIndex)
+      : 0;
+    const chars = (meta.text || "").length;
+    const existing = byIndex.get(meta.sectionIndex);
+    if (!existing) {
+      byIndex.set(meta.sectionIndex, {
+        sectionId: sectionIdForIndex(meta.sectionIndex),
+        title: meta.sectionLabel || "",
+        level: meta.sectionLevel ?? 1,
+        path: meta.sectionPath || meta.sectionLabel || "",
+        chunkIndexes: [chunkIndex, chunkIndex],
+        chars,
+      });
+      continue;
+    }
+    existing.chunkIndexes = [
+      Math.min(existing.chunkIndexes[0], chunkIndex),
+      Math.max(existing.chunkIndexes[1], chunkIndex),
+    ];
+    existing.chars += chars;
+  }
+  const sections = [...byIndex.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, section]) => section);
+  return {
+    sections,
+    totalChunks: Array.isArray(ctx?.chunks)
+      ? ctx.chunks.length
+      : chunkMeta.length,
+    ...(structure ? { structure } : {}),
+  };
 }
 
 export async function buildPaperRetrievalCandidates(

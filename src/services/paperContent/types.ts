@@ -138,6 +138,49 @@ export type PaperContextCandidate = {
   why?: RetrievalExplanation;
 };
 
+/** One section of a document, as an outline read reports it. */
+export type DocumentOutlineSection = {
+  /** Stable handle for the section (`s0`, `s1`, …), usable as a read filter. */
+  sectionId: string;
+  /** Heading of the section, e.g. `2.2 Kinematic condition`. */
+  title: string;
+  /** Markdown heading depth: `#` → 1, `##` → 2. */
+  level: number;
+  /** Heading chain down to the section, e.g. `2 Algorithm › 2.1 Weak form`. */
+  path: string;
+  /** First and last chunk index of the section, inclusive. */
+  chunkIndexes: [number, number];
+  /** Total characters of the section's chunks. */
+  chars: number;
+};
+
+/**
+ * How much structure a parse yielded.
+ *
+ * Structurally identical to `MineruManifestStructure`, restated here because
+ * this module sits below the MinerU cache and importing its types would close
+ * an import cycle. `buildDocumentOutline` takes the manifest type, so the
+ * compiler still checks the two agree wherever an outline is built.
+ */
+export type DocumentStructureHealth = {
+  version: number;
+  headingCounts: { h1: number; h2: number; h3: number };
+  sectionsBuilt: number;
+  labelledChars: number;
+};
+
+/**
+ * The section list of one document: what an `outline` read returns, and the
+ * compact address book a targeted read carries so the next call can name a
+ * section instead of guessing query words.
+ */
+export type DocumentOutline = {
+  sections: DocumentOutlineSection[];
+  totalChunks: number;
+  /** Parse health, when the MinerU manifest records it. */
+  structure?: DocumentStructureHealth;
+};
+
 export type ChunkStat = {
   index: number;
   length: number;

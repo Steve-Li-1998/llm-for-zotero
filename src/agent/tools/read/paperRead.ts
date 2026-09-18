@@ -20,7 +20,14 @@ import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "../../../services/paperContent/paperAttribution";
-import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../services/mineru/mineruCache";
+import {
+  ensureManifest,
+  stripMineruSourceImageEmbedsFromMarkdown,
+} from "../../../services/mineru/mineruCache";
+import type { MineruManifest } from "../../../services/mineru/mineruCache";
+import { buildDocumentOutline } from "../../../services/paperContent/pdfContext";
+import type { DocumentOutline } from "../../../services/paperContent/types";
+import { tokenizeRetrievalText } from "../../../services/retrieval/retrievalTokenizer";
 import {
   buildQuoteCitation,
   mergeQuoteCitations,
@@ -55,6 +62,7 @@ import { resolveAdaptiveReadingBudget } from "../../research/readingBudget";
 
 type PaperReadMode =
   | "overview"
+  | "outline"
   | "targeted"
   | "full"
   | "figures"
@@ -70,6 +78,7 @@ type PaperReadInput = {
   includeSupplementary?: boolean;
   queryVariants?: string[];
   sections?: string[];
+  sectionIds?: string[];
   pages?: number[];
   neighborPages?: number;
   maxChars?: number;
@@ -109,8 +118,17 @@ export type PaperReadFigureExtractionService = {
 const MAX_TARGETED_TARGETS = 10;
 const MAX_FULL_TARGETS = Number.MAX_SAFE_INTEGER;
 const MAX_OVERVIEW_QUOTES_PER_RESULT = 3;
+/**
+ * A targeted passage is one piece of evidence, so it gets one anchor. Three
+ * anchors per passage produced 8–29 anchors per reply of which the model used
+ * 0–2, which buried the ones it did use.
+ */
+const MAX_TARGETED_QUOTES_PER_PASSAGE = 1;
 const MIN_OVERVIEW_QUOTE_CHARS = 40;
 const MAX_OVERVIEW_QUOTE_CHARS = 360;
+/** Compact outline carried by a targeted read: depth and size bounds. */
+const MAX_EMBEDDED_OUTLINE_LEVEL = 2;
+const MAX_EMBEDDED_OUTLINE_SECTIONS = 40;
 
 function normalizeMode(value: unknown): PaperReadMode {
   return value === "targeted" ||
@@ -118,6 +136,7 @@ function normalizeMode(value: unknown): PaperReadMode {
     value === "figures" ||
     value === "visual" ||
     value === "capture" ||
+    value === "outline" ||
     value === "overview"
     ? value
     : "overview";
@@ -488,6 +507,7 @@ function buildTargetedPaperGroups(
   targets: NonNullable<PdfTarget["paperContext"]>[],
   results: Array<Record<string, unknown>>,
   quoteCitationCollector?: QuoteCitation[],
+  outlineByPaper?: Map<string, DocumentOutline>,
 ): Array<Record<string, unknown>> {
   const groups = new Map<string, Array<Record<string, unknown>>>();
   for (const result of results) {
@@ -512,6 +532,11 @@ function buildTargetedPaperGroups(
     if (Number.isFinite(score)) passage.score = score;
     const sectionLabel = normalizeString(result.sectionLabel);
     if (sectionLabel) passage.sectionLabel = sectionLabel;
+    const sectionPath = normalizeString(result.sectionPath);
+    if (sectionPath) passage.sectionPath = sectionPath;
+    if (validateObject<Record<string, unknown>>(result.why)) {
+      passage.why = result.why;
+    }
     const chunkKind = normalizeString(result.chunkKind);
     if (chunkKind) passage.chunkKind = chunkKind;
     const pageIndex = Number(result.pageIndex);
@@ -533,7 +558,10 @@ function buildTargetedPaperGroups(
     }
     const sourceFingerprint = normalizeString(result.sourceFingerprint);
     if (sourceFingerprint) passage.sourceFingerprint = sourceFingerprint;
-    const quoteCitations = buildQuoteCitationsFromResult(result);
+    const quoteCitations = buildQuoteCitationsFromResult(
+      result,
+      MAX_TARGETED_QUOTES_PER_PASSAGE,
+    );
     quoteCitationCollector?.push(...quoteCitations);
     if (quoteCitations.length) {
       if (quoteCitations.length === 1) {
@@ -550,7 +578,9 @@ function buildTargetedPaperGroups(
   }
 
   return targets.map((paperContext) => {
-    const passages = groups.get(paperContextKey(paperContext)) || [];
+    const key = paperContextKey(paperContext);
+    const passages = groups.get(key) || [];
+    const outline = outlineByPaper?.get(key);
     return {
       paperContext,
       status: passages.length ? "matched" : "no_matches",
@@ -558,8 +588,128 @@ function buildTargetedPaperGroups(
       citationLabel: formatPaperCitationLabel(paperContext),
       sourceLabel: formatPaperSourceLabel(paperContext),
       passages,
+      ...(outline?.sections.length ? { outline } : {}),
     };
   });
+}
+
+/**
+ * The section address book a targeted read carries: top-level sections only,
+ * bounded in count. Over the bound the deepest sections go first, and equally
+ * deep ones from the back of the document, so the opening structure survives.
+ */
+function buildEmbeddedOutline(outline: DocumentOutline): DocumentOutline {
+  const kept = outline.sections
+    .map((section, position) => ({ section, position }))
+    .filter((entry) => entry.section.level <= MAX_EMBEDDED_OUTLINE_LEVEL);
+  while (kept.length > MAX_EMBEDDED_OUTLINE_SECTIONS) {
+    let dropIndex = 0;
+    for (let index = 1; index < kept.length; index += 1) {
+      const candidate = kept[index];
+      const current = kept[dropIndex];
+      if (
+        candidate.section.level > current.section.level ||
+        (candidate.section.level === current.section.level &&
+          candidate.position > current.position)
+      ) {
+        dropIndex = index;
+      }
+    }
+    kept.splice(dropIndex, 1);
+  }
+  return {
+    sections: kept
+      .sort((left, right) => left.position - right.position)
+      .map((entry) => entry.section),
+    totalChunks: outline.totalChunks,
+  };
+}
+
+/**
+ * Parse health for an outline read, when the paper has a MinerU cache. A
+ * missing or unreadable manifest is not an error: the outline still comes from
+ * the chunk metadata, only without the `structure` block.
+ */
+async function readManifestStructure(
+  paperContext: NonNullable<PdfTarget["paperContext"]>,
+): Promise<MineruManifest["structure"]> {
+  const contextItemId = Math.floor(Number(paperContext.contextItemId || 0));
+  if (!contextItemId) return undefined;
+  try {
+    return (await ensureManifest(contextItemId))?.structure;
+  } catch (_error) {
+    void _error;
+    return undefined;
+  }
+}
+
+type ResolvedSectionFilter = {
+  /** Section ids that exist in at least one target's outline. */
+  sectionIds: string[];
+  /** Section names no outline title matched; searched as query text instead. */
+  unmatchedNames: string[];
+  warnings: string[];
+};
+
+/**
+ * Turn the two ways a call can name sections into section ids: explicit
+ * `sectionIds` from an outline read, and free-text `sections` names matched
+ * against outline titles by shared non-stopword tokens. Ids nothing knows and
+ * names nothing matches are reported rather than silently dropped, and a read
+ * that ends up with no id at all still reads the whole document.
+ */
+function resolveSectionFilter(params: {
+  sectionIds?: string[];
+  sections?: string[];
+  outlines: DocumentOutline[];
+}): ResolvedSectionFilter {
+  const warnings: string[] = [];
+  const titleTokensById = new Map<string, string[]>();
+  for (const outline of params.outlines) {
+    for (const section of outline.sections) {
+      titleTokensById.set(section.sectionId, [
+        ...(titleTokensById.get(section.sectionId) || []),
+        ...tokenizeRetrievalText(section.title || ""),
+      ]);
+    }
+  }
+  const sectionIds: string[] = [];
+  const addSectionId = (sectionId: string): void => {
+    if (!sectionIds.includes(sectionId)) sectionIds.push(sectionId);
+  };
+  const unknownIds: string[] = [];
+  for (const sectionId of params.sectionIds || []) {
+    if (titleTokensById.has(sectionId)) addSectionId(sectionId);
+    else if (!unknownIds.includes(sectionId)) unknownIds.push(sectionId);
+  }
+  if (unknownIds.length) {
+    warnings.push(`Unknown sectionIds ignored: ${unknownIds.join(", ")}`);
+  }
+  const unmatchedNames: string[] = [];
+  for (const name of params.sections || []) {
+    const nameTokens = new Set(tokenizeRetrievalText(name));
+    const matched = nameTokens.size
+      ? [...titleTokensById.entries()]
+          .filter(([, tokens]) => tokens.some((token) => nameTokens.has(token)))
+          .map(([sectionId]) => sectionId)
+      : [];
+    if (!matched.length) {
+      unmatchedNames.push(name);
+      continue;
+    }
+    for (const sectionId of matched) addSectionId(sectionId);
+  }
+  if (unmatchedNames.length) {
+    warnings.push(
+      `No outline section matched: ${unmatchedNames.join(", ")}. Searched the whole document for those words instead.`,
+    );
+  }
+  if ((params.sectionIds?.length || 0) > 0 && !sectionIds.length) {
+    warnings.push(
+      "No requested section id exists in this paper's outline, so the whole document was searched.",
+    );
+  }
+  return { sectionIds, unmatchedNames, warnings };
 }
 
 function buildQuoteCitationFromResult(
@@ -617,10 +767,14 @@ function buildQuoteCitationFromResult(
 
 function buildQuoteCitationsFromResult(
   result: Record<string, unknown>,
+  maxQuotes: number,
 ): QuoteCitation[] {
   const resultText = normalizeString(result.text) || "";
   const candidates = splitOverviewQuoteCandidates(resultText);
-  const quoteTexts = candidates.length ? candidates : [resultText];
+  const quoteTexts = (candidates.length ? candidates : [resultText]).slice(
+    0,
+    Math.max(1, Math.floor(maxQuotes)),
+  );
   return quoteTexts
     .map((quoteText) => buildQuoteCitationFromResult(result, quoteText))
     .filter((entry): entry is QuoteCitation => Boolean(entry));
@@ -897,7 +1051,7 @@ export function createPaperReadTool(
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' for relevance-ranked textual evidence, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'outline' for the section list with ids and chunk ranges, then mode:'targeted' with sectionIds to read a named section, mode:'targeted' for relevance-ranked textual evidence, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -906,6 +1060,7 @@ export function createPaperReadTool(
             type: "string",
             enum: [
               "overview",
+              "outline",
               "targeted",
               "full",
               "figures",
@@ -913,7 +1068,7 @@ export function createPaperReadTool(
               "capture",
             ],
             description:
-              "overview = bounded summary/main message; targeted = relevance-ranked text evidence; full = exhaustive processing of every extractable text chunk for an explicit full-read request; figures = precise extracted figures; visual = rendered pages/layout; capture = current reader page.",
+              "overview = bounded summary/main message; outline = the section list with ids, levels, and chunk ranges, for addressing a targeted read with sectionIds; targeted = relevance-ranked text evidence; full = exhaustive processing of every extractable text chunk for an explicit full-read request; figures = precise extracted figures; visual = rendered pages/layout; capture = current reader page.",
           },
           target: {
             type: "object",
@@ -953,6 +1108,12 @@ export function createPaperReadTool(
               "Optional search probes such as translations, acronyms, notation variants, or technical equivalents.",
           },
           sections: { type: "array", items: { type: "string" } },
+          sectionIds: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Section ids from an outline read; restricts a targeted read to those sections",
+          },
           pages: {
             anyOf: [
               { type: "string" },
@@ -1001,6 +1162,7 @@ export function createPaperReadTool(
           if (mode === "figures")
             return "Extracting precise figures from the paper";
           if (mode === "capture") return "Capturing current paper page";
+          if (mode === "outline") return "Reading the paper's section outline";
           if (mode === "targeted") return "Reading targeted paper content";
           if (mode === "full") return "Reading the complete paper text";
           return "Reading paper overview";
@@ -1013,6 +1175,29 @@ export function createPaperReadTool(
           const mode = typeof c?.mode === "string" ? c.mode : undefined;
           const results = Array.isArray(c?.results) ? c.results : undefined;
           const papers = Array.isArray(c?.papers) ? c.papers : undefined;
+          if (mode === "outline") {
+            if (papers?.length === 1) {
+              const outline = validateObject<Record<string, unknown>>(
+                (papers[0] as Record<string, unknown>)?.outline,
+              )
+                ? ((papers[0] as Record<string, unknown>).outline as Record<
+                    string,
+                    unknown
+                  >)
+                : undefined;
+              const sections = Array.isArray(outline?.sections)
+                ? outline.sections
+                : [];
+              return `Read outline (${sections.length} sections)`;
+            }
+            const sourcePhrase = formatSourcePhrase(
+              getUniqueSourceLabels(papers || []),
+              papers?.length,
+            );
+            return sourcePhrase
+              ? `Read outlines from ${sourcePhrase}`
+              : "Read paper outlines";
+          }
           if (mode === "targeted") {
             const passageCount =
               results?.length ?? (papers ? countGroupedPassages(papers) : 0);
@@ -1130,6 +1315,7 @@ export function createPaperReadTool(
             : undefined,
         queryVariants: normalizeStringArray(args.queryVariants),
         sections: normalizeStringArray(args.sections),
+        sectionIds: normalizeStringArray(args.sectionIds),
         pages: normalizePages(args.pages),
         neighborPages: normalizePositiveInt(args.neighborPages),
         maxChars: normalizePositiveInt(args.maxChars),
@@ -1474,6 +1660,38 @@ export function createPaperReadTool(
         };
       }
 
+      if (mode === "outline") {
+        const warnings: string[] = [];
+        const papers = [];
+        for (const paperContext of targets) {
+          let paperOutline: DocumentOutline = { sections: [], totalChunks: 0 };
+          try {
+            paperOutline = buildDocumentOutline(
+              await pdfService.ensurePaperContext(paperContext),
+              await readManifestStructure(paperContext),
+            );
+          } catch (error) {
+            warnings.push(
+              `Could not read ${formatPaperSourceLabel(paperContext)}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+          papers.push({
+            paperContext,
+            sourceLabel: formatPaperSourceLabel(paperContext),
+            citationLabel: formatPaperCitationLabel(paperContext),
+            status: paperOutline.sections.length ? "matched" : "no_structure",
+            outline: paperOutline,
+          });
+        }
+        return {
+          mode,
+          papers,
+          ...(warnings.length ? { warnings } : {}),
+        };
+      }
+
       if (input.pages?.length) {
         return readExplicitPageTargets({
           input,
@@ -1483,17 +1701,26 @@ export function createPaperReadTool(
         });
       }
 
+      const outlineByPaper = new Map<string, DocumentOutline>();
+      for (const paper of targets) {
+        outlineByPaper.set(
+          paperContextKey(paper),
+          buildDocumentOutline(await pdfService.ensurePaperContext(paper)),
+        );
+      }
+      const sectionFilter = resolveSectionFilter({
+        sectionIds: input.sectionIds,
+        sections: input.sections,
+        outlines: [...outlineByPaper.values()],
+      });
       const question = [
         input.query || context.request.userText,
-        input.sections?.length
-          ? `Relevant sections: ${input.sections.join(", ")}`
+        sectionFilter.unmatchedNames.length
+          ? `Relevant sections: ${sectionFilter.unmatchedNames.join(", ")}`
           : "",
       ]
         .filter(Boolean)
         .join("\n");
-      for (const paper of targets) {
-        await pdfService.ensurePaperContext(paper);
-      }
       const results = await retrievalService.retrieveEvidence({
         intent: context.request.classifiedIntent,
         papers: targets,
@@ -1507,8 +1734,15 @@ export function createPaperReadTool(
         profileOverride: context.request.advanced?.profileOverride,
         topK: input.topK,
         perPaperTopK: input.topK,
+        ...(sectionFilter.sectionIds.length
+          ? { sectionIds: sectionFilter.sectionIds }
+          : {}),
       });
       const quoteCitations: QuoteCitation[] = [];
+      const embeddedOutlines = new Map<string, DocumentOutline>();
+      for (const [key, outline] of outlineByPaper) {
+        embeddedOutlines.set(key, buildEmbeddedOutline(outline));
+      }
       return {
         mode,
         results,
@@ -1516,8 +1750,12 @@ export function createPaperReadTool(
           targets,
           results as Array<Record<string, unknown>>,
           quoteCitations,
+          embeddedOutlines,
         ),
         quoteCitations: mergeQuoteCitations(quoteCitations),
+        ...(sectionFilter.warnings.length
+          ? { warnings: sectionFilter.warnings }
+          : {}),
       };
     },
     async buildFollowupMessage(result: AgentToolResult) {

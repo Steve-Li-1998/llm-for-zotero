@@ -63,6 +63,7 @@ type EvidenceCacheKey = string;
 function buildEvidenceCacheKey(
   contextItemId: number,
   queryKey: string,
+  sectionIds?: string[],
 ): EvidenceCacheKey {
   // Strip punctuation and normalise whitespace so minor phrasing variations
   // (e.g. "What is the method?" vs "what is the method") share a cache entry.
@@ -73,7 +74,14 @@ function buildEvidenceCacheKey(
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120);
-  return `${contextItemId}::${normalizedQ}`;
+  // A section-restricted read is a different read: it must never be served
+  // from the whole-document entry for the same question, or the other way
+  // round.
+  const sortedSectionIds = [...(sectionIds || [])].sort();
+  const sectionKey = sortedSectionIds.length
+    ? `::${sortedSectionIds.join(",")}`
+    : "";
+  return `${contextItemId}::${normalizedQ}${sectionKey}`;
 }
 
 export class RetrievalService {
@@ -102,6 +110,8 @@ export class RetrievalService {
     signal?: AbortSignal;
     topK?: number;
     perPaperTopK?: number;
+    /** Restrict candidates to these section ids (`s<n>`) before ranking. */
+    sectionIds?: string[];
   }): Promise<RetrievalResult[]> {
     const papers = dedupePaperContexts(params.papers);
     if (!papers.length) return [];
@@ -160,11 +170,15 @@ export class RetrievalService {
         // Embedding unavailable — buildPaperRetrievalCandidates will fall back.
       }
     }
+    const sectionIds = (params.sectionIds || []).filter(
+      (sectionId) => typeof sectionId === "string" && sectionId.trim(),
+    );
     const results: RetrievalResult[] = [];
     for (const paperContext of papers) {
       const cacheKey = buildEvidenceCacheKey(
         paperContext.contextItemId,
         queryCacheKey,
+        sectionIds,
       );
       const cached = this.evidenceCache.get(cacheKey);
       if (cached) {
@@ -181,12 +195,14 @@ export class RetrievalService {
           apiKey: params.apiKey,
           precomputedQueryEmbedding,
           queryPlan,
+          ...(sectionIds.length ? { sectionIds } : {}),
         },
         {
           topK: perPaperTopK,
           mode: "evidence",
           precomputedQueryEmbedding,
           queryPlan,
+          ...(sectionIds.length ? { sectionIds } : {}),
         },
       );
       const paperResults: RetrievalResult[] = candidates.map((candidate) => ({

@@ -1081,6 +1081,79 @@ export function normalizeQuoteCitations(value: unknown): QuoteCitation[] {
   return out;
 }
 
+/**
+ * Markdown blockquote blocks of `text`, normalized the way quote text is, so a
+ * displayed quote can be matched back to the anchor it was taken from.  A block
+ * is a run of consecutive lines starting with ">"; its lines are joined with a
+ * single space because the model wraps one quoted sentence over several lines.
+ */
+function collectBlockquoteTextsForMatch(text: string): string[] {
+  const blocks: string[] = [];
+  let pending: string[] = [];
+  const flushPending = () => {
+    if (!pending.length) return;
+    const normalized = normalizeQuoteTextForMatch(pending.join(" "));
+    pending = [];
+    if (normalized) blocks.push(normalized);
+  };
+  for (const line of text.split(/\r\n?|\n/)) {
+    const quoted = /^[ \t]*>[ \t]?(.*)$/.exec(line);
+    if (!quoted) {
+      flushPending();
+      continue;
+    }
+    pending.push(quoted[1]);
+  }
+  flushPending();
+  return blocks;
+}
+
+function isQuoteCitationShownAsBlockquote(
+  citation: QuoteCitation,
+  blockquoteTexts: readonly string[],
+): boolean {
+  if (!blockquoteTexts.length) return false;
+  const quoteText = normalizeQuoteTextForMatch(citation.quoteText);
+  if (!quoteText) return false;
+  return blockquoteTexts.some(
+    (block) =>
+      block === quoteText ||
+      block.includes(quoteText) ||
+      quoteText.includes(block),
+  );
+}
+
+/**
+ * Anchors are bound on use: a reply keeps only the quote citations it actually
+ * used — referenced by a `[[quote:id]]` token, shown as a Markdown blockquote,
+ * or carried in from the reader's own PDF selection.  Retrieval can deliver
+ * many more anchors than an answer cites, and persisting all of them buries the
+ * quotes the reader can act on.  The full set stays in the run trace.
+ *
+ * This mirrors, synchronously and without PDF validation, the set that
+ * `finalizeAssistantQuoteCitations` keeps for display.
+ */
+export function selectUsedQuoteCitations(input: {
+  text: string;
+  quoteCitations: QuoteCitation[] | undefined;
+}): QuoteCitation[] {
+  const citations = normalizeQuoteCitations(input.quoteCitations);
+  if (!citations.length) return [];
+  const text = typeof input.text === "string" ? input.text : "";
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  const referencedIds = new Set(
+    Array.from(text.matchAll(QUOTE_CITATION_PATTERN)).map((match) => match[1]),
+  );
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  const blockquoteTexts = collectBlockquoteTextsForMatch(text);
+  return citations.filter(
+    (citation) =>
+      citation.sourceMatchKind === "selected-text" ||
+      referencedIds.has(citation.id) ||
+      isQuoteCitationShownAsBlockquote(citation, blockquoteTexts),
+  );
+}
+
 function normalizeDisplayedQuoteForExactBinding(value: unknown): {
   displayText: string;
   quoteText: string;

@@ -116,6 +116,7 @@ import {
   buildSelectedTextQuoteCitations,
   extractQuoteCitationsFromToolContent,
   mergeQuoteCitations,
+  selectUsedQuoteCitations,
 } from "../../../services/quotes/quoteCitations";
 import { synthesizeSelectedTextContexts } from "../../../services/context/normalizers";
 import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
@@ -651,6 +652,13 @@ async function finalizeAgentTurnOutcome(ctx: {
     pairedUserMessage,
     runtimeRequest,
   );
+  // Anchors are bound on use: the completed answer keeps only the quotes it
+  // actually used, so what is rendered matches what is persisted.  The full
+  // retrieved set stays in the run trace.
+  assistantMessage.quoteCitations = selectUsedQuoteCitations({
+    text: assistantMessage.text,
+    quoteCitations: assistantMessage.quoteCitations,
+  });
   if (!skipAssistantPersist) {
     await persistAssistantOnce();
   }
@@ -1270,6 +1278,25 @@ function refreshAssistantMessageTimestampForPersistence(
   return persistedTimestamp;
 }
 
+/**
+ * Quote anchors to store with an agent answer.  A delivered answer keeps only
+ * the anchors it used, so the saved turn shows the same quotes the reader saw.
+ * A cancelled or interrupted answer stops mid-sentence, so its text cannot
+ * prove an anchor went unused: it keeps whatever it already holds.
+ */
+function quoteCitationsForAgentPersistence(
+  assistantMessage: Pick<Message, "text" | "quoteCitations" | "interrupted">,
+): QuoteCitation[] | undefined {
+  const quoteCitations = assistantMessage.quoteCitations;
+  if (assistantMessage.interrupted || !quoteCitations?.length) {
+    return quoteCitations;
+  }
+  return selectUsedQuoteCitations({
+    text: assistantMessage.text,
+    quoteCitations,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // sendAgentTurn — extracted from sendAgentQuestion in chat.ts
 // ---------------------------------------------------------------------------
@@ -1738,7 +1765,7 @@ export async function sendAgentTurn(
       interrupted: assistantMessage.interrupted,
       contextTokens: snapshot?.contextTokens,
       contextWindow: snapshot?.contextWindow,
-      quoteCitations: assistantMessage.quoteCitations,
+      quoteCitations: quoteCitationsForAgentPersistence(assistantMessage),
     });
     assistantPersisted = true;
   };
@@ -2269,7 +2296,7 @@ export async function retryAgentTurn(
       interrupted: assistantMessage.interrupted,
       contextTokens: snapshot?.contextTokens,
       contextWindow: snapshot?.contextWindow,
-      quoteCitations: assistantMessage.quoteCitations,
+      quoteCitations: quoteCitationsForAgentPersistence(assistantMessage),
     });
     assistantPersisted = true;
   };

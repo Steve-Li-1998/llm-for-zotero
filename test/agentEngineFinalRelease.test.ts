@@ -10,6 +10,7 @@ import type {
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
 } from "../src/agent/types";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 
 function fakeItem(id: number): Zotero.Item {
   return {
@@ -1486,5 +1487,159 @@ describe("agent engine final UI release", function () {
     assert.deepEqual(userMessage.paperContexts, [
       { itemId: 1, title: "Old paper" },
     ]);
+  });
+
+  it("persists only the quote anchors the final answer used", async function () {
+    const conversationKey = 601;
+    const usedAnchor = buildQuoteCitation({
+      quoteText:
+        "Elastic weight consolidation slows learning on important weights.",
+      citationLabel: "(Kirkpatrick et al., 2017)",
+      contextItemId: 22,
+      itemId: 11,
+    });
+    const unusedAnchor = buildQuoteCitation({
+      quoteText: "The network was trained for two hundred epochs on each task.",
+      citationLabel: "(Kirkpatrick et al., 2017)",
+      contextItemId: 22,
+      itemId: 11,
+    });
+    assert.isDefined(usedAnchor);
+    assert.isDefined(unusedAnchor);
+    const finalText = `The method protects prior tasks [[quote:${usedAnchor!.id}]].`;
+    const stored: any[] = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: any) => {
+        await params.onStart?.("run-quote-binding");
+        await params.onEvent?.({
+          type: "tool_result",
+          ok: true,
+          toolCallId: "call-1",
+          name: "paper_read",
+          content: {
+            mode: "targeted",
+            quoteCitations: [usedAnchor, unusedAnchor],
+          },
+        });
+        await params.onEvent?.({ type: "final", text: finalText });
+        return {
+          kind: "completed",
+          runId: "run-quote-binding",
+          text: finalText,
+          usedFallback: false,
+        };
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, []);
+    deps.persistConversationMessage = async (_key, message) => {
+      stored.push({ ...message });
+    };
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "Why does the method avoid forgetting?",
+      },
+      deps,
+    );
+
+    const assistant = stored.find((message) => message.role === "assistant");
+    assert.deepEqual(
+      (assistant?.quoteCitations || []).map(
+        (citation: { id: string }) => citation.id,
+      ),
+      [usedAnchor!.id],
+    );
+    assert.deepEqual(
+      (deps.chatHistory.get(conversationKey)?.at(-1)?.quoteCitations || []).map(
+        (citation: { id: string }) => citation.id,
+      ),
+      [usedAnchor!.id],
+    );
+  });
+
+  it("keeps every anchor an interrupted answer had gathered", async function () {
+    const conversationKey = 602;
+    const firstAnchor = buildQuoteCitation({
+      quoteText:
+        "Elastic weight consolidation slows learning on important weights.",
+      citationLabel: "(Kirkpatrick et al., 2017)",
+      contextItemId: 22,
+      itemId: 11,
+    });
+    const secondAnchor = buildQuoteCitation({
+      quoteText: "The network was trained for two hundred epochs on each task.",
+      citationLabel: "(Kirkpatrick et al., 2017)",
+      contextItemId: 22,
+      itemId: 11,
+    });
+    assert.isDefined(firstAnchor);
+    assert.isDefined(secondAnchor);
+    const stored: any[] = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: any) => {
+        await params.onStart?.("run-quote-interrupt");
+        await params.onEvent?.({
+          type: "tool_result",
+          ok: true,
+          toolCallId: "call-1",
+          name: "paper_read",
+          content: {
+            mode: "targeted",
+            quoteCitations: [firstAnchor, secondAnchor],
+          },
+        });
+        await params.onEvent?.({
+          type: "message_delta",
+          text: "The method protects prior tasks by",
+        });
+        throw new Error("Error in input stream");
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, []);
+    deps.persistConversationMessage = async (_key, message) => {
+      stored.push({ ...message });
+    };
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "Why does the method avoid forgetting?",
+      },
+      deps,
+    );
+
+    const assistant = stored.find((message) => message.role === "assistant");
+    assert.isTrue(assistant?.interrupted);
+    assert.deepEqual(
+      (assistant?.quoteCitations || []).map(
+        (citation: { id: string }) => citation.id,
+      ),
+      [firstAnchor!.id, secondAnchor!.id],
+    );
   });
 });

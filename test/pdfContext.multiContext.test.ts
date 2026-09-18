@@ -3,6 +3,7 @@ import { strToU8, zipSync } from "fflate";
 import {
   buildChunkMetadata,
   buildEvidencePack,
+  classifyHeadingKind,
   buildFullPaperContext,
   buildPaperKey,
   buildPaperRetrievalCandidates,
@@ -1130,5 +1131,128 @@ describe("pdfContext multi-context helpers", function () {
       rendered,
       "[No extractable PDF text available. Using metadata only.]",
     );
+  });
+  it("maps numbered headings to section kinds", function () {
+    assert.equal(
+      classifyHeadingKind("1 Introduction and model statement")?.kind,
+      "introduction",
+    );
+    assert.equal(classifyHeadingKind("5. Conclusion")?.kind, "conclusion");
+    assert.equal(classifyHeadingKind("IV. Results")?.kind, "results");
+    assert.isUndefined(classifyHeadingKind("2.2 Kinematic condition"));
+  });
+
+  it("only accepts a whole-line heading when scanning chunk lines", function () {
+    assert.isUndefined(
+      classifyHeadingKind("Results indicate a thinner film", "line"),
+    );
+    assert.equal(classifyHeadingKind("3 Results", "line")?.kind, "results");
+  });
+
+  it("records the manifest heading chain as the chunk section path", async function () {
+    setupMemoryIO();
+    const attachmentId = 1205;
+    const rawMd = [
+      "# Numerics of thin-film free boundary problems",
+      "## 1 Introduction and model statement",
+      "We study a lubrication model for partial wetting.",
+      "## 2 Numerical algorithm",
+      "The algorithm tracks the contact line explicitly.",
+      "### 2.2 Kinematic condition",
+      "The velocity of the free boundary follows from the kinematic relation between the film height and the normal speed.",
+      "## 5 Conclusion",
+      "Front tracking resolves the contact-line singularity.",
+    ].join("\n\n");
+
+    await writeMineruCacheFiles(attachmentId, rawMd, [
+      { relativePath: "paper/full.md", data: bytes(rawMd) },
+    ]);
+    await ensurePDFTextCached(mockPdfAttachment(attachmentId));
+    const context = pdfTextCache.get(attachmentId);
+    assert.exists(context);
+
+    const kinematic = context!.chunkMeta.find((meta) =>
+      meta.text.includes("kinematic relation between the film height"),
+    );
+    assert.equal(kinematic?.sectionLabel, "2.2 Kinematic condition");
+    assert.equal(
+      kinematic?.sectionPath,
+      "2 Numerical algorithm › 2.2 Kinematic condition",
+    );
+    assert.equal(kinematic?.sectionLevel, 3);
+    assert.equal(kinematic?.chunkKind, "body");
+    assert.equal(kinematic?.kindSource, "heuristic");
+
+    const introduction = context!.chunkMeta.find(
+      (meta) => meta.sectionLabel === "1 Introduction and model statement",
+    );
+    assert.equal(introduction?.sectionIndex, 1);
+    assert.equal(introduction?.sectionLevel, 2);
+    assert.equal(introduction?.chunkKind, "introduction");
+    assert.equal(introduction?.kindSource, "manifest");
+
+    const conclusion = context!.chunkMeta.find(
+      (meta) => meta.sectionLabel === "5 Conclusion",
+    );
+    assert.equal(conclusion?.chunkKind, "conclusion");
+    assert.equal(conclusion?.kindSource, "manifest");
+  });
+
+  it("labels MinerU text from its own headings when the manifest has no sections", async function () {
+    const io = setupMemoryIO();
+    const attachmentId = 1206;
+    const rawMd = [
+      "# Sleep pressure reshapes place field stability",
+      "# Introduction",
+      "Hippocampal place fields drift across days in freely moving rodents.",
+      "# Methods",
+      "We recorded CA1 ensembles with chronic tetrodes in twelve animals.",
+      "# Results",
+      "Place field stability fell after sleep deprivation in every animal.",
+      "# Conclusion",
+      "Sleep pressure is a dominant driver of representational drift.",
+    ].join("\n\n");
+
+    await writeMineruCacheFiles(attachmentId, rawMd, [
+      { relativePath: "paper/full.md", data: bytes(rawMd) },
+    ]);
+    io.files.set(
+      `/tmp/zotero/llm-for-zotero-mineru/${attachmentId}/manifest.json`,
+      bytes(
+        JSON.stringify({
+          sections: [],
+          allFigures: [],
+          allTables: [],
+          totalChars: rawMd.length,
+          noSections: true,
+          structure: {
+            version: 2,
+            headingCounts: { h1: 0, h2: 0, h3: 0 },
+            sectionsBuilt: 0,
+            labelledChars: 0,
+          },
+        }),
+      ),
+    );
+
+    await ensurePDFTextCached(mockPdfAttachment(attachmentId));
+    const context = pdfTextCache.get(attachmentId);
+    assert.exists(context);
+
+    const afterTitle = context!.chunkMeta.filter(
+      (meta) => (meta.sourceStart ?? 0) > 0,
+    );
+    assert.isNotEmpty(afterTitle);
+    assert.isTrue(
+      afterTitle.every(
+        (meta) => Boolean(meta.sectionLabel) && meta.sectionIndex !== undefined,
+      ),
+    );
+    const results = context!.chunkMeta.find((meta) =>
+      meta.text.includes("Place field stability fell"),
+    );
+    assert.equal(results?.sectionLabel, "Results");
+    assert.equal(results?.chunkKind, "results");
+    assert.equal(results?.kindSource, "manifest");
   });
 });

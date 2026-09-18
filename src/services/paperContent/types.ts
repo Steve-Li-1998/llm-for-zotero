@@ -52,7 +52,18 @@ export type PdfChunkMeta = {
   text: string;
   normalizedText: string;
   sectionLabel?: string;
+  /** Position of the enclosing section in the manifest's section list. */
+  sectionIndex?: number;
+  /** Heading chain down to the chunk, e.g. `2 Algorithm › 2.1 Weak form`. */
+  sectionPath?: string;
+  /** Markdown heading depth of the enclosing section: `#` → 1, `##` → 2. */
+  sectionLevel?: number;
   chunkKind: PdfChunkKind;
+  /**
+   * Where {@link chunkKind} came from: `manifest` when the section heading
+   * names a standard section, `heuristic` when the chunk text decided it.
+   */
+  kindSource?: "manifest" | "heuristic";
   anchorText?: string;
   leadingNoiseRemoved?: boolean;
   sourceType?: PdfContext["sourceType"];

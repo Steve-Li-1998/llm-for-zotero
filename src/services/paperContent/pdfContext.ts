@@ -44,6 +44,7 @@ import { readAttachmentBytes } from "../attachmentStorage";
 import { pdfTextCache, pdfTextLoadingTasks } from "./contextCache";
 import {
   buildAndWriteManifest,
+  buildManifest,
   ensureManifest,
   readCachedMineruMd,
   stripMineruSourceImageEmbedsFromMarkdown,
@@ -526,36 +527,71 @@ async function cachePDFText(
       let chunks: string[];
       let chunkMeta: PdfChunkMeta[];
 
-      if (manifest && !manifest.noSections && manifest.sections.length > 0) {
-        // Manifest-aware chunking: slice from the raw markdown (offsets match raw full.md),
-        // build metadata from the raw chunks, then convert HTML tables for LLM readability.
-        // Using pdfText (post-conversion) would misalign because convertHtmlTablesToMarkdown
-        // changes character counts.
-        try {
-          const rawMd = cachedMd!;
-          const rawChunks = splitWithManifestSections(
-            rawMd,
-            manifest.sections,
-            CHUNK_TARGET_LENGTH,
-          );
-          chunkMeta = buildChunkMetadataFromManifest(
-            rawChunks,
-            rawMd,
-            manifest.sections,
-          );
-          chunks = rawChunks.map((chunk) =>
-            convertHtmlTablesToMarkdown(
-              stripMineruSourceImageEmbedsFromMarkdown(chunk),
-            ),
-          );
-          // Update chunkMeta text fields to reflect converted content
-          for (let i = 0; i < chunks.length; i++) {
-            chunkMeta[i].text = chunks[i];
-            chunkMeta[i].normalizedText = normalizeEvidenceText(chunks[i]);
+      // Section-aware chunking: slice from the raw markdown (offsets match raw
+      // full.md), build metadata from the raw chunks, then convert HTML tables
+      // for LLM readability. Using pdfText (post-conversion) would misalign
+      // because convertHtmlTablesToMarkdown changes character counts.
+      const chunkBySections = (
+        rawMd: string,
+        sections: ManifestSection[],
+      ): { chunks: string[]; chunkMeta: PdfChunkMeta[] } => {
+        const rawChunks = splitWithManifestSections(
+          rawMd,
+          sections,
+          CHUNK_TARGET_LENGTH,
+        );
+        const meta = buildChunkMetadataFromManifest(rawChunks, rawMd, sections);
+        const converted = rawChunks.map((chunk) =>
+          convertHtmlTablesToMarkdown(
+            stripMineruSourceImageEmbedsFromMarkdown(chunk),
+          ),
+        );
+        // Update chunkMeta text fields to reflect converted content
+        for (let i = 0; i < converted.length; i++) {
+          meta[i].text = converted[i];
+          meta[i].normalizedText = normalizeEvidenceText(converted[i]);
+        }
+        return { chunks: converted, chunkMeta: meta };
+      };
+
+      // MinerU text the manifest could not section: the markdown headings are
+      // still there, so rebuild sections from them and keep one labeller.
+      // Only text with no structure at all falls back to flat chunking.
+      const chunkMineruWithoutManifestSections = (): {
+        chunks: string[];
+        chunkMeta: PdfChunkMeta[];
+      } => {
+        if (cachedMd) {
+          try {
+            const synthetic = buildSyntheticManifestSections(cachedMd);
+            if (synthetic.length > 2)
+              return chunkBySections(cachedMd, synthetic);
+          } catch (e) {
+            ztoolkit.log(
+              "LLM: MinerU heading fallback failed; using flat markdown chunks",
+              { attachmentId: item.id, error: formatErrorForLog(e) },
+            );
           }
+        }
+        const flatChunks = splitMarkdownIntoChunks(
+          pdfText,
+          CHUNK_TARGET_LENGTH,
+        );
+        return {
+          chunks: flatChunks,
+          chunkMeta: buildChunkMetadata(flatChunks, sourceType),
+        };
+      };
+
+      if (manifest && !manifest.noSections && manifest.sections.length > 0) {
+        try {
+          ({ chunks, chunkMeta } = chunkBySections(
+            cachedMd!,
+            manifest.sections,
+          ));
         } catch (e) {
           ztoolkit.log(
-            "LLM: MinerU manifest chunking failed; using full markdown fallback",
+            "LLM: MinerU manifest chunking failed; using markdown headings",
             {
               attachmentId: item.id,
               manifestTotalChars: manifest.totalChars,
@@ -563,12 +599,10 @@ async function cachePDFText(
               error: formatErrorForLog(e),
             },
           );
-          chunks = splitMarkdownIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
-          chunkMeta = buildChunkMetadata(chunks, sourceType);
+          ({ chunks, chunkMeta } = chunkMineruWithoutManifestSections());
         }
       } else if (sourceType === "mineru") {
-        chunks = splitMarkdownIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
-        chunkMeta = buildChunkMetadata(chunks, sourceType);
+        ({ chunks, chunkMeta } = chunkMineruWithoutManifestSections());
       } else {
         chunks = splitIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
         chunkMeta = buildChunkMetadata(chunks, sourceType, {
@@ -959,6 +993,16 @@ function splitWithManifestSections(
 }
 
 /**
+ * Section list derived from the markdown headings alone, for MinerU text whose
+ * manifest holds no usable sections. The manifest builder already owns the
+ * heading scan, the ids, the parents and the heading paths, so this reuses it
+ * with an empty content list: same sections, no figures or tables.
+ */
+export function buildSyntheticManifestSections(md: string): ManifestSection[] {
+  return buildManifest(md, []).sections;
+}
+
+/**
  * Build chunk metadata using manifest section boundaries for accurate labels.
  */
 function buildChunkMetadataFromManifest(
@@ -972,34 +1016,13 @@ function buildChunkMetadataFromManifest(
     return fullText.indexOf(chunkText.slice(0, 100));
   }
 
-  function findSectionForPosition(pos: number): ManifestSection | undefined {
-    if (pos < 0) return undefined;
-    for (const section of sections) {
-      if (pos >= section.charStart && pos < section.charEnd) return section;
+  function findSectionIndexForPosition(pos: number): number {
+    if (pos < 0) return -1;
+    for (let index = 0; index < sections.length; index += 1) {
+      const section = sections[index];
+      if (pos >= section.charStart && pos < section.charEnd) return index;
     }
-    return undefined;
-  }
-
-  // Map standard section headings to chunk kinds
-  function sectionHeadingToKind(heading: string): PdfChunkKind {
-    const lower = heading.toLowerCase().trim();
-    if (/^abstract/.test(lower)) return "abstract";
-    if (/^introduction/.test(lower)) return "introduction";
-    if (
-      /^method/.test(lower) ||
-      /^materials?\s+and\s+method/.test(lower) ||
-      /^experimental/.test(lower)
-    )
-      return "methods";
-    if (/^results?/.test(lower)) return "results";
-    if (/^discussion/.test(lower)) return "discussion";
-    if (/^conclusion/.test(lower)) return "conclusion";
-    if (/^reference/.test(lower) || /^bibliography/.test(lower))
-      return "references";
-    if (/^appendix/.test(lower) || /^supplement/.test(lower)) return "appendix";
-    if (/^fig(?:ure)?\.?\s*\d/i.test(lower)) return "figure-caption";
-    if (/^table\s*\d/i.test(lower)) return "table-caption";
-    return "body";
+    return -1;
   }
 
   const meta: PdfChunkMeta[] = [];
@@ -1009,15 +1032,21 @@ function buildChunkMetadataFromManifest(
       sourceStart >= 0
         ? Math.min(fullText.length, sourceStart + chunkText.length)
         : -1;
-    const section = findSectionForPosition(sourceStart);
+    const sectionIndex = findSectionIndexForPosition(sourceStart);
+    const section = sectionIndex >= 0 ? sections[sectionIndex] : undefined;
     const sectionLabel = section?.heading;
-    const chunkKind = section
-      ? sectionHeadingToKind(section.heading)
-      : resolveChunkKind({
-          chunkText,
-          normalizedText: normalizeEvidenceText(chunkText),
-          sectionHeading: matchSectionHeading(chunkText),
-        });
+    // The manifest heading decides the kind when it names a standard section;
+    // otherwise ("2.2 Kinematic condition") the chunk text decides.
+    const headingKind = section
+      ? classifyHeadingKind(section.heading)
+      : undefined;
+    const chunkKind =
+      headingKind?.kind ??
+      resolveChunkKind({
+        chunkText,
+        normalizedText: normalizeEvidenceText(chunkText),
+        sectionHeading: matchSectionHeading(chunkText),
+      });
 
     const normalizedText = normalizeEvidenceText(chunkText);
     const textWithoutHeading = sectionLabel
@@ -1067,7 +1096,15 @@ function buildChunkMetadataFromManifest(
       text: chunkText,
       normalizedText,
       sectionLabel,
+      ...(section
+        ? {
+            sectionIndex,
+            sectionPath: section.path,
+            sectionLevel: section.level,
+          }
+        : {}),
       chunkKind,
+      kindSource: headingKind ? "manifest" : "heuristic",
       anchorText: buildEvidenceAnchorFromText(cleaned.text) || undefined,
       leadingNoiseRemoved: cleaned.removedLeadingNoise || undefined,
       sourceType: "mineru",
@@ -1087,7 +1124,10 @@ function buildChunkMetadataFromManifest(
 type SectionHeadingPattern = {
   label: string;
   kind: PdfChunkKind;
+  /** Heading that stops at the keyword: "Results", "3. Results:". */
   pattern: RegExp;
+  /** Heading that runs on past the keyword: "Results and discussion". */
+  prefixPattern: RegExp;
 };
 
 type SectionHeadingMatch = {
@@ -1095,56 +1135,85 @@ type SectionHeadingMatch = {
   kind: PdfChunkKind;
 };
 
+/**
+ * Build the two forms of one standard-section heading from its keywords, so
+ * the strict and the run-on form can never drift apart.
+ */
+function sectionHeadingPattern(
+  label: string,
+  kind: PdfChunkKind,
+  keywords: string,
+): SectionHeadingPattern {
+  const opening = `^(?:\\d+(?:\\.\\d+)*)?\\s*${keywords}\\b`;
+  return {
+    label,
+    kind,
+    pattern: new RegExp(`${opening}[:.\\s-]*$`, "i"),
+    prefixPattern: new RegExp(opening, "i"),
+  };
+}
+
 const SECTION_HEADING_PATTERNS: SectionHeadingPattern[] = [
-  {
-    label: "Abstract",
-    kind: "abstract",
-    pattern: /^(?:\d+(?:\.\d+)*)?\s*abstract\b[:.\s-]*$/i,
-  },
-  {
-    label: "Introduction",
-    kind: "introduction",
-    pattern: /^(?:\d+(?:\.\d+)*)?\s*introduction\b[:.\s-]*$/i,
-  },
-  {
-    label: "Related Work",
-    kind: "introduction",
-    pattern: /^(?:\d+(?:\.\d+)*)?\s*related work\b[:.\s-]*$/i,
-  },
-  {
-    label: "Methods",
-    kind: "methods",
-    pattern:
-      /^(?:\d+(?:\.\d+)*)?\s*(?:methods?|methodology|materials and methods)\b[:.\s-]*$/i,
-  },
-  {
-    label: "Results",
-    kind: "results",
-    pattern: /^(?:\d+(?:\.\d+)*)?\s*results?\b[:.\s-]*$/i,
-  },
-  {
-    label: "Discussion",
-    kind: "discussion",
-    pattern: /^(?:\d+(?:\.\d+)*)?\s*discussion\b[:.\s-]*$/i,
-  },
-  {
-    label: "Conclusion",
-    kind: "conclusion",
-    pattern: /^(?:\d+(?:\.\d+)*)?\s*conclusions?\b[:.\s-]*$/i,
-  },
-  {
-    label: "Appendix",
-    kind: "appendix",
-    pattern:
-      /^(?:\d+(?:\.\d+)*)?\s*(?:appendix|supplement(?:ary)? materials?)\b[:.\s-]*$/i,
-  },
-  {
-    label: "References",
-    kind: "references",
-    pattern:
-      /^(?:\d+(?:\.\d+)*)?\s*(?:references|bibliography|works cited|literature cited|references and notes)\b[:.\s-]*$/i,
-  },
+  sectionHeadingPattern("Abstract", "abstract", "abstract"),
+  sectionHeadingPattern("Introduction", "introduction", "introduction"),
+  sectionHeadingPattern("Related Work", "introduction", "related work"),
+  sectionHeadingPattern(
+    "Methods",
+    "methods",
+    "(?:methods?|methodology|materials and methods)",
+  ),
+  sectionHeadingPattern("Results", "results", "results?"),
+  sectionHeadingPattern("Discussion", "discussion", "discussion"),
+  sectionHeadingPattern("Conclusion", "conclusion", "conclusions?"),
+  sectionHeadingPattern(
+    "Appendix",
+    "appendix",
+    "(?:appendix|supplement(?:ary)? materials?)",
+  ),
+  sectionHeadingPattern(
+    "References",
+    "references",
+    "(?:references|bibliography|works cited|literature cited|references and notes)",
+  ),
 ];
+
+/** Enumerators that can precede a heading: "2.1", "3.", "IV.", "a)". */
+const HEADING_ENUMERATOR_PATTERN =
+  /^(?:\d+(?:\.\d+)*\.?|[ivxlcdm]+\.|[a-z]\))\s+/i;
+
+/**
+ * How strictly a candidate string is read as a heading.
+ * - `heading`: the caller already knows this is a heading, so a run-on title
+ *   ("1 Introduction and model statement") still names its section.
+ * - `line`: the candidate is an arbitrary line of body text, so only a line
+ *   that ends at the keyword counts ("3. Results").
+ */
+export type HeadingClassifyMode = "heading" | "line";
+
+/**
+ * The single owner of "which standard section is this heading?". Strips a
+ * leading enumerator first, so numbered and unnumbered headings classify
+ * alike, and returns undefined for headings that name no standard section
+ * (for example "2.2 Kinematic condition").
+ */
+export function classifyHeadingKind(
+  heading: string,
+  mode: HeadingClassifyMode = "heading",
+): SectionHeadingMatch | undefined {
+  const candidate = normalizeEvidenceText(heading)
+    .replace(HEADING_ENUMERATOR_PATTERN, "")
+    .trim();
+  if (!candidate) return undefined;
+  for (const entry of SECTION_HEADING_PATTERNS) {
+    if (
+      entry.pattern.test(candidate) ||
+      (mode === "heading" && entry.prefixPattern.test(candidate))
+    ) {
+      return { label: entry.label, kind: entry.kind };
+    }
+  }
+  return undefined;
+}
 
 const FIGURE_CAPTION_PATTERN =
   /^(?:\d+\s+)?(?:fig(?:ure)?\.?)\s*(?:s(?:upp(?:lementary)?)?\s*)?\d+[a-z]?(?:\s*[:.)-]\s*|\s+)/i;
@@ -1250,26 +1319,15 @@ function matchSectionHeading(
     .filter(Boolean)
     .slice(0, 3);
   for (const line of lines) {
-    for (const heading of SECTION_HEADING_PATTERNS) {
-      if (heading.pattern.test(line)) {
-        return { label: heading.label, kind: heading.kind };
-      }
-    }
+    const lineHeading = classifyHeadingKind(line, "line");
+    if (lineHeading) return lineHeading;
     if (line.length > 100 || /[.!?]/.test(line)) {
       break;
     }
   }
-  const normalized = normalizeEvidenceText(chunkText);
-  for (const heading of SECTION_HEADING_PATTERNS) {
-    const inlinePattern = new RegExp(
-      `^(?:\\d+(?:\\.\\d+)*)?\\s*${heading.label.replace(/\s+/g, "\\s+")}\\b[:.\\s-]+`,
-      "i",
-    );
-    if (inlinePattern.test(normalized)) {
-      return { label: heading.label, kind: heading.kind };
-    }
-  }
-  return undefined;
+  // A chunk can also open with its heading run into the first sentence
+  // ("Results. The film ruptures ..."), which the line scan cannot see.
+  return classifyHeadingKind(chunkText, "heading");
 }
 
 function trimLeadingSectionHeading(

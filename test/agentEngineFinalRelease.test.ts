@@ -186,7 +186,11 @@ function createDeps(params: {
     createQueuedRefresh: (refresh) => refresh,
     waitForUiStep: async () => undefined,
     finalizeCancelledAssistantMessage: (message, fallbackText) => {
-      message.text = fallbackText || "[Cancelled]";
+      // Mirrors chat.ts: a cancelled turn is not an interrupted one, so the
+      // flag the interrupted path sets is cleared here.
+      message.text = message.text || fallbackText || "[Cancelled]";
+      message.streaming = false;
+      message.interrupted = undefined;
     },
     sanitizeText: (text) => text,
     finalizeAssistantQuoteCitations: async () => undefined,
@@ -1635,6 +1639,88 @@ describe("agent engine final UI release", function () {
 
     const assistant = stored.find((message) => message.role === "assistant");
     assert.isTrue(assistant?.interrupted);
+    assert.deepEqual(
+      (assistant?.quoteCitations || []).map(
+        (citation: { id: string }) => citation.id,
+      ),
+      [firstAnchor!.id, secondAnchor!.id],
+    );
+  });
+  it("keeps every anchor a cancelled answer had gathered", async function () {
+    const conversationKey = 603;
+    const firstAnchor = buildQuoteCitation({
+      quoteText:
+        "Elastic weight consolidation slows learning on important weights.",
+      citationLabel: "(Kirkpatrick et al., 2017)",
+      contextItemId: 22,
+      itemId: 11,
+    });
+    const secondAnchor = buildQuoteCitation({
+      quoteText: "The network was trained for two hundred epochs on each task.",
+      citationLabel: "(Kirkpatrick et al., 2017)",
+      contextItemId: 22,
+      itemId: 11,
+    });
+    assert.isDefined(firstAnchor);
+    assert.isDefined(secondAnchor);
+    const stored: any[] = [];
+    let cancelled = false;
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: any) => {
+        await params.onStart?.("run-quote-cancel");
+        await params.onEvent?.({
+          type: "tool_result",
+          ok: true,
+          toolCallId: "call-1",
+          name: "paper_read",
+          content: {
+            mode: "targeted",
+            quoteCitations: [firstAnchor, secondAnchor],
+          },
+        });
+        await params.onEvent?.({
+          type: "message_delta",
+          text: "The method protects prior tasks by",
+        });
+        // The user pressed stop while the answer was still streaming.
+        cancelled = true;
+        return {
+          kind: "completed",
+          runId: "run-quote-cancel",
+          text: "The method protects prior tasks by",
+          usedFallback: false,
+        };
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.cancelledRequestId = () => (cancelled ? 77 : 0);
+    deps.chatHistory.set(conversationKey, []);
+    deps.persistConversationMessage = async (_key, message) => {
+      stored.push({ ...message });
+    };
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "Why does the method avoid forgetting?",
+      },
+      deps,
+    );
+
+    const assistant = stored.find((message) => message.role === "assistant");
+    assert.isDefined(assistant, "the cancelled turn is persisted");
+    assert.isNotTrue(assistant?.interrupted);
     assert.deepEqual(
       (assistant?.quoteCitations || []).map(
         (citation: { id: string }) => citation.id,

@@ -1282,13 +1282,20 @@ function refreshAssistantMessageTimestampForPersistence(
  * Quote anchors to store with an agent answer.  A delivered answer keeps only
  * the anchors it used, so the saved turn shows the same quotes the reader saw.
  * A cancelled or interrupted answer stops mid-sentence, so its text cannot
- * prove an anchor went unused: it keeps whatever it already holds.
+ * prove an anchor went unused: it keeps whatever it already holds.  Cancelling
+ * clears `interrupted` (the turn is stopped, not broken), so the cancel path
+ * asks for the raw set explicitly.
  */
 function quoteCitationsForAgentPersistence(
   assistantMessage: Pick<Message, "text" | "quoteCitations" | "interrupted">,
+  keepAllQuoteCitations = false,
 ): QuoteCitation[] | undefined {
   const quoteCitations = assistantMessage.quoteCitations;
-  if (assistantMessage.interrupted || !quoteCitations?.length) {
+  if (
+    keepAllQuoteCitations ||
+    assistantMessage.interrupted ||
+    !quoteCitations?.length
+  ) {
     return quoteCitations;
   }
   return selectUsedQuoteCitations({
@@ -1744,7 +1751,9 @@ export async function sendAgentTurn(
   }
 
   let assistantPersisted = false;
-  const persistAssistantOnce = async () => {
+  const persistAssistantOnce = async (options?: {
+    keepAllQuoteCitations?: boolean;
+  }) => {
     if (assistantPersisted) return;
     const persistedTimestamp = refreshAssistantMessageTimestampForPersistence(
       assistantMessage,
@@ -1765,7 +1774,10 @@ export async function sendAgentTurn(
       interrupted: assistantMessage.interrupted,
       contextTokens: snapshot?.contextTokens,
       contextWindow: snapshot?.contextWindow,
-      quoteCitations: quoteCitationsForAgentPersistence(assistantMessage),
+      quoteCitations: quoteCitationsForAgentPersistence(
+        assistantMessage,
+        options?.keepAllQuoteCitations,
+      ),
     });
     assistantPersisted = true;
   };
@@ -1773,7 +1785,9 @@ export async function sendAgentTurn(
     flushMessageDeltas("cancel");
     deps.finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
-    await persistAssistantOnce();
+    // The answer was stopped mid-sentence, so its text cannot prove which
+    // anchors went unused: keep every anchor the turn had gathered.
+    await persistAssistantOnce({ keepAllQuoteCitations: true });
     setStatusSafely("Cancelled", "ready");
   };
 
@@ -2276,7 +2290,9 @@ export async function retryAgentTurn(
   }
 
   let assistantPersisted = false;
-  const persistAssistantOnce = async () => {
+  const persistAssistantOnce = async (options?: {
+    keepAllQuoteCitations?: boolean;
+  }) => {
     if (assistantPersisted) return;
     const persistedTimestamp = refreshAssistantMessageTimestampForPersistence(
       assistantMessage,
@@ -2296,7 +2312,10 @@ export async function retryAgentTurn(
       interrupted: assistantMessage.interrupted,
       contextTokens: snapshot?.contextTokens,
       contextWindow: snapshot?.contextWindow,
-      quoteCitations: quoteCitationsForAgentPersistence(assistantMessage),
+      quoteCitations: quoteCitationsForAgentPersistence(
+        assistantMessage,
+        options?.keepAllQuoteCitations,
+      ),
     });
     assistantPersisted = true;
   };
@@ -2304,7 +2323,9 @@ export async function retryAgentTurn(
     flushMessageDeltas("cancel");
     deps.finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
-    await persistAssistantOnce();
+    // The answer was stopped mid-sentence, so its text cannot prove which
+    // anchors went unused: keep every anchor the turn had gathered.
+    await persistAssistantOnce({ keepAllQuoteCitations: true });
     setStatusSafely("Cancelled", "ready");
   };
 

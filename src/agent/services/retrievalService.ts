@@ -7,7 +7,7 @@ import {
 } from "../../services/retrieval/retrievalQueryPlan";
 import {
   callEmbeddings,
-  checkEmbeddingAvailability,
+  resolveSemanticSearchState,
   type ChatParams,
 } from "../../utils/llmClient";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
@@ -156,7 +156,9 @@ export class RetrievalService {
     const queryCacheKey = buildRetrievalQueryPlanCacheKey(queryPlan);
     let embeddingsAvailable = false;
     try {
-      embeddingsAvailable = checkEmbeddingAvailability();
+      // Honour an explicit "off": never spend a query-embedding call on a user
+      // who turned semantic search off.
+      embeddingsAvailable = resolveSemanticSearchState().enabled;
     } catch {
       embeddingsAvailable = false;
     }

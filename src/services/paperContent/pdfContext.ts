@@ -2,8 +2,8 @@ import {
   callEmbeddings,
   EmbeddingUnsupportedError,
   getResolvedEmbeddingConfig,
-  checkEmbeddingAvailability,
   getEmbeddingUnavailableReason,
+  resolveSemanticSearchState,
 } from "../../utils/llmClient";
 import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
@@ -73,7 +73,6 @@ import {
 } from "./textAttachmentExtraction";
 import type { TextAttachmentSourceMode } from "./contextAttachmentTypes";
 import { isPdfContextAttachment } from "./contextAttachmentSupport";
-import { config } from "../../../package.json";
 import { invalidateRetrievalCandidates } from "../retrieval/cacheInvalidation";
 import { isBodyEvidenceSection } from "../../shared/libraryChatEvidencePolicy";
 import {
@@ -87,9 +86,6 @@ import type {
   ProjectedPaperMetadata,
   ZoteroMetadataResolver,
 } from "../../services/zoteroMetadata/types";
-
-const prefKey = (key: string) => `${config.prefsPrefix}.${key}`;
-const getPref = (key: string) => Zotero.Prefs.get(prefKey(key), true);
 
 // ── HTML table → Markdown table conversion ──────────────────────────────────
 // MinerU sometimes emits tables as raw <table> HTML in the markdown.
@@ -2157,19 +2153,22 @@ export function buildTruncatedFullPaperContext(
 }
 
 function shouldTryEmbeddings(): boolean {
-  // Respect the user's "Enable semantic search" toggle (off by default)
-  const enabledPref = getPref("enableSemanticSearch");
-  if (enabledPref !== true && enabledPref !== "true") return false;
-
-  // Delegate to the centralized availability check in llmClient.
-  const available = checkEmbeddingAvailability();
-  if (!available && typeof ztoolkit !== "undefined") {
+  // Semantic search runs whenever an embedding config resolves; an explicit
+  // "off" always wins. llmClient owns both decisions.
+  const state = resolveSemanticSearchState();
+  if (
+    !state.enabled &&
+    state.source === "pref" &&
+    typeof ztoolkit !== "undefined"
+  ) {
+    // Only the user who asked for semantic search needs to hear that it is
+    // unavailable; under auto there is simply nothing to reuse.
     const reason = getEmbeddingUnavailableReason();
     if (reason) {
       ztoolkit.log(`[Semantic Search] Embeddings unavailable: ${reason}`);
     }
   }
-  return available;
+  return state.enabled;
 }
 
 // ── Intent-driven evidence heuristics ────────────────────────────────────────

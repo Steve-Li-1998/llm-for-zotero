@@ -80,6 +80,7 @@ import {
   getProviderPreset,
   isGrokApiBase,
   providerSupportsFileUploads,
+  type SupportedProviderPresetId,
 } from "./providerPresets";
 import {
   inferLegacyProviderProtocol,
@@ -517,6 +518,57 @@ function resolveSeparateEmbeddingApiKey(embeddingProvider: string): string {
   return "";
 }
 
+type AutoEmbeddingProvider = {
+  presetId: SupportedProviderPresetId;
+  apiBase: string;
+  apiKey: string;
+  defaultModel: string;
+};
+
+/**
+ * Reuse an already-configured chat provider for embeddings when the user never
+ * set up a dedicated embedding endpoint. Returns the first provider group, in
+ * the user's own order, that authenticates with an API key and whose preset
+ * serves an OpenAI-compatible /v1/embeddings endpoint. The group's key is used
+ * only for the embeddings request; it is never logged or shown in the UI.
+ */
+function resolveAutoEmbeddingProvider(): AutoEmbeddingProvider | null {
+  for (const group of getModelProviderGroups()) {
+    if (group.authMode !== "api_key") continue;
+    const apiKey = (group.apiKey || "").trim();
+    if (!apiKey) continue;
+    const presetId = detectProviderPreset(group.apiBase || "");
+    if (presetId === "customized") continue;
+    const preset = getProviderPreset(presetId);
+    if (!preset.supportsEmbeddings || !preset.defaultEmbeddingApiBase) continue;
+    return {
+      presetId,
+      apiBase: normalizeEmbeddingApiBase(preset.defaultEmbeddingApiBase),
+      apiKey,
+      defaultModel: preset.defaultEmbeddingModel || DEFAULT_EMBEDDING_MODEL,
+    };
+  }
+  return null;
+}
+
+/**
+ * Key-free view of the auto-resolved embedding provider, for UI that has to
+ * describe the effective configuration without touching the credential.
+ */
+export function getAutoEmbeddingProviderSummary(): {
+  providerId: SupportedProviderPresetId;
+  apiBase: string;
+  model: string;
+} | null {
+  const auto = resolveAutoEmbeddingProvider();
+  if (!auto) return null;
+  return {
+    providerId: auto.presetId,
+    apiBase: auto.apiBase,
+    model: auto.defaultModel,
+  };
+}
+
 export function getResolvedEmbeddingConfig(): ResolvedEmbeddingConfig {
   const embeddingProvider = (getPref("embeddingProvider") || "")
     .toString()
@@ -529,9 +581,23 @@ export function getResolvedEmbeddingConfig(): ResolvedEmbeddingConfig {
     .trim();
 
   if (!embeddingApiBase) {
-    throw new Error(
-      "No embedding provider configured. Enable semantic search and select a provider in Settings → Customization.",
-    );
+    const auto = resolveAutoEmbeddingProvider();
+    if (!auto) {
+      throw new Error(
+        "No embedding provider configured. Enable semantic search and select a provider in Settings → Customization.",
+      );
+    }
+    const autoModel = explicitEmbeddingModel || auto.defaultModel;
+    const autoProviderKey = `${auto.presetId}:${auto.apiBase}`;
+    const autoCacheKey = `${autoProviderKey}:${autoModel}`;
+    return {
+      apiBase: auto.apiBase,
+      apiKey: auto.apiKey,
+      model: autoModel,
+      providerKey: autoProviderKey,
+      cacheKey: autoCacheKey,
+      attemptKey: `${autoCacheKey}:auth=${fingerprintEmbeddingSecret(auto.apiKey)}`,
+    };
   }
 
   const apiKey = resolveSeparateEmbeddingApiKey(embeddingProvider);
@@ -4525,7 +4591,9 @@ export function checkEmbeddingAvailability(): boolean {
   const embeddingProvider = (getPref("embeddingProvider") || "").trim();
   const embeddingApiBase = (getPref("embeddingApiBase") || "").trim();
 
-  if (!embeddingApiBase) return false;
+  // No dedicated endpoint: fall back to a configured provider that serves
+  // embeddings, so semantic search works without extra setup.
+  if (!embeddingApiBase) return Boolean(resolveAutoEmbeddingProvider());
 
   // Custom/local providers may not need a key
   if (embeddingProvider === "custom") return true;
@@ -4541,13 +4609,40 @@ export function getEmbeddingUnavailableReason(): string | null {
   const embeddingApiBase = (getPref("embeddingApiBase") || "").trim();
 
   if (!embeddingApiBase) {
-    return "No embedding provider configured. Select a provider in Settings → Customization → Semantic Search.";
+    if (resolveAutoEmbeddingProvider()) return null;
+    return "No embedding provider configured and no configured OpenAI or Gemini provider to reuse. Select a provider in Settings → Customization → Semantic Search.";
   }
 
   // Custom/local providers may not need a key
   if (embeddingProvider === "custom") return null;
   if (resolveSeparateEmbeddingApiKey(embeddingProvider)) return null;
   return `No API key found for your ${embeddingProvider} embedding provider. Add a key in Settings → Customization → Semantic Search.`;
+}
+
+export type SemanticSearchState = {
+  enabled: boolean;
+  /**
+   * `pref` — the user turned semantic search on explicitly.
+   * `off` — the user turned it off explicitly; nothing may override that.
+   * `auto` — no explicit choice, so availability decides.
+   */
+  source: "pref" | "auto" | "off";
+};
+
+/**
+ * Effective semantic-search state. Semantic search is on by default whenever an
+ * embedding configuration resolves (dedicated endpoint or a reusable configured
+ * provider); an explicit `false` always wins.
+ */
+export function resolveSemanticSearchState(): SemanticSearchState {
+  const raw = getPref("enableSemanticSearch") as unknown;
+  if (raw === false || raw === "false") {
+    return { enabled: false, source: "off" };
+  }
+  if (raw === true || raw === "true") {
+    return { enabled: checkEmbeddingAvailability(), source: "pref" };
+  }
+  return { enabled: checkEmbeddingAvailability(), source: "auto" };
 }
 
 /**

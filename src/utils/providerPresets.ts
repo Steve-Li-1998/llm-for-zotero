@@ -58,6 +58,13 @@ export type ProviderPreset = {
   /** Default embedding model name for providers that support embeddings. */
   defaultEmbeddingModel?: string;
   /**
+   * OpenAI-compatible base URL for this provider's /v1/embeddings endpoint.
+   * Present only when the provider can be reused for embeddings without any
+   * extra configuration; it may differ from `defaultApiBase` (Gemini serves
+   * embeddings from its OpenAI compatibility path).
+   */
+  defaultEmbeddingApiBase?: string;
+  /**
    * Whether an API key is mandatory. Absent means required. Local runtimes
    * (Ollama, LM Studio, llama.cpp, vLLM) serve unauthenticated by default, so
    * the key field, the connection test and the model catalog must all work
@@ -292,6 +299,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportsFileUploads: true,
     supportsEmbeddings: true,
     defaultEmbeddingModel: "text-embedding-3-small",
+    defaultEmbeddingApiBase: "https://api.openai.com/v1",
   },
   {
     id: "gemini",
@@ -306,6 +314,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     ),
     supportsEmbeddings: true,
     defaultEmbeddingModel: "gemini-embedding-001",
+    defaultEmbeddingApiBase:
+      "https://generativelanguage.googleapis.com/v1beta/openai",
   },
   {
     id: "anthropic",

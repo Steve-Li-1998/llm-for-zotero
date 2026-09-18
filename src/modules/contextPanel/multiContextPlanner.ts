@@ -6,7 +6,7 @@ import type {
 import {
   estimateAvailableContextBudget,
   callEmbeddings,
-  checkEmbeddingAvailability,
+  resolveSemanticSearchState,
 } from "../../utils/llmClient";
 import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
@@ -1134,7 +1134,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
   // Pre-compute query embedding once so we don't make N identical API calls
   // for N papers in the loop below.
   let precomputedQueryEmbedding: number[] | undefined;
-  if (queryPlan.semanticQuery.trim() && checkEmbeddingAvailability()) {
+  if (queryPlan.semanticQuery.trim() && resolveSemanticSearchState().enabled) {
     try {
       precomputedQueryEmbedding = (
         await callEmbeddings([queryPlan.semanticQuery])

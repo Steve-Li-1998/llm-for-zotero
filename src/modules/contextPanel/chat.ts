@@ -101,7 +101,7 @@ import {
   ReasoningEvent,
   ReasoningLevel as LLMReasoningLevel,
   UsageStats,
-  checkEmbeddingAvailability,
+  resolveSemanticSearchState,
   type ModelTurnOutcome,
 } from "../../utils/llmClient";
 import {
@@ -312,7 +312,6 @@ import {
   getLastUsedReasoningLevel,
   getLastUsedReasoningLevelForProvider,
   getSelectedModelEntry,
-  getBoolPref,
   getStringPref,
   setLastReasoningExpanded,
   setLastUsedReasoningLevelForProvider,
@@ -4659,13 +4658,9 @@ async function buildContextPlanForRequest(params: {
   });
 
   if (plan.selectedPaperCount > 0) {
-    const semanticEnabled = getBoolPref("enableSemanticSearch", false);
+    const semanticEnabled = resolveSemanticSearchState().enabled;
     const semanticTag =
-      plan.mode === "retrieval" &&
-      semanticEnabled &&
-      checkEmbeddingAvailability()
-        ? " + semantic search"
-        : "";
+      plan.mode === "retrieval" && semanticEnabled ? " + semantic search" : "";
     const modeStatus =
       plan.contextCache?.enabled && plan.contextCache.statusLabel
         ? plan.strategy === "paper-cache-full"

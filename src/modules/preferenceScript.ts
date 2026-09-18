@@ -108,6 +108,8 @@ import {
   resolveCopilotAccessToken,
   fetchCopilotModelList,
   callEmbeddings,
+  getAutoEmbeddingProviderSummary,
+  resolveSemanticSearchState,
 } from "../utils/llmClient";
 import { resetEmbeddingFailedFlags } from "../services/paperContent/pdfContext";
 import { clearRetrievalCandidateCache } from "./contextPanel/multiContextPlanner";
@@ -4733,13 +4735,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         writeEmbPref("embeddingProvider", "custom");
         return "custom";
       }
-      // "main", empty, or unset → default to "gemini" (free tier available)
-      writeEmbPref("embeddingProvider", "gemini");
-      writeEmbPref("embeddingApiBase", EMBEDDING_PRESETS.gemini.apiBase);
+      // "main", empty, or unset → adopt the provider semantic search already
+      // resolves automatically, so the card shows the configuration in force.
+      // With nothing to reuse, fall back to "gemini" (free tier available).
+      const auto = getAutoEmbeddingProviderSummary();
+      const provider =
+        auto && EMBEDDING_PRESETS[auto.providerId] ? auto.providerId : "gemini";
+      writeEmbPref("embeddingProvider", provider);
+      writeEmbPref("embeddingApiBase", EMBEDDING_PRESETS[provider].apiBase);
       if (!readEmbPref("embeddingModel")) {
-        writeEmbPref("embeddingModel", EMBEDDING_PRESETS.gemini.defaultModel);
+        writeEmbPref(
+          "embeddingModel",
+          EMBEDDING_PRESETS[provider].defaultModel,
+        );
       }
-      return "gemini";
+      return provider;
     };
 
     // Toggle visibility (same pattern as MinerU)
@@ -4749,12 +4759,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         : "none";
     };
 
-    const enabledRaw = Zotero.Prefs.get(
-      `${config.prefsPrefix}.enableSemanticSearch`,
-      true,
-    );
-    const enabled = enabledRaw === true || enabledRaw === "true";
-    semanticSearchToggle.checked = enabled;
+    // Show the effective state: with no explicit choice stored, semantic search
+    // is on whenever an embedding configuration resolves.
+    semanticSearchToggle.checked = resolveSemanticSearchState().enabled;
     syncSemanticVisibility();
 
     semanticSearchToggle.addEventListener("change", () => {

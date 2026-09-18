@@ -166,6 +166,68 @@ describe("selectStructuredCandidates", function () {
     );
   });
 
+  it("fills every requested slot when the cap empties the pool's big section", function () {
+    // Three sections holding 1, 9 and 1 chunks: the per-section cap of two
+    // leaves four candidates, two slots short of the requested six.
+    const ranked = [
+      fakeCandidate({ chunkIndex: 0, sectionIndex: 0 }),
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((chunkIndex) =>
+        fakeCandidate({ chunkIndex, sectionIndex: 1 }),
+      ),
+      fakeCandidate({ chunkIndex: 10, sectionIndex: 2 }),
+    ];
+
+    const selected = selectStructuredCandidates({
+      ranked,
+      topK: 6,
+      queryTerms: ["nothing"],
+      sections: sectionList(3),
+      hasSignal: true,
+    });
+
+    assert.lengthOf(selected, 6);
+    assert.includeMembers(
+      indexesOf(selected),
+      [0, 1, 2, 10],
+      "the capped selection is kept",
+    );
+    assert.includeMembers(
+      indexesOf(selected),
+      [3, 4],
+      "the empty slots are back-filled in rank order, cap or no cap",
+    );
+  });
+
+  it("skips the structure rules for a read of fewer than four chunks", function () {
+    const ranked = [
+      fakeCandidate({ chunkIndex: 0, sectionIndex: 0 }),
+      fakeCandidate({ chunkIndex: 1, sectionIndex: 0 }),
+      fakeCandidate({ chunkIndex: 9, sectionIndex: 2 }),
+    ];
+
+    const selected = selectStructuredCandidates({
+      ranked,
+      topK: 2,
+      queryTerms: ["kinematic"],
+      sections: sectionList(3, {
+        0: "1 Introduction",
+        1: "3 Examples",
+        2: "2.2 Kinematic condition",
+      }),
+      hasSignal: true,
+    });
+
+    assert.deepEqual(
+      indexesOf(selected),
+      [0, 1],
+      "a narrow read is plain ranked order",
+    );
+    assert.isTrue(
+      selected.every((candidate) => !candidate.why?.structureRule),
+      "no structure rule claims a slot in a narrow read",
+    );
+  });
+
   it("guarantees a slot for a section whose heading matches the query", function () {
     const ranked = [
       ...[0, 1, 2, 3, 4, 5].map((chunkIndex) =>
@@ -454,11 +516,15 @@ describe("bounded section prior", function () {
       const demoted = candidates.find(
         (candidate) => candidate.chunkIndex === chunkIndex,
       );
-      assert.equal(
-        demoted?.why?.priorShift,
-        Number.POSITIVE_INFINITY,
+      assert.isTrue(
+        demoted?.why?.demoted,
         `chunk ${chunkIndex} is demoted to the end`,
       );
+      // The explanation travels to the model as JSON, where an infinite
+      // rank shift would arrive as null.
+      const serialized = JSON.parse(JSON.stringify(demoted?.why || {}));
+      assert.equal(serialized.priorShift, 0);
+      assert.isTrue(serialized.demoted);
     }
   });
 
@@ -503,9 +569,8 @@ describe("bounded section prior", function () {
       0,
       "prose with an inline citation and a received-date line keeps its rank",
     );
-    assert.equal(
-      byIndex.get(1)?.why?.priorShift,
-      Number.POSITIVE_INFINITY,
+    assert.isTrue(
+      byIndex.get(1)?.why?.demoted,
       "six numbered reference entries are a reference list",
     );
     assert.equal(indexesOf(candidates)[0], 0);

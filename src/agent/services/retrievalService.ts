@@ -29,6 +29,8 @@ type RetrievalResult = {
   sourceLabel: string;
   text: string;
   score: number;
+  /** Fused rank score, before the section prior: the cross-paper tiebreak. */
+  hybridScore: number;
   sourceStart?: number;
   sourceEnd?: number;
   sourceFingerprint?: string;
@@ -217,6 +219,7 @@ export class RetrievalService {
         sourceLabel: formatPaperSourceLabel(paperContext),
         text: candidate.chunkText,
         score: candidate.evidenceScore,
+        hybridScore: candidate.hybridScore,
         sourceStart: candidate.sourceStart,
         sourceEnd: candidate.sourceEnd,
         sourceFingerprint: candidate.sourceFingerprint,
@@ -227,7 +230,15 @@ export class RetrievalService {
       this.evidenceCache.set(cacheKey, paperResults);
       results.push(...paperResults);
     }
-    results.sort((a, b) => b.score - a.score || a.chunkIndex - b.chunkIndex);
+    // Evidence mode gives every paper's rank-1 chunk the same score, so the
+    // fused score decides which paper's best chunk leads; the chunk index is
+    // only the last resort.
+    results.sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.hybridScore - a.hybridScore ||
+        a.chunkIndex - b.chunkIndex,
+    );
     return results.slice(0, topK);
   }
 

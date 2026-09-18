@@ -94,11 +94,16 @@ export type RetrievalExplanation = {
   embeddingRank?: number;
   /**
    * Rank shift applied to the fused rank: `-2` for a boosted section kind,
-   * `0` for neutral kinds, `Number.POSITIVE_INFINITY` for demoted chunks
-   * (references, captions, appendix, short chunks, citation lists). JSON
-   * consumers see `null` for the infinite case.
+   * `0` for neutral kinds and for demoted chunks, whose place is described by
+   * {@link demoted} instead of by a shift.
    */
   priorShift: number;
+  /**
+   * Set when the chunk sorts behind every other chunk of its document
+   * (references, captions, appendix, short chunks, reference lists). It stays
+   * a candidate: a reference-locked read can still pull it back.
+   */
+  demoted?: true;
   structureRule?: RetrievalStructureRule;
   kindSource?: "manifest" | "heuristic";
 };

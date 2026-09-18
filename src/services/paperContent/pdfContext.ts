@@ -2258,9 +2258,16 @@ const SECTION_PRIOR_RANK_SHIFT = -2;
 /** Chunks shorter than this are evidence-poor whatever their section says. */
 const MIN_EVIDENCE_WORD_COUNT = 12;
 
+/** The prior a chunk carries: a bounded rank shift, or a demotion. */
+type SectionPrior = Pick<RetrievalExplanation, "priorShift" | "demoted">;
+
+/** A demoted chunk sorts behind every other chunk; its shift is not a number. */
+const DEMOTED_PRIOR: SectionPrior = { priorShift: 0, demoted: true };
+const NEUTRAL_PRIOR: SectionPrior = { priorShift: 0 };
+
 /**
- * Bounded section prior: a rank shift, not a score. Demoted chunks report
- * `Number.POSITIVE_INFINITY` and sort to the end; they stay candidates so a
+ * Bounded section prior: a rank shift, not a score. Demoted chunks carry
+ * `demoted: true` and sort to the end; they stay candidates so a
  * reference-locked read can still pull a caption or a reference entry back.
  */
 function priorShiftFor(params: {
@@ -2268,22 +2275,20 @@ function priorShiftFor(params: {
   chunkKind?: PdfChunkKind;
   kindSource?: "manifest" | "heuristic";
   intent?: QueryIntent;
-}): number {
+}): SectionPrior {
   const chunkText = normalizeEvidenceText(params.chunkText);
   const wordCount = chunkText ? chunkText.split(/\s+/).length : 0;
-  if (wordCount < MIN_EVIDENCE_WORD_COUNT) return Number.POSITIVE_INFINITY;
-  if (looksLikeReferenceList(params.chunkText)) {
-    return Number.POSITIVE_INFINITY;
-  }
+  if (wordCount < MIN_EVIDENCE_WORD_COUNT) return DEMOTED_PRIOR;
+  if (looksLikeReferenceList(params.chunkText)) return DEMOTED_PRIOR;
 
   const profile = SECTION_BOOST_PROFILES[params.intent || "general"];
   const kind = params.chunkKind as PdfChunkKind | undefined;
-  if (!kind) return 0;
-  if (profile.demote.includes(kind)) return Number.POSITIVE_INFINITY;
+  if (!kind) return NEUTRAL_PRIOR;
+  if (profile.demote.includes(kind)) return DEMOTED_PRIOR;
   if (profile.boost.includes(kind) && params.kindSource === "manifest") {
-    return SECTION_PRIOR_RANK_SHIFT;
+    return { priorShift: SECTION_PRIOR_RANK_SHIFT };
   }
-  return 0;
+  return NEUTRAL_PRIOR;
 }
 
 // ── Structure stage ──────────────────────────────────────────────────────────
@@ -2299,7 +2304,7 @@ function sectionIdForIndex(sectionIndex: number): string {
 }
 
 function isDemotedCandidate(candidate: PaperContextCandidate): boolean {
-  return candidate.why?.priorShift === Number.POSITIVE_INFINITY;
+  return candidate.why?.demoted === true;
 }
 
 function setStructureRule(
@@ -2342,6 +2347,11 @@ export function selectStructuredCandidates(params: {
     if (restricted.length) pool = restricted;
   }
   if (!pool.length) return [];
+  // A read of fewer than four chunks has no room for structure: a reserved
+  // heading slot or a per-section cap would displace the best match instead
+  // of diversifying around it. Reference locks, preferred chunks and the body
+  // fallback still apply — they run after this stage.
+  if (topK < 4) return pool.slice(0, topK);
 
   const poolOrder = new Map(
     pool.map((candidate, index) => [candidate, index] as const),
@@ -2443,6 +2453,17 @@ export function selectStructuredCandidates(params: {
         take(neighbour);
         setStructureRule(neighbour, "neighbour");
       }
+    }
+  }
+
+  // (iv) Back-fill. The per-section cap drops candidates without replacing
+  // them, so a pool concentrated in one section can deliver fewer chunks than
+  // the caller asked for. Membership rules shape a read; they never shrink it.
+  if (selected.length < topK) {
+    for (const candidate of pool) {
+      if (selected.length >= topK) break;
+      if (chosen.has(candidate)) continue;
+      take(candidate);
     }
   }
 
@@ -2745,15 +2766,14 @@ export async function buildPaperRetrievalCandidates(
         embeddingRank: embedRank ? embedRank[idx] : undefined,
         // A general read never reorders by section: the prior exists to break
         // ties inside an evidence read, nothing more.
-        priorShift:
-          retrievalMode === "evidence"
-            ? priorShiftFor({
-                chunkText: chunks[chunk.index],
-                chunkKind: meta?.chunkKind,
-                kindSource: meta?.kindSource,
-                intent,
-              })
-            : 0,
+        ...(retrievalMode === "evidence"
+          ? priorShiftFor({
+              chunkText: chunks[chunk.index],
+              chunkKind: meta?.chunkKind,
+              kindSource: meta?.kindSource,
+              intent,
+            })
+          : NEUTRAL_PRIOR),
         kindSource: meta?.kindSource,
       },
     };
@@ -2775,6 +2795,7 @@ export async function buildPaperRetrievalCandidates(
   const referenceTier = new Map<PaperContextCandidate, number>();
   for (const candidate of candidates) {
     const priorShift = candidate.why?.priorShift ?? 0;
+    const demoted = candidate.why?.demoted === true;
     // A document reference the query named outranks the section prior: a
     // high-confidence match is the read, medium and neighbours only move up.
     const referenceShift =
@@ -2786,7 +2807,7 @@ export async function buildPaperRetrievalCandidates(
     const rank = fusedRank.get(candidate) || 0;
     // A prior may improve a rank, never overtake the best lexical match: a
     // boosted chunk stops at rank 2 unless it already won the fusion.
-    const priorRank = !Number.isFinite(priorShift)
+    const priorRank = demoted
       ? rank + demoteRankShift
       : priorShift < 0
         ? Math.max(rank + priorShift, rank > 1 ? 2 : 1)

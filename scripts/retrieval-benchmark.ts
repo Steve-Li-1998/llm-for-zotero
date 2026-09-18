@@ -365,9 +365,10 @@ function printInventory(
   }
 }
 
-function formatPriorShift(shift: number | undefined): string {
-  if (shift === undefined) return "n/a";
-  if (!Number.isFinite(shift)) return "demoted";
+function formatPriorShift(why: RankedChunk["why"]): string {
+  if (!why) return "n/a";
+  if (why.demoted) return "demoted";
+  const shift = why.priorShift;
   return shift > 0 ? `+${shift}` : String(shift);
 }
 
@@ -376,7 +377,7 @@ function explainRow(row: RankedChunk): string {
     `bm25 ${row.bm25Score.toFixed(3)}`,
     `rank ${row.why ? row.why.bm25Rank : "?"}`,
     `fused ${row.hybridScore.toFixed(4)}`,
-    `prior ${formatPriorShift(row.why?.priorShift)} (${row.chunkKind || "-"}/${row.why?.kindSource || "-"})`,
+    `prior ${formatPriorShift(row.why)} (${row.chunkKind || "-"}/${row.why?.kindSource || "-"})`,
   ];
   if (row.why?.embeddingRank) parts.push(`embedRank ${row.why.embeddingRank}`);
   if (row.why?.structureRule) parts.push(`rule ${row.why.structureRule}`);

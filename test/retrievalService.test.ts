@@ -156,4 +156,72 @@ describe("RetrievalService", function () {
     assert.lengthOf(results, 1);
     assert.equal(results[0].text, "The paper uses calcium imaging.");
   });
+  it("breaks a cross-paper score tie by the fused hybrid score", async function () {
+    const papers: PaperContextRef[] = [
+      {
+        itemId: 1,
+        contextItemId: 11,
+        title: "Weak match",
+        firstCreator: "Adams",
+        year: "2021",
+      },
+      {
+        itemId: 2,
+        contextItemId: 22,
+        title: "Strong match",
+        firstCreator: "Baker",
+        year: "2022",
+      },
+    ];
+    const pdfContext = {
+      title: "Mock Paper",
+      chunks: [],
+      chunkMeta: [],
+      chunkStats: [],
+      docFreq: {},
+      avgChunkLength: 0,
+      fullLength: 0,
+    } as PdfContext;
+    // Every paper's rank-1 chunk scores 1/61 in evidence mode, so the sort
+    // used to fall through to the chunk index and rank the weakest paper's
+    // early chunk first.
+    const tiedScore = 1 / 61;
+    const retrieval = new RetrievalService(
+      {
+        ensurePaperContext: async () => pdfContext,
+      } as any,
+      async (paperContext) => {
+        const strong = paperContext.itemId === 2;
+        return [
+          {
+            paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+            itemId: paperContext.itemId,
+            contextItemId: paperContext.contextItemId,
+            title: paperContext.title || "",
+            chunkIndex: strong ? 7 : 2,
+            chunkText: strong
+              ? "Place fields remained stable across the whole recording block."
+              : "The apparatus is described in an earlier report.",
+            estimatedTokens: 12,
+            bm25Score: strong ? 4.2 : 0.4,
+            embeddingScore: 0,
+            hybridScore: strong ? 0.0161 : 0.0129,
+            evidenceScore: tiedScore,
+          } as PaperContextCandidate,
+        ];
+      },
+    );
+
+    const results = await retrieval.retrieveEvidence({
+      papers,
+      question: "how stable are place fields across days",
+      topK: 2,
+      perPaperTopK: 1,
+    });
+
+    assert.lengthOf(results, 2);
+    assert.equal(results[0].chunkIndex, 7);
+    assert.equal(results[0].paperContext.itemId, 2);
+    assert.equal(results[1].paperContext.itemId, 1);
+  });
 });

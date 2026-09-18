@@ -260,13 +260,26 @@ describe("read stop guidance", function () {
     assert.notInclude(guidance.reason, "missing dimension");
   });
 
-  it("stops targeted retrieval when a read adds nothing new", function () {
+  it("points a targeted read that adds nothing new at the outline", function () {
     const guidance = resolveReadStopGuidance(targeted, {
       frontier: "unchanged",
       readsThisTurn: 2,
     });
     assert.equal(guidance.recommendation, "answer_now");
+    assert.equal(
+      guidance.reason,
+      "This read added no new source text. If a specific claim still lacks support, read one unread section by sectionId from the outline; otherwise answer now from the delivered evidence.",
+    );
+  });
+
+  it("keeps the stop-now wording for overview reads that add nothing new", function () {
+    const guidance = resolveReadStopGuidance(
+      { coverage: "overview", readBudget: 1 },
+      { frontier: "unchanged", readsThisTurn: 1 },
+    );
+    assert.equal(guidance.recommendation, "answer_now");
     assert.include(guidance.reason, "do not retrieve again for this question");
+    assert.notInclude(guidance.reason, "sectionId");
   });
 
   it("stops targeted retrieval once the read budget is used", function () {

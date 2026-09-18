@@ -8152,7 +8152,7 @@ describe("AgentRuntime evidence stop policy", function () {
       assert.equal(last.paperEvidenceProgress?.recommendation, "answer_now");
       assert.include(
         last.paperEvidenceProgress?.reason || "",
-        "do not retrieve again",
+        "read one unread section by sectionId from the outline",
       );
     } finally {
       restoreDb();

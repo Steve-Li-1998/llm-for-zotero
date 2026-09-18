@@ -218,7 +218,9 @@ export function resolveReadStopGuidance(
     return {
       recommendation: "answer_now",
       reason:
-        "This read added no new source text. Answer now from the evidence already held and delivered; do not retrieve again for this question.",
+        policy.coverage === "targeted"
+          ? "This read added no new source text. If a specific claim still lacks support, read one unread section by sectionId from the outline; otherwise answer now from the delivered evidence."
+          : "This read added no new source text. Answer now from the evidence already held and delivered; do not retrieve again for this question.",
     };
   }
   if (state.readsThisTurn >= policy.readBudget) {

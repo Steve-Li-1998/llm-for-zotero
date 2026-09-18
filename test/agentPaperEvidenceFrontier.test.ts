@@ -409,7 +409,7 @@ describe("PaperEvidenceFrontier stop guidance by requested coverage", function (
     );
     assert.include(
       (reused?.content as any).paperEvidenceProgress.reason,
-      "do not retrieve again",
+      "read one unread section by sectionId from the outline",
     );
   });
 

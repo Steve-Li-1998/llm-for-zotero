@@ -124,6 +124,13 @@ describe("instruction harness inventory", function () {
     assert.include(DEFAULT_SYSTEM_PROMPT, RESEARCH_RESPONSE_FORMAT_GUIDANCE);
     assert.include(CORE_RESEARCH_CONTRACT, "concise but thorough");
     assert.include(
+      PAPER_CITATION_CONTRACT,
+      "whether the paper itself states the reason",
+    );
+    for (const prompt of [persona, DEFAULT_SYSTEM_PROMPT]) {
+      assert.include(prompt, "derived from the paper's stated premises");
+    }
+    assert.include(
       RUNTIME_CAPABILITY_CONTEXT,
       "verify required output before claiming success",
     );

@@ -1,8 +1,6 @@
 import { assert } from "chai";
-import * as mineruChunking from "../src/utils/mineruChunking";
 import {
   buildMineruPageRanges,
-  extractMineruPageCountFromDumpData,
   mergeMineruChunkResults,
 } from "../src/utils/mineruChunking";
 
@@ -14,60 +12,21 @@ function file(relativePath: string, content: string) {
 }
 
 describe("mineruChunking", function () {
-  it("finds pdftk installed on a non-system Windows PATH directory", function () {
-    const buildCandidates = (
-      mineruChunking as unknown as {
-        buildMineruExecutablePathCandidates?: (
-          pathValue: string,
-          executableName: string,
-          isWindows: boolean,
-        ) => string[];
-      }
-    ).buildMineruExecutablePathCandidates;
-
-    assert.isFunction(buildCandidates);
-    assert.include(
-      buildCandidates!(
-        "C:\\Windows\\System32;E:\\PDFtk\\PDFtk Server\\bin\\;",
-        "pdftk",
-        true,
-      ),
-      "E:\\PDFtk\\PDFtk Server\\bin\\pdftk.exe",
+  it("rejects a missing Markdown image even if absent from the content list", function () {
+    assert.throws(
+      () =>
+        mergeMineruChunkResults([
+          {
+            range: { index: 0, startPage: 1, endPage: 1, total: 1 },
+            result: {
+              mdContent: "![lost](images/missing.png)",
+              files: [file("content_list.json", "[]")],
+            },
+          },
+        ]),
+      /missing.*asset/i,
     );
   });
-
-  it("directs pdftk page-count output to a file instead of stdout", function () {
-    const buildArguments = (
-      mineruChunking as unknown as {
-        buildMineruDumpDataArguments?: (
-          pdfPath: string,
-          outputPath: string,
-        ) => string[];
-      }
-    ).buildMineruDumpDataArguments;
-
-    assert.isFunction(buildArguments);
-    assert.deepEqual(
-      buildArguments!("E:\\papers\\book.pdf", "C:\\Temp\\pages.txt"),
-      ["E:\\papers\\book.pdf", "dump_data", "output", "C:\\Temp\\pages.txt"],
-    );
-  });
-
-  it("prefers the authoritative pdftk count over heuristic PDF scanning", function () {
-    const selectPageCount = (
-      mineruChunking as unknown as {
-        selectMineruPageCount?: (
-          detectedCount: number | null,
-          pdftkCount: number | null,
-        ) => number | null;
-      }
-    ).selectMineruPageCount;
-
-    assert.isFunction(selectPageCount);
-    assert.equal(selectPageCount!(32, 714), 714);
-    assert.equal(selectPageCount!(32, null), 32);
-  });
-
   it("keeps PDFs at or below 200 pages in one range", function () {
     assert.deepEqual(buildMineruPageRanges(199), [
       { index: 0, startPage: 1, endPage: 199, total: 199 },
@@ -83,41 +42,6 @@ describe("mineruChunking", function () {
       { index: 1, startPage: 201, endPage: 400, total: 401 },
       { index: 2, startPage: 401, endPage: 401, total: 401 },
     ]);
-  });
-
-  it("reads page counts from pdftk dump_data output", function () {
-    assert.equal(
-      extractMineruPageCountFromDumpData(
-        "InfoBegin\nNumberOfPages: 714\nInfoEnd\n",
-      ),
-      714,
-    );
-    assert.equal(
-      extractMineruPageCountFromDumpData(
-        "InfoBegin\nNumberOfPages: 402\nInfoEnd\n",
-      ),
-      402,
-    );
-  });
-
-  it("rejects a split PDF whose actual page count does not match its range", function () {
-    const validateSplitPageCount = (
-      mineruChunking as unknown as {
-        validateMineruSplitPageCount?: (
-          actualPageCount: number | null,
-          range: { startPage: number; endPage: number },
-        ) => void;
-      }
-    ).validateMineruSplitPageCount;
-
-    assert.isFunction(validateSplitPageCount);
-    assert.doesNotThrow(() =>
-      validateSplitPageCount!(200, { startPage: 201, endPage: 400 }),
-    );
-    assert.throws(
-      () => validateSplitPageCount!(199, { startPage: 201, endPage: 400 }),
-      /expected 200 pages.*found 199/i,
-    );
   });
 
   it("merges chunks while isolating assets and offsetting page indexes", function () {

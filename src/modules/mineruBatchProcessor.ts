@@ -1,23 +1,24 @@
+import { getMineruCheckpointRoot } from "../services/mineru/mineruCheckpoint";
 import {
   parsePdfWithMineru,
+  publishMineruParsedResult,
+} from "../services/mineru/mineruParser";
+import {
   MineruRateLimitError,
   MineruCancelledError,
   MineruPageLimitError,
 } from "../utils/mineruClient";
-import {
-  writeMineruCacheFiles,
-  writeMineruSourceProvenanceForAttachment,
-  getMineruCacheDir,
-} from "../services/mineru/mineruCache";
+import { getMineruCacheDir } from "../services/mineru/mineruCache";
 import { invalidateCachedContextText } from "../services/paperContent/pdfContext";
 import {
   setItemProcessing,
   setItemCached,
   setItemFailed,
-  clearAllCachedStatuses,
-  clearItemCachedStatus,
+  clearAllStatuses,
+  getAllProcessingIds,
   clearItemStatus,
   runMineruTaskOnce,
+  cancelMineruTaskAndWait,
 } from "./mineruProcessingStatus";
 import {
   cleanSyncedMineruPackages,
@@ -367,19 +368,17 @@ async function processNext(): Promise<void> {
           pdfPath as string,
           report,
           sharedSignal,
-          entry.overrideEligibility
-            ? {}
-            : { maxPages: getMineruMaxAutoPages() },
+          {
+            attachmentId: entry.attachmentId,
+            ...(entry.overrideEligibility
+              ? {}
+              : { maxPages: getMineruMaxAutoPages() }),
+          },
         );
         if (sharedSignal?.aborted) throw new MineruCancelledError();
         if (!parsed?.mdContent) return parsed;
 
-        await writeMineruCacheFiles(
-          entry.attachmentId,
-          parsed.mdContent,
-          parsed.files,
-        );
-        await writeMineruSourceProvenanceForAttachment(pdfItem);
+        await publishMineruParsedResult(pdfItem, parsed, sharedSignal);
         setItemCached(entry.attachmentId);
         void publishMineruCachePackageForAttachment(entry.attachmentId).then(
           (published) => {
@@ -588,6 +587,7 @@ export async function resetBatchQueue(): Promise<void> {
 
 export async function deleteAllMineruCache(): Promise<void> {
   pauseBatchProcessing();
+  await Promise.all(getAllProcessingIds().map(cancelMineruTaskAndWait));
 
   const cacheDir = getMineruCacheDir();
   const IOUtils = (
@@ -603,19 +603,24 @@ export async function deleteAllMineruCache(): Promise<void> {
   if (IOUtils?.remove) {
     try {
       await IOUtils.remove(cacheDir, { recursive: true, ignoreAbsent: true });
+      await IOUtils.remove(getMineruCheckpointRoot(), {
+        recursive: true,
+        ignoreAbsent: true,
+      });
     } catch {
       /* ignore */
     }
   }
 
   await cleanSyncedMineruPackages();
-  clearAllCachedStatuses();
+  clearAllStatuses();
   await resetBatchQueue();
 }
 
 export async function deleteMineruCacheForItem(itemId: number): Promise<void> {
+  await cancelMineruTaskAndWait(itemId);
   await deleteMineruCacheArtifactsForAttachment(itemId);
-  clearItemCachedStatus(itemId);
+  clearItemStatus(itemId);
   // If queue is built, we need to re-add this item to the queue
   // Simplest approach: reset and rebuild
   if (queueBuilt) {

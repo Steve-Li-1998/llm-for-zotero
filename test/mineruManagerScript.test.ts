@@ -47,6 +47,12 @@ function item(
 }
 
 describe("mineruManagerScript", function () {
+  it("preserves partial parent status until all children complete", function () {
+    assert.equal(
+      getMineruParentDisplayStatus([child("cached"), child("partial")]),
+      "partial",
+    );
+  });
   describe("filterMineruItemsForSearch", function () {
     const items = [
       item(1, {

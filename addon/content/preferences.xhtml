@@ -12,20 +12,22 @@
     <html:link rel="localization" href="__addonRef__-preferences.ftl" />
   </linkset>
   <html:style>
-    /* The preferences window is a chrome document, whose used user-select value
-    roots at `none` — hints, helper text, and status lines must opt back in so
-    users can copy URLs and error details out of them. Interactive controls opt
-    out again. */ /* Field and edge colours for the WHOLE preferences pane, not
-    just the two tabs built from .llm-pref-*: every text input, dropdown and
-    textarea on Customization and MinerU takes them too, so the pane reads as
-    one design. Zotero never defines --stroke-secondary, so the borders those
-    tabs used to draw fell back to a light #c8c8c8 on a dark pane. */
-    #__addonRef__-prefs { --llm-pref-surface: #f4f4f4; --llm-pref-head: #ffffff;
-    --llm-pref-field: #ffffff; --llm-pref-stroke: #dadada; } @media
-    (prefers-color-scheme: dark) { #__addonRef__-prefs { --llm-pref-surface:
-    #3a3a3a; --llm-pref-head: #282828; --llm-pref-field: #282828;
-    --llm-pref-stroke: #4f4f4f; } } #__addonRef__-prefs .llm-pref-fields
-    :is(textarea, select,
+    .llm-mineru-page-limit { width: 88px; height: 26px; margin: 0; padding: 3px
+    8px; font-family: inherit; font-size: 12px; text-align: left; border-radius:
+    6px; box-sizing: border-box; flex: 0 0 88px; } /* The preferences window is
+    a chrome document, whose used user-select value roots at `none` — hints,
+    helper text, and status lines must opt back in so users can copy URLs and
+    error details out of them. Interactive controls opt out again. */ /* Field
+    and edge colours for the WHOLE preferences pane, not just the two tabs built
+    from .llm-pref-*: every text input, dropdown and textarea on Customization
+    and MinerU takes them too, so the pane reads as one design. Zotero never
+    defines --stroke-secondary, so the borders those tabs used to draw fell back
+    to a light #c8c8c8 on a dark pane. */ #__addonRef__-prefs {
+    --llm-pref-surface: #f4f4f4; --llm-pref-head: #ffffff; --llm-pref-field:
+    #ffffff; --llm-pref-stroke: #dadada; } @media (prefers-color-scheme: dark) {
+    #__addonRef__-prefs { --llm-pref-surface: #3a3a3a; --llm-pref-head: #282828;
+    --llm-pref-field: #282828; --llm-pref-stroke: #4f4f4f; } }
+    #__addonRef__-prefs .llm-pref-fields :is(textarea, select,
     input:not([type="checkbox"]):not([type="radio"]):not([type="range"])) {
     background: var(--llm-pref-field); color: FieldText; border: 1px solid
     var(--llm-pref-stroke); } #__addonRef__-prefs { -moz-user-select: text;
@@ -2099,6 +2101,18 @@
                 ></html:span>
                 Processing
                 <html:span
+                  id="__addonRef__-mineru-partial-legend-dot"
+                  style="
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 50%;
+                    background: #8b5cf6;
+                    display: inline-block;
+                    margin-left: 8px;
+                  "
+                ></html:span>
+                Partial
+                <html:span
                   style="
                     width: 8px;
                     height: 8px;
@@ -2447,27 +2461,37 @@
                     "
                   >
                     <html:label
-                      for="__addonRef__-mineru-max-auto-pages"
+                      for="__addonRef__-mineru-max-auto-pages-preset"
                       style="font-weight: 600"
                     >
                       Skip files over
                     </html:label>
+                    <html:select
+                      id="__addonRef__-mineru-max-auto-pages-preset"
+                      class="llm-mineru-page-limit"
+                    >
+                      <html:option value="100">100</html:option>
+                      <html:option value="200">200</html:option>
+                      <html:option value="500">500</html:option>
+                      <html:option value="1000">1000</html:option>
+                      <html:option value="0">Unlimited</html:option>
+                      <html:option value="custom">Customized</html:option>
+                    </html:select>
                     <html:input
                       id="__addonRef__-mineru-max-auto-pages"
+                      aria-label="Custom page limit"
+                      hidden="hidden"
                       type="text"
                       inputmode="numeric"
                       pattern="[0-9]*"
                       placeholder="100"
-                      style="
-                        width: 46px;
-                        padding: 3px 6px;
-                        font-size: 13px;
-                        border-radius: 5px;
-                        box-sizing: border-box;
-                        text-align: right;
-                      "
+                      class="llm-mineru-page-limit"
                     ></html:input>
-                    <html:span style="font-weight: 600">pages</html:span>
+                    <html:span
+                      id="__addonRef__-mineru-max-auto-pages-unit"
+                      style="font-weight: 600"
+                      >pages</html:span
+                    >
                   </html:div>
                   <html:span
                     style="

@@ -1,3 +1,11 @@
+import {
+  createPdfFixture,
+  createPdfWithHiddenPageCount,
+} from "./helpers/pdfFixture";
+import {
+  installPdfWorkerTestHost,
+  closePdfWorkersForTests,
+} from "./helpers/pdfWorkerHost";
 import { assert } from "chai";
 import {
   deleteMineruCacheForItem,
@@ -50,10 +58,7 @@ type MockItem = {
 };
 
 function pdfText(pageCount: number): string {
-  return `%PDF-1.7
-1 0 obj
-<< /Type /Pages /Count ${pageCount} /Kids [] >>
-endobj`;
+  return new TextDecoder().decode(createPdfFixture(pageCount));
 }
 
 function normalizePath(path: string): string {
@@ -122,6 +127,7 @@ function setupZotero(
       }
     },
   };
+  installPdfWorkerTestHost();
   return { files };
 }
 
@@ -156,16 +162,18 @@ async function waitForBatchState(
   assert.fail("Timed out waiting for MinerU batch state");
 }
 
-function setupAuthoritativePageCount(
+async function setupAuthoritativePageCount(
   estimatedPages: number | null,
   maxPages = 100,
 ) {
   const pdf = createRawPdf();
   pdf.getFilePathAsync = async () => "/tmp/authoritative.pdf";
-  const { files } = setupZotero(new Map([[pdf.id, pdf]]), {
+  setupZotero(new Map([[pdf.id, pdf]]), {
     files: {
       "/tmp/authoritative.pdf":
-        estimatedPages === null ? "%PDF-1.7" : pdfText(estimatedPages),
+        estimatedPages === null
+          ? await createPdfWithHiddenPageCount(412)
+          : createPdfFixture(412, estimatedPages),
     },
     pref: (key) => {
       if (key.endsWith(".mineruApiKey")) return "test-key";
@@ -173,7 +181,6 @@ function setupAuthoritativePageCount(
       return undefined;
     },
   });
-  const splitPageCounts = new Map<string, number>();
   let requestCount = 0;
   (globalThis as any).Zotero.HTTP = {
     request: async () => {
@@ -181,43 +188,6 @@ function setupAuthoritativePageCount(
       // Stop at the upload boundary without requiring a cloud connection.
       return { status: 429, responseText: "" };
     },
-  };
-  (globalThis as any).ChromeUtils = {
-    importESModule: () => ({
-      Subprocess: {
-        call: async ({ arguments: args }: { arguments: string[] }) => {
-          let stdout = "";
-          if (args[0] === "pdftk") {
-            stdout = "/mock/pdftk\n";
-          } else if (args[1] === "dump_data") {
-            files.set(
-              args[3],
-              encoder.encode(
-                `NumberOfPages: ${splitPageCounts.get(args[0]) ?? 412}\n`,
-              ),
-            );
-          } else if (args[1] === "cat") {
-            const [start, end] = args[2].split("-").map(Number);
-            splitPageCounts.set(args[4], end - start + 1);
-            files.set(args[4], encoder.encode("%PDF-1.7"));
-          } else {
-            throw new Error(`Unexpected pdftk arguments: ${args}`);
-          }
-          return {
-            stdout: {
-              readString: async () => {
-                const value = stdout;
-                stdout = "";
-                return value;
-              },
-            },
-            stderr: { readString: async () => "" },
-            wait: async () => ({ exitCode: 0 }),
-            kill: () => {},
-          };
-        },
-      },
-    }),
   };
   return { pdf, getRequestCount: () => requestCount };
 }
@@ -236,7 +206,8 @@ describe("mineruBatchProcessor", function () {
     restoreRetrievalInvalidator = null;
   });
 
-  afterEach(function () {
+  afterEach(async function () {
+    await closePdfWorkersForTests();
     clearAllStatuses();
     clearMineruEligibilityCacheForTests();
     delete (globalThis as unknown as { Zotero?: unknown }).Zotero;
@@ -247,7 +218,7 @@ describe("mineruBatchProcessor", function () {
 
   it("preserves a confirmed selected-item override when resuming its queue", async function () {
     // Exercise the first selected queue before Start All has built any queue.
-    const { pdf, getRequestCount } = setupAuthoritativePageCount(412);
+    const { pdf, getRequestCount } = await setupAuthoritativePageCount(412);
     await processSelectedItems([pdf.id], { overrideEligibility: true });
     await waitForBatchState((state) => !state.running);
     assert.equal(getRequestCount(), 1);
@@ -260,9 +231,25 @@ describe("mineruBatchProcessor", function () {
   });
 
   for (const action of ["all", "selected", "filtered"] as const) {
+    it(`allows an Unlimited document through ${action} without a filter override`, async function () {
+      const { pdf, getRequestCount } = await setupAuthoritativePageCount(
+        412,
+        0,
+      );
+      await resetBatchQueue();
+      if (action === "all") await startBatchProcessing();
+      else await processSelectedItems([pdf.id], { overrideEligibility: false });
+      await waitForBatchState((state) => !state.running);
+      assert.equal(
+        getRequestCount(),
+        1,
+        "reaches chunk upload without bypassing eligibility",
+      );
+    });
     for (const estimate of [null, 50]) {
       it(`skips an authoritative over-limit PDF in ${action} with estimate ${estimate}`, async function () {
-        const { pdf, getRequestCount } = setupAuthoritativePageCount(estimate);
+        const { pdf, getRequestCount } =
+          await setupAuthoritativePageCount(estimate);
         await resetBatchQueue();
         if (action === "all") {
           await startBatchProcessing();
@@ -301,7 +288,8 @@ describe("mineruBatchProcessor", function () {
 
   for (const estimate of [null, 50, 412]) {
     it(`honors a confirmed selected-item override with estimate ${estimate}`, async function () {
-      const { pdf, getRequestCount } = setupAuthoritativePageCount(estimate);
+      const { pdf, getRequestCount } =
+        await setupAuthoritativePageCount(estimate);
       await resetBatchQueue();
       await processSelectedItems([pdf.id], { overrideEligibility: true });
       await waitForBatchState((state) => !state.running);
@@ -310,9 +298,9 @@ describe("mineruBatchProcessor", function () {
     });
   }
 
-  for (const limit of [412, 500]) {
+  for (const limit of [0, 412, 500]) {
     it(`allows ordinary batch processing with an automatic limit of ${limit}`, async function () {
-      const { getRequestCount } = setupAuthoritativePageCount(50, limit);
+      const { getRequestCount } = await setupAuthoritativePageCount(50, limit);
       await resetBatchQueue();
       await startBatchProcessing();
       await waitForBatchState((state) => !state.running);

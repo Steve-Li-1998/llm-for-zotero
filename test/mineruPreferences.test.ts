@@ -14,6 +14,13 @@ describe("MinerU preferences", function () {
     i18n = readFileSync("src/utils/i18n.ts", "utf8");
   });
 
+  it("includes Partial in the status legend with the matching purple dot", function () {
+    assert.match(
+      preferences,
+      /Processing[\s\S]*?#8b5cf6;[\s\S]*?Partial[\s\S]*?Failed/,
+    );
+  });
+
   it("renders a segmented cloud/local mode chooser instead of the old local checkbox", function () {
     assert.include(preferences, "__addonRef__-mineru-mode-segmented");
     assert.include(preferences, 'role="group"');
@@ -41,6 +48,20 @@ describe("MinerU preferences", function () {
     assert.include(preferences, '<html:option value="vlm">vlm (recommended)');
     assert.include(preferences, "vlm uses a vision-language model");
     assert.include(prefs, 'pref("mineruCloudModel", "vlm");');
+  });
+
+  it("offers page-limit presets, Unlimited, and an accessible custom input", function () {
+    const selector = preferences.match(
+      /<html:select\s+id="__addonRef__-mineru-max-auto-pages-preset"[\s\S]*?<\/html:select>/,
+    )?.[0];
+    assert.include(prefs, 'pref("mineruMaxAutoPages", 0);');
+    assert.isString(selector);
+    for (const value of ["100", "200", "500", "1000", "0", "custom"]) {
+      assert.include(selector!, `value="${value}"`);
+    }
+    assert.include(selector!, ">Unlimited</html:option>");
+    assert.include(selector!, ">Customized</html:option>");
+    assert.include(preferences, 'aria-label="Custom page limit"');
   });
 
   it("renders a shared force OCR option for MinerU parsing", function () {

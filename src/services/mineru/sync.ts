@@ -10,6 +10,7 @@ import {
   getMineruCacheDir,
   getMineruItemDir,
   hasCachedMineruMd,
+  hasPendingCacheWrite,
   invalidateMineruMd,
   isDurableMineruCacheArtifactPath,
   MINERU_SOURCE_PROVENANCE_FILE,
@@ -645,7 +646,8 @@ async function collectMineruCachePackageEntries(
   sourceAttachment: Zotero.Item,
 ): Promise<Record<string, Uint8Array> | null> {
   const sourceKey = getItemKey(sourceAttachment);
-  if (!sourceKey) return null;
+  if (!sourceKey || (await hasPendingCacheWrite(sourceAttachment.id)))
+    return null;
 
   const itemDir = getMineruItemDir(sourceAttachment.id);
   if (!(await pathExists(itemDir))) return null;
@@ -685,6 +687,7 @@ async function collectMineruCachePackageEntries(
     }
   }
 
+  if (await hasPendingCacheWrite(sourceAttachment.id)) return null;
   return entries["full.md"] ? entries : null;
 }
 

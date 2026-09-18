@@ -5475,27 +5475,78 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   }
 
   // ── MinerU advanced parse filters ──────────────────────────────
+  const mineruMaxAutoPagesPreset = doc.querySelector(
+    `#${config.addonRef}-mineru-max-auto-pages-preset`,
+  ) as HTMLSelectElement | null;
   const mineruMaxAutoPagesInput = doc.querySelector(
     `#${config.addonRef}-mineru-max-auto-pages`,
   ) as HTMLInputElement | null;
-  if (mineruMaxAutoPagesInput) {
-    const maxPages = getMineruMaxAutoPages();
-    mineruMaxAutoPagesInput.value = String(maxPages);
-    const saveMaxAutoPages = () => {
-      const digitsOnly = mineruMaxAutoPagesInput.value.replace(/[^\d]/g, "");
-      if (mineruMaxAutoPagesInput.value !== digitsOnly) {
-        mineruMaxAutoPagesInput.value = digitsOnly;
+  if (mineruMaxAutoPagesPreset && mineruMaxAutoPagesInput) {
+    let editingPageLimit = false;
+    const showSavedPageLimit = () => {
+      editingPageLimit = false;
+      const maxPages = getMineruMaxAutoPages();
+      let savedOption = mineruMaxAutoPagesPreset.querySelector(
+        'option[value="saved-custom"]',
+      ) as HTMLOptionElement | null;
+      if (savedOption) savedOption.remove();
+      if ([0, 100, 200, 500, 1000].includes(maxPages)) {
+        mineruMaxAutoPagesPreset.value = String(maxPages);
+      } else {
+        savedOption = doc.createElementNS(
+          "http://www.w3.org/1999/xhtml",
+          "option",
+        ) as HTMLOptionElement;
+        savedOption.value = "saved-custom";
+        savedOption.textContent = String(maxPages);
+        mineruMaxAutoPagesPreset.prepend(savedOption);
+        mineruMaxAutoPagesPreset.value = "saved-custom";
       }
-      const normalized = normalizeMineruMaxAutoPages(digitsOnly);
-      setMineruMaxAutoPages(normalized);
-      return normalized;
+      mineruMaxAutoPagesInput.value = String(maxPages || 100);
+      mineruMaxAutoPagesInput.hidden = true;
+      mineruMaxAutoPagesPreset.hidden = false;
     };
+    const finishPageLimitEdit = (save: boolean, restoreFocus: boolean) => {
+      if (!editingPageLimit) return;
+      // Hiding the input can fire blur; finish this edit only once.
+      editingPageLimit = false;
+      if (save) {
+        setMineruMaxAutoPages(
+          normalizeMineruMaxAutoPages(mineruMaxAutoPagesInput.value),
+        );
+        notifyMineruParseFiltersChanged();
+      }
+      showSavedPageLimit();
+      if (restoreFocus) mineruMaxAutoPagesPreset.focus();
+    };
+    showSavedPageLimit();
+    mineruMaxAutoPagesPreset.addEventListener("change", () => {
+      if (mineruMaxAutoPagesPreset.value === "custom") {
+        editingPageLimit = true;
+        mineruMaxAutoPagesPreset.hidden = true;
+        mineruMaxAutoPagesInput.hidden = false;
+        mineruMaxAutoPagesInput.focus();
+        mineruMaxAutoPagesInput.select();
+      } else if (mineruMaxAutoPagesPreset.value !== "saved-custom") {
+        setMineruMaxAutoPages(Number(mineruMaxAutoPagesPreset.value));
+        showSavedPageLimit();
+        notifyMineruParseFiltersChanged();
+      }
+    });
     mineruMaxAutoPagesInput.addEventListener("input", () => {
-      saveMaxAutoPages();
+      mineruMaxAutoPagesInput.value = mineruMaxAutoPagesInput.value.replace(
+        /[^\d]/g,
+        "",
+      );
+    });
+    mineruMaxAutoPagesInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === "Escape") {
+        event.preventDefault();
+        finishPageLimitEdit(event.key === "Enter", true);
+      }
     });
     mineruMaxAutoPagesInput.addEventListener("blur", () => {
-      const normalized = saveMaxAutoPages();
-      mineruMaxAutoPagesInput.value = String(normalized);
+      finishPageLimitEdit(true, false);
     });
   }
 

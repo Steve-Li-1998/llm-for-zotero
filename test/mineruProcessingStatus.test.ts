@@ -88,6 +88,13 @@ function setupZotero(item: MockItem): void {
     makeDirectory: async (path: string) => {
       addDir(dirs, path);
     },
+    remove: async (path: string) => {
+      const normalized = normalizePath(path);
+      for (const p of files.keys())
+        if (p === normalized || p.startsWith(normalized + "/")) files.delete(p);
+      for (const p of dirs)
+        if (p === normalized || p.startsWith(normalized + "/")) dirs.delete(p);
+    },
     write: async (path: string, data: Uint8Array) => {
       const normalized = normalizePath(path);
       addDir(dirs, parentPath(normalized));

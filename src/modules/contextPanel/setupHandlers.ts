@@ -263,6 +263,7 @@ import {
 import { getAutoWatchStatus, pauseAutoWatch } from "../mineruAutoWatch";
 import {
   getItemStatus,
+  getMineruStatus,
   onProcessingStatusChange,
 } from "../mineruProcessingStatus";
 import { isMineruEnabled } from "../../utils/mineruConfig";
@@ -2437,9 +2438,7 @@ export function setupHandlers(
       return true;
     }
     // Cache may not be populated yet — trigger async check and update chip later
-    if (!cached) {
-      void checkAndApplyMineruChipStyle(paperContext.contextItemId);
-    }
+    void checkAndApplyMineruChipStyle(paperContext.contextItemId);
     return false;
   };
 
@@ -2461,6 +2460,7 @@ export function setupHandlers(
               validateSyncedPackage: false,
             },
           );
+          await getMineruStatus(contextItemId);
           if (availability.status === "missing") return;
           mineruAvailableIds.add(contextItemId);
           upgradePaperContextsToMineruForAttachment(contextItemId);

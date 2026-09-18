@@ -1,3 +1,7 @@
+import {
+  parsePdfWithMineru,
+  publishMineruParsedResult,
+} from "../services/mineru/mineruParser";
 import { config } from "../../package.json";
 import {
   buildMineruFilenameMatcher,
@@ -6,15 +10,10 @@ import {
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
 import {
-  parsePdfWithMineru,
   MineruRateLimitError,
   MineruCancelledError,
   MineruPageLimitError,
 } from "../utils/mineruClient";
-import {
-  writeMineruCacheFiles,
-  writeMineruSourceProvenanceForAttachment,
-} from "../services/mineru/mineruCache";
 import { invalidateCachedContextText } from "../services/paperContent/pdfContext";
 import {
   setItemProcessing,
@@ -22,6 +21,7 @@ import {
   setItemFailed,
   clearItemStatus,
   cancelMineruTask,
+  cancelMineruTaskAndWait,
   getItemStatus,
   runMineruTaskOnce,
 } from "./mineruProcessingStatus";
@@ -322,6 +322,7 @@ async function cleanupRemovedAttachmentArtifacts(
   itemIds: number[],
 ): Promise<void> {
   for (const itemId of itemIds) {
+    await cancelMineruTaskAndWait(itemId);
     const result = await cleanupMineruArtifactsForRemovedAttachment(itemId);
     if (result.failed > 0) {
       ztoolkit.log(
@@ -433,7 +434,10 @@ async function processQueue(): Promise<void> {
             pdfPath as string,
             report,
             sharedSignal,
-            { maxPages: getMineruMaxAutoPages() },
+            {
+              attachmentId: entry.attachmentId,
+              maxPages: getMineruMaxAutoPages(),
+            },
           );
           if (sharedSignal?.aborted) throw new MineruCancelledError();
           if (!parsed?.mdContent) return parsed;
@@ -444,12 +448,7 @@ async function processQueue(): Promise<void> {
             );
           }
 
-          await writeMineruCacheFiles(
-            entry.attachmentId,
-            parsed.mdContent,
-            parsed.files,
-          );
-          await writeMineruSourceProvenanceForAttachment(pdfItem);
+          await publishMineruParsedResult(pdfItem, parsed, sharedSignal);
           setItemCached(entry.attachmentId);
           void publishMineruCachePackageForAttachment(entry.attachmentId).then(
             (published) => {

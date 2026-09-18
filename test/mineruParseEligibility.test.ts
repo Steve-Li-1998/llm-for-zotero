@@ -202,7 +202,17 @@ describe("mineruParseEligibility", function () {
     assert.isNull(result.pageCount);
   });
 
-  it("uses the preserved 100-page default when the saved value is zero", async function () {
+  it("still applies filename exclusions with an Unlimited page limit", async function () {
+    setupZoteroPrefs({ maxAutoPages: 0, excludePatterns: ["_translated"] });
+    const result = await getMineruParseEligibility(
+      createParent() as Zotero.Item,
+      createPdf(110, "paper_translated.pdf") as Zotero.Item,
+    );
+    assert.isFalse(result.eligible);
+    assert.deepEqual(result.reasons, ["filename"]);
+  });
+
+  it("allows long PDFs when the saved page limit is Unlimited", async function () {
     setupZoteroPrefs({ maxAutoPages: 0 });
     setupIO({ "/tmp/109.pdf": pdfText(150) });
 
@@ -211,8 +221,8 @@ describe("mineruParseEligibility", function () {
       createPdf(109) as Zotero.Item,
     );
 
-    assert.isFalse(result.eligible);
-    assert.deepEqual(result.reasons, ["page_count"]);
-    assert.equal(result.pageCount, 150);
+    assert.isTrue(result.eligible);
+    assert.deepEqual(result.reasons, []);
+    assert.isNull(result.pageCount);
   });
 });

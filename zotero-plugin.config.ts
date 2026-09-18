@@ -1,3 +1,4 @@
+import { cp } from "node:fs/promises";
 import { defineConfig } from "zotero-plugin-scaffold";
 import pkg from "./package.json";
 import { patchGeneratedWorkflowTestReporter } from "./scripts/workflow-test-reporter.mjs";
@@ -54,6 +55,12 @@ export default defineConfig({
         loader: { ".md": "text" },
         outfile: `.scaffold/build/addon/content/scripts/${pkg.config.addonRef}.js`,
       },
+      {
+        entryPoints: ["src/utils/pdfSplitterWorker.ts"],
+        bundle: true,
+        target: "firefox115",
+        outfile: ".scaffold/build/addon/content/scripts/pdfSplitterWorker.js",
+      },
     ],
   },
 
@@ -80,6 +87,15 @@ export default defineConfig({
         }
       : {}),
     hooks: {
+      "test:init": async () => {
+        if (process.env.LLM_FOR_ZOTERO_MINERU_RESTART_PHASE === "resume") {
+          await cp(
+            ".scaffold/mineru-restart/data-snapshot",
+            ".scaffold/test/data",
+            { recursive: true },
+          );
+        }
+      },
       "test:bundleTests": () => patchGeneratedWorkflowTestReporter(),
     },
     waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,

@@ -1,3 +1,5 @@
+import { deleteMineruCheckpoint, hashMineruBytes } from "./mineruCheckpoint";
+import { MineruCancelledError } from "../../utils/mineruClient";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
@@ -74,6 +76,7 @@ export type FinalizedMineruCacheFiles = {
 
 type FinalizeMineruCacheFilesOptions = {
   keepSourceImages?: boolean;
+  pageCount?: number;
 };
 
 type IOUtilsLike = {
@@ -865,7 +868,7 @@ export async function pruneNonDurableMineruCacheArtifacts(
     if (!children) return;
     for (const child of children) {
       const relativePath = relativeCachePath(root, child);
-      if (!relativePath) continue;
+      if (!relativePath || relativePath === PENDING_CACHE_WRITE) continue;
       const childEntries = await getChildren(child);
       if (childEntries) {
         if (
@@ -1003,9 +1006,26 @@ export function finalizeMineruCacheFiles(
   const canonicalMdContent = stripMineruSourceImageEmbedsFromMarkdown(
     normalized.mdContent,
   );
-  const sourceManifest = buildManifest(normalized.mdContent, contentList);
-  const canonicalManifest = buildManifest(canonicalMdContent, contentList);
   const incomingManifest = readManifestFromNormalizedFiles(normalized.files);
+  // Saved packages know the PDF length, including pages with no extracted text.
+  const savedPageCount = incomingManifest?.totalPages;
+  const pageCount =
+    options.pageCount ??
+    (Number.isSafeInteger(savedPageCount) &&
+    savedPageCount! > 0 &&
+    incomingManifest?.totalChars === normalized.mdContent.length
+      ? savedPageCount
+      : undefined);
+  const sourceManifest = buildManifest(
+    normalized.mdContent,
+    contentList,
+    pageCount,
+  );
+  const canonicalManifest = buildManifest(
+    canonicalMdContent,
+    contentList,
+    pageCount,
+  );
   const figureBlocks = hasLocalImageEmbeds(normalized.mdContent)
     ? sourceManifest.figureBlocks
     : incomingManifest?.figureBlocks || sourceManifest.figureBlocks;
@@ -1191,6 +1211,7 @@ export async function writeMineruSourceProvenanceForAttachment(
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function hasCachedMineruMd(id: number): Promise<boolean> {
+  if (await hasPendingCacheWrite(id)) return false;
   if (await pathExists(getMineruMdPath(id))) return true;
   // Check legacy _content.md path
   if (await pathExists(getLegacyContentMdPath(id))) return true;
@@ -1199,38 +1220,114 @@ export async function hasCachedMineruMd(id: number): Promise<boolean> {
 }
 
 export async function readCachedMineruMd(id: number): Promise<string | null> {
-  // Try full.md (current canonical path)
-  const bytes = await readFileBytes(getMineruMdPath(id));
-  if (bytes) return new TextDecoder("utf-8").decode(bytes);
-  // Try legacy _content.md
-  const legacyContentBytes = await readFileBytes(getLegacyContentMdPath(id));
-  if (legacyContentBytes)
-    return new TextDecoder("utf-8").decode(legacyContentBytes);
-  // Try legacy single-file cache
-  const legacyBytes = await readFileBytes(getLegacyMdPath(id));
-  if (legacyBytes) return new TextDecoder("utf-8").decode(legacyBytes);
+  if (await hasPendingCacheWrite(id)) return null;
+  // Keep pre-directory and _content.md caches readable on upgrade.
+  for (const path of [
+    getMineruMdPath(id),
+    getLegacyContentMdPath(id),
+    getLegacyMdPath(id),
+  ]) {
+    const bytes = await readFileBytes(path);
+    if (await hasPendingCacheWrite(id)) return null;
+    if (bytes) return new TextDecoder("utf-8").decode(bytes);
+  }
   return null;
+}
+
+const PENDING_CACHE_WRITE = "_llm_write_pending.json";
+export async function hasPendingCacheWrite(id: number): Promise<boolean> {
+  return pathExists(joinLocalPath(getMineruItemDir(id), PENDING_CACHE_WRITE));
+}
+
+export function validateMineruManifest(
+  md: string,
+  manifest: MineruManifest,
+  pageCount?: number,
+): void {
+  if (manifest.totalChars !== md.length)
+    throw new Error("MinerU manifest text length mismatch");
+  if (pageCount !== undefined && manifest.totalPages !== pageCount)
+    throw new Error("MinerU manifest page count mismatch");
+  const totalPages = pageCount ?? manifest.totalPages;
+  if (
+    totalPages !== undefined &&
+    (!Number.isSafeInteger(totalPages) || totalPages <= 0)
+  )
+    throw new Error("Invalid MinerU manifest page count");
+  let previousEnd = 0;
+  for (const section of manifest.sections) {
+    if (
+      !Number.isInteger(section.charStart) ||
+      !Number.isInteger(section.charEnd) ||
+      section.charStart < previousEnd ||
+      section.charEnd <= section.charStart ||
+      section.charEnd > md.length ||
+      md
+        .slice(section.charStart, section.charEnd)
+        .match(/^#\s+(.+)/)?.[1]
+        .trim() !== section.heading
+    )
+      throw new Error("Invalid MinerU manifest section offsets");
+    previousEnd = section.charEnd;
+  }
+  for (const entry of [
+    ...manifest.sections,
+    ...manifest.allFigures,
+    ...manifest.allTables,
+    ...manifest.sections.flatMap((s) => [...s.figures, ...s.tables]),
+  ]) {
+    if (
+      entry.page !== undefined &&
+      (!Number.isInteger(entry.page) ||
+        entry.page < 0 ||
+        (totalPages !== undefined && entry.page >= totalPages))
+    )
+      throw new Error("Invalid MinerU manifest page index");
+  }
 }
 
 export async function writeMineruCacheFiles(
   id: number,
   mdContent: string,
   files: MineruCacheFile[],
+  options: {
+    pageCount?: number;
+    signal?: AbortSignal;
+    beforeCommit?: () => Promise<void>;
+  } = {},
 ): Promise<void> {
+  const checkAbort = () => {
+    if (options.signal?.aborted) throw new MineruCancelledError();
+  };
+  checkAbort();
   const itemDir = getMineruItemDir(id);
   await ensureDir(itemDir);
-  const manifestProbe = finalizeMineruCacheFiles(mdContent, files);
+  const manifestProbe = finalizeMineruCacheFiles(mdContent, files, {
+    pageCount: options.pageCount,
+  });
   const keepSourceImages = !(await hasReadyPdfFigureCropCache(
     itemDir,
     manifestProbe.manifest,
   ));
   const finalized = keepSourceImages
-    ? finalizeMineruCacheFiles(mdContent, files, { keepSourceImages: true })
+    ? finalizeMineruCacheFiles(mdContent, files, {
+        keepSourceImages: true,
+        pageCount: options.pageCount,
+      })
     : manifestProbe;
 
+  validateMineruManifest(
+    finalized.mdContent,
+    finalized.manifest,
+    options.pageCount,
+  );
+  checkAbort();
+  const pendingPath = joinLocalPath(itemDir, PENDING_CACHE_WRITE);
+  await writeFileBytes(pendingPath, new TextEncoder().encode("{}"));
   await pruneNonDurableMineruCacheArtifacts(itemDir, { keepSourceImages });
 
   for (const file of finalized.files) {
+    checkAbort();
     const parts = file.relativePath.split(/[\\/]+/).filter(Boolean);
     const filePath = joinLocalPath(itemDir, ...parts);
     const parentDir = getLocalParentPath(filePath);
@@ -1258,14 +1355,40 @@ export async function writeMineruCacheFiles(
     );
   }
 
-  try {
-    await writeFileBytes(
-      getManifestPath(id),
-      new TextEncoder().encode(JSON.stringify(finalized.manifest)),
+  const manifestBytes = new TextEncoder().encode(
+    JSON.stringify(finalized.manifest),
+  );
+  await writeFileBytes(getManifestPath(id), manifestBytes);
+  const expected = [
+    ...finalized.files.filter(
+      (file) =>
+        file.relativePath !== "full.md" &&
+        file.relativePath !== "manifest.json",
+    ),
+    {
+      relativePath: "full.md",
+      data: new TextEncoder().encode(finalized.mdContent),
+    },
+    { relativePath: "manifest.json", data: manifestBytes },
+  ];
+  for (const file of expected) {
+    checkAbort();
+    const readback = await readFileBytes(
+      joinLocalPath(itemDir, file.relativePath),
     );
-  } catch {
-    // Non-critical — manifest is an optimization, not required
+    if (
+      !readback ||
+      (await hashMineruBytes(readback)) !== (await hashMineruBytes(file.data))
+    )
+      throw new Error(
+        `MinerU cache integrity check failed: ${file.relativePath}`,
+      );
   }
+  await options.beforeCommit?.();
+  checkAbort();
+  await removePath(pendingPath);
+  if (await pathExists(pendingPath))
+    throw new Error("MinerU cache publication could not finish");
 
   // Clean up legacy _content.md if it exists
   const legacyContentPath = getLegacyContentMdPath(id);
@@ -1372,6 +1495,7 @@ function isNoiseHeading(text: string): boolean {
 export function buildManifest(
   mdContent: string,
   contentList: ContentListEntry[],
+  pageCount?: number,
 ): MineruManifest {
   const figureBlocks = buildMineruFigureBlocks({
     fullMd: mdContent,
@@ -1440,7 +1564,7 @@ export function buildManifest(
       });
     }
 
-    if (entry.type === "table" && entry.img_path) {
+    if (entry.type === "table" && (entry.img_path || entry.table_body)) {
       const captionText = (entry.table_caption || []).join(" ").trim();
       const footnoteText = (entry.table_footnote || []).join(" ").trim();
       const label = extractFigureLabel(captionText || footnoteText);
@@ -1449,7 +1573,7 @@ export function buildManifest(
       currentCLSection.tables.push({
         label: effectiveLabel,
         baseLabel: getManifestFigureBaseLabel(effectiveLabel),
-        path: entry.img_path,
+        path: entry.img_path || "",
         caption: (captionText || footnoteText).slice(0, 300),
         page: entry.page_idx,
       });
@@ -1462,9 +1586,11 @@ export function buildManifest(
 
   // ── Step 3: Build manifest sections by combining md offsets + cl metadata ──
   // Match md headings to content_list sections by heading text
-  const clSectionByHeading = new Map<string, CLSection>();
+  const clSectionByHeading = new Map<string, CLSection[]>();
   for (const cls of clSections) {
-    clSectionByHeading.set(cls.heading, cls);
+    const occurrences = clSectionByHeading.get(cls.heading) || [];
+    occurrences.push(cls);
+    clSectionByHeading.set(cls.heading, occurrences);
   }
 
   const sections: ManifestSection[] = [];
@@ -1475,7 +1601,7 @@ export function buildManifest(
         ? mdHeadings[i + 1].charStart
         : mdContent.length;
 
-    const cls = clSectionByHeading.get(heading);
+    const cls = clSectionByHeading.get(heading)?.shift();
 
     sections.push({
       heading,
@@ -1486,19 +1612,6 @@ export function buildManifest(
       tables: cls?.tables || [],
       equationCount: cls?.equationCount || 0,
     });
-  }
-
-  // Handle edge case: 0-2 real sections → noSections mode
-  if (sections.length <= 2) {
-    return {
-      sections,
-      allFigures: [],
-      allTables: [],
-      figureBlocks,
-      totalPages: totalPages || undefined,
-      totalChars: mdContent.length,
-      noSections: true,
-    };
   }
 
   // If too many sections (50+), merge adjacent small ones (< 500 chars)
@@ -1545,8 +1658,9 @@ export function buildManifest(
     allFigures,
     allTables,
     figureBlocks,
-    totalPages: totalPages || undefined,
+    totalPages: pageCount ?? (totalPages || undefined),
     totalChars: mdContent.length,
+    ...(sections.length <= 2 ? { noSections: true } : {}),
   };
 }
 
@@ -1601,6 +1715,7 @@ export async function readMineruContentListFromDir(
 export async function buildAndWriteManifest(
   id: number,
 ): Promise<MineruManifest | null> {
+  if (await hasPendingCacheWrite(id)) return null;
   const itemDir = getMineruItemDir(id);
   if (!(await pathExists(itemDir))) return null;
 
@@ -1610,7 +1725,11 @@ export async function buildAndWriteManifest(
 
   const contentList = await readMineruContentListFromDir(itemDir);
 
-  const manifest = buildManifest(mdContent, contentList);
+  const manifest = buildManifest(
+    mdContent,
+    contentList,
+    (await readManifest(id))?.totalPages,
+  );
 
   // Write manifest.json
   const manifestPath = getManifestPath(id);
@@ -1625,6 +1744,7 @@ export async function buildAndWriteManifest(
 export async function finalizeExistingMineruCache(
   id: number,
 ): Promise<boolean> {
+  if (await hasPendingCacheWrite(id)) return false;
   const itemDir = getMineruItemDir(id);
   const mdBytes = await readFileBytes(getMineruMdPath(id));
   if (!mdBytes) return false;
@@ -1635,8 +1755,16 @@ export async function finalizeExistingMineruCache(
   const contentList = await readMineruContentListFromDir(itemDir);
   const existingManifest = await readManifest(id);
   let changed = canonicalMdContent !== sourceMdContent;
-  const sourceManifest = buildManifest(sourceMdContent, contentList);
-  const canonicalManifest = buildManifest(canonicalMdContent, contentList);
+  const sourceManifest = buildManifest(
+    sourceMdContent,
+    contentList,
+    existingManifest?.totalPages,
+  );
+  const canonicalManifest = buildManifest(
+    canonicalMdContent,
+    contentList,
+    existingManifest?.totalPages,
+  );
   const finalizedManifest = {
     ...canonicalManifest,
     figureBlocks: sourceManifest.figureBlocks,
@@ -1679,9 +1807,10 @@ export async function finalizeExistingMineruCache(
  * Read a previously built manifest.json from cache.
  */
 export async function readManifest(id: number): Promise<MineruManifest | null> {
+  if (await hasPendingCacheWrite(id)) return null;
   const manifestPath = getManifestPath(id);
   const bytes = await readFileBytes(manifestPath);
-  if (!bytes) return null;
+  if (!bytes || (await hasPendingCacheWrite(id))) return null;
   try {
     return JSON.parse(new TextDecoder("utf-8").decode(bytes));
   } catch {
@@ -1702,6 +1831,7 @@ export async function ensureManifest(
 }
 
 export async function invalidateMineruMd(id: number): Promise<void> {
+  await deleteMineruCheckpoint(id);
   // Remove the directory-based cache
   await removePath(getMineruItemDir(id));
   // Also remove legacy single-file cache

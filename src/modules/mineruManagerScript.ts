@@ -1,3 +1,4 @@
+import { getMineruCheckpointProgress } from "../services/mineru/mineruCheckpoint";
 import {
   getMineruBatchState,
   getMineruItemList,
@@ -132,6 +133,7 @@ const MINERU_STATUS_DOT_COLORS: Record<MineruStatus, string> = {
   cached: "#10b981",
   processing: "#f59e0b",
   failed: "#ef4444",
+  partial: "#8b5cf6",
   idle: "#d1d5db",
 };
 
@@ -237,6 +239,7 @@ export function getMineruParentDisplayStatus(
   if (children.some((child) => child.status === "failed")) {
     return "failed";
   }
+  if (children.some((child) => child.status === "partial")) return "partial";
   const actionableChildren = children.filter((child) => !child.excluded);
   if (!actionableChildren.length) {
     return children.length > 0 &&
@@ -385,6 +388,11 @@ export async function registerMineruManagerScript(
     status: MineruStatus,
   ): void {
     dot.style.background = MINERU_STATUS_DOT_COLORS[status];
+    dot.dataset.status = status;
+    dot.setAttribute(
+      "aria-label",
+      t(status === "partial" ? "Partial" : status),
+    );
   }
 
   function getAvailabilityTooltip(item: MineruItemEntry): string {
@@ -417,8 +425,7 @@ export async function registerMineruManagerScript(
     entry.cached = availability.status !== "missing";
     const dot = dotElements.get(attachmentId);
     if (dot) {
-      setDotDisplayStatus(dot, await getMineruStatus(attachmentId));
-      dot.title = getAvailabilityTooltip(entry);
+      await refreshAttachmentDot(attachmentId, dot);
     }
     void updateParentDotForAttachment(attachmentId);
   }
@@ -1732,9 +1739,17 @@ export async function registerMineruManagerScript(
   ): Promise<void> {
     const parentDot = parentDotElements.get(parentId);
     if (!parentDot) return;
+    if (group.children.length === 1) {
+      await refreshAttachmentDot(group.children[0].attachmentId, parentDot);
+      return;
+    }
     const status = await getResolvedParentDisplayStatus(group);
     if (parentDotElements.get(parentId) !== parentDot) return;
     setDotDisplayStatus(parentDot, status);
+    parentDot.title =
+      status === "partial"
+        ? `${t("Partial")} — ${t("Resume to continue from saved progress.")}`
+        : "";
   }
 
   function findRenderedGroupForAttachment(
@@ -1769,7 +1784,13 @@ export async function registerMineruManagerScript(
     attachmentId: number,
     dot: HTMLSpanElement,
   ): Promise<void> {
-    setDotDisplayStatus(dot, await getMineruStatus(attachmentId));
+    const status = await getMineruStatus(attachmentId);
+    setDotDisplayStatus(dot, status);
+    const entry = allItems.find((item) => item.attachmentId === attachmentId);
+    if (status === "partial") {
+      const progress = await getMineruCheckpointProgress(attachmentId);
+      dot.title = `${t("Partial")}: ${progress?.completedPages ?? 0}/${progress?.totalPages ?? 0} ${t("pages")} — ${t("Resume to continue from saved progress.")}`;
+    } else if (entry) dot.title = getAvailabilityTooltip(entry);
   }
 
   function getSkippedLabel(item: MineruItemEntry): string {
@@ -2439,7 +2460,7 @@ export async function registerMineruManagerScript(
     } else if (lastSeenCurrentId !== null) {
       const failed = s.lastFailedItemId === lastSeenCurrentId;
       const dot = dotElements.get(lastSeenCurrentId);
-      if (dot) setDotDisplayStatus(dot, failed ? "failed" : "cached");
+      if (dot) void refreshAttachmentDot(lastSeenCurrentId, dot);
       const entry = allItems.find((i) => i.attachmentId === lastSeenCurrentId);
       if (entry && !failed) {
         entry.localCached = true;

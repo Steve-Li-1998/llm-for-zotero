@@ -22,42 +22,6 @@ export type MineruChunk = {
   result: MineruChunkResult;
 };
 
-export function buildMineruExecutablePathCandidates(
-  pathValue: string,
-  executableName: string,
-  isWindows: boolean,
-): string[] {
-  const separator = isWindows ? ";" : ":";
-  const pathSeparator = isWindows ? "\\" : "/";
-  const filename =
-    isWindows && !executableName.toLowerCase().endsWith(".exe")
-      ? `${executableName}.exe`
-      : executableName;
-
-  return pathValue
-    .split(separator)
-    .map((entry) => entry.trim().replace(/^"|"$/g, ""))
-    .filter(Boolean)
-    .map(
-      (directory) =>
-        `${directory.replace(/[\\/]+$/g, "")}${pathSeparator}${filename}`,
-    );
-}
-
-export function buildMineruDumpDataArguments(
-  pdfPath: string,
-  outputPath: string,
-): string[] {
-  return [pdfPath, "dump_data", "output", outputPath];
-}
-
-export function selectMineruPageCount(
-  detectedCount: number | null,
-  pdftkCount: number | null,
-): number | null {
-  return pdftkCount || detectedCount;
-}
-
 function normalizePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/^\.\//, "");
 }
@@ -291,29 +255,6 @@ export function buildMineruPageRanges(
   return ranges;
 }
 
-export function extractMineruPageCountFromDumpData(
-  output: string,
-): number | null {
-  const counts = [...output.matchAll(/^\s*NumberOfPages:\s*(\d+)\s*$/gim)]
-    .map((match) => Number(match[1]))
-    .filter((count) => Number.isInteger(count) && count > 0);
-  return counts.length ? Math.max(...counts) : null;
-}
-
-export function validateMineruSplitPageCount(
-  actualPageCount: number | null,
-  range: Pick<MineruPageRange, "startPage" | "endPage">,
-): void {
-  const expectedPageCount = range.endPage - range.startPage + 1;
-  if (actualPageCount !== expectedPageCount) {
-    throw new Error(
-      `MinerU split expected ${expectedPageCount} pages but found ${
-        actualPageCount ?? "an unreadable page count"
-      }`,
-    );
-  }
-}
-
 function validateMineruChunkRanges(chunks: MineruChunk[]): void {
   const total = chunks[0].range.total;
   let expectedStartPage = 1;
@@ -337,6 +278,61 @@ function validateMineruChunkRanges(chunks: MineruChunk[]): void {
   }
 }
 
+export function validateMineruChunk(chunk: MineruChunk): void {
+  if (
+    typeof chunk.result.mdContent !== "string" ||
+    !chunk.result.mdContent.trim()
+  )
+    throw new Error("MinerU chunk has no Markdown");
+  const seen = new Set<string>();
+  for (const file of chunk.result.files) {
+    const path = normalizePath(file.relativePath);
+    if (
+      !path ||
+      path.startsWith("/") ||
+      /^[a-z]:/i.test(path) ||
+      path.split("/").some((part) => part === ".." || !part) ||
+      seen.has(path) ||
+      !(file.data instanceof Uint8Array)
+    )
+      throw new Error("Invalid MinerU chunk artifact");
+    seen.add(path);
+  }
+  const pathMap = buildAssetPathMap(chunk.result.files, chunk.range.index);
+  const list = readContentList(
+    chunk.result.files.find((f) =>
+      isKnownCacheFile(f.relativePath, "content_list.json"),
+    ),
+  );
+  validateContentListPageIndexes(
+    list,
+    chunk.range.endPage - chunk.range.startPage + 1,
+  );
+  validateContentListAssetPaths(list, pathMap);
+  const imageTargets = [
+    ...Array.from(
+      chunk.result.mdContent.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g),
+      (m) => m[1],
+    ),
+    ...Array.from(
+      chunk.result.mdContent.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["']/gi),
+      (m) => m[1],
+    ),
+  ];
+  for (const raw of imageTargets) {
+    const target = raw
+      .trim()
+      .replace(/^<([^>]+)>.*$/, "$1")
+      .replace(/\s+["'].*$/, "");
+    if (
+      target &&
+      !/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(target) &&
+      !pathMap.has(normalizePath(target))
+    )
+      throw new Error(`MinerU chunk is missing referenced asset: ${target}`);
+  }
+}
+
 export function mergeMineruChunkResults(
   chunks: MineruChunk[],
 ): MineruChunkResult {
@@ -350,6 +346,7 @@ export function mergeMineruChunkResults(
   const mergedContentList: unknown[] = [];
 
   for (const chunk of chunks) {
+    validateMineruChunk(chunk);
     const pathMap = buildAssetPathMap(chunk.result.files, chunk.range.index);
     const contentListFile = chunk.result.files.find((file) =>
       isKnownCacheFile(file.relativePath, "content_list.json"),

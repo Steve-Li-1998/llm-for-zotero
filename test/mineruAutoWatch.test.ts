@@ -1,3 +1,11 @@
+import {
+  createPdfFixture,
+  createPdfWithHiddenPageCount,
+} from "./helpers/pdfFixture";
+import {
+  installPdfWorkerTestHost,
+  closePdfWorkersForTests,
+} from "./helpers/pdfWorkerHost";
 import { assert } from "chai";
 import { zipSync } from "fflate";
 import {
@@ -58,10 +66,7 @@ function bytes(value: string): Uint8Array {
 }
 
 function pdfText(pageCount: number): string {
-  return `%PDF-1.7
-1 0 obj
-<< /Type /Pages /Count ${pageCount} /Kids [] >>
-endobj`;
+  return new TextDecoder().decode(createPdfFixture(pageCount));
 }
 
 function normalizePath(path: string): string {
@@ -157,62 +162,8 @@ function setupZotero(
     },
   };
   (globalThis as unknown as { IOUtils: unknown }).IOUtils = io;
+  installPdfWorkerTestHost();
   return { files };
-}
-
-function completedProcess(stdout = "") {
-  let stdoutRead = false;
-  return {
-    stdout: {
-      readString: async () => {
-        if (stdoutRead) return "";
-        stdoutRead = true;
-        return stdout;
-      },
-    },
-    stderr: { readString: async () => "" },
-    wait: async () => ({ exitCode: 0 }),
-    kill: () => {},
-  };
-}
-
-function installPdftkMock(
-  files: Map<string, Uint8Array>,
-  originalPageCount: number,
-): void {
-  const splitPageCounts = new Map<string, number>();
-  (globalThis as unknown as { ChromeUtils: unknown }).ChromeUtils = {
-    importESModule: () => ({
-      Subprocess: {
-        call: async ({ command, arguments: args }: any) => {
-          if (command === "which") {
-            return completedProcess("/mock/pdftk\n");
-          }
-          if (args[1] === "dump_data") {
-            const pageCount =
-              splitPageCounts.get(normalizePath(args[0])) ?? originalPageCount;
-            files.set(
-              normalizePath(args[3]),
-              bytes(`NumberOfPages: ${pageCount}\n`),
-            );
-            return completedProcess();
-          }
-          if (args[1] === "cat") {
-            const range = /^(\d+)-(\d+)$/.exec(args[2]);
-            if (!range) throw new Error(`Unexpected page range: ${args[2]}`);
-            const outputPath = normalizePath(args[4]);
-            splitPageCounts.set(
-              outputPath,
-              Number(range[2]) - Number(range[1]) + 1,
-            );
-            files.set(outputPath, bytes("%PDF-1.7"));
-            return completedProcess();
-          }
-          throw new Error(`Unexpected subprocess command: ${command}`);
-        },
-      },
-    }),
-  };
 }
 
 function createParent(id = 201, attachmentIDs: number[] = [202]): MockItem {
@@ -277,7 +228,8 @@ describe("mineruAutoWatch", function () {
     restoreRetrievalInvalidator = null;
   });
 
-  afterEach(function () {
+  afterEach(async function () {
+    await closePdfWorkersForTests();
     resetAutoWatchForTests();
     clearMineruEligibilityCacheForTests();
     clearAllStatuses();
@@ -470,9 +422,12 @@ describe("mineruAutoWatch", function () {
       [secondPdf.id, secondPdf],
     ]);
     const io = setupZotero(items);
-    io.files.set("/tmp/missing-count.pdf", bytes("%PDF-1.7"));
-    io.files.set("/tmp/under-count.pdf", bytes(pdfText(50)));
-    installPdftkMock(io.files, 412);
+    io.files.set(
+      "/tmp/missing-count.pdf",
+      await createPdfWithHiddenPageCount(412),
+    );
+    io.files.set("/tmp/under-count.pdf", createPdfFixture(412, 50));
+
     let requestCount = 0;
     (globalThis as any).Zotero.HTTP = {
       request: async () => {
@@ -502,51 +457,53 @@ describe("mineruAutoWatch", function () {
     }
   });
 
-  it("pauses and preserves the queue when a chunk hits the daily quota", async function () {
-    const firstParent = createParent(201, [202]);
-    const firstPdf = createPdf(202, 201);
-    firstPdf.getFilePathAsync = async () => "/tmp/first-long.pdf";
-    const secondParent = createParent(301, [302]);
-    const secondPdf = createPdf(302, 301);
-    secondPdf.getFilePathAsync = async () => "/tmp/second-long.pdf";
-    const items = new Map<number, MockItem>([
-      [firstParent.id, firstParent],
-      [firstPdf.id, firstPdf],
-      [secondParent.id, secondParent],
-      [secondPdf.id, secondPdf],
-    ]);
-    const io = setupZotero(items, {
-      pref: (key) => {
-        if (key.endsWith(".mineruMaxAutoPages")) return 500;
-        if (key.endsWith(".mineruApiKey")) return "test-key";
-        return undefined;
-      },
+  for (const limit of [0, 500]) {
+    it(`pauses and preserves a chunked queue at quota with page limit ${limit}`, async function () {
+      const firstParent = createParent(201, [202]);
+      const firstPdf = createPdf(202, 201);
+      firstPdf.getFilePathAsync = async () => "/tmp/first-long.pdf";
+      const secondParent = createParent(301, [302]);
+      const secondPdf = createPdf(302, 301);
+      secondPdf.getFilePathAsync = async () => "/tmp/second-long.pdf";
+      const items = new Map<number, MockItem>([
+        [firstParent.id, firstParent],
+        [firstPdf.id, firstPdf],
+        [secondParent.id, secondParent],
+        [secondPdf.id, secondPdf],
+      ]);
+      const io = setupZotero(items, {
+        pref: (key) => {
+          if (key.endsWith(".mineruMaxAutoPages")) return limit;
+          if (key.endsWith(".mineruApiKey")) return "test-key";
+          return undefined;
+        },
+      });
+      io.files.set("/tmp/first-long.pdf", bytes(pdfText(401)));
+      io.files.set("/tmp/second-long.pdf", bytes(pdfText(401)));
+
+      let requestCount = 0;
+      (globalThis as any).Zotero.HTTP = {
+        request: async () => {
+          requestCount++;
+          return { status: 429, responseText: "" };
+        },
+      };
+
+      await handleAutoWatchNotificationForTests("add", "item", [
+        firstPdf.id,
+        secondPdf.id,
+      ]);
+      await processAutoWatchQueueForTests();
+
+      assert.equal(requestCount, 1);
+      assert.isTrue(getAutoWatchStatus().isPaused);
+      assert.sameMembers(
+        getAutoWatchQueueSnapshotForTests().map((entry) => entry.attachmentId),
+        [firstPdf.id, secondPdf.id],
+      );
+      assert.equal(getAutoWatchReadinessRetryCountForTests(), 0);
     });
-    io.files.set("/tmp/first-long.pdf", bytes(pdfText(401)));
-    io.files.set("/tmp/second-long.pdf", bytes(pdfText(401)));
-    installPdftkMock(io.files, 401);
-    let requestCount = 0;
-    (globalThis as any).Zotero.HTTP = {
-      request: async () => {
-        requestCount++;
-        return { status: 429, responseText: "" };
-      },
-    };
-
-    await handleAutoWatchNotificationForTests("add", "item", [
-      firstPdf.id,
-      secondPdf.id,
-    ]);
-    await processAutoWatchQueueForTests();
-
-    assert.equal(requestCount, 1);
-    assert.isTrue(getAutoWatchStatus().isPaused);
-    assert.sameMembers(
-      getAutoWatchQueueSnapshotForTests().map((entry) => entry.attachmentId),
-      [firstPdf.id, secondPdf.id],
-    );
-    assert.equal(getAutoWatchReadinessRetryCountForTests(), 0);
-  });
+  }
 
   it("does not enqueue a duplicate PDF while that PDF is actively parsing", async function () {
     const originalFetch = globalThis.fetch;
@@ -572,7 +529,7 @@ describe("mineruAutoWatch", function () {
       const io = setupZotero(items, {
         pref: (key) => (key.endsWith(".mineruMode") ? "local" : undefined),
       });
-      io.files.set("/tmp/paper.pdf", bytes("%PDF-1.7"));
+      io.files.set("/tmp/paper.pdf", createPdfFixture(1));
 
       await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
       assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 1);
@@ -731,7 +688,7 @@ describe("mineruAutoWatch", function () {
       const io = setupZotero(items, {
         pref: (key) => (key.endsWith(".mineruMode") ? "local" : undefined),
       });
-      io.files.set("/tmp/paper.pdf", bytes("%PDF-1.7"));
+      io.files.set("/tmp/paper.pdf", createPdfFixture(1));
 
       await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
       await processAutoWatchQueueForTests();
@@ -771,7 +728,7 @@ describe("mineruAutoWatch", function () {
       const io = setupZotero(items, {
         pref: (key) => (key.endsWith(".mineruMode") ? "local" : undefined),
       });
-      io.files.set("/tmp/paper.pdf", bytes("%PDF-1.7"));
+      io.files.set("/tmp/paper.pdf", createPdfFixture(1));
 
       await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
       await processAutoWatchQueueForTests();

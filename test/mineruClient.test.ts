@@ -1,3 +1,10 @@
+import { parsePdfWithMineru } from "../src/services/mineru/mineruParser";
+import { PDFDocument } from "pdf-lib";
+import { createPdfFixture } from "./helpers/pdfFixture";
+import {
+  installPdfWorkerTestHost,
+  closePdfWorkersForTests,
+} from "./helpers/pdfWorkerHost";
 import { assert } from "chai";
 import { readFileSync } from "fs";
 import { zipSync } from "fflate";
@@ -6,7 +13,7 @@ import {
   buildMineruCloudProgressMessageForTests,
   getMineruCloudPollDecisionForTests,
   MineruCancelledError,
-  parsePdfWithMineru,
+  MineruPageLimitError,
   parsePdfWithMineruCloud,
   parsePdfWithMineruLocal,
   resetMineruLocalFileParseGateForTests,
@@ -67,73 +74,24 @@ function setupLocalMineruClientTest(files: Record<string, string>): void {
   };
 }
 
-function completedSubprocess(stdout = "") {
-  let stdoutRead = false;
-  return {
-    stdout: {
-      readString: async () => {
-        if (stdoutRead) return "";
-        stdoutRead = true;
-        return stdout;
-      },
-    },
-    stderr: { readString: async () => "" },
-    wait: async () => ({ exitCode: 0 }),
-    kill: () => {},
-  };
-}
-
-function deferredSubprocess(onKill: () => void) {
-  return {
-    stdout: { readString: async () => "" },
-    stderr: { readString: async () => "" },
-    wait: () => new Promise<{ exitCode: number }>(() => {}),
-    kill: onKill,
-  };
-}
-
-function setupChunkingSubprocessTest(
-  pdfContent: string,
-  call: (
-    command: string,
-    args: string[],
-    files: Map<string, Uint8Array>,
-  ) => any,
-): Map<string, Uint8Array> {
-  const files = new Map<string, Uint8Array>([
-    ["/tmp/long.pdf", bytes(pdfContent)],
-  ]);
-  (globalThis as unknown as { Zotero: unknown }).Zotero = {
-    isWin: false,
-    version: "test",
+function setupChunkingTest(source: Uint8Array): Map<string, Uint8Array> {
+  setupLocalMineruClientTest({});
+  const files = new Map<string, Uint8Array>([["/tmp/long.pdf", source]]);
+  Object.assign((globalThis as any).Zotero, {
     getTempDirectory: () => ({ path: "/tmp" }),
     Prefs: { get: () => "" },
-  };
-  (globalThis as unknown as { ztoolkit: unknown }).ztoolkit = {
-    getGlobal: (name: string) => {
-      if (name === "fetch") return globalThis.fetch;
-      if (name === "AbortController") return AbortController;
-      return undefined;
-    },
-    log: () => {},
-  };
-  (globalThis as unknown as { IOUtils: unknown }).IOUtils = {
+  });
+  (globalThis as any).IOUtils = {
     read: async (path: string) => {
       const data = files.get(path.replace(/\\/g, "/"));
       if (!data) throw new Error("missing");
       return data;
     },
+    write: async (path: string, data: Uint8Array) => files.set(path, data),
     makeDirectory: async () => {},
     remove: async () => {},
   };
-  (globalThis as unknown as { ChromeUtils: unknown }).ChromeUtils = {
-    importESModule: () => ({
-      Subprocess: {
-        call: async ({ command, arguments: args }: any) =>
-          call(command, args, files),
-      },
-    }),
-  };
+  installPdfWorkerTestHost();
   return files;
 }
 
@@ -203,8 +161,9 @@ function buildMineruWindowsOutputPath(
 }
 
 describe("mineruClient", function () {
-  describe("chunking subprocesses", function () {
-    afterEach(function () {
+  describe("bundled PDF chunking", function () {
+    afterEach(async function () {
+      await closePdfWorkersForTests();
       delete (globalThis as unknown as { Zotero?: unknown }).Zotero;
       delete (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit;
       delete (globalThis as unknown as { IOUtils?: unknown }).IOUtils;
@@ -213,119 +172,161 @@ describe("mineruClient", function () {
       delete (globalThis as unknown as { Services?: unknown }).Services;
     });
 
-    it("kills page counting and preserves cancellation", async function () {
-      let signalStarted: (() => void) | null = null;
-      const started = new Promise<void>((resolve) => {
-        signalStarted = resolve;
-      });
-      let killed = false;
-      setupChunkingSubprocessTest("%PDF-1.7", (command, args) => {
-        if (command === "which") return completedSubprocess("/mock/pdftk\n");
-        if (args[1] === "dump_data") {
-          signalStarted?.();
-          return deferredSubprocess(() => {
-            killed = true;
-          });
-        }
-        throw new Error(`Unexpected subprocess command: ${command}`);
-      });
-      const controller = new AbortController();
-
-      const parsing = parsePdfWithMineru(
-        "/tmp/long.pdf",
-        undefined,
-        controller.signal,
-      );
-      await started;
-      controller.abort();
-
-      let thrown: unknown = null;
-      try {
-        await parsing;
-      } catch (error) {
-        thrown = error;
-      }
-      assert.isTrue(killed);
-      assert.instanceOf(thrown, MineruCancelledError);
-    });
-
-    it("kills PDF splitting and preserves cancellation", async function () {
-      let signalStarted: (() => void) | null = null;
-      const started = new Promise<void>((resolve) => {
-        signalStarted = resolve;
-      });
-      let killed = false;
-      setupChunkingSubprocessTest(
-        "%PDF-1.7\n/Type /Pages /Count 401",
-        (command, args, files) => {
-          if (command === "which") {
-            return completedSubprocess("/mock/pdftk\n");
-          }
-          if (args[1] === "dump_data") {
-            files.set(args[3], bytes("NumberOfPages: 401\n"));
-            return completedSubprocess();
-          }
-          if (args[1] === "cat") {
-            signalStarted?.();
-            return deferredSubprocess(() => {
-              killed = true;
-            });
-          }
-          throw new Error(`Unexpected subprocess command: ${command}`);
-        },
-      );
-      const controller = new AbortController();
-
-      const parsing = parsePdfWithMineru(
-        "/tmp/long.pdf",
-        undefined,
-        controller.signal,
-      );
-      await started;
-      controller.abort();
-
-      let thrown: unknown = null;
-      try {
-        await parsing;
-      } catch (error) {
-        thrown = error;
-      }
-      assert.isTrue(killed);
-      assert.instanceOf(thrown, MineruCancelledError);
-    });
-
-    it("finds pdftk in the Apple Silicon Homebrew fallback", async function () {
-      const commands: string[] = [];
-      setupChunkingSubprocessTest("%PDF-1.7", (command, args, files) => {
-        commands.push(command);
-        if (command === "which") return completedSubprocess();
-        if (command === "/opt/homebrew/bin/pdftk") {
-          files.set(args[3], bytes("NumberOfPages: 1\n"));
-          return completedSubprocess();
-        }
-        throw new Error(`Unexpected subprocess command: ${command}`);
-      });
-      (globalThis as unknown as { Services: unknown }).Services = {
-        env: { get: () => "/usr/bin:/usr/local/bin" },
-      };
-      let currentPath = "";
-      (globalThis as unknown as { Components: unknown }).Components = {
-        classes: {
-          "@mozilla.org/file/local;1": {
-            createInstance: () => ({
-              initWithPath: (path: string) => {
-                currentPath = path;
-              },
-              exists: () => currentPath === "/opt/homebrew/bin/pdftk",
+    for (const limit of [0, 500, 200]) {
+      it(`applies whole-document limit ${limit} before splitting and merges all allowed chunks`, async function () {
+        const originalFetch = globalThis.fetch;
+        const removed: string[] = [];
+        let uploads = 0;
+        const files = setupChunkingTest(createPdfFixture(401, 50));
+        (globalThis as any).Zotero.Prefs.get = (key: string) => {
+          if (key.endsWith(".mineruMode")) return "local";
+          if (key.endsWith(".mineruLocalBackend")) return "hybrid";
+          if (key.endsWith(".mineruForceOcr")) return true;
+          return "";
+        };
+        (globalThis as any).IOUtils.remove = async (path: string) => {
+          removed.push(path);
+        };
+        globalThis.fetch = (async (_url, init) => {
+          uploads++;
+          assert.equal(
+            await readMultipartTextField(init?.body, "backend"),
+            "hybrid-auto-engine",
+          );
+          assert.equal(
+            await readMultipartTextField(init?.body, "parse_method"),
+            "ocr",
+          );
+          return new Response(
+            zipSync({
+              "full.md": bytes(
+                `# Part ${uploads}\n\n![figure](images/figure.png)`,
+              ),
+              "content_list.json": bytes(
+                JSON.stringify([
+                  { type: "image", page_idx: 0, img_path: "images/figure.png" },
+                ]),
+              ),
+              "images/figure.png": bytes(`image ${uploads}`),
             }),
-          },
-        },
-        interfaces: { nsIFile: {} },
-      };
+            { status: 200 },
+          );
+        }) as typeof fetch;
+        try {
+          if (limit === 200) {
+            let error: unknown;
+            try {
+              await parsePdfWithMineru("/tmp/long.pdf", undefined, undefined, {
+                maxPages: limit,
+              });
+            } catch (caught) {
+              error = caught;
+            }
+            assert.instanceOf(error, MineruPageLimitError);
+            assert.equal(files.size, 1);
+            assert.equal(uploads, 0);
+          } else {
+            const result = await parsePdfWithMineru(
+              "/tmp/long.pdf",
+              undefined,
+              undefined,
+              { maxPages: limit },
+            );
+            assert.isNotNull(result);
+            const pageCounts: number[] = [];
+            for (const [path, data] of files) {
+              if (path === "/tmp/long.pdf") continue;
+              pageCounts.push((await PDFDocument.load(data)).getPageCount());
+            }
+            assert.deepEqual(pageCounts, [200, 200, 1]);
+            assert.equal(uploads, 3);
+            assert.isBelow(
+              result!.mdContent.indexOf("# Part 1"),
+              result!.mdContent.indexOf("# Part 2"),
+            );
+            assert.isBelow(
+              result!.mdContent.indexOf("# Part 2"),
+              result!.mdContent.indexOf("# Part 3"),
+            );
+            const list = JSON.parse(
+              decoder.decode(
+                result!.files.find(
+                  (file) => file.relativePath === "content_list.json",
+                )!.data,
+              ),
+            );
+            assert.deepEqual(
+              list.map((item: any) => item.page_idx),
+              [0, 200, 400],
+            );
+            for (const chunk of ["001", "002", "003"]) {
+              assert.include(
+                result!.mdContent,
+                `images/chunk-${chunk}/images/figure.png`,
+              );
+              assert.isTrue(
+                result!.files.some(
+                  (file) =>
+                    file.relativePath ===
+                    `images/chunk-${chunk}/images/figure.png`,
+                ),
+              );
+            }
+            assert.isTrue(
+              removed.some((path) => /mineru-chunks-[^/]+$/.test(path)),
+              "cleans temporary chunks after merging",
+            );
+          }
+        } finally {
+          globalThis.fetch = originalFetch;
+          resetMineruLocalFileParseGateForTests();
+        }
+      });
+    }
 
-      await parsePdfWithMineru("/tmp/long.pdf");
+    for (const stage of ["Reading PDF page count", "Splitting PDF"]) {
+      it(`preserves cancellation during ${stage}`, async function () {
+        setupChunkingTest(createPdfFixture(401));
+        const removed: string[] = [];
+        (globalThis as any).IOUtils.remove = async (path: string) =>
+          removed.push(path);
+        const controller = new AbortController();
+        let error: unknown;
+        try {
+          await parsePdfWithMineru(
+            "/tmp/long.pdf",
+            (message) => {
+              if (message.startsWith(stage)) controller.abort();
+            },
+            controller.signal,
+          );
+        } catch (caught) {
+          error = caught;
+        }
+        assert.instanceOf(error, MineruCancelledError);
+        if (stage === "Splitting PDF") {
+          assert.lengthOf(removed, 1, "cleans chunks on cancellation");
+        }
+      });
+    }
 
-      assert.include(commands, "/opt/homebrew/bin/pdftk");
+    it("cleans temporary chunks when an upload fails", async function () {
+      const originalFetch = globalThis.fetch;
+      setupChunkingTest(createPdfFixture(401));
+      (globalThis as any).Zotero.Prefs.get = (key: string) =>
+        key.endsWith(".mineruMode") ? "local" : "";
+      const removed: string[] = [];
+      (globalThis as any).IOUtils.remove = async (path: string) =>
+        removed.push(path);
+      globalThis.fetch = (async () =>
+        new Response("Failure", { status: 400 })) as typeof fetch;
+      try {
+        assert.isNull(await parsePdfWithMineru("/tmp/long.pdf"));
+        assert.lengthOf(removed, 1);
+      } finally {
+        globalThis.fetch = originalFetch;
+        resetMineruLocalFileParseGateForTests();
+      }
     });
   });
 

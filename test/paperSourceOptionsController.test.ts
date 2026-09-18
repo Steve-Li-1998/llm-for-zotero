@@ -80,6 +80,16 @@ function buildOptionsForItems(params: {
 }
 
 describe("paper source MinerU option state", function () {
+  it("offers resume for saved partial work without hiding text", function () {
+    assert.deepEqual(
+      resolveMineruSourceOptionState({
+        hasUsableMineru: false,
+        itemStatus: { status: "partial" },
+      }),
+      { state: "partial", action: "retry", hideTextSource: false },
+    );
+  });
+
   it("uses local-path PDF support only for Claude Code and Codex conversations", function () {
     assert.equal(
       resolvePaperPdfSupportForConversation({

@@ -1054,6 +1054,11 @@ const zhCN: Record<string, string> = {
   // MinerU preference filters
   "Sync existing MinerU caches now": "立即同步已有 MinerU 缓存",
   "Advanced parsing filters": "高级解析过滤器",
+  Unlimited: "不限",
+  Partial: "部分完成",
+  "Partial parsing. Click to resume": "部分解析完成。点击继续",
+  "Resume to continue from saved progress.": "恢复以继续已保存的进度。",
+  "Custom page limit": "自定义页数上限",
   "Skip files over": "跳过超过",
   pages: "页",
   "Start All, Start Filtered, Start Selected, and auto-parse skip PDFs above this page count.":

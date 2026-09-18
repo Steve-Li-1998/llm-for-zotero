@@ -16,8 +16,9 @@ import {
 } from "../src/utils/mineruConfig";
 
 describe("mineruConfig", function () {
-  it("preserves 100 as the default automatic page limit", function () {
-    assert.equal(DEFAULT_MINERU_MAX_AUTO_PAGES, 100);
+  it("defaults to Unlimited when no page limit is saved", function () {
+    assert.equal(DEFAULT_MINERU_MAX_AUTO_PAGES, 0);
+    assert.equal(normalizeMineruMaxAutoPages(undefined), 0);
   });
 
   describe("normalizeMineruMode", function () {
@@ -115,22 +116,22 @@ describe("mineruConfig", function () {
   });
 
   describe("normalizeMineruMaxAutoPages", function () {
+    it("preserves zero as Unlimited", function () {
+      assert.equal(normalizeMineruMaxAutoPages(0), 0);
+      assert.equal(normalizeMineruMaxAutoPages("0"), 0);
+    });
     it("accepts positive page limits and floors decimals", function () {
       assert.equal(normalizeMineruMaxAutoPages("100"), 100);
       assert.equal(normalizeMineruMaxAutoPages(100.9), 100);
     });
 
-    it("falls back to the default for empty, zero, or invalid values", function () {
+    it("falls back to the default for empty or invalid values", function () {
       assert.equal(
         normalizeMineruMaxAutoPages(""),
         DEFAULT_MINERU_MAX_AUTO_PAGES,
       );
       assert.equal(
-        normalizeMineruMaxAutoPages("0"),
-        DEFAULT_MINERU_MAX_AUTO_PAGES,
-      );
-      assert.equal(
-        normalizeMineruMaxAutoPages(0),
+        normalizeMineruMaxAutoPages(-1),
         DEFAULT_MINERU_MAX_AUTO_PAGES,
       );
       assert.equal(

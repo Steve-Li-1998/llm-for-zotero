@@ -9,13 +9,18 @@ import {
 import { sanitizeText } from "../../../../utils/textSanitization";
 import type { PaperContextRef } from "../../types";
 
-export type MineruSourceUiState = "cached" | "idle" | "processing" | "failed";
+export type MineruSourceUiState =
+  | "cached"
+  | "idle"
+  | "processing"
+  | "failed"
+  | "partial";
 
 export type MineruSourceAction = "select" | "start" | "pause" | "retry";
 
 export type MineruSourceStatusSnapshot =
   | {
-      status?: "idle" | "processing" | "failed" | "cached";
+      status?: "idle" | "processing" | "failed" | "partial" | "cached";
     }
   | undefined;
 
@@ -110,9 +115,9 @@ export function resolveMineruSourceOptionState(input: {
     };
   }
 
-  if (status === "failed") {
+  if (status === "failed" || status === "partial") {
     return {
-      state: "failed",
+      state: status,
       action: "retry",
       hideTextSource: hasUsableMineru,
     };
@@ -228,6 +233,9 @@ function getMineruSourceDescription(input: {
   if (input.state === "processing") {
     return `${input.attachmentTitle} - ${input.translate("MinerU parsing...")}`;
   }
+  if (input.state === "partial") {
+    return `${input.attachmentTitle} - ${input.translate("Partial parsing. Click to resume")}`;
+  }
   if (input.state === "failed") {
     return `${input.attachmentTitle} - ${input.translate(
       "MinerU parsing failed. Click to retry",
@@ -261,6 +269,9 @@ function getMineruActionTitle(input: {
   if (input.disabledReason) return input.disabledReason;
   if (input.state === "processing") {
     return input.translate("Click to stop MinerU parsing");
+  }
+  if (input.state === "partial") {
+    return input.translate("Partial parsing. Click to resume");
   }
   if (input.state === "failed") {
     return input.translate("MinerU parsing failed. Click to retry");

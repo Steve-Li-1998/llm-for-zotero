@@ -6,7 +6,10 @@ import {
 } from "../src/services/pdf/pdfFigureCropCache";
 import {
   buildManifest,
+  finalizeMineruCacheFiles,
+  validateMineruManifest,
   getManifestFigureBaseLabel,
+  getMineruItemDir,
   MINERU_SOURCE_PROVENANCE_KIND,
   MINERU_SOURCE_PROVENANCE_VERSION,
   normalizeMineruCacheFiles,
@@ -140,6 +143,92 @@ describe("mineruCache", function () {
     delete (globalThis as unknown as { IOUtils?: unknown }).IOUtils;
     delete (globalThis as unknown as { Zotero?: unknown }).Zotero;
     delete (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit;
+  });
+
+  it("withholds a cache read when publication starts while the file is being read", async function () {
+    const memory = setupMemoryIO();
+    await writeMineruCacheFiles(42, "# Intro", []);
+    const io = (globalThis as any).IOUtils;
+    const read = io.read;
+    io.read = async (path: string) => {
+      const data = await read(path);
+      if (path.endsWith("/full.md"))
+        memory.files.set(
+          `${getMineruItemDir(42)}/_llm_write_pending.json`,
+          bytes("{}"),
+        );
+      return data;
+    };
+    assert.isNull(await readCachedMineruMd(42));
+  });
+  it("accepts valid heading whitespace when verifying manifest offsets", function () {
+    const md =
+      "#  Introduction\n\nFirst\n\n#\tMethods\n\nSecond\n\n# Results\n\nThird";
+    assert.doesNotThrow(() =>
+      validateMineruManifest(md, buildManifest(md, [], 3), 3),
+    );
+  });
+  it("rejects saved manifest page references outside its declared document", function () {
+    const md = "# Intro\ntext";
+    const manifest = buildManifest(
+      md,
+      [{ type: "text", text_level: 1, text: "Intro", page_idx: 400 }],
+      200,
+    );
+    assert.throws(() => validateMineruManifest(md, manifest), /page index/);
+  });
+  it("preserves authoritative page totals when finalizing a saved sync package", function () {
+    const md = "# Introduction\n\ntext";
+    const manifest = buildManifest(
+      md,
+      [{ type: "text", text_level: 1, text: "Introduction", page_idx: 0 }],
+      401,
+    );
+    const result = finalizeMineruCacheFiles(md, [
+      { relativePath: "manifest.json", data: bytes(JSON.stringify(manifest)) },
+      {
+        relativePath: "content_list.json",
+        data: bytes(
+          '[{"type":"text","text_level":1,"text":"Introduction","page_idx":0}]',
+        ),
+      },
+    ]);
+    assert.equal(
+      result.manifest.totalPages,
+      401,
+      "blank trailing pages remain part of the PDF",
+    );
+  });
+  it("keeps repeated chapter headings attached to their own page and figures", function () {
+    const md =
+      "# Introduction\n\nfirst\n\n# Introduction\n\nsecond\n\n# Introduction\n\nthird";
+    const list = [0, 200, 400].flatMap((page, index) => [
+      { type: "text", text_level: 1, text: "Introduction", page_idx: page },
+      {
+        type: "image",
+        img_path: `images/chunk-${index + 1}/figure.png`,
+        image_caption: [`Fig. ${index + 1}`],
+        page_idx: page,
+      },
+    ]);
+    const manifest = buildManifest(md, list);
+    assert.deepEqual(
+      manifest.sections.map((section) => section.page),
+      [0, 200, 400],
+    );
+    assert.deepEqual(
+      manifest.sections.map((section) => section.figures[0].path),
+      [
+        "images/chunk-1/figure.png",
+        "images/chunk-2/figure.png",
+        "images/chunk-3/figure.png",
+      ],
+    );
+    for (const section of manifest.sections)
+      assert.match(
+        md.slice(section.charStart, section.charEnd),
+        /^# Introduction/,
+      );
   });
 
   describe("manifest figure grouping", function () {

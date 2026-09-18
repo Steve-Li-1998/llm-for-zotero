@@ -1,7 +1,8 @@
+import { getMineruCheckpointProgress } from "../services/mineru/mineruCheckpoint";
 import { getMineruAvailabilityForAttachmentId } from "../services/mineru/sync";
 import { MineruCancelledError } from "../utils/mineruClient";
 
-type ProcessingStatus = "idle" | "processing" | "failed" | "cached";
+type ProcessingStatus = "idle" | "processing" | "failed" | "cached" | "partial";
 
 interface ItemStatus {
   status: ProcessingStatus;
@@ -68,12 +69,19 @@ export function setItemFailed(
   attachmentId: number,
   errorMessage?: string,
 ): void {
-  processingMap.set(attachmentId, {
+  const failed: ItemStatus = {
     status: "failed",
     updatedAt: Date.now(),
     errorMessage,
-  });
+  };
+  processingMap.set(attachmentId, failed);
   notifyListeners();
+  void getMineruCheckpointProgress(attachmentId).then((progress) => {
+    if (progress && processingMap.get(attachmentId) === failed) {
+      processingMap.set(attachmentId, { ...failed, status: "partial" });
+      notifyListeners();
+    }
+  });
 }
 
 export function clearItemStatus(attachmentId: number): void {
@@ -187,13 +195,13 @@ function waitForMineruTask<T>(
     };
     const onAbort = () => {
       if (settled) return;
+      if (cancelSharedOnAbort) {
+        active.controller?.abort();
+        return;
+      }
       settled = true;
       cleanup();
-      // The workflow that created the shared task owns the underlying
-      // operation, so its pause/stop aborts the task. A joined workflow only
-      // detaches from the wait; attachment deletion uses cancelMineruTask()
-      // below to cancel the shared task regardless of ownership.
-      if (cancelSharedOnAbort) active.controller?.abort();
+      // Joined workflows only detach; the owner waits for durable writes.
       reject(new MineruCancelledError());
     };
 
@@ -203,7 +211,8 @@ function waitForMineruTask<T>(
         if (settled) return;
         settled = true;
         cleanup();
-        resolve(value as T);
+        if (subscriberSignal.aborted) reject(new MineruCancelledError());
+        else resolve(value as T);
       },
       (error) => {
         if (settled) return;
@@ -223,7 +232,12 @@ export function cancelMineruTask(attachmentId: number): boolean {
   return true;
 }
 
-export type MineruStatus = "cached" | "processing" | "failed" | "idle";
+export type MineruStatus =
+  | "cached"
+  | "processing"
+  | "failed"
+  | "idle"
+  | "partial";
 
 export async function getMineruStatus(
   attachmentId: number,
@@ -242,6 +256,20 @@ export async function getMineruStatus(
   if (availability.status !== "missing") {
     return "cached";
   }
+
+  if (await getMineruCheckpointProgress(attachmentId)) {
+    if (processingMap.get(attachmentId)?.status === "processing")
+      return "processing";
+    if (status?.status !== "partial") {
+      processingMap.set(attachmentId, {
+        status: "partial",
+        updatedAt: Date.now(),
+      });
+      notifyListeners();
+    }
+    return "partial";
+  }
+  if (status?.status === "partial") processingMap.delete(attachmentId);
 
   if (status?.status === "failed") {
     return "failed";
@@ -284,4 +312,17 @@ export function getAllFailedIds(): number[] {
 export function clearAllStatuses(): void {
   processingMap.clear();
   notifyListeners();
+}
+
+export async function cancelMineruTaskAndWait(
+  attachmentId: number,
+): Promise<void> {
+  const active = activeTasks.get(attachmentId);
+  if (!active) return;
+  active.controller?.abort();
+  try {
+    await active.promise;
+  } catch {
+    /* The caller is removing the task's files. */
+  }
 }

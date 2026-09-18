@@ -11618,6 +11618,21 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   animation: llm-compact-spin 900ms linear infinite;
 }
 
+.llm-paper-chip-menu-row-mineru-partial .llm-paper-picker-badge {
+  gap: 4px;
+  background: color-mix(in srgb, #8b5cf6 18%, transparent);
+  color: #8b5cf6;
+}
+
+.llm-paper-chip-menu-row-mineru-partial .llm-paper-picker-badge::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 .llm-paper-chip-menu-row-mineru-failed .llm-paper-picker-badge {
   gap: 4px;
   background: color-mix(in srgb, #ef4444 18%, transparent);

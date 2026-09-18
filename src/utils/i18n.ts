@@ -1050,6 +1050,8 @@ const zhCN: Record<string, string> = {
   "No %provider% provider found. Enter an API key for embeddings.":
     "未找到 %provider% 服务商。请输入用于嵌入模型的 API 密钥。",
   "Estimated cost": "预估费用",
+  "No embedding provider is available yet; configure one below.":
+    "尚无可用的嵌入模型服务商，请在下方配置。",
 
   // MinerU preference filters
   "Sync existing MinerU caches now": "立即同步已有 MinerU 缓存",

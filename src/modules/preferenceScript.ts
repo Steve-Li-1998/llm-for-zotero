@@ -4759,9 +4759,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         : "none";
     };
 
-    // Show the effective state: with no explicit choice stored, semantic search
-    // is on whenever an embedding configuration resolves.
-    semanticSearchToggle.checked = resolveSemanticSearchState().enabled;
+    // Show the stored choice, not the resolved outcome: a user who turned
+    // semantic search on keeps the switch on — and the embedding card in
+    // view — while no provider is available yet. With nothing stored, the
+    // switch shows what semantic search resolves to on its own.
+    const semanticSearchState = resolveSemanticSearchState();
+    semanticSearchToggle.checked =
+      semanticSearchState.source === "pref" ||
+      (semanticSearchState.source === "auto" && semanticSearchState.enabled);
     syncSemanticVisibility();
 
     semanticSearchToggle.addEventListener("change", () => {
@@ -4772,6 +4777,22 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     // Render the embedding config card inside sub-settings
     const renderEmbeddingCard = () => {
       semanticSearchMount.innerHTML = "";
+
+      // Semantic search is on by choice but nothing can run it yet: say so,
+      // instead of leaving the card to explain itself.
+      if (
+        semanticSearchState.source === "pref" &&
+        !semanticSearchState.enabled
+      ) {
+        semanticSearchMount.appendChild(
+          el(
+            doc,
+            "div",
+            `${HELPER_STYLE} margin-bottom: 8px;`,
+            t("No embedding provider is available yet; configure one below."),
+          ),
+        );
+      }
 
       const provider = resolveEmbeddingProvider();
       const preset = EMBEDDING_PRESETS[provider];

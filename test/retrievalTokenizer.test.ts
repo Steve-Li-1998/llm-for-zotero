@@ -2,11 +2,19 @@ import { assert } from "chai";
 import {
   extractCjkKeywordProbes,
   isCjkDominantText,
+  LATEX_FORMATTING_COMMANDS,
+  MATH_SYMBOL_TOKENS,
   stripTerminalPunctuation,
   tokenizeRetrievalDiversity,
   tokenizeRetrievalQuery,
   tokenizeRetrievalText,
 } from "../src/services/retrieval/retrievalTokenizer";
+import {
+  buildFixturePdfContext,
+  restoreTestGlobals,
+  snapshotTestGlobals,
+  type TestGlobalSnapshot,
+} from "./helpers/retrievalCorpus";
 
 describe("retrievalTokenizer", function () {
   it("preserves academic compounds and indexes their split parts", function () {
@@ -69,6 +77,52 @@ describe("retrievalTokenizer", function () {
 
   it("falls query tokenization back to unfiltered tokens when needed", function () {
     assert.deepEqual(tokenizeRetrievalQuery("the"), ["the"]);
+  });
+
+  it("maps unicode math operators to word tokens", function () {
+    assert.includeMembers(tokenizeRetrievalQuery("why is ∇π singular at ∂ω"), [
+      "nabla",
+      "partial",
+      "singular",
+    ]);
+    assert.includeMembers(tokenizeRetrievalQuery("the term ∇Δh"), [
+      "nabla",
+      "delta",
+    ]);
+
+    for (const [symbol, token] of Object.entries(MATH_SYMBOL_TOKENS)) {
+      assert.include(
+        tokenizeRetrievalText(`the operator ${symbol} appears twice`),
+        token,
+        `symbol ${symbol} should tokenize as ${token}`,
+      );
+    }
+
+    // Plain Greek letters are not operators and keep their own token.
+    assert.include(tokenizeRetrievalText("the σ term"), "σ");
+  });
+
+  it("keeps semantic LaTeX commands and drops formatting commands", function () {
+    const tokens = tokenizeRetrievalText(
+      "$\\dot{\\mathbf{x}} = (m/h)\\nabla\\Delta h$ with $\\mathrm{d}\\gamma$",
+    );
+
+    assert.includeMembers(tokens, ["nabla", "delta", "dot", "m/h"]);
+    assert.notInclude(tokens, "mathbf");
+    assert.notInclude(tokens, "mathrm");
+    assert.include(tokens, "gamma");
+
+    for (const command of LATEX_FORMATTING_COMMANDS) {
+      const wrapped = tokenizeRetrievalText(
+        `inline \\${command}{argument} tail`,
+      );
+      assert.notInclude(wrapped, command, `\\${command} should be dropped`);
+      assert.include(
+        wrapped,
+        "argument",
+        `\\${command} should keep its argument`,
+      );
+    }
   });
 
   it("uses multilingual tokens for diversity overlap", function () {
@@ -136,5 +190,39 @@ describe("quicksearch probe helpers", function () {
     );
 
     assert.isAtMost(probes.length, 3);
+  });
+});
+
+describe("retrieval tokenizer over the chunk index", function () {
+  let globalsBefore: TestGlobalSnapshot;
+
+  before(function () {
+    globalsBefore = snapshotTestGlobals();
+  });
+
+  after(function () {
+    restoreTestGlobals(globalsBefore);
+  });
+
+  it("indexes an equation-dense chunk with operator tokens and no formatting noise", async function () {
+    const ctx = await buildFixturePdfContext("mathDoubleHash", 9301);
+    const chunkIndex = ctx.chunkMeta.findIndex((meta) =>
+      meta.text.includes("kinematic relation between the film height"),
+    );
+    assert.isAtLeast(chunkIndex, 0, "section 2.2 chunk not found");
+
+    const tf = ctx.chunkStats[chunkIndex]?.tf || {};
+    assert.isAbove(tf["nabla"] || 0, 0, "section 2.2 chunk should index nabla");
+    assert.isAbove(
+      tf["partial"] || 0,
+      0,
+      "section 2.2 chunk should index partial",
+    );
+    for (const command of ["mathbf", "operatorname", "quad", "qquad", "text"]) {
+      assert.isUndefined(
+        tf[command],
+        `LaTeX formatting token ${command} should not be indexed`,
+      );
+    }
   });
 });

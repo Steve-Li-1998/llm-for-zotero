@@ -27,6 +27,76 @@ const HANGUL_PATTERN = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/g;
 const PLAIN_ASCII_WORD_PATTERN = /^[a-z]+$/;
 const GREEK_SINGLE_LETTER_PATTERN = /^[\u0370-\u03FF]$/u;
 
+/**
+ * Maths operators a reader can type but a word tokenizer cannot see: they are
+ * symbols, not letters, so `WORD_PATTERN` drops them and a question about
+ * "\u2207\u03C0" can never meet a paper that spells the same operator `\nabla`. Mapping
+ * both sides onto the operator's LaTeX name is what makes them match.
+ *
+ * The keys are the post-NFKC lowercase forms, which is why `\u0394` appears here as
+ * `\u03B4`. Plain Greek letters (\u03C3, \u03C0, \u03C9 \u2026) are *not* listed: they are ordinary
+ * symbols in prose and keep their own token.
+ */
+export const MATH_SYMBOL_TOKENS: Record<string, string> = {
+  "\u2207": "nabla",
+  "\u2202": "partial",
+  δ: "delta",
+  "\u2211": "sum",
+  "\u222B": "integral",
+  "\u221E": "infinity",
+};
+
+/**
+ * LaTeX commands that only style their argument. Their names would otherwise
+ * become high-frequency tokens ("mathbf", "quad") that dilute BM25 for every
+ * equation-dense chunk. Semantic commands (`\nabla`, `\frac`, `\dot`, \u2026) are
+ * deliberately absent: their names are the content.
+ */
+export const LATEX_FORMATTING_COMMANDS = new Set([
+  "mathbf",
+  "mathrm",
+  "mathcal",
+  "mathbb",
+  "boldsymbol",
+  "operatorname",
+  "left",
+  "right",
+  "quad",
+  "qquad",
+  "text",
+  "textbf",
+  "textit",
+  "label",
+  "tag",
+  "begin",
+  "end",
+  "displaystyle",
+]);
+
+const MATH_SYMBOL_PATTERN = new RegExp(
+  `[${Object.keys(MATH_SYMBOL_TOKENS).join("")}]`,
+  "gu",
+);
+
+// Longest name first so `\textbf` cannot be consumed as `\text` + "bf".
+const LATEX_FORMATTING_PATTERN = new RegExp(
+  `\\\\(?:${[...LATEX_FORMATTING_COMMANDS]
+    .sort((a, b) => b.length - a.length)
+    .join("|")})\\b`,
+  "g",
+);
+
+/**
+ * Rewrite normalized text so maths reads as words: operators become their
+ * LaTeX names, styling commands disappear and leave their argument behind.
+ * Tokens are space-padded, so "\u2207\u03B4h" indexes as "nabla delta h".
+ */
+function applyMathRewrites(text: string): string {
+  return text
+    .replace(MATH_SYMBOL_PATTERN, (symbol) => ` ${MATH_SYMBOL_TOKENS[symbol]} `)
+    .replace(LATEX_FORMATTING_PATTERN, " ");
+}
+
 let cachedWordSegmenter: SegmenterLike | null | undefined;
 
 function getWordSegmenter(): SegmenterLike | null {
@@ -139,13 +209,16 @@ export function tokenizeRetrievalText(
   const normalized = normalizeRetrievalText(text);
   if (!normalized) return [];
 
+  // Rewrite maths before compounds are collected, so "m/h" and friends still
+  // match the protected-term pattern on untouched text.
+  const rewritten = applyMathRewrites(normalized);
   const filterStopwords = options?.filterStopwords !== false;
   const { tokens: protectedTokens, maskedText } =
-    collectProtectedTerms(normalized);
+    collectProtectedTerms(rewritten);
   const rawTokens = [
     ...protectedTokens,
     ...segmentWordTokens(maskedText),
-    ...collectScriptBigrams(normalized),
+    ...collectScriptBigrams(rewritten),
   ];
   const filtered = rawTokens.filter((token) =>
     shouldKeepToken(token, { filterStopwords }),

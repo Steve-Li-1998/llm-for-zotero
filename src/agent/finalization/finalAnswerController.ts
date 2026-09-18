@@ -1,4 +1,9 @@
-import type { AgentModelMessage, AgentRuntimeRequest } from "../types";
+import type {
+  AgentActionReceipt,
+  AgentModelMessage,
+  AgentRuntimeRequest,
+  AgentToolEffect,
+} from "../types";
 import type {
   ActionContractRunSession,
   RejectedActionContractFinalDecision,
@@ -17,6 +22,9 @@ import type { PlanExecutionRunSession } from "../plans/runSession";
 export type AgentFinalAnswerToolRecord = {
   name: string;
   ok: boolean;
+  mutability?: "read" | "write";
+  effect?: AgentToolEffect;
+  actionReceipts?: readonly AgentActionReceipt[];
   content?: unknown;
 };
 
@@ -78,7 +86,13 @@ export class AgentFinalAnswerController {
     canCorrect: boolean;
     toolExecutionRecords: readonly AgentFinalAnswerToolRecord[];
   }): Promise<AgentFinalAnswerDecision> {
-    if (this.request.planContext?.phase !== "planning") {
+    // Action contracts remain a compatibility boundary for approved legacy
+    // Plans. Fresh direct turns are checked at each concrete invocation and
+    // have no predicted obligations to evaluate here.
+    if (
+      this.request.actionContract &&
+      this.request.planContext?.phase !== "planning"
+    ) {
       const actionDecision = await this.actionContractSession.evaluateFinal({
         canCorrect: params.canCorrect,
       });
@@ -96,6 +110,25 @@ export class AgentFinalAnswerController {
           actionContractRejection: actionDecision,
         };
       }
+    }
+
+    const unverifiableWrite = params.toolExecutionRecords.find(
+      (record) =>
+        record.ok &&
+        record.mutability === "write" &&
+        (record.effect === "applied" || record.effect === "partial") &&
+        (!(record.actionReceipts || []).length ||
+          (record.actionReceipts || []).some(
+            (receipt) =>
+              receipt.verification === "unverified" ||
+              receipt.status === "unverified",
+          )),
+    );
+    if (unverifiableWrite) {
+      return {
+        kind: "fail",
+        userMessage: `${unverifiableWrite.name} ran, but its concrete effect could not be verified. Inspect current state before retrying it.`,
+      };
     }
 
     const planDecision = await this.planSession?.evaluateFinal({

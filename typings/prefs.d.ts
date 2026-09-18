@@ -8,6 +8,7 @@ declare namespace _ZoteroTypes {
   interface Prefs {
     PluginPrefsMap: {
       "enable": boolean;
+      "sidebarLayout": string;
       "standaloneSidebarWidth": number;
       "input": string;
       "apiBase": string;
@@ -45,7 +46,6 @@ declare namespace _ZoteroTypes {
       "codexAppServerPath": string;
       "codexAppServerConversationModeMap": string;
       "codexAppServerZoteroMcpToolsEnabled": boolean;
-      "externalMcpWritesEnabled": boolean;
       "codexAppServerNativeApprovalsEnabled": boolean;
       "codexAppServerApprovalsReviewer": string;
       "codexAppServerPermissionProfile": string;

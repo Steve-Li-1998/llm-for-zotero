@@ -529,27 +529,45 @@ export async function getLatestAgentRunForConversation(
   return toAgentRunRecord(rows?.[0]);
 }
 
-/** Every run of a conversation, oldest first; the flight report joins them to an execution. */
-export async function listAgentRunsForConversation(
-  conversationKey: number,
-): Promise<AgentRunRecord[]> {
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT run_id AS runId,
+const AGENT_RUN_COLUMNS = `run_id AS runId,
             conversation_key AS conversationKey,
             mode,
             model_name AS modelName,
             status,
             created_at AS createdAt,
             completed_at AS completedAt,
-            final_text AS finalText
+            final_text AS finalText`;
+
+/**
+ * Every run of a conversation, oldest first; the flight report joins them to
+ * an execution.  `limit` keeps only the newest N runs -- bounded in SQL, not
+ * after the fact -- and still returns them oldest first.
+ */
+export async function listAgentRunsForConversation(
+  conversationKey: number,
+  options: { limit?: number } = {},
+): Promise<AgentRunRecord[]> {
+  const limit =
+    options.limit === undefined
+      ? undefined
+      : Math.max(1, Math.floor(options.limit));
+  const rows = (await Zotero.DB.queryAsync(
+    limit === undefined
+      ? `SELECT ${AGENT_RUN_COLUMNS}
      FROM ${AGENT_RUNS_TABLE}
      WHERE conversation_key = ?
-     ORDER BY created_at ASC, rowid ASC`,
-    [conversationKey],
+     ORDER BY created_at ASC, rowid ASC`
+      : `SELECT ${AGENT_RUN_COLUMNS}
+     FROM ${AGENT_RUNS_TABLE}
+     WHERE conversation_key = ?
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT ?`,
+    limit === undefined ? [conversationKey] : [conversationKey, limit],
   )) as AgentRunRow[] | undefined;
-  return (rows || [])
+  const runs = (rows || [])
     .map((row) => toAgentRunRecord(row))
     .filter((run): run is AgentRunRecord => Boolean(run));
+  return limit === undefined ? runs : runs.reverse();
 }
 
 export async function appendAgentRunEvent(
@@ -615,9 +633,17 @@ export async function appendAgentRunEventAfterLatest(
   return { runId, seq, eventType: event.type, payload: event, createdAt };
 }
 
+/**
+ * A run's persisted events, in order.  `eventTypes` narrows the read in SQL so
+ * a caller that only needs a couple of event kinds does not pay to load and
+ * parse the whole trace.
+ */
 export async function listAgentRunEvents(
   runId: string,
+  options: { eventTypes?: readonly string[] } = {},
 ): Promise<AgentRunEventRecord[]> {
+  const eventTypes = [...new Set(options.eventTypes || [])];
+  if (options.eventTypes && !eventTypes.length) return [];
   const rows = (await Zotero.DB.queryAsync(
     `SELECT run_id AS runId,
             seq,
@@ -625,9 +651,13 @@ export async function listAgentRunEvents(
             payload_json AS payloadJson,
             created_at AS createdAt
      FROM ${AGENT_RUN_EVENTS_TABLE}
-     WHERE run_id = ?
+     WHERE run_id = ?${
+       eventTypes.length
+         ? ` AND event_type IN (${eventTypes.map(() => "?").join(", ")})`
+         : ""
+     }
      ORDER BY seq ASC, id ASC`,
-    [runId],
+    [runId, ...eventTypes],
   )) as
     | Array<{
         runId?: unknown;
@@ -651,6 +681,21 @@ export async function listAgentRunEvents(
       payload = null;
     }
     if (!payload || typeof payload.type !== "string") continue;
+    // Before interaction metadata existed, this persisted review action was
+    // the native question contract. Upgrade only the decoded legacy record;
+    // live renderers use explicit metadata and stored evidence stays intact.
+    if (
+      payload.type === "confirmation_required" &&
+      payload.action?.interaction === undefined &&
+      payload.action?.toolName === "request_user_input" &&
+      payload.action.mode === "review" &&
+      Array.isArray(payload.action.fields)
+    ) {
+      payload = {
+        ...payload,
+        action: { ...payload.action, interaction: "user_input" },
+      };
+    }
     out.push({
       runId,
       seq: Math.floor(seq),

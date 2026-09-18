@@ -14,6 +14,7 @@ import type {
 import { initResearchStore } from "../../src/agent/research/store";
 import type { ResearchContract } from "../../src/agent/research/types";
 import { createResearchUpdateTool } from "../../src/agent/tools/plan/researchUpdate";
+import { normalizeExecutionOutput } from "../../src/agent/tools/execution/results";
 import { resolvePlanContract } from "../../src/agent/tools/plan/updatePlan";
 import type { AgentToolContext } from "../../src/agent/types";
 import { resolvedAgentRequest } from "./resolvedAgentRequest";
@@ -453,7 +454,12 @@ export function installResearchHarness(
         modelName: request.model || "test-model",
         publishPlanEvent: async () => undefined,
       } as unknown as AgentToolContext;
-      return tool.execute(validation.value, context);
+      // Every operation returns the tool's execution output in one shape --
+      // its payload under `content`, beside the facts the host reads -- so a
+      // test never has to know which branch of the tool it took.
+      return normalizeExecutionOutput(
+        await tool.execute(validation.value, context),
+      );
     },
     async verifiedRead(keys, depth, readOptions = {}) {
       readCounter += 1;

@@ -5,7 +5,7 @@ import {
 import {
   persistAttachmentBlob,
   readAttachmentBytes,
-} from "../../attachmentStorage";
+} from "../../../../services/attachmentStorage";
 import type { ChatAttachment, PaperContextRef } from "../../types";
 
 type PdfPaperAttachmentResolverDeps = {

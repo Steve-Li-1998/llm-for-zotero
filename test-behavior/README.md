@@ -27,6 +27,9 @@ npm run test:behavior
 npm run test:behavior:smoke -- --select modes.auto.note
 npm run test:behavior -- --select paper,library
 
+# Crop-to-note regression with the Geva paper and commentary PDF in zotero-dev.
+npm run test:behavior -- --select figures --model deepseek-flash
+
 # Same research journey with 8 synthetic papers, or a current real collection.
 npm run test:behavior:smoke -- --select research
 npm run test:behavior -- --select research --collection Representation_Drift
@@ -54,6 +57,7 @@ It does not test Claude Code, Codex or WebChat.
 | Research                                 | Auto plus one plan approval     | Frozen per-run scope; durable research evidence; completion ledger; published document; exact coverage; human prose review                                                 |
 | Mode conformance                         | Safe / Auto / YOLO              | Read, note, metadata, file, explicit no-write and related-paper review behavior                                                                                            |
 | Recovery                                 | Safe / Auto                     | Cancellation without mutations; honest handling of a missing figure                                                                                                        |
+| Figure extraction                        | Auto / YOLO                     | Semantic skills before work; real bundled Python crops from the active PDF; native embedded images; crop-only note content; no confirmations or script detours             |
 
 `catalog.ts` is the authoritative list of stable check IDs, dependencies, acceptance statements and evidence types.
 `--list` shows the complete selected list and expected mode.
@@ -105,10 +109,12 @@ The invoked command exits nonzero for failure or blocking, so shell callers can 
 No report status controls any release command.
 
 Auto and YOLO confirmations are never blindly approved.
-Unexpected cards are cancelled and recorded as failures.
-Safe approval probes check native state and vault file hashes before approval.
-Requested new notes are created without confirmation in Safe, Auto, and YOLO, and must have a saved-note card linking the actual native note.
-The cancellation probe proposes a metadata edit, not a new note.
+Unexpected cards are cancelled and recorded as failures, while an explicitly cataloged exceptional-risk review may be approved after its proposal and unchanged pre-state are checked.
+Approval probes check native state and vault file hashes before approval.
+Safe reviews every external write, including new-note creation, before mutation.
+Auto runs routine reversible same-library changes directly and reviews cross-library, destructive, ambiguous, and out-of-scope effects.
+Verified note creation must produce a saved-note card linking the actual native note.
+The cancellation probe proposes a metadata edit.
 For note content-review cards, the proposed tool call must target the exact paper and its final content must match the displayed review payload.
 Other approval cards must expose their targets.
 They then approve the card as the test operator and inspect the resulting state and receipts.
@@ -138,7 +144,9 @@ Their automatic confirmation handling should not be used to judge Auto/YOLO conf
 
 ## Explicit coverage limits
 
-The current live catalog does not yet automate real-process research restart/resume, timeout-after-effect retry, stale approval payload edits, duplicate-item merge, group-library fixture creation, or command-execution conformance.
+The figure journey includes one Auto command probe that writes and runs a temporary Python script to read a crop's dimensions while preserving the image and native Zotero state.
+This is evidence for routine intermediate script execution, not general command-execution conformance.
+The current live catalog does not yet automate real-process research restart/resume, timeout-after-effect retry, stale approval payload edits, duplicate-item merge, or group-library fixture creation.
 Existing unit/workflow coverage of those mechanisms is not presented as live-suite coverage.
 These need dedicated scenarios before this suite can claim to cover them.
 No quality judge is run; you inspect the generated documents yourself.

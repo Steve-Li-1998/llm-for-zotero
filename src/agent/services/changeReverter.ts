@@ -25,6 +25,39 @@ import {
 } from "../store/journalRecoveryBlobStore";
 import { withActiveJournalAction } from "./externalMutationCoordinator";
 import {
+  captureCurrentScriptDeclaredGuard,
+  captureCurrentScriptItems,
+  isMutationOperation,
+  MUTATION_STATE_SECTIONS,
+  readFileBytes,
+  readRecordedPostImage,
+  verifyRecordedPostImage,
+  type PostImageReader,
+  type RecordedPostImage,
+  type RecordedPostImageState,
+} from "./recordedPostImage";
+
+/**
+ * The reverter reads through the full mutation service, so every recorded
+ * post-image shape is re-readable here.
+ */
+function postImageReader(
+  service: LibraryMutationService,
+  context: AgentToolContext,
+): PostImageReader {
+  return {
+    getItem: (itemId) => service.getGateway().getItem(itemId),
+    readSetting: (key) =>
+      service
+        .getGateway()
+        .listSettings()
+        .find((setting) => setting.key === key)?.value,
+    captureOperationState: (operation, result) =>
+      service.captureOperationState(operation, context, result),
+  };
+}
+export { isMutationOperation } from "./recordedPostImage";
+import {
   atomizeMutationOperationFromHandler,
   isRegisteredLibraryMutationOperation,
   mutationPostconditionIsSatisfied,
@@ -120,6 +153,27 @@ export type RevertConflict = {
   reason: string;
 };
 
+/**
+ * How native state read back after a step's inverse ran.
+ *
+ * `matched` is the only value that proves the step was put back: the target
+ * was re-read and holds the recorded pre-image. `mismatched` means the re-read
+ * succeeded and disagreed, `not_re_readable` that the target could not be read
+ * at all. The replay itself is unchanged by this classification — it is the
+ * evidence a receipt needs to stop reporting the tool's own counters as proof.
+ */
+export type RevertedStepVerification =
+  | "matched"
+  | "mismatched"
+  | "not_re_readable";
+
+export type RevertedStep = {
+  actionId: string;
+  sequence: number;
+  verification: RevertedStepVerification;
+  reason?: string;
+};
+
 export type RevertOutcome = {
   /** Actions whose complete durable inverse was replayed. */
   reverted: number;
@@ -132,6 +186,8 @@ export type RevertOutcome = {
   }>;
   skipped: Array<{ entryId: string; reason: string }>;
   conflicts: RevertConflict[];
+  /** Native re-read of every step whose inverse this call replayed. */
+  steps: RevertedStep[];
 };
 
 const stable = canonicalJson;
@@ -139,12 +195,6 @@ const stable = canonicalJson;
 function parseJson(value: string | undefined): unknown {
   if (!value) return undefined;
   return JSON.parse(value) as unknown;
-}
-
-export function isMutationOperation(
-  value: unknown,
-): value is LibraryMutationOperation {
-  return isRegisteredLibraryMutationOperation(value);
 }
 
 function isRecoveryPayload(value: unknown): value is RecoveryPayload {
@@ -237,268 +287,30 @@ function parseInverse(step: JournalStep): JournalInverse | null {
   return parseInverseValue(parseJson(step.inverseJson));
 }
 
-function captureCurrentScriptItems(
-  expectedItems: unknown[],
-  service: LibraryMutationService,
-): unknown[] {
-  return expectedItems.map((entry) => {
-    const itemId = Number(
-      entry && typeof entry === "object"
-        ? (entry as { itemId?: unknown }).itemId
-        : 0,
-    );
-    const item = service.getGateway().getItem(itemId) as any;
-    if (!item) return { itemId, exists: false };
-    let json: unknown;
-    try {
-      json = item.toJSON?.();
-    } catch {
-      json = undefined;
-    }
-    let noteHtml: string | undefined;
-    try {
-      if (item.isNote?.()) noteHtml = String(item.getNote?.() ?? "");
-    } catch {
-      noteHtml = undefined;
-    }
-    return {
-      itemId,
-      exists: true,
-      ...(json === undefined ? {} : { json }),
-      parentID: Number(item.parentID) || null,
-      deleted: item.deleted === true,
-      tags: item.getTags?.() || [],
-      collectionIds: item.getCollections?.() || [],
-      ...(noteHtml === undefined ? {} : { noteHtml }),
-    };
-  });
-}
-
-async function captureCurrentScriptDeclaredGuard(params: {
-  expected: unknown;
-  service: LibraryMutationService;
-  context: AgentToolContext;
-}): Promise<unknown> {
-  if (!params.expected || typeof params.expected !== "object") {
-    throw new Error("The script declaration guard is invalid");
-  }
-  const guard = params.expected as Record<string, unknown>;
-  if (guard.kind === "library_operation") {
-    if (!isMutationOperation(guard.operation)) {
-      throw new Error("The script library-operation guard is invalid");
-    }
-    return {
-      kind: "library_operation",
-      operation: guard.operation,
-      state: await params.service.captureOperationState(
-        guard.operation,
-        params.context,
-      ),
-    };
-  }
-  if (guard.kind === "note_html") {
-    const noteId = Number(guard.noteId);
-    const item = params.service.getGateway().getItem(noteId);
-    return {
-      kind: "note_html",
-      noteId,
-      checksum: await sha256Text(item?.getNote?.() || ""),
-    };
-  }
-  if (guard.kind === "file") {
-    const path = String(guard.path || "");
-    const bytes = await readFileBytes(path);
-    return {
-      kind: "file",
-      path,
-      exists: bytes !== null,
-      checksum: bytes === null ? null : await sha256Bytes(bytes),
-    };
-  }
-  if (guard.kind === "preference") {
-    const key = String(guard.key || "");
-    const setting = params.service
-      .getGateway()
-      .listSettings()
-      .find((entry) => entry.key === key);
-    return {
-      kind: "preference",
-      key,
-      existed: setting?.value !== undefined,
-      value: setting?.value,
-    };
-  }
-  throw new Error("The script declaration guard type is unsupported");
-}
-
+/**
+ * Live state read back in the shape of one journal step's recorded post-image.
+ *
+ * The reader itself is shared with the mutation coordinator, which asks the
+ * same question of a write it has just applied; this adapter only unpacks the
+ * durable step into the three values the reader needs.
+ */
 async function currentStepPostcondition(params: {
   step: JournalStep;
   service: LibraryMutationService;
   context: AgentToolContext;
 }): Promise<unknown> {
-  const expected = parseJson(params.step.expectedPostconditionJson);
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { version?: unknown }).version === 1 &&
-    typeof (expected as { operation?: unknown }).operation === "string"
-  ) {
-    const operation = parseJson(params.step.forwardJson);
-    if (!isMutationOperation(operation)) return undefined;
-    return params.service.captureOperationState(
-      operation,
-      params.context,
-      parseJson(params.step.resultJson),
-    );
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "script_items"
-  ) {
-    const expectedItems = (expected as { items?: unknown }).items;
-    if (!Array.isArray(expectedItems)) return undefined;
-    const items = captureCurrentScriptItems(expectedItems, params.service);
-    return { kind: "script_items", items };
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "script_effects"
-  ) {
-    const expectedItems = (expected as { items?: unknown }).items;
-    const expectedDeclared = (expected as { declared?: unknown }).declared;
-    if (!Array.isArray(expectedItems) || !Array.isArray(expectedDeclared)) {
-      return undefined;
-    }
-    const declared = [];
-    for (const guard of expectedDeclared) {
-      declared.push(
-        await captureCurrentScriptDeclaredGuard({
-          expected: guard,
-          service: params.service,
-          context: params.context,
-        }),
-      );
-    }
-    return {
-      kind: "script_effects",
-      items: captureCurrentScriptItems(expectedItems, params.service),
-      declared,
-    };
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "created_item"
-  ) {
-    const record = expected as Record<string, unknown>;
-    const itemId = Number(record.itemId);
-    const item = params.service.getGateway().getItem(itemId);
-    const current: Record<string, unknown> = {
-      kind: "created_item",
-      itemId,
-      exists: Boolean(item),
-    };
-    if (Object.prototype.hasOwnProperty.call(record, "parentItemId")) {
-      current.parentItemId = item
-        ? Number((item as Zotero.Item & { parentID?: unknown }).parentID) ||
-          null
-        : null;
-    }
-    if (Object.prototype.hasOwnProperty.call(record, "html")) {
-      current.html = item?.getNote?.() || "";
-    }
-    if (Object.prototype.hasOwnProperty.call(record, "htmlChecksum")) {
-      current.htmlChecksum = await sha256Text(item?.getNote?.() || "");
-    }
-    if (Object.prototype.hasOwnProperty.call(record, "collections")) {
-      current.collections = item?.getCollections?.() || [];
-    }
-    return current;
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "note_html"
-  ) {
-    const noteId = Number((expected as { noteId?: unknown }).noteId);
-    const item = params.service.getGateway().getItem(noteId);
-    if (Object.prototype.hasOwnProperty.call(expected, "canonicalChecksum")) {
-      if (!item || item.deleted)
-        throw new Error("The original note is unavailable");
-      await item.reload(["note"], true);
-      return {
-        kind: "note_html",
-        noteId,
-        canonicalChecksum: await sha256Text(canonicalNoteHtml(item.getNote())),
-      };
-    }
-    const html = item?.getNote?.() || "";
-    const current: Record<string, unknown> = {
-      kind: "note_html",
-      noteId,
-    };
-    if (Object.prototype.hasOwnProperty.call(expected, "checksum")) {
-      current.checksum = await sha256Text(html);
-    } else {
-      current.html = html;
-    }
-    return current;
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "path"
-  ) {
-    const record = expected as Record<string, unknown>;
-    const path = String(record.path || "");
-    const io = (globalThis as { IOUtils?: any }).IOUtils;
-    const exists = Boolean(await io?.exists?.(path));
-    let pathKind: string | null = null;
-    if (exists && typeof io?.stat === "function") {
-      const stat = await io.stat(path);
-      pathKind =
-        stat?.type === "directory"
-          ? "directory"
-          : stat?.type === "regular" || stat?.type === "file"
-            ? "file"
-            : null;
-    }
-    return {
-      kind: "path",
-      path,
-      pathKind,
-      exists,
-    };
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "file"
-  ) {
-    const path = String((expected as { path?: unknown }).path || "");
-    const bytes = await readFileBytes(path);
-    return {
-      kind: "file",
-      path,
-      exists: bytes !== null,
-      checksum: bytes === null ? null : await sha256Bytes(bytes),
-    };
-  }
-  if (
-    expected &&
-    typeof expected === "object" &&
-    (expected as { kind?: unknown }).kind === "preference"
-  ) {
-    const key = String((expected as { key?: unknown }).key || "");
-    const value = params.service
-      .getGateway()
-      .listSettings()
-      .find((setting) => setting.key === key)?.value;
-    return { kind: "preference", key, existed: value !== undefined, value };
-  }
-  return undefined;
+  return readRecordedPostImage({
+    image: recordedPostImageOfStep(params.step),
+    reader: postImageReader(params.service, params.context),
+  });
+}
+
+function recordedPostImageOfStep(step: JournalStep): RecordedPostImage {
+  return {
+    expected: parseJson(step.expectedPostconditionJson),
+    forward: parseJson(step.forwardJson),
+    result: parseJson(step.resultJson),
+  };
 }
 
 async function conflictForStep(params: {
@@ -553,14 +365,6 @@ function atomizeLibraryOperations(
 ): LibraryMutationOperation[] {
   return operations.flatMap(atomizeMutationOperationFromHandler);
 }
-
-const MUTATION_STATE_SECTIONS = [
-  "items",
-  "collections",
-  "savedSearches",
-  "libraryTags",
-  "relations",
-] as const;
 
 type MutationStateSection = (typeof MUTATION_STATE_SECTIONS)[number];
 type MutationStateRow = Record<string, unknown>;
@@ -768,6 +572,12 @@ async function conflictForLibraryInverse(params: {
   return null;
 }
 
+/**
+ * Returns `matched` because every operation below is re-read before the loop
+ * moves on: an executed one must classify `completed` afterwards or this
+ * throws, and a skipped one classified `completed` before it. Reaching the end
+ * therefore *is* the native re-read result for this step.
+ */
 async function executeLibraryInverseWithProgress(params: {
   actionId: string;
   step: JournalStep;
@@ -775,7 +585,7 @@ async function executeLibraryInverseWithProgress(params: {
   service: LibraryMutationService;
   context: AgentToolContext;
   now: () => number;
-}): Promise<void> {
+}): Promise<RevertedStepVerification> {
   let remaining = atomizeLibraryOperations(params.inverse.operations);
   const checkpoint = async (): Promise<void> => {
     await updateJournalStep({
@@ -832,6 +642,7 @@ async function executeLibraryInverseWithProgress(params: {
     remaining = remaining.slice(1);
     await checkpoint();
   }
+  return "matched";
 }
 
 async function readFile(path: string): Promise<string | null> {
@@ -841,22 +652,6 @@ async function readFile(path: string): Promise<string | null> {
     if (typeof io.readUTF8 === "function") return await io.readUTF8(path);
     const bytes = await io.read(path);
     return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
-async function readFileBytes(path: string): Promise<Uint8Array | null> {
-  const io = (globalThis as { IOUtils?: any }).IOUtils;
-  try {
-    if (!(await io?.exists?.(path))) return null;
-    if (typeof io?.read === "function") {
-      return new Uint8Array(await io.read(path));
-    }
-    if (typeof io?.readUTF8 === "function") {
-      return new TextEncoder().encode(await io.readUTF8(path));
-    }
-    return null;
   } catch {
     return null;
   }
@@ -1489,6 +1284,38 @@ async function nonLibraryInverseIsSatisfied(params: {
     : Boolean(setting && stable(setting.value) === stable(materialized.value));
 }
 
+/**
+ * Re-reads a non-library target after its inverse ran.
+ *
+ * The library and script replays already re-read their own target and refuse
+ * to finish otherwise. A note, file or preference inverse had no such check:
+ * it wrote and returned. This adds the missing observation without changing
+ * what the replay does with it — a mismatch is reported, not thrown, so a step
+ * that committed still ends `reverted` in the journal and the disagreement
+ * reaches the user through the receipt instead of a failed undo.
+ */
+async function rereadNonLibraryInverse(params: {
+  materialized: MaterializedNonLibraryInverse;
+  service: LibraryMutationService;
+}): Promise<{ verification: RevertedStepVerification; reason?: string }> {
+  try {
+    return (await nonLibraryInverseIsSatisfied(params))
+      ? { verification: "matched" }
+      : {
+          verification: "mismatched",
+          reason:
+            "the target did not hold the recorded pre-image when it was read back",
+        };
+  } catch (error) {
+    return {
+      verification: "not_re_readable",
+      reason: `the target could not be read back: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+}
+
 type NonLibraryReplayClassification =
   | { kind: "pending" }
   | { kind: "completed" }
@@ -1656,8 +1483,7 @@ async function classifyScriptReplayUnit(params: {
     try {
       const current = await captureCurrentScriptDeclaredGuard({
         expected: unit.value.guard,
-        service,
-        context,
+        reader: postImageReader(service, context),
       });
       return stable(current) === stable(unit.value.guard)
         ? { kind: "pending" }
@@ -1685,7 +1511,10 @@ async function classifyScriptReplayUnit(params: {
     if (!unit.expected) {
       return { kind: "conflict", reason: "The created-item guard is missing." };
     }
-    const current = captureCurrentScriptItems([unit.expected], service)[0];
+    const current = captureCurrentScriptItems(
+      [unit.expected],
+      postImageReader(service, context),
+    )[0];
     return stable(current) === stable(unit.expected)
       ? { kind: "pending" }
       : {
@@ -1699,7 +1528,10 @@ async function classifyScriptReplayUnit(params: {
   if (!unit.expected) {
     return { kind: "conflict", reason: "The script item guard is missing." };
   }
-  const current = captureCurrentScriptItems([unit.expected], service)[0];
+  const current = captureCurrentScriptItems(
+    [unit.expected],
+    postImageReader(service, context),
+  )[0];
   return stable(current) === stable(unit.expected)
     ? { kind: "pending" }
     : {
@@ -1797,6 +1629,7 @@ async function conflictForScriptSnapshots(params: {
   }
 }
 
+/** Returns `matched` for the same reason as the library replay above. */
 async function executeScriptSnapshotsWithProgress(params: {
   actionId: string;
   step: JournalStep;
@@ -1804,7 +1637,7 @@ async function executeScriptSnapshotsWithProgress(params: {
   service: LibraryMutationService;
   context: AgentToolContext;
   now: () => number;
-}): Promise<void> {
+}): Promise<RevertedStepVerification> {
   const plan = await buildScriptReplayPlan(params.inverse, params.step);
   let progress = validatedScriptReplayProgress(params.inverse, plan);
   const checkpoint = async (): Promise<void> => {
@@ -1867,6 +1700,7 @@ async function executeScriptSnapshotsWithProgress(params: {
     progress = advanceScriptReplayProgress(plan, progress);
     await checkpoint();
   }
+  return "matched";
 }
 
 async function executeMaterializedNonLibraryInverse(params: {
@@ -1997,6 +1831,7 @@ export async function revertActions(params: {
   const skipped: RevertOutcome["skipped"] = [];
   const residuals: RevertOutcome["residuals"] = [];
   const conflicts: RevertConflict[] = [];
+  const steps: RevertedStep[] = [];
   let reverted = 0;
   let partiallyReverted = 0;
   const ordered = [...params.actions].sort(
@@ -2162,25 +1997,39 @@ export async function revertActions(params: {
             }).catch(() => undefined);
             continue;
           }
+          let reread: {
+            verification: RevertedStepVerification;
+            reason?: string;
+          };
           if (inverse.kind === "library_operations") {
-            await executeLibraryInverseWithProgress({
-              actionId: action.actionId,
-              step,
-              inverse,
-              service,
-              context: params.context,
-              now,
-            });
+            reread = {
+              verification: await executeLibraryInverseWithProgress({
+                actionId: action.actionId,
+                step,
+                inverse,
+                service,
+                context: params.context,
+                now,
+              }),
+            };
           } else if (inverse.kind === "script_snapshots") {
-            await executeScriptSnapshotsWithProgress({
-              actionId: action.actionId,
-              step,
-              inverse,
-              service,
-              context: params.context,
-              now,
-            });
-          } else if (claimedNonLibraryState === "pending") {
+            reread = {
+              verification: await executeScriptSnapshotsWithProgress({
+                actionId: action.actionId,
+                step,
+                inverse,
+                service,
+                context: params.context,
+                now,
+              }),
+            };
+          } else if (claimedNonLibraryState === "completed") {
+            // The guard above already read this target and found the
+            // pre-image in place, which is the native re-read. Reading again
+            // would only widen the window for a concurrent edit to be
+            // misreported as this step's failure.
+            reread = { verification: "matched" };
+          } else {
             if (!claimedNonLibraryInverse) {
               throw new Error("The guarded recovery pre-image was lost");
             }
@@ -2188,6 +2037,34 @@ export async function revertActions(params: {
               materialized: claimedNonLibraryInverse,
               service,
             });
+            reread = await rereadNonLibraryInverse({
+              materialized: claimedNonLibraryInverse,
+              service,
+            });
+          }
+          steps.push({
+            actionId: action.actionId,
+            sequence: step.sequence,
+            verification: reread.verification,
+            ...(reread.reason ? { reason: reread.reason } : {}),
+          });
+          if (reread.verification !== "matched") {
+            // The journal must not claim an undo the target does not show.
+            // Marking the step and its action `revert_failed` keeps both
+            // selectable, so the user can retry instead of being told the
+            // change was put back by a history that no longer offers it.
+            const reason = `Step ${step.sequence} ran its inverse but ${
+              reread.reason || "did not read back as restored"
+            }.`;
+            actionFailed = true;
+            skipped.push({ entryId: action.actionId, reason });
+            await updateJournalStep({
+              stepId: step.stepId,
+              status: "revert_failed",
+              error: reason,
+              now: now(),
+            }).catch(() => undefined);
+            continue;
           }
           await updateJournalStep({
             stepId: step.stepId,
@@ -2258,7 +2135,45 @@ export async function revertActions(params: {
       }
     }
   }
-  return { reverted, partiallyReverted, residuals, skipped, conflicts };
+  return { reverted, partiallyReverted, residuals, skipped, conflicts, steps };
+}
+
+export type JournalStepPostState = RecordedPostImageState;
+
+/**
+ * Re-reads the native state a journalled step recorded as its post-image.
+ *
+ * The reader is shared with the mutation coordinator, which asks the same
+ * question of a write it has just applied. This entry point exists for the
+ * callers that hold a durable step instead of those in-memory values —
+ * anything reading a step back after the call that wrote it has returned.
+ */
+export async function verifyJournalStepPostcondition(params: {
+  step: JournalStep;
+  zoteroGateway: ZoteroGateway;
+  context: AgentToolContext;
+}): Promise<JournalStepPostState> {
+  let image: RecordedPostImage;
+  try {
+    image = recordedPostImageOfStep(params.step);
+  } catch (error) {
+    // A step whose stored JSON cannot be parsed proves nothing either way, and
+    // a receipt that could not check must never fail the write it describes.
+    return {
+      kind: "not_re_readable",
+      comparedTargets: 0,
+      reason: `the post-image could not be read back: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  return verifyRecordedPostImage({
+    image,
+    reader: postImageReader(
+      new LibraryMutationService(params.zoteroGateway),
+      params.context,
+    ),
+  });
 }
 
 export async function revertRun(params: {

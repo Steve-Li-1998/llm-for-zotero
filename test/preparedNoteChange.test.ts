@@ -6,8 +6,22 @@ import {
   listJournalActions,
 } from "../src/agent/store/changeJournal";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 describe("prepared note action lifecycle", function () {
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Invalidating cached paper context reaches the panel's retrieval cache
+    // through a host surface bridge the plugin composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   const original = globalThis.Zotero;
   let db: ChangeJournalTestDb;
   let stored: string;

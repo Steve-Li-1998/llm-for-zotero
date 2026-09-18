@@ -92,7 +92,6 @@ export function createActionLayoutController(
     }
   };
 
-  let layoutRetryScheduled = false;
   const textMeasureContext = (() => {
     const canvas = body.ownerDocument?.createElement(
       "canvas",
@@ -103,7 +102,13 @@ export function createActionLayoutController(
   })();
 
   const applyResponsiveActionButtonsLayout = () => {
-    if (!modelBtn || !actionsLeft) return;
+    if (
+      !body.isConnected ||
+      !panelRoot.isConnected ||
+      !modelBtn ||
+      !actionsLeft
+    )
+      return;
     const modelLabel = modelBtn.dataset.modelLabel || "default";
     const modelHint = modelBtn.dataset.modelHint || "";
     const modelCanUseTwoLineWrap =
@@ -122,17 +127,9 @@ export function createActionLayoutController(
       if (leftWidth > 0) return leftWidth;
       return panelRoot?.clientWidth || 0;
     })();
-    if (immediateAvailableWidth <= 0) {
-      const view = body.ownerDocument?.defaultView;
-      if (view && !layoutRetryScheduled) {
-        layoutRetryScheduled = true;
-        view.requestAnimationFrame(() => {
-          layoutRetryScheduled = false;
-          applyResponsiveActionButtonsLayout();
-        });
-      }
-      return;
-    }
+    // Retained native tabs can stay hidden indefinitely. Their ResizeObserver
+    // requests layout when they become measurable again; do not poll frames.
+    if (immediateAvailableWidth <= 0) return;
 
     const getComputedSizePx = (
       style: CSSStyleDeclaration | null | undefined,

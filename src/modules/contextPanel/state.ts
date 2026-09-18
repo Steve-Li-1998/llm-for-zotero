@@ -1,7 +1,6 @@
 import type { PlanExecutionLedger } from "../../agent/plans/types";
 import type {
   Message,
-  PdfContext,
   ReasoningProviderKind,
   ReasoningLevelSelection,
   CustomShortcut,
@@ -17,7 +16,11 @@ import type {
   PaperContentSourceMode,
   GeneratedChatImage,
 } from "./types";
-import { TTLMap } from "./contexts/ttlMap";
+import {
+  pdfTextCache,
+  pdfTextLoadingTasks,
+} from "../../services/paperContent/contextCache";
+import { TTLMap } from "../../utils/ttlMap";
 import { clearMermaidSvgCache } from "./mermaidSvgCache";
 import type { ConversationForkLink } from "../../shared/conversationForkLinks";
 import type { WebSourceAnchor } from "../../webAccess/types";
@@ -57,10 +60,6 @@ export const selectedReasoningProviderCache = new Map<
 >();
 export const selectedRuntimeModeCache = new Map<number, ChatRuntimeMode>();
 
-// 30-minute TTL, sized above multi-paper retrieval caps to avoid evicting
-// body text while a folder/tag synthesis pass is still assembling evidence.
-export const pdfTextCache = new TTLMap<number, PdfContext>(30 * 60 * 1000, 100);
-export const pdfTextLoadingTasks = new Map<number, Promise<void>>();
 export const shortcutTextCache = new Map<string, string>();
 export const shortcutMoveModeState = new WeakMap<Element, boolean>();
 export const shortcutRenderItemState = new WeakMap<
@@ -92,6 +91,22 @@ export function nextRequestId(): number {
 const pendingRequestIds = new Map<number, number>();
 const cancelledRequestIds = new Map<number, number>();
 const abortControllers = new Map<number, AbortController | null>();
+const requestActivityListeners = new Set<(conversationKey: number) => void>();
+
+export function subscribeRequestActivity(
+  listener: (conversationKey: number) => void,
+): () => void {
+  requestActivityListeners.add(listener);
+  return () => requestActivityListeners.delete(listener);
+}
+
+function notifyRequestActivityChanged(
+  conversationKey: number,
+  wasPending: boolean,
+): void {
+  if (wasPending === isRequestPending(conversationKey)) return;
+  for (const listener of requestActivityListeners) listener(conversationKey);
+}
 
 function normalizeConversationKey(value: unknown): number {
   const key = Math.floor(Number(value || 0));
@@ -197,6 +212,7 @@ export function tryBeginRequest(
   if (!key || requestId <= 0 || pendingRequestIds.has(key)) return false;
   pendingRequestIds.set(key, requestId);
   if (abortController) abortControllers.set(key, abortController);
+  notifyRequestActivityChanged(key, false);
   return true;
 }
 
@@ -219,6 +235,7 @@ export function finishRequest(
   pendingRequestIds.delete(key);
   livePlanExecutions.delete(key);
   abortControllers.delete(key);
+  notifyRequestActivityChanged(key, true);
   return true;
 }
 
@@ -240,6 +257,8 @@ export function transferRequest(
   abortControllers.delete(fromKey);
   pendingRequestIds.set(toKey, requestId);
   if (abortController) abortControllers.set(toKey, abortController);
+  notifyRequestActivityChanged(fromKey, true);
+  notifyRequestActivityChanged(toKey, false);
   return true;
 }
 
@@ -248,6 +267,7 @@ export function setPendingRequestId(
   id: number,
   expectedCurrentId?: number,
 ): void {
+  const wasPending = isRequestPending(conversationKey);
   if (
     id <= 0 &&
     expectedCurrentId !== undefined &&
@@ -263,6 +283,7 @@ export function setPendingRequestId(
       livePlanExecutions.delete(conversationKey);
     pendingRequestIds.set(conversationKey, id);
   }
+  notifyRequestActivityChanged(conversationKey, wasPending);
 }
 
 export function getCancelledRequestId(conversationKey: number): number {
@@ -338,8 +359,7 @@ export function clearConversationOwnedRuntimeState(
   selectedRuntimeModeCache.delete(key);
   draftInputCache.delete(key);
   webChatDraftInputCache.delete(key);
-  pendingRequestIds.delete(key);
-  livePlanExecutions.delete(key);
+  setPendingRequestId(key, 0);
   abortControllers.delete(key);
   autoLockedGlobalConversationKeys.delete(key);
 
@@ -626,17 +646,6 @@ export function setInlineEditSavedDraft(text: string): void {
  * memory leaks across hot-reloads.
  */
 export function clearAllState(): void {
-  // Disconnect any ResizeObservers stored on panel bodies before clearing.
-  for (const [panelBody] of activeContextPanels) {
-    const obs = (panelBody as any).__llmResizeObservers as
-      | ResizeObserver[]
-      | undefined;
-    if (obs) {
-      for (const o of obs) o.disconnect();
-      delete (panelBody as any).__llmResizeObservers;
-    }
-  }
-
   chatHistory.clear();
   conversationForkLinks.clear();
   loadedConversationKeys.clear();
@@ -677,7 +686,10 @@ export function clearAllState(): void {
   pinnedPaperKeys.clear();
   recentReaderSelectionCache.clear();
   activePaperConversationByPaper.clear();
+  const pendingKeys = [...pendingRequestIds.keys()];
   pendingRequestIds.clear();
+  for (const key of pendingKeys) notifyRequestActivityChanged(key, true);
+  requestActivityListeners.clear();
   livePlanExecutions.clear();
   cancelledRequestIds.clear();
   abortControllers.clear();

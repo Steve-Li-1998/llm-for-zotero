@@ -1,6 +1,6 @@
 declare const Zotero: any;
 
-import { getNoteConversation } from "./noteEditing/conversationItem";
+import { getNoteConversation } from "../../services/notes/conversationItem";
 
 import {
   buildDefaultClaudeGlobalConversationKey,

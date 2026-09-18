@@ -18,7 +18,7 @@ import { createUpdatePlanTool } from "../src/agent/tools/plan/updatePlan";
 import {
   buildGenericSourceQuoteCitationGuidance,
   buildPaperQuoteCitationGuidance,
-} from "../src/modules/contextPanel/paperAttribution";
+} from "../src/services/paperContent/paperAttribution";
 import {
   AGENT_ACTION_CONTRACT,
   PAPER_CITATION_CONTRACT,

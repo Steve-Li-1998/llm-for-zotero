@@ -4,9 +4,12 @@ import {
   verifyNativeNoteHtml,
   type FinalizedNoteBuildContext,
   type FinalizedNoteBuildResult,
-} from "../../modules/contextPanel/notePersistence";
+} from "../../services/notePersistence";
 import { canonicalNoteHtml } from "../../utils/noteHtml";
-import { executeExternalMutation } from "./externalMutationCoordinator";
+import {
+  executeExternalMutation,
+  MutationNoEffectError,
+} from "./externalMutationCoordinator";
 import {
   isAgentChangeJournalAvailable,
   listJournalActions,
@@ -21,6 +24,13 @@ import type { AgentToolContext } from "../types";
 
 type Creation = {
   context: AgentToolContext;
+  /**
+   * Durable identity of this intended note creation.
+   *
+   * A retry reuses it. A separate user request receives a different identity
+   * even when its finalized content is byte-for-byte equal.
+   */
+  logicalActionId?: string;
   libraryID: number;
   parentItemId?: number;
   collections?: number[];
@@ -35,20 +45,28 @@ const pending = new Map<string, Promise<unknown>>();
 export async function executeNoteCreation(params: Creation) {
   const scope =
     params.context.request.actionContract?.id || params.context.runId;
-  const identity = await sha256Text(
-    JSON.stringify([
-      params.context.request.conversationKey,
-      scope,
-      params.libraryID,
-      params.parentItemId,
-      params.collections || [],
-      canonicalNoteHtml(params.html),
-    ]),
-  );
+  const identity =
+    params.logicalActionId ||
+    (await sha256Text(
+      JSON.stringify([
+        params.context.request.conversationKey,
+        scope,
+        params.libraryID,
+        params.parentItemId,
+        params.collections || [],
+        canonicalNoteHtml(params.html),
+      ]),
+    ));
   const previous = pending.get(identity) || Promise.resolve();
   const operation = previous
     .catch(() => undefined)
-    .then(() => create(params, scope ? `note-create-${identity}` : undefined));
+    .then(() =>
+      create(
+        params,
+        params.logicalActionId ||
+          (scope ? `note-create-${identity}` : undefined),
+      ),
+    );
   pending.set(identity, operation);
   try {
     return await operation;
@@ -59,7 +77,12 @@ export async function executeNoteCreation(params: Creation) {
 
 async function create(params: Creation, id?: string) {
   const { context, libraryID, parentItemId } = params;
-  const actionId = isAgentChangeJournalAvailable() ? id : undefined;
+  // Inside a scope this note is a step of the action that owns the scope, so
+  // it neither mints nor resumes a journal action of its own.
+  const actionId =
+    !context.journalActionScope && isAgentChangeJournalAvailable()
+      ? id
+      : undefined;
   const prior = actionId
     ? (
         await listJournalActions({
@@ -130,8 +153,7 @@ async function create(params: Creation, id?: string) {
       note.addToCollection(collectionId);
   }
   return executeExternalMutation({
-    // This note keeps its own stable recovery identity even inside a batch.
-    context: { ...context, journalActionScope: undefined },
+    context,
     toolName: "note_write",
     recovery: actionId ? { actionId, resume: Boolean(prior) } : undefined,
     plan: {
@@ -141,7 +163,7 @@ async function create(params: Creation, id?: string) {
       reversibility: params.finalize ? "partial" : "full",
       deferredInverse: true,
     },
-    execute: async () => {
+    execute: async ({ stepId }) => {
       if (existed && !forward.finalized && !checkpoint?.preparedHtml)
         throw new Error(
           "The reserved note has incomplete assets; inspect that note before resuming asset creation",
@@ -157,15 +179,23 @@ async function create(params: Creation, id?: string) {
                 const result = await params.finalize!(ctx);
                 const html = typeof result === "string" ? result : result.html;
                 // Preserve the exact final payload before its native write.
-                if (actionId)
+                if (stepId)
                   await updateJournalStep({
-                    stepId: `${actionId}:1`,
+                    stepId,
                     status: "applying",
                     result: { preparedHtml: await storeRecoveryText(html) },
                   });
                 return result;
               }
             : undefined,
+        }).catch((error: unknown) => {
+          // Nothing exists at the reserved key, so this creation provably had
+          // no effect. Saying so keeps the step out of the uncertain barrier
+          // and lets the rest of its action stay undoable.
+          if (Zotero.Items.getByLibraryAndKey(libraryID, key)) throw error;
+          throw new MutationNoEffectError(
+            error instanceof Error ? error.message : String(error),
+          );
         });
         expected = persisted.html;
         warnings = persisted.warnings;

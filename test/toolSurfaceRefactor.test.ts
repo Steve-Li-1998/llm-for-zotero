@@ -24,7 +24,7 @@ import {
   PDF_FIGURE_CROP_CACHE_VERSION,
   buildPdfFigureCropManifestHash,
   buildPdfFigureCropPdfFingerprint,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
+} from "../src/services/pdf/pdfFigureCropCache";
 import { CodexAppServerProcess } from "../src/utils/codexAppServerProcess";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
@@ -255,7 +255,7 @@ describe("semantic tool surface", function () {
     assert.exists(registry.getTool("query_library"));
   });
 
-  it("exposes the semantic built-in surface and hides legacy primitive names", function () {
+  it("exposes the direct-agent built-in surface and hides legacy primitive names", function () {
     const registry = createTestBuiltInRegistry();
     const tools = registry.listToolsForRequest(baseContext.request);
     const names = tools.map((tool) => tool.name).sort();
@@ -264,6 +264,7 @@ describe("semantic tool surface", function () {
       "annotate_pdf",
       "attachment_update",
       "collection_update",
+      "conversation_read",
       "file_io",
       "library_cite",
       "library_delete",
@@ -275,6 +276,7 @@ describe("semantic tool surface", function () {
       "library_update",
       "literature_review",
       "literature_search",
+      "load_skill",
       "note_write",
       "note_write_batch",
       "paper_read",
@@ -282,6 +284,7 @@ describe("semantic tool surface", function () {
       "revert_changes",
       "run_command",
       "saved_search_update",
+      "submit_document",
       "undo_last_action",
       "workflow_script",
       "zotero_script",
@@ -1790,6 +1793,27 @@ describe("semantic tool surface", function () {
     );
   });
 
+  it("paper_read rejects malformed figure labels instead of expanding them into all figures", function () {
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    for (const figureLabels of ["Figure 2", [42], [""], ["Figure 2", null]]) {
+      assert.isFalse(tool.validate({ mode: "figures", figureLabels }).ok);
+    }
+    for (const figureLabels of [
+      [],
+      ["Figure 2", "Figure 4b"],
+      ["Supplementary Figure 3"],
+    ]) {
+      const result = tool.validate({ mode: "figures", figureLabels });
+      assert.isTrue(result.ok);
+      if (result.ok) assert.deepEqual(result.value.figureLabels, figureLabels);
+    }
+  });
+
   it("paper_read figures hydrates MinerU cache metadata from the Zotero attachment", async function () {
     const scopedPaperContext = {
       itemId: 11,
@@ -2912,7 +2936,7 @@ describe("semantic tool surface", function () {
     } catch (error) {
       assert.match(
         error instanceof Error ? error.message : String(error),
-        /requires a resolved semantic reading intent/,
+        /requires compatible legacy turn intent or an approved full-read contract/,
       );
     }
     assert.deepEqual(prepared, []);

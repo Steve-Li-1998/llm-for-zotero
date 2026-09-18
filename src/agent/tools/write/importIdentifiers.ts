@@ -6,6 +6,7 @@ import {
   LibraryMutationService,
   type ImportIdentifiersOperation,
 } from "../../services/libraryMutationService";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import type { AgentWriteToolDefinition } from "../../types";
 import {
@@ -33,6 +34,8 @@ export function createImportIdentifiersTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["import_identifiers"],
     spec: {
       name: "import_identifiers",
       description: "Import papers into Zotero by DOI, ISBN, arXiv ID, or URL.",
@@ -57,7 +60,7 @@ export function createImportIdentifiersTool(
         },
       },
       executionClass: "external_effect",
-      requiresConfirmation: true,
+      workCategory: "zotero_action",
     },
 
     presentation: {

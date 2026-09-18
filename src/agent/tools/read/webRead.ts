@@ -142,7 +142,7 @@ export function createWebReadTool(
         },
       },
       executionClass: "read",
-      requiresConfirmation: false,
+      workCategory: "retrieval",
       localAgentOnly: true,
     },
     isAvailable: isWebAccessToolAvailable,

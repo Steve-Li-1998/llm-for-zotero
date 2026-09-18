@@ -6,24 +6,32 @@ import { describe, it } from "mocha";
 
 import {
   applyChatScrollSnapshot,
-  isScrollUpdateSuspended,
-  cancelFollowBottomCatchup,
+  captureChatScrollForRender,
+  restoreChatScrollAfterRender,
+  withScrollGuard,
+  initializeChatScrollViewport,
+  observeChatScroll,
+  reconcileChatScroll,
+  writeChatScrollTop,
+  scheduleChatScrollReconciliation,
+  disposeChatScrollViewport,
+  withChatContentScrollGuard,
+  cancelChatScrollFollow,
   setFollowBottomChatScrollSnapshot,
   clearChatScrollSnapshotsForTests,
   cancelChatNavigation,
   consumePendingChatScrollRestoreForTests,
   getActiveChatNavigationSnapshot,
   getChatScrollSnapshot,
-  hasActiveFollowBottomCatchupRequest,
   isChatNavigationActive,
   navigateChatToMessage,
   persistPendingChatScrollRestoreForConversationKey,
   persistPendingChatScrollRestoreForElement,
   persistChatScrollSnapshotForConversationKey,
-  requestFollowBottomCatchup,
   restoreChatScrollSnapshotForConversationKey,
-  settleFollowBottomIntent,
 } from "../src/modules/contextPanel/chatScrollSnapshots";
+
+import { bindChatScrollLifecycle } from "../src/modules/contextPanel/chatScrollLifecycle";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +63,7 @@ class FakeElement {
   readonly classList = new FakeClassList();
   parentElement: FakeElement | null = null;
   id = "";
+  tagName = "DIV";
   scrollTop = 0;
   scrollHeight = 0;
   clientHeight = 0;
@@ -176,6 +185,8 @@ function matchesSelector(element: FakeElement, selector: string): boolean {
     );
     return Boolean(element.dataset[key]);
   }
+  if (/^[a-z]+$/i.test(selector))
+    return element.tagName.toLowerCase() === selector.toLowerCase();
   // Like the DOM, an unparseable selector is a SyntaxError, not a miss.
   throw new SyntaxError(`'${selector}' is not a valid selector`);
 }
@@ -212,6 +223,311 @@ function appendElement(
 }
 
 describe("chat scroll snapshots", function () {
+  it("honors a scrollbar drag after an automatic write but before its delayed event", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({
+      scrollTop: 1400,
+      scrollHeight: 1800,
+      clientHeight: 400,
+    });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    element.scrollHeight = 2000;
+    reconcileChatScroll(1, box);
+    assert.equal(box.scrollTop, 1600);
+    element.scrollTop = 1500;
+    observeChatScroll(1, box);
+    element.scrollHeight += 100;
+    reconcileChatScroll(1, box);
+    assert.equal(box.scrollTop, 1500);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "manual");
+  });
+
+  it("honors one-pixel upward movements and resumes only on a user move to the bottom", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 900, scrollHeight: 1000 });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    element.scrollTop -= 1;
+    observeChatScroll(1, box);
+    element.scrollHeight += 100;
+    reconcileChatScroll(1, box);
+    assert.equal(box.scrollTop, 899);
+    element.scrollTop = 1000;
+    observeChatScroll(1, box);
+    element.scrollHeight += 100;
+    reconcileChatScroll(1, box);
+    assert.equal(box.scrollTop, 1100);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "followBottom");
+  });
+
+  it("does not treat delayed automatic upward restoration as manual input", async function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 900, scrollHeight: 1000 });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    writeChatScrollTop(box, 700);
+    await Promise.resolve();
+    observeChatScroll(1, box);
+    element.scrollHeight += 100;
+    reconcileChatScroll(1, box);
+    assert.equal(box.scrollTop, 1000);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "followBottom");
+  });
+
+  it("keeps the reader at 500px through viewport shrink and 1000px of growth below", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({
+      scrollTop: 500,
+      scrollHeight: 1400,
+      clientHeight: 400,
+    });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    element.clientHeight -= 10;
+    element.scrollHeight += 1000;
+    reconcileChatScroll(1, box);
+    assert.equal(box.scrollTop, 500);
+  });
+
+  it("retains manual intent when the browser clamps a collapsing conversation", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({
+      scrollTop: 500,
+      scrollHeight: 1400,
+      clientHeight: 400,
+    });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    element.scrollHeight = 700;
+    element.scrollTop = 300; // native clamp, with no user input
+    observeChatScroll(1, box);
+    reconcileChatScroll(1, box);
+    element.scrollHeight += 1000;
+    reconcileChatScroll(1, box);
+    assert.equal(box.scrollTop, 300);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "manual");
+  });
+
+  it("preserves the visible quote through an actual deferred content mutation", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({
+      scrollTop: 500,
+      scrollHeight: 1400,
+      clientHeight: 400,
+    });
+    const wrapper = appendElement(element, "llm-message-wrapper", {
+      offsetTop: 0,
+      offsetHeight: 1400,
+      dataset: { messageRole: "assistant", messageTimestamp: "1" },
+    });
+    const quote = appendElement(wrapper, "llm-quote-card", {
+      offsetTop: 510,
+      offsetHeight: 80,
+      dataset: { quoteCitationId: "q1" },
+    });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    withChatContentScrollGuard(wrapper as never, () => {
+      quote.offsetTop += 250;
+      element.scrollHeight += 250;
+    });
+    assert.equal(quote.getBoundingClientRect().top, 10);
+    assert.equal(box.scrollTop, 750);
+  });
+
+  it("preserves an answer paragraph when thinking collapses inside the same message", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({
+      scrollTop: 500,
+      scrollHeight: 1400,
+      clientHeight: 400,
+    });
+    const wrapper = appendElement(element, "llm-message-wrapper", {
+      offsetTop: 0,
+      offsetHeight: 1400,
+      dataset: { messageRole: "assistant", messageTimestamp: "1" },
+    });
+    const answer = appendElement(wrapper, "llm-assistant-answer", {
+      offsetTop: 400,
+      offsetHeight: 1000,
+    });
+    const paragraph = appendElement(answer, "", {
+      offsetTop: 490,
+      offsetHeight: 100,
+    });
+    paragraph.tagName = "P";
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    withChatContentScrollGuard(wrapper as never, () => {
+      paragraph.offsetTop -= 300;
+      answer.offsetTop -= 300;
+      wrapper.offsetHeight -= 300;
+      element.scrollHeight -= 300;
+    });
+    assert.equal(paragraph.getBoundingClientRect().top, -10);
+    assert.equal(box.scrollTop, 200);
+  });
+
+  it("anchors the paragraph nearest the reading edge instead of the preceding paragraph's tiny tail", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({
+      scrollTop: 500,
+      scrollHeight: 1400,
+      clientHeight: 400,
+    });
+    const wrapper = appendElement(element, "llm-message-wrapper", {
+      offsetTop: 0,
+      offsetHeight: 1400,
+      dataset: { messageRole: "assistant", messageTimestamp: "1" },
+    });
+    const answer = appendElement(wrapper, "llm-assistant-answer", {
+      offsetTop: 0,
+      offsetHeight: 1400,
+    });
+    const tail = appendElement(answer, "", {
+      offsetTop: 439,
+      offsetHeight: 63,
+    });
+    tail.tagName = "P";
+    const paragraph = appendElement(answer, "", {
+      offsetTop: 510,
+      offsetHeight: 63,
+    });
+    paragraph.tagName = "P";
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    tail.offsetHeight += 21;
+    paragraph.offsetTop += 21;
+    element.scrollHeight += 21;
+    reconcileChatScroll(1, box);
+    assert.equal(paragraph.getBoundingClientRect().top, 10);
+  });
+
+  it("lets an explicit follow request win over an older undelivered scroll event", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 900, scrollHeight: 1000 });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    element.scrollTop = 500;
+    setFollowBottomChatScrollSnapshot(1, box);
+    observeChatScroll(1, box);
+    reconcileChatScroll(1, box);
+    assert.equal(box.scrollTop, 900);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "followBottom");
+  });
+
+  it("lets newer manual input supersede a queued resize/follow update", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 900, scrollHeight: 1000 });
+    const frames = new Map<number, FrameRequestCallback>();
+    let next = 0;
+    element.ownerDocument = {
+      defaultView: {
+        requestAnimationFrame: (run: FrameRequestCallback) => {
+          frames.set(++next, run);
+          return next;
+        },
+        cancelAnimationFrame: (id: number) => frames.delete(id),
+        setTimeout: () => ++next,
+        clearTimeout: () => {},
+      },
+    } as unknown as Document;
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    element.scrollHeight += 500;
+    scheduleChatScrollReconciliation(1, box);
+    element.scrollTop = 850; // event deliberately not delivered yet
+    for (const callback of frames.values()) callback(0);
+    assert.equal(box.scrollTop, 850);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "manual");
+    disposeChatScrollViewport(box);
+  });
+
+  it("rebinds a reused panel without saving its previous conversation's DOM into the next one", function () {
+    clearChatScrollSnapshotsForTests();
+    const remembered = makeChatBox({ scrollTop: 200, scrollHeight: 1000 });
+    persistChatScrollSnapshotForConversationKey(2, remembered as never);
+    const root = new FakeElement();
+    root.id = "llm-main";
+    root.dataset.itemId = "1";
+    const element = makeChatBox({ scrollTop: 600, scrollHeight: 1000 });
+    root.appendChild(element);
+    const box = element as unknown as HTMLDivElement;
+    let key = 1;
+    const release = bindChatScrollLifecycle(
+      box,
+      () => key,
+      () => {},
+    );
+    key = 2;
+    root.dataset.itemId = "2";
+    // The native event arrives while the new conversation is still loading.
+    element.dispatch("scroll");
+    assert.equal(getChatScrollSnapshot(2, box)?.scrollTop, 200);
+    reconcileChatScroll(2, box);
+    assert.equal(box.scrollTop, 200);
+    release();
+    element.scrollTop = 100;
+    element.dispatch("scroll");
+    assert.equal(getChatScrollSnapshot(2, box)?.scrollTop, 200);
+  });
+
+  it("rejects pending layout callbacks after a viewport switches conversations", function () {
+    clearChatScrollSnapshotsForTests();
+    const root = new FakeElement();
+    root.id = "llm-main";
+    root.dataset.itemId = "1";
+    const element = makeChatBox({ scrollTop: 900, scrollHeight: 1000 });
+    root.appendChild(element);
+    let run: FrameRequestCallback = () => {};
+    element.ownerDocument = {
+      defaultView: {
+        requestAnimationFrame: (callback: FrameRequestCallback) => {
+          run = callback;
+          return 1;
+        },
+        cancelAnimationFrame: () => {},
+        setTimeout: () => 2,
+        clearTimeout: () => {},
+      },
+    } as unknown as Document;
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    scheduleChatScrollReconciliation(1, box);
+    root.dataset.itemId = "2";
+    element.scrollTop = 300;
+    run(0);
+    assert.equal(box.scrollTop, 300);
+    disposeChatScrollViewport(box);
+  });
+
+  it("does not resume following when a layout collapse puts a manual reader at the bottom", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 500, scrollHeight: 1100 });
+    const box = element as unknown as HTMLDivElement;
+    cancelChatScrollFollow(1, box);
+    element.scrollHeight = 600;
+    persistChatScrollSnapshotForConversationKey(1, box);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "manual");
+    withScrollGuard(box, 1, () => {
+      element.scrollHeight += 500;
+    });
+    assert.equal(box.scrollTop, 500);
+  });
+
+  it("keeps following through an anchored streaming mutation", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 500, scrollHeight: 600 });
+    const box = element as unknown as HTMLDivElement;
+    setFollowBottomChatScrollSnapshot(1, box);
+    withScrollGuard(box, 1, () => {
+      element.scrollHeight += 200;
+    });
+    assert.equal(box.scrollTop, 700);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "followBottom");
+  });
+
   it("restores the quote card the reader was on, not the first card sharing its citation id", function () {
     clearChatScrollSnapshotsForTests();
     const chatBox = makeChatBox({
@@ -299,78 +615,6 @@ describe("chat scroll snapshots", function () {
     assert.equal(chatBox.scrollTop, 600, "the card must stay where it was");
   });
 
-  describe("settleFollowBottomIntent", function () {
-    function makeTwoTurnChat(scrollTop: number): FakeElement {
-      const chatBox = makeChatBox({
-        scrollTop,
-        scrollHeight: 1000,
-        clientHeight: 100,
-      });
-      appendElement(chatBox, "llm-message-wrapper", {
-        offsetTop: 0,
-        offsetHeight: 500,
-        dataset: {
-          messageRole: "user",
-          messageTimestamp: "1",
-          messageAnchorKey: "turn-1",
-        },
-      });
-      appendElement(chatBox, "llm-message-wrapper", {
-        offsetTop: 500,
-        offsetHeight: 500,
-        dataset: {
-          messageRole: "assistant",
-          messageTimestamp: "2",
-          messageAnchorKey: "turn-2",
-        },
-      });
-      return chatBox;
-    }
-
-    it("ends follow-bottom intent once a settled conversation is no longer at the bottom", function () {
-      clearChatScrollSnapshotsForTests();
-      const chatBox = makeTwoTurnChat(900);
-      setFollowBottomChatScrollSnapshot(3, chatBox);
-      // The reader pulled away (or opened something that grew the page).
-      chatBox.scrollTop = 400;
-
-      const settled = settleFollowBottomIntent(3, chatBox, {
-        streaming: false,
-      });
-
-      assert.equal(settled?.mode, "manual");
-      assert.equal(settled?.anchor?.kind, "message");
-      assert.equal(settled?.anchor?.messageAnchorKey, "turn-1");
-      assert.equal(getChatScrollSnapshot(3)?.mode, "manual");
-    });
-
-    it("keeps following while the answer is still streaming", function () {
-      clearChatScrollSnapshotsForTests();
-      const chatBox = makeTwoTurnChat(900);
-      setFollowBottomChatScrollSnapshot(3, chatBox);
-      chatBox.scrollTop = 400;
-
-      const settled = settleFollowBottomIntent(3, chatBox, {
-        streaming: true,
-      });
-
-      assert.equal(settled?.mode, "followBottom");
-      assert.equal(getChatScrollSnapshot(3)?.mode, "followBottom");
-    });
-
-    it("keeps following while the reader is still at the bottom", function () {
-      clearChatScrollSnapshotsForTests();
-      const chatBox = makeTwoTurnChat(900);
-      setFollowBottomChatScrollSnapshot(3, chatBox);
-
-      const settled = settleFollowBottomIntent(3, chatBox, {
-        streaming: false,
-      });
-
-      assert.equal(settled?.mode, "followBottom");
-    });
-  });
-
   it("locates the visible anchor without measuring every message of a long conversation", function () {
     clearChatScrollSnapshotsForTests();
     const chatBox = makeChatBox({
@@ -410,6 +654,34 @@ describe("chat scroll snapshots", function () {
     );
   });
 
+  it("locates a reading anchor in a long answer without measuring every paragraph", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 100000, scrollHeight: 200000 });
+    const wrapper = appendElement(element, "llm-message-wrapper", {
+      offsetTop: 0,
+      offsetHeight: 200000,
+      dataset: { messageRole: "assistant", messageTimestamp: "1" },
+    });
+    const answer = appendElement(wrapper, "llm-assistant-answer", {
+      offsetTop: 0,
+      offsetHeight: 200000,
+    });
+    for (let index = 0; index < 2000; index++) {
+      const paragraph = appendElement(answer, "", {
+        offsetTop: index * 100,
+        offsetHeight: 90,
+      });
+      paragraph.tagName = "P";
+    }
+    rectReads = 0;
+    initializeChatScrollViewport(1, element as never);
+    assert.equal(
+      getChatScrollSnapshot(1, element as never)?.anchor?.blockOrdinal,
+      1000,
+    );
+    assert.isBelow(rectReads, 80, `measured ${rectReads} paragraphs`);
+  });
+
   it("preserves follow intent when text grows before a pending scroll event", function () {
     clearChatScrollSnapshotsForTests();
     const element = makeChatBox({
@@ -426,10 +698,10 @@ describe("chat scroll snapshots", function () {
     persistChatScrollSnapshotForConversationKey(1, box);
     assert.equal(getChatScrollSnapshot(1, box)?.mode, "followBottom");
     restoreChatScrollSnapshotForConversationKey(1, box);
-    assert.equal(box.scrollTop, box.scrollHeight);
+    assert.equal(box.scrollTop, box.scrollHeight - box.clientHeight);
 
     // Explicit user cancellation must still survive subsequent text growth.
-    cancelFollowBottomCatchup(1, box);
+    cancelChatScrollFollow(1, box);
     box.scrollTop = 400;
     element.scrollHeight += 100;
     persistChatScrollSnapshotForConversationKey(1, box);
@@ -448,7 +720,7 @@ describe("chat scroll snapshots", function () {
     const boxB = b as unknown as HTMLDivElement;
     setFollowBottomChatScrollSnapshot(1, boxA);
     setFollowBottomChatScrollSnapshot(1, boxB);
-    cancelFollowBottomCatchup(1, boxA);
+    cancelChatScrollFollow(1, boxA);
     assert.equal(getChatScrollSnapshot(1, boxA)?.mode, "manual");
     assert.equal(getChatScrollSnapshot(1, boxB)?.mode, "followBottom");
     applyChatScrollSnapshot(boxA, {
@@ -456,10 +728,28 @@ describe("chat scroll snapshots", function () {
       scrollTop: 300,
       updatedAt: 1,
     });
-    assert.isTrue(isScrollUpdateSuspended(boxA));
-    assert.isFalse(isScrollUpdateSuspended(boxB));
     await Promise.resolve();
-    assert.isFalse(isScrollUpdateSuspended(boxA));
+    observeChatScroll(1, boxA);
+    assert.equal(getChatScrollSnapshot(1, boxA)?.mode, "manual");
+    assert.equal(getChatScrollSnapshot(1, boxB)?.mode, "followBottom");
+  });
+
+  it("restores each mounted view from its own snapshot of the same conversation", function () {
+    clearChatScrollSnapshotsForTests();
+    const manual = makeChatBox({ scrollTop: 300, scrollHeight: 2000 });
+    const following = makeChatBox({ scrollTop: 1900, scrollHeight: 2000 });
+    const manualBox = manual as unknown as HTMLDivElement;
+    const followingBox = following as unknown as HTMLDivElement;
+    persistChatScrollSnapshotForConversationKey(1, manualBox);
+    setFollowBottomChatScrollSnapshot(1, followingBox);
+
+    // The latest conversation-wide position belongs to the other view.
+    manual.scrollTop = 0;
+    assert.isTrue(restoreChatScrollSnapshotForConversationKey(1, manualBox));
+    assert.equal(manual.scrollTop, 300);
+    assert.equal(getChatScrollSnapshot(1, manualBox)?.mode, "manual");
+    assert.isTrue(restoreChatScrollSnapshotForConversationKey(1, followingBox));
+    assert.equal(getChatScrollSnapshot(1, followingBox)?.mode, "followBottom");
   });
 
   it("rerenders only quote-validated assistant wrappers", function () {
@@ -467,14 +757,21 @@ describe("chat scroll snapshots", function () {
       resolve(here, "../src/modules/contextPanel/chat.ts"),
       "utf8",
     );
-    const validationRefreshStart = chatSource.indexOf(
+    const schedulingSource = readFileSync(
+      resolve(
+        here,
+        "../src/modules/contextPanel/quoteValidation/scheduling.ts",
+      ),
+      "utf8",
+    );
+    const validationRefreshStart = schedulingSource.indexOf(
       "function refreshConversationAfterQuoteValidation(",
     );
-    const validationRefreshEnd = chatSource.indexOf(
+    const validationRefreshEnd = schedulingSource.indexOf(
       "function startConversationQuoteValidation(",
       validationRefreshStart,
     );
-    const validationRefreshSource = chatSource.slice(
+    const validationRefreshSource = schedulingSource.slice(
       validationRefreshStart,
       validationRefreshEnd,
     );
@@ -487,23 +784,28 @@ describe("chat scroll snapshots", function () {
       refreshChatStart,
       refreshChatEnd,
     );
-    const validationTaskStart = chatSource.indexOf(
+    const validationTaskStart = schedulingSource.indexOf(
       "function startConversationQuoteValidation(",
     );
-    const validationTaskEnd = chatSource.indexOf(
+    const validationTaskEnd = schedulingSource.indexOf(
       "function scheduleAssistantMessageQuoteValidation(",
       validationTaskStart,
     );
-    const validationTaskSource = chatSource.slice(
+    const validationTaskSource = schedulingSource.slice(
       validationTaskStart,
       validationTaskEnd,
     );
 
+    // The refresh names the messages it changed instead of rebuilding the
+    // panel. It used to be paired with a check that the whole-panel rebuild
+    // was not called here; that check cannot fail now the validator lives in
+    // its own module and cannot import the renderer at all, so the behaviour
+    // is pinned by test/quoteGateWorkflow.test.ts ("repaints the changed
+    // message through the composed chat refresher") instead.
     assert.include(
       validationRefreshSource,
       "rerenderAssistantMessages: changedMessages",
     );
-    assert.notInclude(validationRefreshSource, "refreshConversationPanels(");
     // The validation task classifies on-screen messages first and flips each
     // one the moment it is classified (progressive refresh), instead of
     // accumulating a batch and refreshing once at the end.
@@ -740,7 +1042,7 @@ describe("chat scroll snapshots", function () {
         messageAnchorKey: "id:99",
       },
     });
-    requestFollowBottomCatchup(conversationKey);
+    setFollowBottomChatScrollSnapshot(conversationKey, chatBox as never);
 
     assert.isTrue(
       navigateChatToMessage({
@@ -752,7 +1054,7 @@ describe("chat scroll snapshots", function () {
       }),
     );
     assert.isTrue(isChatNavigationActive(chatBox as unknown as HTMLDivElement));
-    assert.isFalse(hasActiveFollowBottomCatchupRequest(conversationKey));
+    assert.equal(getChatScrollSnapshot(conversationKey)?.mode, "manual");
     assert.equal(
       getActiveChatNavigationSnapshot(chatBox as never)?.scrollTop,
       588,
@@ -835,22 +1137,14 @@ describe("chat scroll snapshots", function () {
     assert.isUndefined(
       getActiveChatNavigationSnapshot(chatBox as unknown as HTMLDivElement),
     );
-    assert.isTrue(isChatNavigationActive(chatBox as unknown as HTMLDivElement));
-
-    chatBox.scrollTop = 300;
-    persistChatScrollSnapshotForConversationKey(
-      conversationKey,
-      chatBox as unknown as HTMLDivElement,
-    );
-    assert.equal(getChatScrollSnapshot(conversationKey)?.scrollTop, 588);
-    chatBox.dispatch("wheel");
     assert.isFalse(
       isChatNavigationActive(chatBox as unknown as HTMLDivElement),
     );
-    persistChatScrollSnapshotForConversationKey(
-      conversationKey,
-      chatBox as unknown as HTMLDivElement,
-    );
+    observeChatScroll(conversationKey, chatBox as never);
+    assert.equal(getChatScrollSnapshot(conversationKey)?.scrollTop, 588);
+    // There is no timed suppression window that can discard a real drag.
+    chatBox.scrollTop = 300;
+    observeChatScroll(conversationKey, chatBox as never);
     assert.equal(getChatScrollSnapshot(conversationKey)?.scrollTop, 300);
   });
 
@@ -930,7 +1224,7 @@ describe("chat scroll snapshots", function () {
     );
 
     assert.isTrue(restored);
-    assert.equal(after.scrollTop, 1200);
+    assert.equal(after.scrollTop, 1100);
   });
 
   it("keeps a pending restore when normal resize persistence updates the snapshot", function () {
@@ -1123,26 +1417,32 @@ describe("chat scroll snapshots", function () {
     assert.isAbove(refresh, capture);
   });
 
-  it("refreshChat lets pending restores win before cached conversation snapshots", function () {
-    const source = readFileSync(
-      resolve(here, "../src/modules/contextPanel/chat.ts"),
-      "utf8",
-    );
-    const pending = source.indexOf("consumePendingChatScrollRestore");
-    const cached = source.indexOf("getChatScrollSnapshot", pending);
-
-    assert.isAtLeast(pending, 0);
-    assert.isAbove(cached, pending);
+  it("uses a requested restore across a full redraw, then preserves manual intent", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 200, scrollHeight: 1000 });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    persistPendingChatScrollRestoreForConversationKey(1, box);
+    const snapshot = captureChatScrollForRender(1, box);
+    element.scrollTop = 0; // replacing the message DOM resets native geometry
+    restoreChatScrollAfterRender(1, box, snapshot);
+    assert.equal(box.scrollTop, 200);
+    assert.equal(getChatScrollSnapshot(1, box)?.mode, "manual");
+    disposeChatScrollViewport(box);
   });
 
-  it("refreshChat prefers the conversation snapshot over existing local panel content", function () {
-    const source = readFileSync(
-      resolve(here, "../src/modules/contextPanel/chat.ts"),
-      "utf8",
-    );
-
-    assert.notInclude(source, "!hasExistingRenderedContent && cachedSnapshot");
-    assert.include(source, ": cachedSnapshot");
+  it("gives a newer scrollbar drag priority over a pending full-redraw restore", function () {
+    clearChatScrollSnapshotsForTests();
+    const element = makeChatBox({ scrollTop: 500, scrollHeight: 1000 });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    persistPendingChatScrollRestoreForConversationKey(1, box);
+    element.scrollTop = 300;
+    const snapshot = captureChatScrollForRender(1, box);
+    element.scrollTop = 0;
+    restoreChatScrollAfterRender(1, box, snapshot);
+    assert.equal(box.scrollTop, 300);
+    disposeChatScrollViewport(box);
   });
 
   it("renders stable message anchors for scroll restoration", function () {

@@ -66,6 +66,9 @@ export function buildNativeQuestionAction(
 ): AgentPendingAction {
   return {
     toolName: "request_user_input",
+    // The card is a question, and says so; nothing downstream has to know
+    // which tool names ask questions.
+    interaction: "user_input",
     title: "Plan needs your input",
     mode: "review",
     confirmLabel: "Continue planning",

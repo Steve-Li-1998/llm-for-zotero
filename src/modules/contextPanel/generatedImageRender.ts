@@ -12,7 +12,7 @@ import {
   resolveGeneratedImageAsset,
   resolveGeneratedImageLocalPath,
   saveGeneratedImageAssetToPath,
-} from "./generatedImageAssets";
+} from "../../services/images/generatedImageAssets";
 
 function openGeneratedImageFileUrl(fileUrl: string): boolean {
   try {

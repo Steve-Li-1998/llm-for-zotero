@@ -4,7 +4,7 @@ import {
   rememberCachedCitationPage,
 } from "../src/modules/contextPanel/assistantCitationLinks";
 import { buildChatHistoryNotePayload } from "../src/modules/contextPanel/notes";
-import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import type {
   Message,
   PaperContextRef,

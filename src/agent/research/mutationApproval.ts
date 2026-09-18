@@ -1,5 +1,7 @@
 import type { AgentActionContract } from "../contracts/types";
 import type { PlanArtifact } from "../plans/types";
+import type { PlanEffectSpecification } from "../plans/types";
+import { operationCatalogEntry } from "../contracts/operationCatalog";
 import { canonicalJson } from "../services/libraryMutation/canonicalJson";
 import { sha256Text } from "../store/journalRecoveryBlobStore";
 import {
@@ -57,7 +59,7 @@ export async function computeResearchTargetSetDigest(params: {
 async function validateResearchMutationGrantInternal(params: {
   grant: ResearchMutationApprovalGrant;
   artifact: PlanArtifact;
-}): Promise<AgentActionContract> {
+}): Promise<ValidatedResearchMutationGrant> {
   const { grant, artifact } = params;
   if (
     grant.status !== "approved" ||
@@ -65,7 +67,11 @@ async function validateResearchMutationGrantInternal(params: {
     grant.planRevision !== artifact.revision ||
     grant.conversationKey !== artifact.conversationKey ||
     grant.planDigest !== artifact.digest ||
-    artifact.contract?.effects?.libraryMutation.approval !== "after_research"
+    (grant.version === 4
+      ? artifact.version !== 5 ||
+        !artifact.effectSpecification?.deferredEffects.length
+      : artifact.contract?.effects?.libraryMutation.approval !==
+        "after_research")
   ) {
     throw new Error(
       "The research-selected mutation approval no longer matches the plan",
@@ -112,6 +118,122 @@ async function validateResearchMutationGrantInternal(params: {
     itemKey: string;
     itemId: number;
   }> = [];
+  if (grant.version === 4) {
+    const approved = grant.effectSpecification;
+    const base = artifact.effectSpecification;
+    if (
+      !approved ||
+      !base ||
+      (await researchMutationDigest(approved)) !==
+        grant.effectSpecificationDigest ||
+      canonicalJson(approved.constraints) !== canonicalJson(base.constraints) ||
+      canonicalJson(approved.deferredEffects) !==
+        canonicalJson(base.deferredEffects)
+    ) {
+      throw new Error(
+        "The research-selected effect specification changed after approval",
+      );
+    }
+    const baseEffects = new Map(
+      base.effects.map((effect) => [effect.effectId, effect]),
+    );
+    const retainedInitialEffects = approved.effects.filter(
+      (entry) => !entry.derivedFromDeferredEffectId,
+    );
+    if (retainedInitialEffects.length !== base.effects.length) {
+      throw new Error(
+        "The research approval omitted an initially approved effect",
+      );
+    }
+    for (const effect of retainedInitialEffects) {
+      if (
+        canonicalJson(baseEffects.get(effect.effectId)) !==
+        canonicalJson(effect)
+      ) {
+        throw new Error("The initially approved Plan effects changed");
+      }
+    }
+    const derivedEffects = approved.effects.filter((effect) =>
+      Boolean(effect.derivedFromDeferredEffectId),
+    );
+    if (!derivedEffects.length) {
+      throw new Error("The research approval contains no derived effects");
+    }
+    for (const effect of derivedEffects) {
+      const deferred = base.deferredEffects.find(
+        (entry) => entry.effectId === effect.derivedFromDeferredEffectId,
+      );
+      const authority = operationCatalogEntry(effect.operation);
+      if (
+        !deferred ||
+        !authority ||
+        effect.operation !== deferred.operation ||
+        canonicalJson(effect.parameters) !==
+          canonicalJson(deferred.parameters) ||
+        effect.review !== deferred.review ||
+        canonicalJson(effect.restrictions) !==
+          canonicalJson(deferred.restrictions) ||
+        canonicalJson(effect.dependsOnEffectIds) !==
+          canonicalJson(deferred.dependsOnEffectIds) ||
+        canonicalJson(effect.targetBindings) !==
+          canonicalJson(deferred.targetBindings) ||
+        canonicalJson(effect.materialBindings) !==
+          canonicalJson(deferred.materialBindings)
+      ) {
+        throw new Error(
+          "A research-derived effect no longer matches its approved template",
+        );
+      }
+      for (const target of effect.targets) {
+        if (target.domain !== "zotero") {
+          throw new Error(
+            "Research-selected effects must use exact Zotero targets",
+          );
+        }
+        const stableTargets: Array<{ libraryID: number; itemKey: string }> = [];
+        for (const targetId of target.targetIds) {
+          const match = /^item:(\d+)$/.exec(targetId);
+          const item = match ? Zotero.Items.get(Number(match[1])) : null;
+          if (
+            !item ||
+            item.deleted ||
+            Number(item.libraryID) !== target.libraryID ||
+            !String(item.key || "").trim()
+          ) {
+            throw new Error(
+              "A research-selected mutation target changed or disappeared",
+            );
+          }
+          const stable = {
+            libraryID: target.libraryID,
+            itemKey: String(item.key),
+          };
+          stableTargets.push(stable);
+          resolvedTargets.push({ ...stable, itemId: Number(match![1]) });
+        }
+        operations.push({
+          capability: authority.capability,
+          operation: effect.operation,
+          parameters: effect.parameters,
+          targets: stableTargets,
+        });
+      }
+    }
+    if (
+      (await computeResearchTargetSetDigest({
+        operations,
+        resolvedTargets,
+      })) !== grant.targetSetDigest
+    ) {
+      throw new Error(
+        "Research-selected mutation targets or parameters changed after approval",
+      );
+    }
+    return { kind: "v5_effects", effectSpecification: approved };
+  }
+  if (!grant.actionContract) {
+    throw new Error("The legacy research approval has no action contract");
+  }
   for (const obligation of grant.actionContract.obligations) {
     const boundary = obligation.targetBoundary;
     if (!boundary?.frozenTargetIds.length) {
@@ -153,13 +275,23 @@ async function validateResearchMutationGrantInternal(params: {
       "Research-selected mutation targets or parameters changed after approval",
     );
   }
-  return grant.actionContract;
+  return { kind: "legacy_action_contract", contract: grant.actionContract };
 }
+
+export type ValidatedResearchMutationGrant =
+  | Readonly<{
+      kind: "legacy_action_contract";
+      contract: AgentActionContract;
+    }>
+  | Readonly<{
+      kind: "v5_effects";
+      effectSpecification: PlanEffectSpecification;
+    }>;
 
 export async function validateResearchMutationGrant(params: {
   grant: ResearchMutationApprovalGrant;
   artifact: PlanArtifact;
-}): Promise<AgentActionContract> {
+}): Promise<ValidatedResearchMutationGrant> {
   try {
     return await validateResearchMutationGrantInternal(params);
   } catch (error) {

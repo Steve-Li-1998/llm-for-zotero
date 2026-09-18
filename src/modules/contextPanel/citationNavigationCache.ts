@@ -1,4 +1,4 @@
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 
 export type CitationPageCacheEntry = {
   contextItemId: number;

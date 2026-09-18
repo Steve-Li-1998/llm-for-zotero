@@ -11,22 +11,24 @@ import {
 import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
   COLLECTION_RETRIEVAL_MAX_PAPERS,
-  COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
   MAX_FULL_TEXT_PAPER_CONTEXTS,
+} from "./constants";
+import {
+  COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
   PAPER_FOLLOWUP_RETRIEVAL_MAX_CHUNKS,
   PAPER_FOLLOWUP_RETRIEVAL_MIN_CHUNKS,
   RETRIEVAL_MMR_LAMBDA,
   RETRIEVAL_MIN_ACTIVE_PAPER_CHUNKS,
   RETRIEVAL_MIN_OTHER_PAPER_CHUNKS,
   RETRIEVAL_TOP_K_PER_PAPER,
-} from "./constants";
-import { normalizePaperContextRefs } from "./normalizers";
+} from "../../services/retrieval/constants";
+import { normalizePaperContextRefs } from "../../services/context/normalizers";
 
 import {
   formatPaperSourceLabel,
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromNote,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   buildFullPaperContext,
   buildTruncatedFullPaperContext,
@@ -36,21 +38,21 @@ import {
   ensurePDFTextCached,
   ensureNoteTextCached,
   buildEvidencePack,
-} from "./pdfContext";
+} from "../../services/paperContent/pdfContext";
 import {
   isPdfContextAttachment,
   isSupportedContextAttachment,
-} from "./contextAttachmentSupport";
-import { mergeQuoteCitations } from "./quoteCitations";
-import { pdfTextCache } from "./state";
-import { sanitizeText } from "./textUtils";
-import { tokenizeRetrievalDiversity } from "./retrievalTokenizer";
+} from "../../services/paperContent/contextAttachmentSupport";
+import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { sanitizeText } from "../../utils/textSanitization";
+import { tokenizeRetrievalDiversity } from "../../services/retrieval/retrievalTokenizer";
 import {
   buildRetrievalQueryPlan,
   buildRetrievalQueryPlanCacheKey,
   resolveRetrievalQueryPlan,
   type RetrievalQueryPlan,
-} from "./retrievalQueryPlan";
+} from "../../services/retrieval/retrievalQueryPlan";
 import {
   planContextCacheReuse,
   shouldPreferCacheAwareFullContext,
@@ -72,7 +74,7 @@ import {
 } from "../../shared/exhaustiveDocumentReader";
 import { resolveFullReadPaperTargets } from "../../shared/fullReadTargetResolver";
 import { resolveNormalChatFigureInputs } from "./normalChatFigureInputs";
-import { renderSelectedTextPageFallbackContext } from "./selectedTextAnchorFormatting";
+import { renderSelectedTextPageFallbackContext } from "../../services/context/selectedTextAnchorFormatting";
 import { createZoteroMetadataResolver } from "../../services/zoteroMetadata/resolver";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────
@@ -163,13 +165,15 @@ import type {
   AdvancedModelParams,
   CollectionContextRef,
   MultiContextPlan,
-  PaperContextCandidate,
   PaperContextRef,
-  PdfContext,
   QuoteCitation,
   ResolvedSelectedTextAnchor,
   TagContextRef,
 } from "./types";
+import type {
+  PaperContextCandidate,
+  PdfContext,
+} from "../../services/paperContent/types";
 
 type PlannerPaperEntry = {
   order: number;

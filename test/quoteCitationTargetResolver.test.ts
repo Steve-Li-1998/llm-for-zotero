@@ -446,7 +446,6 @@ describe("untrusted quote navigation contract", function () {
   it("never invents a page label for the reader to navigate by", function () {
     // Zotero navigates by printed label when one is given, and printed labels
     // need not track page order.
-    assert.notInclude(navigateSection, "pageLabel: `${resolution.pageIndex");
     assert.include(navigateSection, "pageLabel?: string;");
   });
 

@@ -139,4 +139,41 @@ describe("uiSchedulingController", function () {
     });
     assert.equal(starts, 2);
   });
+
+  it("cancels both wakeups on disposal and ignores late requests and callbacks", function () {
+    let frame: FrameRequestCallback | undefined;
+    let timeout: (() => void) | undefined;
+    const canceled: number[] = [];
+    const cleared: number[] = [];
+    let calls = 0;
+    let scheduled = 0;
+    const scheduler = createCoalescedFrameScheduler({
+      getWindow: () => ({
+        requestAnimationFrame(callback) {
+          scheduled++;
+          frame = callback;
+          return 11;
+        },
+        cancelAnimationFrame: (handle) => canceled.push(handle),
+        setTimeout(callback) {
+          timeout = callback;
+          return 22;
+        },
+        clearTimeout: (handle) => cleared.push(handle),
+      }),
+      run: () => calls++,
+    });
+    scheduler.schedule();
+    scheduler.dispose();
+    scheduler.dispose();
+    scheduler.schedule();
+    scheduler.flush();
+    frame?.(16);
+    timeout?.();
+    assert.equal(calls, 0);
+    assert.equal(scheduled, 1);
+    assert.isFalse(scheduler.isPending());
+    assert.deepEqual(canceled, [11]);
+    assert.deepEqual(cleared, [22]);
+  });
 });

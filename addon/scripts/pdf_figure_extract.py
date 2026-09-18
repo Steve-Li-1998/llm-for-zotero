@@ -43,7 +43,7 @@ DEFAULT_POPPLER_BIN_VALUE = os.environ.get("LLM_FOR_ZOTERO_POPPLER_BIN") or (
 DEFAULT_POPPLER_BIN = Path(DEFAULT_POPPLER_BIN_VALUE).expanduser()
 MIN_ACCEPTED_CONFIDENCE = 0.40
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
-DIRECT_EXTRACTOR_VERSION = "raw-pdf-evaluator-v6"
+DIRECT_EXTRACTOR_VERSION = "raw-pdf-evaluator-v7"
 
 CAPTION_PATTERN = re.compile(
     r"^\s*((?:Extended\s+Data\s+)?Fig(?:ure)?\.?\s*S?\d+[A-Za-z]?|"
@@ -741,7 +741,10 @@ def score_candidate(
     if box_count > 1:
         confidence += 0.04
     warnings: list[str] = []
-    overlap = text_overlap_ratio(rect, page, target)
+    # The ink fallback deliberately removed text during component detection.
+    # Restored short axis/panel labels are figure evidence, not body-text noise.
+    overlap = (paragraph_text_overlap_ratio(rect, page, target)
+               if source == "rendered-ink" else text_overlap_ratio(rect, page, target))
     if overlap > 0.03:
         confidence -= min(0.50, overlap * 2.4)
         warnings.append("substantial non-caption text overlap")
@@ -1153,6 +1156,10 @@ def looks_like_page_header_text(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", text.strip()).lower()
     if not normalized:
         return True
+    # Publisher mastheads may contain only a logo glyph and article type.
+    # These occur in the header probe, not among the figure's panel labels.
+    if normalized in ("ll", "report"):
+        return True
     header_terms = (
         "article",
         "research article",
@@ -1327,6 +1334,21 @@ def choose_caption_region_candidate(
         if trimmed_rect != rect:
             rect = trimmed_rect
             warnings.append("trimmed leading paragraph text")
+        if "trimmed page header band" in warnings or "trimmed leading paragraph text" in warnings:
+            # Recompute both axes after removing page furniture: a masthead
+            # at the page edge must not determine the figure's left margin.
+            tx0 = max(0, int(rect.left * sx))
+            ty0 = max(0, int(rect.top * sy))
+            tx1 = min(image.width, int(math.ceil(rect.right * sx)))
+            ty1 = min(image.height, int(math.ceil(rect.bottom * sy)))
+            ys, xs = np.nonzero(visual[ty0:ty1, tx0:tx1])
+            if xs.size:
+                rect = rect_from_pixels((
+                    max(tx0, tx0 + int(xs.min()) - pad_x),
+                    max(ty0, ty0 + int(ys.min()) - pad_y),
+                    min(tx1, tx0 + int(xs.max()) + 1 + pad_x),
+                    min(ty1, ty0 + int(ys.max()) + 1 + pad_y),
+                ), sx, sy)
         page_area = max(1.0, page["width"] * page["height"])
         if rect.width < page["width"] * 0.12 or rect.height < page["height"] * 0.035:
             return None
@@ -1424,6 +1446,15 @@ def choose_ink_candidate(
     sy = image.height / page["height"]
     arr = np.asarray(image)
     ink = np.any(arr < 245, axis=2)
+    header_floor = page["height"] * 0.11
+    has_publisher_header = any(
+        box.rect.top < header_floor and looks_like_page_header_text(box.text)
+        for box in page["texts"]
+    )
+    if has_publisher_header and not has_top_figure_evidence(
+        Rect(0, 0, page["width"], header_floor), header_floor, page, target,
+    ):
+        ink[:int(header_floor * sy), :] = False
     for box in page["texts"]:
         left, top, right, bottom = scale_rect(box.rect, sx, sy)
         pad = 3
@@ -1460,6 +1491,23 @@ def choose_ink_candidate(
     if not boxes:
         return None
     union = rect_union(boxes)
+    # Component detection removes PDF text to isolate graphics. Restore nearby
+    # panel labels and axis text to the crop bounds, especially when the caption
+    # is on another page and cannot provide a containing region.
+    padding = page["width"] * 0.06
+    vicinity = Rect(union.left - padding, union.top - padding,
+                    union.width + 2 * padding, union.height + 2 * padding)
+    labels = [
+        box.rect for box in page["texts"]
+        if not looks_like_page_header_text(box.text)
+        and not is_caption_text_box(box, target)
+        and box.rect.width <= page["width"] * 0.30
+        and box.rect.height <= 32
+        and len(box.text) <= 80
+        and vicinity.left <= box.rect.left <= vicinity.right
+        and vicinity.top <= box.rect.top <= vicinity.bottom
+    ]
+    union = rect_union([union, *labels])
     return score_candidate(
         "rendered-ink",
         union,

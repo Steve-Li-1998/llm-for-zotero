@@ -82,6 +82,11 @@ export async function finalizeDocument(params: {
   const { spec, origin } = context;
   const planned = origin.kind === "planned";
   const researchGrounded = context.integrityPolicy === "research_grounded";
+  // Per-item note material is note text, not a document anyone publishes. It
+  // is held to the same rules as a single `note_write`, which requires no
+  // heading and applies no visible-document privacy check: the two ways of
+  // writing the same note must not disagree about what a note may contain.
+  const noteMaterial = spec.kind === "note";
   // Plans retain their approved evidence requirements, including authored plans.
   const requireEvidence = planned || researchGrounded;
   const submittedTitle = input.title.trim();
@@ -147,12 +152,13 @@ export async function finalizeDocument(params: {
   if (
     !planned &&
     !researchGrounded &&
+    !noteMaterial &&
     collectHeadings(calibratedMarkdown).size === 0
   )
     throw new ToolInputRejection(
       "A document must contain at least one Markdown heading",
     );
-  validateVisibleDocumentPrivacy(calibratedMarkdown);
+  if (!noteMaterial) validateVisibleDocumentPrivacy(calibratedMarkdown);
   validateAssets(input.assets, requireEvidence);
   if (
     input.groundingReviewed === "passed_with_limitations" &&
@@ -169,7 +175,7 @@ export async function finalizeDocument(params: {
       context.evidence.map((entry) => [entry.evidenceRef, entry]),
     ),
   });
-  validateVisibleDocumentPrivacy(resolvedQuotes.markdown);
+  if (!noteMaterial) validateVisibleDocumentPrivacy(resolvedQuotes.markdown);
   await context.validateAssetProvenance();
   const formatted = await formatDocumentCitations({
     gateway: params.gateway,
@@ -251,17 +257,21 @@ export async function finalizeDocument(params: {
 /** Persist the document, pending outbox, and any Plan integrity evidence together. */
 export async function persistFinalizedDocument(
   finalized: FinalizedDocument,
-  evidence?: TaskEvidence,
+  evidence?: TaskEvidence | TaskEvidence[],
 ): Promise<void> {
   await Zotero.DB.executeTransaction(async () => {
     await savePlanDocumentInTransaction(finalized);
-    if (evidence)
+    for (const entry of evidence
+      ? Array.isArray(evidence)
+        ? evidence
+        : [evidence]
+      : [])
       await updatePlanTask({
         kind: "evidence",
-        executionId: evidence.executionId,
-        taskId: evidence.taskId,
-        evidence: [evidence],
-        now: evidence.createdAt,
+        executionId: entry.executionId,
+        taskId: entry.taskId,
+        evidence: [entry],
+        now: entry.createdAt,
         alreadyInTransaction: true,
       });
   });

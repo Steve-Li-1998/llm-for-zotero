@@ -122,6 +122,19 @@ describe("claim-based node records", function () {
     return "";
   }
 
+  it("declares the research job its result belongs to", async function () {
+    // A bridge that had to recognise this tool by name to know that a
+    // research job moved would be reading identity for meaning. The result
+    // says which job it advanced, so the bridge reads a fact instead.
+    const job = (await loadResearchJobForExecution(
+      (await harness!.ledger()).executionId,
+    ))!;
+    const result = (await harness!.run({ operation: "inventory_scope" })) as {
+      researchJobId?: string;
+    };
+    assert.equal(result.researchJobId, job.researchJobId);
+  });
+
   it("records a core node with host-assigned claim ids and derived legacy fields", async function () {
     await harness!.verifiedRead(["PAPER001"], "body");
     await record(coreNode());

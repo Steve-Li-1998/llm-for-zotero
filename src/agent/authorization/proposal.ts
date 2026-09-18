@@ -42,6 +42,7 @@ export function buildActionProposal(params: {
   input: unknown;
   plan: AgentInvocationPlan;
   typedProposals?: readonly AgentActionProposal[];
+  targetLibraryIDs?: readonly number[];
   intentBinding?: {
     conversationKey?: number;
     conversationGeneration?: number;
@@ -56,6 +57,18 @@ export function buildActionProposal(params: {
   const capabilities = [
     ...new Set(typedProposals.map((entry) => entry.capability)),
   ];
+  const riskSignals = [
+    ...new Set([
+      ...params.plan.riskSignals,
+      ...(typedProposals.some(
+        (entry) =>
+          entry.operation === "move_to_collection" &&
+          entry.parameters?.sourceCollectionId === "all",
+      )
+        ? (["exclusive_replacement"] as const)
+        : []),
+    ]),
+  ];
   const intentBinding = {
     conversationKey: params.intentBinding?.conversationKey,
     conversationGeneration: params.intentBinding?.conversationGeneration,
@@ -69,7 +82,7 @@ export function buildActionProposal(params: {
     domains: [...params.plan.domains],
     effects: [...params.plan.effects],
     targets: [...params.plan.targets],
-    riskSignals: [...params.plan.riskSignals],
+    riskSignals,
   };
   const canonical = JSON.stringify(
     stableValue({
@@ -78,6 +91,9 @@ export function buildActionProposal(params: {
       invocationPlan,
       operations,
       capabilities,
+      targetLibraryIDs: [...new Set(params.targetLibraryIDs || [])].sort(
+        (left, right) => left - right,
+      ),
       typedProposals,
       intentBinding,
     }),
@@ -93,9 +109,12 @@ export function buildActionProposal(params: {
     domains: [...invocationPlan.domains],
     effects: [...invocationPlan.effects],
     targets: [...invocationPlan.targets],
+    targetLibraryIDs: [...new Set(params.targetLibraryIDs || [])].sort(
+      (left, right) => left - right,
+    ),
     summary: invocationPlan.reason,
     reversibility: invocationPlan.reversibility,
-    riskSignals: [...invocationPlan.riskSignals],
+    riskSignals,
     invocationPlan,
     intentBinding,
     payloadDigest: hashText(canonical),

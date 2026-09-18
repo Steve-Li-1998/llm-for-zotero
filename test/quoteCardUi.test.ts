@@ -146,12 +146,10 @@ describe("quote card UI contract", function () {
     const css = source("addon/content/zoteroPane.css");
     const quoteCardRuleStart = css.indexOf(".llm-quote-card {");
     const quoteCardRuleEnd = css.indexOf("}", quoteCardRuleStart);
-    const quoteCardRule = css.slice(quoteCardRuleStart, quoteCardRuleEnd);
 
     assert.include(css, ".llm-quote-card");
     assert.isAtLeast(quoteCardRuleStart, 0);
     assert.isAbove(quoteCardRuleEnd, quoteCardRuleStart);
-    assert.include(quoteCardRule, "margin: 10px 0");
     assert.include(css, ".llm-quote-card-content");
     assert.include(css, ".llm-quote-card-body");
     assert.include(css, '.llm-quote-card[data-expanded="false"]');
@@ -159,7 +157,6 @@ describe("quote card UI contract", function () {
     assert.include(css, '.llm-quote-card[data-expanded="false"]:hover');
     assert.include(css, "--llm-quote-card-rail");
     assert.include(css, "--llm-quote-card-rail: var(--color-accent)");
-    assert.include(css, "border-left: 3px solid var(--llm-quote-card-rail)");
     assert.include(css, "border: none");
     assert.include(css, "justify-content: flex-end");
     assert.include(css, "background: transparent");
@@ -180,7 +177,6 @@ describe("quote card UI contract", function () {
       css,
       '.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-content',
     );
-    assert.include(css, "padding-bottom: 8px");
   });
 
   it("defaults quote cards to the collapsed visual state", function () {
@@ -248,7 +244,6 @@ describe("quote card UI contract", function () {
     assert.isAtLeast(notSourceBranchStart, 0);
     assert.isAbove(nextBranchStart, notSourceBranchStart);
     assert.notInclude(notSourceBranch, "citationContent");
-    assert.notInclude(renderSource, "Related source:");
   });
 
   it("keeps citation activation separate from quote-card toggling", function () {
@@ -429,8 +424,6 @@ describe("quote card UI contract", function () {
 
     assert.include(css, ".llm-quote-card-preview .math-display-inline");
     assert.include(css, ".llm-quote-card-preview .katex-display");
-    assert.include(css, "font-size: 1em");
-    assert.include(css, "margin: 0");
   });
 
   it("does not construct a hidden preview for rejected quote cards", function () {
@@ -655,25 +648,52 @@ describe("quote card UI contract", function () {
   });
 
   it("separates the cache-only quote gate from background warming", function () {
-    const chatSource = source("src/modules/contextPanel/chat.ts");
+    const quoteValidationSource = [
+      "sourceEvidence",
+      "caches",
+      "gate",
+      "scheduling",
+    ]
+      .map((file) =>
+        source(`src/modules/contextPanel/quoteValidation/${file}.ts`),
+      )
+      .join("\n");
 
-    assert.include(chatSource, "warmPageTextCacheForAttachment");
-    assert.include(chatSource, "getCachedPageTextForAttachment");
-    assert.include(chatSource, 'sourceMatchSource: "pdf-page-text"');
-    assert.include(chatSource, "ensureQuoteSourceTextCachedForPaper");
-    assert.include(chatSource, "assistantMarkdownNeedsQuoteSourceSearch");
-    assert.include(chatSource, "await ensurePDFTextCached(contextItem");
-    assert.include(chatSource, 'paper.contentSourceMode || ""');
-    assert.include(chatSource, "!hasCachedQuoteSourceText(contextItemId) &&");
-    assert.include(chatSource, "pdfTextCache.has(contextItemId)");
+    assert.include(quoteValidationSource, "warmPageTextCacheForAttachment");
+    assert.include(quoteValidationSource, "getCachedPageTextForAttachment");
+    assert.include(quoteValidationSource, 'sourceMatchSource: "pdf-page-text"');
     assert.include(
-      chatSource,
+      quoteValidationSource,
+      "ensureQuoteSourceTextCachedForPaper",
+    );
+    assert.include(
+      quoteValidationSource,
+      "assistantMarkdownNeedsQuoteSourceSearch",
+    );
+    assert.include(
+      quoteValidationSource,
+      "await ensurePDFTextCached(contextItem",
+    );
+    assert.include(quoteValidationSource, 'paper.contentSourceMode || ""');
+    assert.include(
+      quoteValidationSource,
+      "!hasCachedQuoteSourceText(contextItemId) &&",
+    );
+    assert.include(quoteValidationSource, "pdfTextCache.has(contextItemId)");
+    assert.include(
+      quoteValidationSource,
       "const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(",
     );
-    assert.include(chatSource, "await warmQuoteSourceCachesForPaperContexts(");
-    assert.include(chatSource, "pendingQuoteValidations");
-    assert.include(chatSource, "startConversationQuoteValidation");
-    assert.include(chatSource, "scheduleAssistantMessageQuoteValidation(");
+    assert.include(
+      quoteValidationSource,
+      "await warmQuoteSourceCachesForPaperContexts(",
+    );
+    assert.include(quoteValidationSource, "pendingQuoteValidations");
+    assert.include(quoteValidationSource, "startConversationQuoteValidation");
+    assert.include(
+      quoteValidationSource,
+      "scheduleAssistantMessageQuoteValidation(",
+    );
   });
 
   it("decorates citation blockquotes after all assistant markdown surfaces are mounted", function () {

@@ -12,6 +12,9 @@ import {
   unregisterReaderSelectionTracking,
   openStandaloneChat,
 } from "./modules/contextPanel";
+import { composeHostSurfaces } from "./modules/contextPanel/hostSurfaces";
+import { composePanelSurfaces } from "./modules/contextPanel/panelSurfaces";
+import { installDedicatedChatPane } from "./modules/contextPanel/dedicatedChatPane";
 import { resolveActiveLibraryID } from "./utils/zoteroLibraryScope";
 import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
 import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
@@ -25,7 +28,12 @@ import {
   runStartupPreferenceMigrations,
 } from "./utils/migrations";
 import { createZToolkit } from "./utils/ztoolkit";
-import { clearAllState, initFontScale } from "./modules/contextPanel/state";
+import {
+  activeContextPanels,
+  clearAllState,
+  initFontScale,
+} from "./modules/contextPanel/state";
+import { disposeSetupHandlers } from "./modules/contextPanel/setupHandlers";
 import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps";
 import { closeAllAddonDialogs } from "./utils/dialogRegistry";
 import {
@@ -45,6 +53,8 @@ type ConversationStoreReadiness = {
 };
 
 let startupUserSkillsLoadTask: Promise<void> | null = null;
+let disposeHostSurfaces: (() => void) | null = null;
+let disposePanelSurfaces: (() => void) | null = null;
 
 function getStartupPrefKey(key: string): string {
   return `${config.prefsPrefix}.${key}`;
@@ -224,9 +234,9 @@ function scheduleAgentSubsystemStartup(): void {
     const { getAgentApi, initAgentSubsystem } = await import("./agent");
     await initAgentSubsystem();
     addon.api.agent = getAgentApi();
-    const { refreshAllActiveConversationPanels } =
+    const { refreshActiveConversationPanels } =
       await import("./modules/contextPanel/chat");
-    refreshAllActiveConversationPanels();
+    refreshActiveConversationPanels();
     await ensureStartupUserSkillsLoaded();
   });
 }
@@ -304,6 +314,15 @@ function scheduleDeferredStartupWork(
 }
 
 async function onStartup() {
+  // Host surface composition comes first. Services and agent code reach
+  // panel-owned capabilities through bridges that throw when nothing is
+  // configured, so every later startup step - stores, the MCP server, any
+  // agent path - must run against a composed surface.
+  disposeHostSurfaces = composeHostSurfaces();
+  // The panel's own internal bridges compose the same way, right after, so a
+  // panel mounted by any later startup step already has them.
+  disposePanelSurfaces = composePanelSurfaces();
+
   await measureStartupPhase("Zotero readiness", () =>
     Promise.all([
       Zotero.initializationPromise,
@@ -375,6 +394,8 @@ async function onStartup() {
   scheduleDeferredStartupWork(conversationStoreReadiness);
 }
 
+const dedicatedChatPaneDisposers = new Map<Window, () => void>();
+
 async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   // Create ztoolkit for every window
   addon.data.ztoolkit = createZToolkit();
@@ -385,6 +406,11 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
   registerLLMStyles(win);
   registerReaderContextPanel();
+  dedicatedChatPaneDisposers.get(win)?.();
+  dedicatedChatPaneDisposers.set(
+    win,
+    installDedicatedChatPane(win.document, Zotero.Notifier),
+  );
   registerReaderSelectionTracking();
   registerNoteEditingSelectionTracking(win);
   registerZoteroItemContextMenu({
@@ -456,6 +482,11 @@ function registerPrefsPane() {
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
+  for (const [body] of activeContextPanels) {
+    if (body.ownerDocument === win.document) disposeSetupHandlers(body);
+  }
+  dedicatedChatPaneDisposers.get(win)?.();
+  dedicatedChatPaneDisposers.delete(win);
   unregisterNoteEditingSelectionTracking(win);
   ztoolkit.unregisterAll();
   closeAllAddonDialogs();
@@ -465,6 +496,12 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 }
 
 async function onShutdown(): Promise<void> {
+  // Dispose while hosts are still registered, before unregisterAll removes
+  // their DOM and clearAllState forgets them. Detached callbacks must not run
+  // against the next plugin instance during a hot reload.
+  for (const [body] of activeContextPanels) disposeSetupHandlers(body);
+  for (const dispose of dedicatedChatPaneDisposers.values()) dispose();
+  dedicatedChatPaneDisposers.clear();
   zoteroChangeDispatcher.unregisterNativeObserver();
   await zoteroChangeDispatcher.flush();
   unregisterPaperConversationRestoreNotifications();
@@ -500,6 +537,10 @@ async function onShutdown(): Promise<void> {
   }
   clearQueuedFollowUpState();
   clearAllState();
+  disposePanelSurfaces?.();
+  disposePanelSurfaces = null;
+  disposeHostSurfaces?.();
+  disposeHostSurfaces = null;
   // Remove addon object
   addon.data.alive = false;
   // @ts-expect-error - Plugin instance is not typed

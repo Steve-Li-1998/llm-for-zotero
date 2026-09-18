@@ -74,7 +74,7 @@ export function createReadAttachmentTool(
         },
       },
       executionClass: "read",
-      requiresConfirmation: false,
+      workCategory: "retrieval",
     },
     presentation: {
       label: "Read Attachment",

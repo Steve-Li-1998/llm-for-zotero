@@ -2,7 +2,7 @@ import type {
   DocumentReferenceConfidence,
   DocumentReferenceEvidence,
   PdfChunkMeta,
-} from "../modules/contextPanel/types";
+} from "../services/paperContent/types";
 
 export type QueryReferenceKind = "figure" | "table";
 

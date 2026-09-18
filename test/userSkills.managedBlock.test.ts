@@ -107,7 +107,35 @@ describe("getSkillCustomizationNotice", function () {
     const notice = getSkillCustomizationNotice(instruction);
     assert.isString(notice);
     assert.include(notice || "", "USER CUSTOMIZATIONS");
-    assert.include(notice || "", "OVERRIDE");
+    assert.include(notice || "", "after the managed section");
+    assert.include(notice || "", "current request");
+  });
+
+  it("reports customizations before and after the managed block against the shipped body", function () {
+    const shipped = `Shipped intro.\n${BEGIN}\nmanaged defaults\n${END}\n`;
+    const customized = `Use concise headings.\n${BEGIN}\nmanaged defaults\n${END}\nSave under Notes.\n`;
+    const notice = getSkillCustomizationNotice(customized, {
+      source: "customized",
+      shippedInstruction: shipped,
+    });
+    assert.include(notice || "", "before and after the managed section");
+    assert.include(notice || "", "Use these preferences");
+  });
+
+  it("treats an unseparable customized legacy body conservatively", function () {
+    const notice = getSkillCustomizationNotice("Legacy customized body.", {
+      source: "customized",
+      shippedInstruction: `Shipped.\n${BEGIN}\ndefault\n${END}`,
+    });
+    assert.include(notice || "", "could not be separated safely");
+    assert.include(notice || "", "entire loaded instruction");
+  });
+
+  it("identifies an entirely user-authored personal skill", function () {
+    const notice = getSkillCustomizationNotice("Personal instructions.", {
+      source: "personal",
+    });
+    assert.include(notice || "", "entire instruction is user-authored");
   });
 
   it("returns null when nothing follows the managed block", function () {

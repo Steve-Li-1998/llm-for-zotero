@@ -1,9 +1,9 @@
 import {
-  sanitizeText,
   normalizeSelectedText,
   isLikelyCorruptedSelectedText,
   setStatus,
 } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import {
   buildNoteContextIdentityKey,
   normalizeNoteContextRef,
@@ -11,7 +11,7 @@ import {
   normalizePositiveInt,
   normalizeSelectedTextContexts,
   normalizeSelectedTextSource,
-} from "./normalizers";
+} from "../../services/context/normalizers";
 import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
 import {
   selectedTextCache,
@@ -22,7 +22,6 @@ import {
 } from "./state";
 import type {
   NoteContextRef,
-  ZoteroTabsState,
   ResolvedContextSource,
   ContextSourceLifecycleState,
   SelectedTextContext,
@@ -30,19 +29,23 @@ import type {
   PaperContextRef,
 } from "./types";
 import {
-  isGlobalPortalItem,
+  getActiveReaderForSelectedTab,
+  getZoteroTabsState,
+} from "../../services/pdf/zoteroReaderTabs";
+import {
   resolveActiveNoteSession,
   resolveDisplayConversationKind,
 } from "./portalScope";
+import { isGlobalPortalItem } from "../../services/context/portalItems";
 import {
   formatPaperCitationLabel,
   resolvePaperContextRefFromAttachment,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   isPdfContextAttachment,
   resolveContextAttachmentSupport,
   isSupportedContextAttachment,
-} from "./contextAttachmentSupport";
+} from "../../services/paperContent/contextAttachmentSupport";
 import { createContextIcon } from "./contextIcons";
 import {
   getFirstSelectionFromReader,
@@ -57,7 +60,7 @@ import {
   isPinnedSelectedText,
   prunePinnedSelectedTextKeys,
 } from "./setupHandlers/controllers/pinnedContextController";
-import { readNoteSnapshot } from "./noteSnapshot";
+import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 
 export type SelectedTextPageLocation = {
   contextItemId?: number;
@@ -79,46 +82,6 @@ type CreateNoteChipOptions = {
   noteChipKind: "active" | "selected";
 };
 
-/**
- * Last known selected tab ID.  Updated every time we successfully read
- * selectedID from Zotero.Tabs (which fails during nested Tabs.select
- * transitions).  Used by restoreNonReaderTab as a fallback.
- */
-let _lastKnownSelectedTabId: string | number | null = null;
-
-export function getLastKnownSelectedTabId(): string | number | null {
-  return _lastKnownSelectedTabId;
-}
-
-export function refreshLastKnownSelectedTabId(): string | number | null {
-  const tabs = getZoteroTabsState();
-  const selectedTabId = tabs?.selectedID;
-  if (selectedTabId === undefined || selectedTabId === null) return null;
-  _lastKnownSelectedTabId = selectedTabId;
-  return selectedTabId;
-}
-
-export function getActiveReaderForSelectedTab(): any | null {
-  const selectedTabId = refreshLastKnownSelectedTabId();
-  if (selectedTabId === null) return null;
-  return (
-    (
-      Zotero as unknown as {
-        Reader?: { getByTabID?: (id: string | number) => any };
-      }
-    ).Reader?.getByTabID?.(selectedTabId as string | number) || null
-  );
-}
-
-export function getAllOpenReaders(): any[] {
-  const readers = (
-    Zotero as unknown as {
-      Reader?: { _readers?: unknown[] };
-    }
-  ).Reader?._readers;
-  return Array.isArray(readers) ? readers.filter(Boolean) : [];
-}
-
 function parseItemID(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -126,124 +89,6 @@ function parseItemID(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
-}
-
-function isTabsState(value: unknown): value is ZoteroTabsState {
-  if (!value || typeof value !== "object") return false;
-  const obj = value as any;
-  return (
-    "selectedID" in obj || "selectedType" in obj || Array.isArray(obj._tabs)
-  );
-}
-
-function getZoteroTabsStateWithSource(): {
-  tabs: ZoteroTabsState | null;
-  source: string;
-} {
-  const candidates: Array<{ source: string; value: unknown }> = [];
-  const push = (source: string, value: unknown) => {
-    candidates.push({ source, value });
-  };
-
-  push(
-    "local.Zotero.Tabs",
-    (Zotero as unknown as { Tabs?: ZoteroTabsState }).Tabs,
-  );
-
-  let mainWindow: any = null;
-  try {
-    mainWindow = Zotero.getMainWindow?.() || null;
-  } catch (_error) {
-    void _error;
-  }
-  if (mainWindow) {
-    push("mainWindow.Zotero.Tabs", mainWindow.Zotero?.Tabs);
-    push("mainWindow.Zotero_Tabs", mainWindow.Zotero_Tabs);
-    push("mainWindow.Tabs", mainWindow.Tabs);
-  }
-
-  let activePaneWindow: any = null;
-  try {
-    const activePane = Zotero.getActiveZoteroPane?.() as
-      | { document?: Document }
-      | null
-      | undefined;
-    activePaneWindow = activePane?.document?.defaultView || null;
-  } catch (_error) {
-    void _error;
-  }
-  if (activePaneWindow) {
-    push("activePaneWindow.Zotero.Tabs", activePaneWindow.Zotero?.Tabs);
-    push("activePaneWindow.Zotero_Tabs", activePaneWindow.Zotero_Tabs);
-  }
-
-  let anyMainWindow: any = null;
-  try {
-    const windows = Zotero.getMainWindows?.() || [];
-    anyMainWindow = windows[0] || null;
-  } catch (_error) {
-    void _error;
-  }
-  if (anyMainWindow) {
-    push("mainWindows[0].Zotero.Tabs", anyMainWindow.Zotero?.Tabs);
-    push("mainWindows[0].Zotero_Tabs", anyMainWindow.Zotero_Tabs);
-  }
-
-  try {
-    const wmRecent = (Services as any).wm?.getMostRecentWindow?.(
-      "navigator:browser",
-    ) as any;
-    push("wm:navigator:browser.Zotero.Tabs", wmRecent?.Zotero?.Tabs);
-    push("wm:navigator:browser.Zotero_Tabs", wmRecent?.Zotero_Tabs);
-  } catch (_error) {
-    void _error;
-  }
-  try {
-    const wmAny = (Services as any).wm?.getMostRecentWindow?.("") as any;
-    push("wm:any.Zotero.Tabs", wmAny?.Zotero?.Tabs);
-    push("wm:any.Zotero_Tabs", wmAny?.Zotero_Tabs);
-  } catch (_error) {
-    void _error;
-  }
-
-  const globalAny = globalThis as any;
-  push("globalThis.Zotero_Tabs", globalAny.Zotero_Tabs);
-  push("globalThis.window.Zotero_Tabs", globalAny.window?.Zotero_Tabs);
-
-  for (const candidate of candidates) {
-    if (isTabsState(candidate.value)) {
-      return { tabs: candidate.value, source: candidate.source };
-    }
-  }
-  return { tabs: null, source: "none" };
-}
-
-function getZoteroTabsState(): ZoteroTabsState | null {
-  return getZoteroTabsStateWithSource().tabs;
-}
-
-/**
- * Select a Zotero tab by ID using the same fallback discovery as
- * getZoteroTabsState.  Returns true if a select() call was made.
- */
-export function selectZoteroTab(tabId: string | number): boolean {
-  const { tabs, source } = getZoteroTabsStateWithSource();
-  if (!tabs) return false;
-  const tabsAny = tabs as unknown as {
-    select?: (id: string | number) => void;
-  };
-  if (typeof tabsAny.select === "function") {
-    try {
-      tabsAny.select(tabId);
-      ztoolkit.log(`[LLM] selectZoteroTab: selected "${tabId}" via ${source}`);
-      return true;
-    } catch (err) {
-      ztoolkit.log(
-        `[LLM] selectZoteroTab: error selecting "${tabId}" via ${source} — ${err}`,
-      );
-    }
-  }
-  return false;
 }
 
 function collectCandidateItemIDsFromObject(source: any): number[] {

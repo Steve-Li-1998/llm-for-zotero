@@ -1,0 +1,29 @@
+import { clearRetrievalCandidateCache } from "../../src/modules/contextPanel/multiContextPlanner";
+import {
+  verifyCompleteQuoteInLivePdfJs,
+  warmPageTextCache,
+  warmPageTextCacheForAttachment,
+} from "../../src/modules/contextPanel/livePdfSelectionLocator";
+import { configureRetrievalCandidateInvalidator } from "../../src/services/retrieval/cacheInvalidation";
+import { configurePdfReaderTextBridge } from "../../src/services/pdf/readerTextBridge";
+
+/**
+ * Panel-owned capabilities that services reach through `src/services/**`
+ * bridges. The plugin composes them once at startup (see
+ * `src/modules/contextPanel/hostSurfaces.ts`); a unit suite that drives one of
+ * those code paths stands in for that surface with the same implementation,
+ * rather than depending on whichever module another test file imported first.
+ *
+ * Each function returns a disposer to be called from the suite's `after`.
+ */
+export function composeRetrievalCandidateInvalidation(): () => void {
+  return configureRetrievalCandidateInvalidator(clearRetrievalCandidateCache);
+}
+
+export function composePdfReaderText(): () => void {
+  return configurePdfReaderTextBridge({
+    warmPageTextCache,
+    warmPageTextCacheForAttachment,
+    verifyCompleteQuote: verifyCompleteQuoteInLivePdfJs,
+  });
+}

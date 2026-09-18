@@ -1,16 +1,16 @@
-import { normalizePaperContextRefs } from "../../normalizers";
+import { normalizePaperContextRefs } from "../../../../services/context/normalizers";
 import {
   isTextLikeAttachmentSourceMode,
   resolvePaperContextDisplayMetadata as resolvePaperContextDisplayMetadataShared,
-} from "../../paperAttribution";
-import { isPdfContextAttachment } from "../../contextAttachmentSupport";
+} from "../../../../services/paperContent/paperAttribution";
+import { isPdfContextAttachment } from "../../../../services/paperContent/contextAttachmentSupport";
 import {
   getContextSourceModeBadgeLabel,
   getContextSourceModeSourceTitle,
   isContextSourceModeReaderNavigable,
   isContextSourceModeTextLikeAttachment,
-} from "../../contextSourceModes";
-import { sanitizeText } from "../../textUtils";
+} from "../../../../services/paperContent/contextSourceModes";
+import { sanitizeText } from "../../../../utils/textSanitization";
 import type {
   PaperContextRef,
   PaperContextSendMode,

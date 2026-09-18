@@ -6,7 +6,13 @@ import {
   resolveOllamaNativeApiRoot,
   resolveOllamaNativeEndpoint,
 } from "./apiHelpers";
+import {
+  createProviderOperationId,
+  resolveProviderSessionId,
+} from "./providerSessionId";
+import { version } from "../../package.json";
 import type { ModelProviderAuthMode } from "./modelProviders";
+import { detectProviderPreset } from "./providerPresets";
 import type { ProviderProtocol } from "./providerProtocol";
 
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -272,7 +278,57 @@ export function resolveProviderTransportEndpoint(params: {
   });
 }
 
-export function buildProviderTransportHeaders(params: {
+/** Identity belongs to a conversation or to one standalone operation, never a retry. */
+export type ProviderRequestScope =
+  | { conversationKey: number | string }
+  | { operationId: string };
+
+export function createProviderRequestScope(
+  conversationKey?: number | string | null,
+): ProviderRequestScope {
+  if (
+    conversationKey !== undefined &&
+    conversationKey !== null &&
+    String(conversationKey).trim()
+  ) {
+    return { conversationKey };
+  }
+  return { operationId: createProviderOperationId() };
+}
+
+/**
+ * Shared HTTP dispatch boundary for configurable model inference. Requirements
+ * are applied to the actual destination, after protocol/auth headers are built.
+ * Callers cannot opt out by forgetting to identify the provider or its headers.
+ */
+export async function sendProviderRequest(params: {
+  url: string;
+  scope: ProviderRequestScope;
+  fetchFn: typeof fetch;
+  init: RequestInit;
+}): Promise<Response> {
+  if (detectProviderPreset(params.url) !== "opencode") {
+    return params.fetchFn(params.url, params.init);
+  }
+  const sessionId =
+    "conversationKey" in params.scope
+      ? await resolveProviderSessionId(params.scope.conversationKey)
+      : params.scope.operationId;
+  if (!sessionId?.trim()) {
+    throw new Error(
+      "OpenCode requires a stable request session; no request was sent.",
+    );
+  }
+  // Preserve authentication and protocol headers, but always own routing headers.
+  const headers = Object.fromEntries(
+    new Headers(params.init.headers).entries(),
+  );
+  headers["x-opencode-session"] = sessionId;
+  headers["user-agent"] = `llm-for-zotero/${version}`;
+  return params.fetchFn(params.url, { ...params.init, headers });
+}
+
+export function buildProviderAuthHeaders(params: {
   protocol: ProviderProtocol;
   apiKey: string;
   authMode?: ModelProviderAuthMode;

@@ -23,10 +23,14 @@ import {
   hasCachedMineruMd,
   readCachedMineruMd,
   writeMineruCacheFiles,
-} from "../src/modules/contextPanel/mineruCache";
-import { pdfTextCache } from "../src/modules/contextPanel/state";
-import { clearMineruEligibilityCacheForTests } from "../src/modules/mineruParseEligibility";
+} from "../src/services/mineru/mineruCache";
+import { pdfTextCache } from "../src/services/paperContent/contextCache";
+import {
+  clearMineruEligibilityCacheForTests,
+  getMineruParseEligibility,
+} from "../src/modules/mineruParseEligibility";
 import { MineruCancelledError } from "../src/utils/mineruClient";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 const encoder = new TextEncoder();
 
@@ -260,6 +264,19 @@ async function waitForAutoWatchStatus(message: string): Promise<void> {
 }
 
 describe("mineruAutoWatch", function () {
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Invalidating cached paper context reaches the panel's retrieval cache
+    // through a host surface bridge the plugin composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   afterEach(function () {
     resetAutoWatchForTests();
     clearMineruEligibilityCacheForTests();
@@ -475,6 +492,14 @@ describe("mineruAutoWatch", function () {
     assert.equal(requestCount, 0);
     assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
     assert.deepEqual(getAllFailedIds(), []);
+    for (const pdf of [firstPdf, secondPdf]) {
+      const eligibility = await getMineruParseEligibility(
+        null,
+        pdf as Zotero.Item,
+      );
+      assert.isTrue(eligibility.excluded);
+      assert.equal(eligibility.pageCount, 412);
+    }
   });
 
   it("pauses and preserves the queue when a chunk hits the daily quota", async function () {

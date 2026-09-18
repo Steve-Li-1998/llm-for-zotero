@@ -82,7 +82,9 @@ describe("research graph loop", function () {
     const last = await recordAllNodes(harness!);
     assert.match(last.continuationCheckpoint.instruction, /links phase/);
     assert.equal((await job(harness!)).synthesisPhase, "links");
-    const view = await harness!.run({ operation: "list_findings" });
+    const { content: view } = await harness!.run({
+      operation: "list_findings",
+    });
     assert.equal(view.view, "compact");
     assert.lengthOf(view.findings, 3);
     assert.deepEqual(
@@ -128,7 +130,7 @@ describe("research graph loop", function () {
       }),
     );
     assert.match(unknownClaim, /claim PAPER001:c9/);
-    const result = await harness!.run({
+    const { content: result } = await harness!.run({
       operation: "record_edges",
       edges: [
         {
@@ -158,7 +160,7 @@ describe("research graph loop", function () {
     );
     assert.isFalse(result.edges[0].requiresVerification);
     assert.equal(result.edges[0].status, "candidate");
-    const again = await harness!.run({
+    const { content: again } = await harness!.run({
       operation: "record_edges",
       edges: [
         {
@@ -212,12 +214,12 @@ describe("research graph loop", function () {
         },
       ],
     });
-    const advanced = await harness!.run({
+    const { content: advanced } = await harness!.run({
       operation: "advance_phase",
       phase: "verification",
     });
     assert.equal(advanced.phase, "verification");
-    const work = await harness!.run({ operation: "next_work" });
+    const { content: work } = await harness!.run({ operation: "next_work" });
     assert.equal(work.phase, "verification");
     assert.isFalse(work.phaseComplete);
     assert.equal(work.candidates[0].kind, "verify_edge");
@@ -247,7 +249,7 @@ describe("research graph loop", function () {
     assert.match(overviewOnly, /targeted paper_read/);
     // A targeted read of either paper verifies, with or without a page locator.
     await harness!.verifiedRead(["PAPER003"], "body", { mode: "targeted" });
-    const decided = await harness!.run({
+    const { content: decided } = await harness!.run({
       operation: "update_edges",
       edges: [
         {
@@ -285,12 +287,12 @@ describe("research graph loop", function () {
         },
       ],
     });
-    const done = await harness!.run({ operation: "next_work" });
+    const { content: done } = await harness!.run({ operation: "next_work" });
     assert.isTrue(done.phaseComplete);
     assert.lengthOf(done.candidates, 0);
     assert.equal(done.counts.verifiedEdges, 1);
     assert.equal(done.counts.tentativeEdges, 1);
-    const structure = await harness!.run({
+    const { content: structure } = await harness!.run({
       operation: "advance_phase",
       phase: "structure",
     });
@@ -299,7 +301,9 @@ describe("research graph loop", function () {
 
   it("records and resolves open questions scoped to edges, nodes and subquestions", async function () {
     await recordAllNodes(harness!);
-    const { edges } = await harness!.run({
+    const {
+      content: { edges },
+    } = await harness!.run({
       operation: "record_edges",
       edges: [
         {
@@ -327,7 +331,7 @@ describe("research graph loop", function () {
       }),
     );
     assert.match(badScope, /existing edge/);
-    const recorded = await harness!.run({
+    const { content: recorded } = await harness!.run({
       operation: "record_questions",
       questions: [
         {
@@ -349,7 +353,7 @@ describe("research graph loop", function () {
       recorded.questions.map((question: any) => question.priority),
       [1, 3, 2],
     );
-    const work = await harness!
+    const { content: work } = await harness!
       .run({ operation: "advance_phase", phase: "verification" })
       .then(() => harness!.run({ operation: "next_work" }));
     const questionCandidate = work.candidates.find(
@@ -405,7 +409,9 @@ describe("research structure phase", function () {
 
   async function reachStructure(h: ResearchHarness) {
     await recordAllNodes(h);
-    const { edges } = await h.run({
+    const {
+      content: { edges },
+    } = await h.run({
       operation: "record_edges",
       edges: [
         {
@@ -450,7 +456,9 @@ describe("research structure phase", function () {
         },
       ],
     });
-    const graph = await harness!.run({ operation: "list_graph" });
+    const { content: graph } = await harness!.run({
+      operation: "list_graph",
+    });
     assert.equal(graph.phase, "structure");
     assert.lengthOf(graph.nodes, 3);
     assert.deepEqual(graph.nodes[0].claimIds, [
@@ -535,13 +543,15 @@ describe("research structure phase", function () {
         },
       ],
     });
-    const themes = await harness!.run({ operation: "list_themes" });
+    const { content: themes } = await harness!.run({
+      operation: "list_themes",
+    });
     assert.deepEqual(themes.themes[0].edgeIds, [
       edges[0].edgeId,
       edges[1].edgeId,
     ]);
     await harness!.run({ operation: "advance_phase", phase: "writing" });
-    const finalized = await harness!.run({
+    const { content: finalized } = await harness!.run({
       operation: "finalize",
       outcome: "complete",
     });
@@ -576,7 +586,9 @@ describe("document support audit in the plan finalizer", function () {
 
   async function completeResearch(h: ResearchHarness) {
     await recordAllNodes(h);
-    const { edges } = await h.run({
+    const {
+      content: { edges },
+    } = await h.run({
       operation: "record_edges",
       edges: [
         {

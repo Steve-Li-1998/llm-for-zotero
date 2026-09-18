@@ -5,7 +5,7 @@ import {
   type MinerUZipFile,
   type MinerUZipInspectionResult,
 } from "./mineruZip";
-import { extractPdfPageCountFromBytes } from "../modules/mineruParseEligibility";
+import { extractPdfPageCountFromBytes } from "./pdfPageCount";
 import {
   buildMineruDumpDataArguments,
   buildMineruExecutablePathCandidates,

@@ -3,7 +3,7 @@ import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
   PDF_FIGURE_CROP_CACHE_VERSION,
   buildPdfFigureCropManifestHash,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
+} from "../src/services/pdf/pdfFigureCropCache";
 import {
   buildManifest,
   getManifestFigureBaseLabel,
@@ -16,7 +16,7 @@ import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
   type MineruCacheFile,
-} from "../src/modules/contextPanel/mineruCache";
+} from "../src/services/mineru/mineruCache";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

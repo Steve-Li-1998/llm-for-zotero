@@ -8,7 +8,7 @@ import {
   RETRIEVAL_QUERY_VARIANT_DEFAULT_LIMIT,
   resolveRetrievalQueryPlan,
   shouldAutoGenerateQueryVariants,
-} from "../src/modules/contextPanel/retrievalQueryPlan";
+} from "../src/services/retrieval/retrievalQueryPlan";
 
 describe("retrievalQueryPlan", function () {
   it("dedupes and caps query variants while preserving the original query", function () {
@@ -185,8 +185,7 @@ describe("probe reformulation", function () {
       level: "low",
     });
     assert.deepEqual(captured.outputTokenLimit, {
-      mode: "custom",
-      tokens: 1_284,
+      mode: "auto",
     });
     assert.deepEqual(captured.profileOverride, {
       forModel: "gpt-5.4",
@@ -205,8 +204,8 @@ describe("probe reformulation", function () {
       providerProtocol: "openai_chat_compat",
       llmCall: async () => {
         calls += 1;
-        // A budget-truncated first response is exactly what the second
-        // attempt exists for; treating it as terminal wastes the retry.
+        // A completed but blank response can be retried; explicit output
+        // exhaustion is handled separately without repeating the same cap.
         return {
           text:
             calls === 1

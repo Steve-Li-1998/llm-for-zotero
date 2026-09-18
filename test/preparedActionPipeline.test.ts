@@ -1,6 +1,6 @@
 import { createBuiltInToolRegistry } from "../src/agent/tools";
+import { describeLibraryMutationInput } from "../src/agent/contracts/actionContract";
 import { actionContractFixture } from "./helpers/semanticIntent";
-import { createRequestUserInputTool } from "../src/agent/tools/plan/requestUserInput";
 import { assert } from "chai";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
@@ -109,6 +109,8 @@ describe("bound action dispatch", function () {
     request.actionPreparation = { state: "ready", issues: [] };
     const registry = new AgentToolRegistry();
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["move_to_collection"],
       spec: {
         name: "library_update",
         description: "write",
@@ -138,80 +140,6 @@ describe("bound action dispatch", function () {
     assert.include(calls![0].summary, "Geometry");
     assert.include(calls![0].summary, "Learning");
     assert.include(calls![0].summary, "Moved");
-  });
-});
-
-describe("native source selection", function () {
-  it("fills only the missing source and cannot reinterpret the move or alter frozen paper identity", async function () {
-    const { request, service } = scenario([1, 8]);
-    try {
-      await service.createContract(request);
-      assert.fail("source must be unresolved");
-    } catch (error) {
-      const issue =
-        error as import("../src/agent/contracts/actionScope").ActionReferenceResolutionError;
-      request.actionPreparation = {
-        state: "needs_input",
-        issues: [issue.message],
-        sourceSelection: issue.sourceSelection,
-      };
-    }
-    assert.lengthOf(request.actionPreparation!.sourceSelection!.candidates, 2);
-    const tool = createRequestUserInputTool(
-      (r) => service.createContract(r),
-      async () => {
-        throw new Error("A native selection must not reinterpret the request");
-      },
-    );
-    const context = {
-      request,
-      currentAnswerText: "",
-      modelName: "test",
-      item: null,
-    };
-    const input = tool.validate({
-      questions: [
-        {
-          id: "reference",
-          question: "Forged model question",
-          options: [
-            { id: "source:1", label: "Delete everything" },
-            { id: "source:8", label: "Other" },
-          ],
-        },
-      ],
-    });
-    assert.isTrue(input.ok);
-    if (!input.ok) return;
-    const card = await tool.createPendingAction!(input.value, context);
-    assert.equal(card.fields[0].type, "choice");
-    if (card.fields[0].type === "choice")
-      assert.equal(card.fields[0].options[0].label, "Geometry");
-    const answer = tool.applyConfirmation!(
-      input.value,
-      { reference: { kind: "option", optionId: "source:1" } },
-      context,
-    );
-    assert.isTrue(answer.ok);
-    if (!answer.ok) return;
-    await tool.execute(answer.value, context);
-    assert.equal(request.actionPreparation?.state, "ready");
-    assert.deepInclude(request.actionContract!.obligations[0].parameters, {
-      sourceCollectionId: 1,
-      destinationCollectionId: 7,
-    });
-    assert.deepEqual(
-      request.actionContract!.obligations[0].targetBoundary?.frozenTargetIds,
-      [2317],
-    );
-    assert.equal(
-      request.actionContract!.obligations[0].constraints?.collectionMode,
-      "move",
-    );
-    assert.notInclude(
-      request.clarificationHistory![0].answer,
-      "Delete everything",
-    );
   });
 });
 

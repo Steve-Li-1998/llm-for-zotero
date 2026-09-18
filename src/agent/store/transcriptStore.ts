@@ -1,9 +1,4 @@
-import type {
-  AgentModelContentPart,
-  AgentModelMessage,
-  AgentRuntimeRequest,
-  ToolSpec,
-} from "../types";
+import type { AgentModelContentPart, AgentModelMessage } from "../types";
 import {
   installConversationKeyLedgerAgentTriggers,
   isConversationKeyRetiredInMemory,
@@ -32,16 +27,10 @@ export type AgentTranscriptWriteResult =
   | "failed"
   | "skipped";
 
-export type AgentTranscriptCompatibilityInput = {
-  request: AgentRuntimeRequest;
-  resourceSignature: string;
-  stableContextBlock: string;
-  tools: ToolSpec[];
-};
+export const PORTABLE_TRANSCRIPT_KEY = "portable-v2";
 
 const TRANSCRIPT_TABLE = "llm_for_zotero_agent_transcript";
 const TRANSCRIPT_INDEX = "llm_for_zotero_agent_transcript_key_idx";
-const TRANSCRIPT_SCHEMA_VERSION = 1;
 
 const transcriptByKey = new Map<string, AgentTranscriptSegment>();
 const hydratedKeys = new Set<string>();
@@ -88,15 +77,6 @@ function stabilizeForJson(value: unknown): unknown {
   return out;
 }
 
-function hashText(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
 function segmentKey(conversationKey: number, compatibilityKey: string): string {
   return `${normalizePositiveInt(conversationKey) || 0}:${compatibilityKey}`;
 }
@@ -122,7 +102,7 @@ function sanitizeContentForTranscript(
   const parts: AgentModelContentPart[] = [];
   for (const part of content) {
     if (part.type === "text") {
-      parts.push(part);
+      parts.push({ type: "text", text: part.text });
       continue;
     }
     if (part.type === "image_url") {
@@ -158,12 +138,24 @@ function sanitizeMessageForTranscript(
 ): AgentModelMessage {
   if (message.role === "tool") {
     return {
-      ...message,
+      role: "tool",
+      name: message.name,
+      ...(message.workCategory ? { workCategory: message.workCategory } : {}),
+      tool_call_id: message.tool_call_id,
       content: stringifyTranscriptContent(message.content),
     };
   }
   return {
-    ...message,
+    role: message.role,
+    ...(message.role !== "system" && message.messageId
+      ? { messageId: message.messageId }
+      : {}),
+    ...(message.role === "assistant" && message.tool_calls
+      ? { tool_calls: message.tool_calls }
+      : {}),
+    ...(message.role === "user" && message.retainedTool
+      ? { retainedTool: message.retainedTool }
+      : {}),
     content: sanitizeContentForTranscript(message.content),
   };
 }
@@ -229,6 +221,7 @@ function normalizeMessages(
 ): AgentModelMessage[] {
   return dropOrphanToolCalls(
     messages
+      .filter((message) => !(message.role === "user" && message.transient))
       .map((message) => normalizeMessage(message))
       .filter((message): message is AgentModelMessage => Boolean(message)),
   );
@@ -271,30 +264,6 @@ async function ensureAgentTranscriptStore(): Promise<boolean> {
 
 export async function initAgentTranscriptStore(): Promise<boolean> {
   return ensureAgentTranscriptStore();
-}
-
-export function buildAgentTranscriptCompatibilityKey(
-  params: AgentTranscriptCompatibilityInput,
-): string {
-  const request = params.request;
-  const toolShape = params.tools.map((tool) => ({
-    name: tool.name,
-    inputSchema: tool.inputSchema,
-  }));
-  return hashText(
-    stableJson({
-      schemaVersion: TRANSCRIPT_SCHEMA_VERSION,
-      providerProtocol: request.providerProtocol || "",
-      authMode: request.authMode || "",
-      apiBase: request.apiBase || "",
-      model: request.model || "",
-      systemPrompt: request.systemPrompt || "",
-      customInstructions: request.customInstructions || "",
-      resourceSignature: params.resourceSignature,
-      stableContextHash: hashText(params.stableContextBlock || ""),
-      toolShape,
-    }),
-  );
 }
 
 async function hydrateTranscriptSegment(params: {
@@ -388,7 +357,12 @@ export async function loadLatestAgentTranscriptSegment(
   if (!conversationKey) return null;
   const dbReady = await ensureAgentTranscriptStore();
   const db = getDb();
-  if (!dbReady || !db) return null;
+  if (!dbReady || !db)
+    return (
+      [...transcriptByKey.values()]
+        .reverse()
+        .find((segment) => segment.conversationKey === conversationKey) || null
+    );
   try {
     const rows = (await db.queryAsync(
       `SELECT compatibility_key AS compatibilityKey
@@ -408,6 +382,38 @@ export async function loadLatestAgentTranscriptSegment(
     );
     return null;
   }
+}
+
+export async function readAgentConversationMessages(
+  conversationKey: number,
+): Promise<AgentModelMessage[]> {
+  const portable = await loadAgentTranscriptSegment({
+    conversationKey,
+    compatibilityKey: PORTABLE_TRANSCRIPT_KEY,
+  });
+  const segment = portable.messages.length
+    ? portable
+    : await loadLatestAgentTranscriptSegment(conversationKey);
+  return (segment?.messages || []).filter(
+    (message) =>
+      (message.role === "assistant" && !message.tool_calls?.length) ||
+      (message.role === "user" && !message.transient && !message.retainedTool),
+  );
+}
+
+export async function readAgentConversationAnswer(
+  conversationKey: number,
+  messageId: string,
+): Promise<string> {
+  const message = (await readAgentConversationMessages(conversationKey)).find(
+    (message) =>
+      message.role === "assistant" && message.messageId === messageId,
+  );
+  if (!message)
+    throw new Error(
+      "No assistant answer with this messageId exists in the current conversation. Use conversation_read to find the exact source.",
+    );
+  return stringifyTranscriptContent(message.content);
 }
 
 async function persistTranscriptSegment(

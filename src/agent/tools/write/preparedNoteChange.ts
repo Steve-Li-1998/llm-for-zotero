@@ -2,12 +2,12 @@ import { noteHtmlMatches, canonicalNoteHtml } from "../../../utils/noteHtml";
 import {
   persistVerifiedNoteHtml,
   verifyNativeNoteHtml,
-} from "../../../modules/contextPanel/notePersistence";
+} from "../../../services/notePersistence";
 import {
   appendNoteHtml,
   normalizeNoteSourceText,
-} from "../../../modules/contextPanel/notes";
-import { invalidateCachedContextText } from "../../../modules/contextPanel/pdfContext";
+} from "../../../services/notes/noteRendering";
+import { invalidateCachedContextText } from "../../../services/paperContent/pdfContext";
 import {
   executeExternalMutation,
   MutationNoEffectError,

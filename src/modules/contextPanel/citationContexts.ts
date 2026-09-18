@@ -1,5 +1,5 @@
-import { normalizePaperContextRefs } from "./normalizers";
-import { sanitizeText } from "./textUtils";
+import { normalizePaperContextRefs } from "../../services/context/normalizers";
+import { sanitizeText } from "../../utils/textSanitization";
 import type { PaperContextRef } from "./types";
 
 export type CitationContextSource = {

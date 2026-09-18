@@ -1,8 +1,3 @@
-import { semanticInputDigest } from "../../model/semanticTransport";
-import { detectTurnIntent } from "../../model/semanticIntentService";
-import { getAllSkills } from "../../skills";
-import { ActionReferenceResolutionError } from "../../contracts/actionScope";
-import { isConversationWriteGenerationCurrent } from "../../../shared/conversationWriteFence";
 import type {
   AgentPendingChoiceValue,
   AgentPendingField,
@@ -106,10 +101,7 @@ function validateInput(
 }
 
 export function createRequestUserInputTool(
-  prepare?: (
-    request: import("../../types").AgentRuntimeRequest,
-  ) => Promise<import("../../types").AgentActionContract | null>,
-  interpret: typeof detectTurnIntent = detectTurnIntent,
+  ..._legacyArguments: unknown[]
 ): AgentToolDefinition<RequestUserInput, unknown> {
   return {
     spec: {
@@ -150,12 +142,17 @@ export function createRequestUserInputTool(
         },
       },
       executionClass: "control",
+      workCategory: "planning",
       requiresConfirmation: true,
       interaction: "user_input",
     },
-    isAvailable: (request) =>
-      request.planContext?.phase === "planning" ||
-      Boolean(request.classifiedIntent?.semantic),
+    /**
+     * The plan machinery itself. Its calls are how a plan is drafted and
+     * advanced, and the plan card already shows the reader the outcome, so a
+     * row for each of them would report the trace's own plumbing.
+     */
+    presentation: { hiddenInTrace: true },
+    isAvailable: () => true,
     validate: validateInput,
     planInvocation: () =>
       readOnlyInvocationPlan({
@@ -212,11 +209,6 @@ export function createRequestUserInputTool(
         id: question.id,
         answer: question.answer,
       }));
-      if (
-        !prepare ||
-        context.request.actionPreparation?.state !== "needs_input"
-      )
-        return { answers: publicAnswers };
       const answers = input.questions.map((question) => ({
         question: question.question,
         answer: (() => {
@@ -230,96 +222,14 @@ export function createRequestUserInputTool(
       }));
       if (answers.some((entry) => !entry.answer))
         throw new Error("The requested clarification has not been answered.");
-      const revised = {
-        ...context.request,
-        clarificationHistory: [
+      if (context.request) {
+        context.request.clarificationHistory = [
           ...(context.request.clarificationHistory || []),
           ...answers,
-        ],
-      };
-      const selection = context.request.actionPreparation.sourceSelection;
-      if (selection && revised.classifiedIntent?.semantic) {
-        const answer =
-          input.questions.find((question) => question.id === "reference")
-            ?.answer || "";
-        const selected = selection.candidates.filter(
-          (candidate) =>
-            answer === `source:${candidate.id}` ||
-            [candidate.name, candidate.path].some(
-              (name) =>
-                name.toLocaleLowerCase() === answer.trim().toLocaleLowerCase(),
-            ),
-        );
-        if (selected.length !== 1)
-          throw new Error(
-            "Choose one of the displayed source collections or enter its exact name. The action remains paused.",
-          );
-        const intent = revised.classifiedIntent;
-        revised.classifiedIntent = {
-          ...intent,
-          actionIntents: intent.actionIntents.map((action, index) =>
-            index === selection.actionIndex
-              ? {
-                  ...action,
-                  parameters: {
-                    ...action.parameters,
-                    sourceCollectionId: selected[0].id,
-                  },
-                }
-              : action,
-          ),
-          semantic: {
-            ...intent.semantic!,
-            revision: intent.semantic!.revision + 1,
-            inputDigest: await semanticInputDigest(revised),
-          },
-        };
-      } else {
-        const result = await interpret(revised, getAllSkills(), {
-          signal: context.signal,
-        });
-        if (!result.classifiedIntent)
-          throw new Error(
-            "Semantic interpretation of the clarification is unavailable. Actions remain paused.",
-          );
-        revised.classifiedIntent = result.classifiedIntent;
+        ];
       }
-      let contract: import("../../types").AgentActionContract | undefined;
-      let issues: string[] = [];
-      let sourceSelection: import("../../contracts/actionPreparation").ActionPreparation["sourceSelection"];
-      try {
-        contract = (await prepare(revised)) || undefined;
-      } catch (error) {
-        if (!(error instanceof ActionReferenceResolutionError)) throw error;
-        issues = [error.message];
-        sourceSelection = error.sourceSelection;
-      }
-      if (
-        context.signal?.aborted ||
-        (context.request.conversationGeneration !== undefined &&
-          !isConversationWriteGenerationCurrent(
-            context.request.conversationKey,
-            context.request.conversationGeneration,
-          ))
-      ) {
-        throw new Error(
-          "The conversation changed while resolving the request.",
-        );
-      }
-      context.request.clarificationHistory = revised.clarificationHistory;
-      context.request.classifiedIntent = revised.classifiedIntent;
-      context.request.actionContract = contract;
-      context.request.actionProgress = undefined;
-      context.request.actionPreparation = {
-        state: issues.length ? "needs_input" : "ready",
-        issues,
-        sourceSelection,
-      };
-      await context.checkpointActionProgress?.();
       return {
         answers: publicAnswers,
-        preparation: context.request.actionPreparation,
-        contract,
       };
     },
   };

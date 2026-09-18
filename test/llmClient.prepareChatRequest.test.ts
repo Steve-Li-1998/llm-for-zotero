@@ -858,7 +858,7 @@ describe("llmClient prepareChatRequest", function () {
         apiBase: "https://api.anthropic.com/v1",
         apiKey: "anthropic-test",
         providerProtocol: "anthropic_messages",
-        reasoning: { provider: "anthropic", level: "xhigh" },
+        reasoning: { provider: "anthropic", level: "max" },
         temperature: 0.3,
         outputTokenLimit: { mode: "custom", tokens: 4096 },
       },

@@ -1,10 +1,10 @@
 import { buildSafeSvgMarkup } from "../../utils/markdown";
-import { escapeNoteHtml } from "./textUtils";
+import { escapeNoteHtml } from "../../utils/textSanitization";
 import {
   importNoteImageAsset,
   type NoteImageImporter,
   type NoteImageImportInput,
-} from "./noteImages";
+} from "../../services/notes/noteImages";
 
 export type SvgRasterizer = (
   doc: Document,

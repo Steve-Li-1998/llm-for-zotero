@@ -7,7 +7,7 @@ import {
   locatedResultIdentifiesQuoteSourceForTests as identifiesQuoteSource,
 } from "../src/modules/contextPanel/assistantCitationLinks";
 import { locateQuoteInPageTexts } from "../src/modules/contextPanel/livePdfSelectionLocator";
-import { summarizeQuoteTextSupport } from "../src/modules/contextPanel/quoteTextSearch";
+import { summarizeQuoteTextSupport } from "../src/services/quotes/quoteTextSearch";
 
 /**
  * A quote a model wrote by stitching two passages of one paper together. This

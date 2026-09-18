@@ -1,5 +1,5 @@
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
-import type { ContextAttachmentSupport } from "./contextAttachmentTypes";
+import type { ContextAttachmentSupport } from "../../services/paperContent/contextAttachmentTypes";
 import type {
   SelectedTextSource,
   ChatAttachmentCategory,
@@ -26,7 +26,6 @@ import type {
   LibraryChatCoverageReceipt,
   LibraryChatReadStrategyDiagnostics,
 } from "../../shared/libraryChatReadStrategy";
-
 export type {
   SelectedTextSource,
   ChatAttachmentCategory,
@@ -152,6 +151,8 @@ export type ReasoningProviderKind =
   | "mimo"
   | "qwen"
   | "grok"
+  | "minimax"
+  | "glm"
   | "anthropic"
   | "customized"
   | "local"
@@ -214,73 +215,6 @@ export type ContextSourceLifecycleState = {
   isAsyncFinal: boolean;
 };
 
-export type PdfContext = {
-  title: string;
-  chunks: string[];
-  chunkMeta: PdfChunkMeta[];
-  chunkStats: ChunkStat[];
-  docFreq: Record<string, number>;
-  avgChunkLength: number;
-  fullLength: number;
-  embeddings?: number[][];
-  embeddingCacheKey?: string;
-  embeddingPromise?: Promise<number[][] | null>;
-  embeddingPromiseKey?: string;
-  /** Last embedding attempt that failed; suppresses retry storms for the same config. */
-  embeddingFailureKey?: string;
-  sourceType?:
-    | "mineru"
-    | "zotero-worker"
-    | "zotero-fulltext-cache"
-    | "attachment-markdown"
-    | "attachment-html"
-    | "attachment-txt"
-    | "attachment-docx";
-};
-
-export type PdfChunkKind =
-  | "abstract"
-  | "introduction"
-  | "methods"
-  | "results"
-  | "discussion"
-  | "conclusion"
-  | "references"
-  | "figure-caption"
-  | "table-caption"
-  | "appendix"
-  | "body"
-  | "unknown";
-
-export type DocumentReferenceConfidence = "high" | "medium" | "low";
-
-export type DocumentReferenceEvidence = {
-  kind: "figure" | "table";
-  id: string;
-  panel?: string;
-  confidence: DocumentReferenceConfidence;
-  provenance: string[];
-  pageStart?: number;
-  pageEnd?: number;
-};
-
-export type PdfChunkMeta = {
-  chunkIndex: number;
-  text: string;
-  normalizedText: string;
-  sectionLabel?: string;
-  chunkKind: PdfChunkKind;
-  anchorText?: string;
-  leadingNoiseRemoved?: boolean;
-  sourceType?: PdfContext["sourceType"];
-  sourceStart?: number;
-  sourceEnd?: number;
-  sourceFingerprint?: string;
-  pageStart?: number;
-  pageEnd?: number;
-  references?: DocumentReferenceEvidence[];
-};
-
 export type ContextAssemblyMode = "full" | "retrieval";
 export type ContextAssemblyStrategy =
   | "paper-first-full"
@@ -302,35 +236,6 @@ export type ContextBudgetPlan = {
   contextBudgetTokens: number;
 };
 
-export type PaperContextCandidate = {
-  paperKey: string;
-  itemId: number;
-  contextItemId: number;
-  title: string;
-  citationKey?: string;
-  firstCreator?: string;
-  year?: string;
-  chunkIndex: number;
-  chunkText: string;
-  sectionLabel?: string;
-  chunkKind?: PdfChunkKind;
-  anchorText?: string;
-  leadingNoiseRemoved?: boolean;
-  sourceStart?: number;
-  sourceEnd?: number;
-  sourceFingerprint?: string;
-  pageStart?: number;
-  pageEnd?: number;
-  estimatedTokens: number;
-  bm25Score: number;
-  embeddingScore: number;
-  hybridScore: number;
-  evidenceScore: number;
-  matchedQueryVariant?: string;
-  matchedQueryVariants?: string[];
-  referenceConfidence?: DocumentReferenceConfidence;
-};
-
 export type MultiContextPlan = {
   mode: ContextAssemblyMode;
   strategy: ContextAssemblyStrategy;
@@ -347,32 +252,6 @@ export type MultiContextPlan = {
   coverageReceipt?: LibraryChatCoverageReceipt;
   fullReadReceipt?: import("../../shared/exhaustiveDocumentReader").FullReadCoverageReceipt;
   modelImages?: string[];
-};
-
-export type GlobalPortalItem = {
-  __llmGlobalPortalItem: true;
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
-};
-
-export type PaperPortalItem = {
-  __llmPaperPortalItem: true;
-  __llmPaperPortalBaseItemID: number;
-  __llmPaperPortalSessionVersion: number;
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
 };
 
 export type ClaudeGlobalPortalItem = {
@@ -427,19 +306,6 @@ export type CodexPaperPortalItem = {
   getAttachments: () => number[];
   getField: (field: string) => string;
   isRegularItem: () => boolean;
-};
-
-export type ChunkStat = {
-  index: number;
-  length: number;
-  tf: Record<string, number>;
-  uniqueTerms: string[];
-};
-
-export type ZoteroTabsState = {
-  selectedID?: string | number;
-  selectedType?: string;
-  _tabs?: Array<{ id?: string | number; type?: string; data?: any }>;
 };
 
 // ── Send flow options ─────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ import type { PlanAmendmentGrant } from "../../plans/planAmendmentTypes";
 import { canonicalJson } from "../../services/libraryMutation/canonicalJson";
 import type {
   AgentActionEvidence,
+  AgentActionReceipt,
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentToolCall,
@@ -32,7 +33,46 @@ import {
   createRequestId,
   invocationExpands,
   normalizeExecutionOutput,
+  pendingActionMaterial,
 } from "./results";
+
+/**
+ * What an execution's evidence records are worth recording in the audit trail.
+ *
+ * The records themselves carry whole post-images — a script's guarded item
+ * JSON, a note body, a captured library state. Every one of those is already
+ * durable in the journal step the record names, so the audit row keeps the
+ * identity and the verdict and drops the payload: a summary tells a reader
+ * which durable step proved what, and nothing is stored twice.
+ */
+function summarizeActionEvidence(
+  evidence: AgentActionEvidence[] | undefined,
+  receipts: AgentActionReceipt[],
+):
+  | Array<{
+      source: AgentActionEvidence["source"];
+      stepId?: string;
+      verification?: AgentActionReceipt["verification"];
+      reason?: string;
+    }>
+  | undefined {
+  if (!evidence?.length) return undefined;
+  return evidence.map((entry) => {
+    const receipt = entry.journalStepId
+      ? receipts.find(
+          (candidate) => candidate.evidenceRef === entry.journalStepId,
+        )
+      : undefined;
+    const matched =
+      receipt || (receipts.length === 1 ? receipts[0] : undefined);
+    return {
+      source: entry.source,
+      ...(entry.journalStepId ? { stepId: entry.journalStepId } : {}),
+      ...(matched ? { verification: matched.verification } : {}),
+      ...(matched?.reasons.length ? { reason: matched.reasons[0] } : {}),
+    };
+  });
+}
 
 type ReceiptOutcome = {
   ok: boolean;
@@ -59,6 +99,7 @@ type GrantAuthority =
 export class InvocationController {
   private readonly assessor: InvocationAssessor;
   private readonly frozenContract: string;
+  private readonly frozenExecutionContext: string;
   private amendment?: AuthorizedAmendment;
   /** Exact proposal the host authorized on the agent's judgment (yolo only). */
   private judgment?: { proposalDigest: string };
@@ -77,6 +118,9 @@ export class InvocationController {
   ) {
     this.assessor = new InvocationAssessor(tool, context, options, contracts);
     this.frozenContract = canonicalJson(context.request.actionContract || null);
+    this.frozenExecutionContext = canonicalJson(
+      context.request.executionContext || null,
+    );
   }
 
   async prepare(input: unknown): Promise<PreparedToolExecution> {
@@ -98,14 +142,14 @@ export class InvocationController {
       }
       const assessed = await this.assessor.assess(input, false);
       if (
-        this.options.inheritedApproval?.sourceMode === "approval" &&
+        this.options.inheritedApproval &&
         !assessed.scopeFailure &&
         assessed.authorization.kind !== "block"
       )
         return this.execute(assessed, assessed.proposal.payloadDigest);
       return await this.dispatch(assessed);
     } catch (error) {
-      return this.result(this.failure(input, error));
+      return this.result(await this.failure(input, error));
     }
   }
 
@@ -115,7 +159,7 @@ export class InvocationController {
     return { kind: "result", execution };
   }
 
-  private receipts(
+  private async receipts(
     outcome: ReceiptOutcome,
     assessed?: AssessedInvocation,
     input?: unknown,
@@ -125,7 +169,7 @@ export class InvocationController {
     const details = this.amendment?.failure.amendableObligation;
     const receipts =
       prepared && this.contracts
-        ? this.contracts.finalize(
+        ? await this.contracts.finalize(
             this.context.request.actionContract,
             prepared,
             outcome,
@@ -165,12 +209,12 @@ export class InvocationController {
       : allReceipts;
   }
 
-  private failure(
+  private async failure(
     input: unknown,
     error: unknown,
     assessed?: AssessedInvocation,
     cancelled = false,
-  ): PreparedToolExecutionResult {
+  ): Promise<PreparedToolExecutionResult> {
     const reason = error instanceof Error ? error.message : String(error);
     return {
       tool: this.tool,
@@ -182,7 +226,7 @@ export class InvocationController {
         ...(error instanceof ToolInputRejection
           ? { inputRejected: true as const }
           : {}),
-        actionReceipts: this.receipts(
+        actionReceipts: await this.receipts(
           {
             ok: false,
             reason,
@@ -330,7 +374,11 @@ export class InvocationController {
       return this.result(this.scopeFailure(assessed));
     if (assessed.authorization.kind === "block")
       return this.result(
-        this.failure(assessed.input, assessed.authorization.reason, assessed),
+        await this.failure(
+          assessed.input,
+          assessed.authorization.reason,
+          assessed,
+        ),
       );
     const toolReview =
       this.tool.spec.interaction === "user_input" &&
@@ -341,12 +389,9 @@ export class InvocationController {
         this.tool.spec.requiresConfirmation);
     const needsReview =
       assessed.authorization.kind === "confirm" ||
-      scopeDecision?.kind === "confirm" ||
-      toolReview ||
-      (this.context.authorization?.kind !== "external_runtime" &&
-        this.options.forceConfirmation &&
-        this.options.callerKind !== "mcp" &&
-        Boolean(this.tool.createPendingAction));
+      (scopeDecision?.kind === "confirm" &&
+        getOriginalAgentPermissionMode() !== "yolo") ||
+      toolReview;
     if (needsReview) {
       const action = assessed.scopeFailure
         ? createProposalConfirmationAction({
@@ -368,9 +413,33 @@ export class InvocationController {
 
   private review(
     assessed: AssessedInvocation,
-    action: AgentPendingAction,
+    displayedAction: AgentPendingAction,
     applyToolResolution = true,
   ): PreparedToolExecution {
+    // The card a tool builds describes its own payload; only the host knows
+    // which frozen material the proposal bound, so the host stamps it here
+    // rather than asking every tool to repeat it. The interaction kind is
+    // stamped for the same reason: the spec already declares that this tool
+    // asks the user something, and a view that had to recognise such a tool
+    // by name would be reading identity for meaning.
+    const material = pendingActionMaterial(assessed.preparedAction?.proposals);
+    const action = {
+      ...displayedAction,
+      ...(assessed.authorization.kind === "confirm"
+        ? {
+            description: [
+              displayedAction.description,
+              assessed.authorization.reason,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          }
+        : {}),
+      ...(material ? { material } : {}),
+      ...(this.tool.spec.interaction === "user_input"
+        ? { interaction: "user_input" as const }
+        : {}),
+    };
     return {
       kind: "confirmation",
       requestId: createRequestId(),
@@ -403,7 +472,7 @@ export class InvocationController {
         (!confirmation.actionId && !resolution.approved)
       )
         return this.result(
-          this.failure(input, "User denied action", displayed, true),
+          await this.failure(input, "User denied action", displayed, true),
         );
       if (applyToolResolution && this.tool.applyConfirmation) {
         const resolved = this.tool.applyConfirmation(
@@ -449,7 +518,7 @@ export class InvocationController {
       return this.execute(assessed, assessed.proposal.payloadDigest);
     } catch (error) {
       await this.failAmendment(error);
-      return this.result(this.failure(input, error, displayed));
+      return this.result(await this.failure(input, error, displayed));
     }
   }
 
@@ -457,6 +526,8 @@ export class InvocationController {
     return (
       !this.context.signal?.aborted &&
       (!this.options.isExecutionAllowed || this.options.isExecutionAllowed()) &&
+      canonicalJson(this.context.request.executionContext || null) ===
+        this.frozenExecutionContext &&
       (!checkContract ||
         canonicalJson(this.context.request.actionContract || null) ===
           this.frozenContract)
@@ -534,11 +605,6 @@ export class InvocationController {
       )
     )
       return undefined;
-    const progress = this.context.request.actionProgress;
-    if (!progress || !this.context.checkpointActionProgress)
-      throw new Error(
-        "Action authorization could not be persisted before execution.",
-      );
     const authority = this.grantAuthority(assessed, userApproval);
     const grant = {
       version: 2 as const,
@@ -546,13 +612,35 @@ export class InvocationController {
       proposalDigest: assessed.proposal.payloadDigest,
       toolName: this.call.name,
       authority,
+      planEffectIds: assessed.planEffectIds,
+      ...(assessed.review ? { review: assessed.review } : {}),
       status: "staged" as "staged" | "executed" | "failed",
       createdAt: Date.now(),
     };
-    const grants = (progress.authorizationGrants ||= []);
+    const progress = this.context.request.actionProgress;
+    const legacyContractGrant = Boolean(
+      this.context.request.actionContract &&
+      progress &&
+      this.context.checkpointActionProgress,
+    );
+    if (!legacyContractGrant) {
+      await recordJournalObservation({
+        actionId: this.context.journalActionScope?.actionId,
+        event: "original_authorization_prepared",
+        objectType: "tool_invocation",
+        objectIds: [this.context.runId!, this.call.id],
+        extra: {
+          grant,
+          libraryID: this.context.request.executionContext?.chatLibraryID,
+          proposal: assessed.proposal,
+        },
+      });
+      return grant;
+    }
+    const grants = (progress!.authorizationGrants ||= []);
     grants.push(grant);
     try {
-      await this.context.checkpointActionProgress();
+      await this.context.checkpointActionProgress!();
     } catch (error) {
       grants.splice(grants.indexOf(grant), 1);
       throw new Error(
@@ -560,6 +648,34 @@ export class InvocationController {
       );
     }
     return grant;
+  }
+
+  private async recordGrantOutcome(
+    grant: Awaited<ReturnType<InvocationController["stageAuthority"]>>,
+    status: "executed" | "failed",
+    extra: Record<string, unknown>,
+  ): Promise<void> {
+    if (!grant || !this.context.runId) return;
+    const external = grant.authority === "external_runtime";
+    await recordJournalObservation({
+      actionId: this.context.journalActionScope?.actionId,
+      event: external
+        ? status === "executed"
+          ? "external_execution_completed"
+          : "external_execution_failed"
+        : status === "executed"
+          ? "original_execution_completed"
+          : "original_execution_failed",
+      objectType: "tool_invocation",
+      objectIds: [this.context.runId, this.call.id],
+      extra: { authority: grant.authority, ...extra },
+    }).catch((error) => {
+      // Mutation receipts remain authoritative. A supplementary audit failure
+      // must not invite replay of an action whose native outcome is already known.
+      Zotero.debug?.(
+        `Execution authorization audit could not be recorded: ${String(error)}`,
+      );
+    });
   }
 
   private async completeAmendment() {
@@ -600,7 +716,7 @@ export class InvocationController {
       grant = await this.stageAuthority(prepared, userApproval);
     } catch (error) {
       await this.failAmendment(error);
-      return this.result(this.failure(prepared.input, error, prepared));
+      return this.result(await this.failure(prepared.input, error, prepared));
     }
     const run = async (): Promise<PreparedToolExecution> => {
       let assessed = prepared;
@@ -700,25 +816,25 @@ export class InvocationController {
                   )
                 ? "applied"
                 : undefined;
-        if (this.context.authorization?.kind === "external_runtime" && grant) {
-          await recordJournalObservation({
-            event: "external_execution_completed",
-            objectType: "tool_invocation",
-            objectIds: [this.context.runId!, this.call.id],
-            extra: {
-              authority: grant.authority,
-              effect,
-              actionEvidence: output.actionEvidence,
-              content: output.content,
-            },
-          }).catch((error) => {
-            // The mutation journal and native receipts remain authoritative.
-            // A supplementary audit failure must not invite replay of a saved write.
-            Zotero.debug?.(
-              `External execution audit could not be recorded: ${String(error)}`,
-            );
-          });
-        }
+        // Receipts first: the audit row records what this execution proved,
+        // and that is only knowable once the receipts have re-read state.
+        const actionReceipts = await this.receipts(
+          {
+            ok: true,
+            effect,
+            content: output.content,
+            actionEvidence: output.actionEvidence,
+          },
+          assessed,
+        );
+        await this.recordGrantOutcome(grant, "executed", {
+          effect,
+          actionEvidence: summarizeActionEvidence(
+            output.actionEvidence,
+            actionReceipts,
+          ),
+          content: output.content,
+        });
         return this.result({
           tool: this.tool,
           input: assessed.input,
@@ -729,32 +845,24 @@ export class InvocationController {
             effect,
             authority:
               authority === "yolo_judgment" ? "yolo_judgment" : undefined,
-            actionReceipts: this.receipts(
-              {
-                ok: true,
-                effect,
-                content: output.content,
-                actionEvidence: output.actionEvidence,
-              },
-              assessed,
-            ),
+            actionReceipts,
             content: output.content,
             artifacts: output.artifacts,
             continuationCheckpoint: output.continuationCheckpoint,
+            materialRef: output.materialRef,
+            materialKind: output.materialKind,
+            materialTitle: output.materialTitle,
+            batchItems: output.batchItems,
+            researchJobId: output.researchJobId,
           },
         });
       } catch (error) {
         if (grant) grant.status = "failed";
-        if (this.context.authorization && grant) {
-          await recordJournalObservation({
-            event: "external_execution_failed",
-            objectType: "tool_invocation",
-            objectIds: [this.context.runId!, this.call.id],
-            extra: { authority: "external_runtime", error: String(error) },
-          }).catch(() => undefined);
-        }
+        await this.recordGrantOutcome(grant, "failed", {
+          error: String(error),
+        });
         await this.failAmendment(error);
-        return this.result(this.failure(assessed.input, error, assessed));
+        return this.result(await this.failure(assessed.input, error, assessed));
       }
     };
     return prepared.plan.impact !== "read_only" && this.options.executeWithLock

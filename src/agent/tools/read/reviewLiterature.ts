@@ -1,6 +1,5 @@
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { isExplicitLiteratureImport } from "../../model/literatureIntent";
-import { getOriginalAgentPermissionMode } from "../../originalAgentPermissionMode";
 import {
   createSearchLiteratureReviewAction,
   resolveSearchLiteratureReview,
@@ -25,7 +24,7 @@ export function createLiteratureReviewTool(
       description:
         "Show a ranked paper-only import-selection card after literature_search. Select the requested number using saved candidate references and evidence-based relevance reasons. Use this card when the user requests selection or review. Ordinary discovery returns ranked results without importing. Explicit import requests use library_import directly instead.",
       executionClass: "read",
-      requiresConfirmation: false,
+      workCategory: "retrieval",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -213,12 +212,7 @@ export function createLiteratureReviewTool(
       return discoveryContent(discovery.record);
     },
     createResultReviewAction: (_input, result, context) =>
-      context.request.actionEntryPoint === "action_ui" ||
-      getOriginalAgentPermissionMode() === "safe" ||
-      context.request.classifiedIntent?.semantic?.literature ===
-        "select_then_import"
-        ? createSearchLiteratureReviewAction(result, context, result.content)
-        : null,
+      createSearchLiteratureReviewAction(result, context, result.content),
     resolveResultReview: async (_input, result, resolution, context) => {
       const content = result.content as {
         sessionId?: string;

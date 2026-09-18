@@ -6,7 +6,7 @@ import {
   buildQuoteCitation,
   buildQuoteSourceIndex,
   finalizeAssistantQuoteCitationsCooperatively,
-} from "../src/modules/contextPanel/quoteCitations";
+} from "../src/services/quotes/quoteCitations";
 
 describe("workflow: document and chat quote parity", function () {
   this.timeout(120000);
@@ -94,6 +94,14 @@ describe("workflow: document and chat quote parity", function () {
       const root = Zotero.getMainWindow().document.querySelector(
         `[data-workflow-panel-id="${panel.panelId}"] .llm-plan-document-content`,
       )!;
+      // The display repair may complete only after the style registry loads.
+      const grouped = "Evidence (Alpha, 2020; Beta, 2021).";
+      for (
+        let waited = 0;
+        waited < 15000 && root.textContent?.trim() !== grouped;
+        waited += 25
+      )
+        await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(
         root.textContent?.trim(),
         "Evidence (Alpha, 2020; Beta, 2021).",

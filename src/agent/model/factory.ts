@@ -75,10 +75,7 @@ export function createAgentModelAdapter(
     return new CodexResponsesAgentAdapter();
   }
   if (protocol === "responses_api") {
-    // Only use the Responses adapter (which uploads files via /v1/files)
-    // for providers that actually host that endpoint.  Third-party relays
-    // fall back to the chat-compat adapter; unresolved PDF file_refs are
-    // rejected there and should have been rendered to page images upstream.
+    // Inference protocol support does not imply support for /v1/files.
     if (providerSupportsResponsesEndpoint(request.apiBase || "")) {
       return new OpenAIResponsesAgentAdapter();
     }

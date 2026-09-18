@@ -1,7 +1,8 @@
 import { HTML_NS } from "../../utils/domHelpers";
 import type { Message } from "./types";
 import type { ResponseActionTarget } from "./state";
-import { sanitizeText, setStatus } from "./textUtils";
+import { setStatus } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import { renderAssistantRichText } from "./assistantRichText";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 import { openStandaloneDocumentWindow } from "./standaloneDocumentWindow";

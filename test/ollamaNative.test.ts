@@ -4,7 +4,7 @@ import {
   resolveOllamaNativeApiRoot,
   resolveOllamaNativeEndpoint,
   resolveProviderTransportEndpoint,
-  buildProviderTransportHeaders,
+  buildProviderAuthHeaders,
 } from "../src/utils/providerTransport";
 import { detectProviderPreset } from "../src/utils/providerPresets";
 import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
@@ -105,7 +105,7 @@ describe("ollama native protocol", function () {
 
   describe("headers", function () {
     it("omits Authorization when no key is configured", function () {
-      const headers = buildProviderTransportHeaders({
+      const headers = buildProviderAuthHeaders({
         protocol: "ollama_native",
         apiKey: "",
       });
@@ -113,7 +113,7 @@ describe("ollama native protocol", function () {
     });
 
     it("sends a bearer token when the server is behind a proxy that needs one", function () {
-      const headers = buildProviderTransportHeaders({
+      const headers = buildProviderAuthHeaders({
         protocol: "ollama_native",
         apiKey: "proxy-secret",
       });

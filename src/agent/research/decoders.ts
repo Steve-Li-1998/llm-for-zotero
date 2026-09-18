@@ -1,4 +1,5 @@
 import { decodeActionContract } from "../plans/contracts";
+import { decodePlanEffectSpecification } from "../plans/decoders";
 import {
   decodeResearchCandidateLink,
   decodeResearchClaim,
@@ -696,20 +697,25 @@ export function decodeResearchMutationApprovalGrant(
   value: unknown,
 ): ResearchMutationApprovalGrant {
   const input = object(value, "research mutation approval grant");
-  if (input.version !== 1 && input.version !== 2 && input.version !== 3) {
+  if (
+    input.version !== 1 &&
+    input.version !== 2 &&
+    input.version !== 3 &&
+    input.version !== 4
+  ) {
     throw new Error("Unsupported research mutation approval grant version");
   }
   if (input.status !== "approved" && input.status !== "invalidated") {
     throw new Error("Invalid research mutation approval grant status");
   }
   if (
-    input.version === 3 &&
+    input.version >= 3 &&
     !["user", "auto_policy", "yolo"].includes(String(input.authority))
   )
     throw new Error("Research mutation authority is invalid");
   return {
     version: input.version,
-    ...(input.version === 3
+    ...(input.version >= 3
       ? { authority: input.authority as "user" | "auto_policy" | "yolo" }
       : {}),
     grantId: string(input.grantId, "grantId"),
@@ -727,7 +733,18 @@ export function decodeResearchMutationApprovalGrant(
         ? string(input.scopeLineageDigest, "scopeLineageDigest")
         : undefined,
     targetSetDigest: string(input.targetSetDigest, "targetSetDigest"),
-    actionContract: decodeActionContract(input.actionContract),
+    actionContract:
+      input.version <= 3
+        ? decodeActionContract(input.actionContract)
+        : undefined,
+    effectSpecification:
+      input.version === 4
+        ? decodePlanEffectSpecification(input.effectSpecification)
+        : undefined,
+    effectSpecificationDigest:
+      input.version === 4
+        ? string(input.effectSpecificationDigest, "effectSpecificationDigest")
+        : undefined,
     status: input.status,
     approvedAt: number(input.approvedAt, "approvedAt"),
     invalidatedAt:

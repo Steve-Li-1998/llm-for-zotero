@@ -1,4 +1,4 @@
-import { el, iconBtn } from "../../../utils/domHelpers";
+import { createElement, el, iconBtn } from "../../../utils/domHelpers";
 import { t } from "../../../utils/i18n";
 import {
   getCodexDirectCatalogSnapshot,
@@ -22,7 +22,8 @@ import {
   runAfterSelectChangeDispatch,
 } from "../../../utils/providerModelPicker";
 import {
-  PROVIDER_MODEL_CONTROL_STYLE,
+  PROVIDER_MODEL_SELECT_CLASS,
+  PROVIDER_MODEL_SLOT_CLASS,
   createProviderModelRowBlueprint,
   createProviderModelSectionBlueprint,
 } from "../../../utils/providerCardModelSection";
@@ -38,22 +39,13 @@ function createModelPicker(args: {
   doc: Document;
   group: CodexDirectProviderGroup;
   rowId: string;
-  helperStyle: string;
   isDisposed: () => boolean;
   onModelPicked: (model: string) => void;
 }): ModelPicker {
   const { doc, group, rowId } = args;
-  const container = el(
-    doc,
-    "div",
-    "flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px;",
-  );
-  const select = el(
-    doc,
-    "select",
-    PROVIDER_MODEL_CONTROL_STYLE,
-  ) as HTMLSelectElement;
-  const statusEl = el(doc, "span", args.helperStyle);
+  const container = createElement(doc, "div", PROVIDER_MODEL_SLOT_CLASS);
+  const select = createElement(doc, "select", PROVIDER_MODEL_SELECT_CLASS);
+  const statusEl = createElement(doc, "span", "llm-pref-hint");
   statusEl.style.display = "none";
   container.appendChild(select);
 
@@ -179,9 +171,6 @@ function createModelPicker(args: {
 export function createCodexDirectProviderCardController(args: {
   doc: Document;
   group: CodexDirectProviderGroup;
-  sectionLabelStyle: string;
-  outlineButtonStyle: string;
-  helperStyle: string;
   onGroupChange: (group: CodexDirectProviderGroup) => void;
   getFetch: () => typeof fetch | undefined;
 }) {
@@ -189,17 +178,13 @@ export function createCodexDirectProviderCardController(args: {
   const pickers: ModelPicker[] = [];
   const { section, addButton } = createProviderModelSectionBlueprint({
     doc: args.doc,
-    sectionLabelStyle: args.sectionLabelStyle,
-    title: t("Model names"),
+    title: t("Models"),
     addTitle: t("Add model"),
   });
   section.appendChild(
-    el(
-      args.doc,
-      "span",
-      args.helperStyle,
-      t("Per-response output limit: Managed by runtime"),
-    ),
+    createElement(args.doc, "span", "llm-pref-hint", {
+      textContent: t("Per-response output limit: Managed by runtime"),
+    }),
   );
   const syncAddButton = () => {
     addButton.disabled = args.group.models.some((row) => !row.model.trim());
@@ -221,14 +206,12 @@ export function createCodexDirectProviderCardController(args: {
       status,
     } = createProviderModelRowBlueprint({
       doc: args.doc,
-      outlineButtonStyle: args.outlineButtonStyle,
       testLabel: t("Test"),
     });
     const picker = createModelPicker({
       doc: args.doc,
       group: args.group,
       rowId: row.id,
-      helperStyle: args.helperStyle,
       isDisposed: () => disposed,
       onModelPicked: (model) => {
         const next = updateCodexDirectModelRow(args.group, row.id, model);

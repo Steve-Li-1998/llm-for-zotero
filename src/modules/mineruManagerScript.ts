@@ -18,7 +18,7 @@ import type {
   MineruCollectionNode,
   MineruParentGroup,
 } from "./mineruBatchProcessor";
-import { getMineruItemDir } from "./contextPanel/mineruCache";
+import { getMineruItemDir } from "../services/mineru/mineruCache";
 import {
   getMineruStatus,
   onProcessingStatusChange,
@@ -35,7 +35,7 @@ import {
   getMineruAvailabilityForAttachmentId,
   repairMineruCaches,
   type MineruCacheRepairResult,
-} from "./contextPanel/mineruSync";
+} from "../services/mineru/sync";
 import {
   buildMineruTagIndex,
   computeMineruTagAvailability,

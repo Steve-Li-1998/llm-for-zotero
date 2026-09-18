@@ -21,6 +21,7 @@ import {
   resolveOutputRequestPolicy,
 } from "../../utils/outputTokenPolicy";
 import { normalizeProviderProtocol } from "../../utils/providerProtocol";
+import { durableTranscriptMessages } from "./transcriptCompactor";
 
 const HISTORY_CHECKPOINT_MAX_TOKENS = 1_200;
 const TOOL_HANDLE_MAX_TOKENS = 768;
@@ -839,7 +840,9 @@ function buildHistoryCheckpoint(params: {
   const userLines: string[] = [];
   const assistantLines: string[] = [];
   const toolLines: string[] = [];
-  for (const message of params.messages) {
+  // A checkpoint is durable; the transient host block that names unsaved
+  // material is recomputed every turn, so it must never be summarised into one.
+  for (const message of durableTranscriptMessages(params.messages)) {
     if (message.role === "tool") {
       const parsed = parseToolContent(message);
       const handleRecord = buildPromptToolResultHandle({

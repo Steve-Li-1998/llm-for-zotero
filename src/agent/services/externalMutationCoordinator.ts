@@ -53,6 +53,19 @@ export type MutationStepPlan = {
   forward: unknown;
   inverse?: unknown;
   precondition?: unknown;
+  /**
+   * The post-image this write was *authorized* to make true, in the same shape
+   * the post-image is recorded in.
+   *
+   * It is built from the validated input the user approved, never from what
+   * the call then did, which is the whole point: a receipt that compares live
+   * state against this proves the authorized change, while one that compares
+   * against the recorded post-image proves only that whatever the tool wrote
+   * is still there. Left unset by a write whose authorization is not a single
+   * re-readable image; the journal never stores it, so replaying an inverse
+   * still compares against what actually happened.
+   */
+  authorizedPostcondition?: unknown;
   reversibility: JournalReversibility;
   reason?: string;
   deferredInverse?: boolean;
@@ -83,7 +96,10 @@ export async function executeJournaledStep<T>(params: {
   sequence: number;
   plan: MutationStepPlan | (() => Promise<MutationStepPlan>);
   prepareAction?: (plan: MutationStepPlan) => JournalActionSeed;
-  execute: (plan: MutationStepPlan) => Promise<MutationStepOutcome<T>>;
+  execute: (
+    plan: MutationStepPlan,
+    step: { stepId: string | null },
+  ) => Promise<MutationStepOutcome<T>>;
   resume?: boolean;
   reconcileAfterError?: (
     plan: MutationStepPlan,
@@ -97,12 +113,14 @@ export async function executeJournaledStep<T>(params: {
   affectedCount: number;
   expectedPostcondition?: unknown;
   precondition?: unknown;
+  authorizedPostcondition?: unknown;
+  operation: string;
   journalStepId?: string;
 }> {
   const { context, actionId, sequence } = params;
   const parentScope = context.journalActionScope;
   const stepId = actionId ? `${actionId}:${sequence}` : null;
-  return withActiveJournalAction(actionId, async () => {
+  const executeStep = async () => {
     const plan =
       typeof params.plan === "function" ? await params.plan() : params.plan;
     const action = params.prepareAction?.(plan);
@@ -248,12 +266,14 @@ export async function executeJournaledStep<T>(params: {
         affectedCount: outcome.affectedCount,
         expectedPostcondition: outcome.expectedPostcondition,
         precondition: plan.precondition,
+        authorizedPostcondition: plan.authorizedPostcondition,
+        operation: plan.operation,
         journalStepId: stepId || undefined,
       };
     };
 
     try {
-      return await recordOutcome(await params.execute(plan));
+      return await recordOutcome(await params.execute(plan, { stepId }));
     } catch (error) {
       let failure = error;
       let reconciled: MutationStepOutcome<T> | null | undefined;
@@ -292,7 +312,8 @@ export async function executeJournaledStep<T>(params: {
       if (failure instanceof MutationNoEffectError) throw failure;
       throw new MutationMayHaveAppliedError(reason, plan.reversibility);
     }
-  });
+  };
+  return withActiveJournalAction(actionId, executeStep);
 }
 
 export type ExternalMutationPlan = MutationStepPlan;
@@ -303,14 +324,25 @@ export async function executeExternalMutation<T>(params: {
   context: AgentToolContext;
   toolName: string;
   plan: ExternalMutationPlan | (() => Promise<ExternalMutationPlan>);
-  execute: () => Promise<ExternalMutationOutcome<T>>;
+  /** The durable step this write belongs to, wherever it is a step of. */
+  execute: (step: {
+    stepId: string | null;
+  }) => Promise<ExternalMutationOutcome<T>>;
   /** Host-bound identity and frozen plan loaded from the existing journal. */
   recovery?: { actionId: string; resume: boolean };
   reconcileAfterError?: (
     plan: ExternalMutationPlan,
     error: unknown,
   ) => Promise<ExternalMutationOutcome<T> | null>;
-}): Promise<AgentWriteToolOutput<T>> {
+}): Promise<
+  AgentWriteToolOutput<T> & {
+    /**
+     * The durable step this write became, for callers that keep their own
+     * ledger of it. Absent when the change journal is unavailable.
+     */
+    journalStep?: { actionId: string; sequence: number };
+  }
+> {
   const { context, toolName } = params;
   const parentScope = context.journalActionScope;
   const journalAvailable = isAgentChangeJournalAvailable();
@@ -325,6 +357,7 @@ export async function executeExternalMutation<T>(params: {
       ? params.recovery?.actionId || createJournalId("action")
       : null);
   const ownsAction = Boolean(actionId && !parentScope);
+  const sequence = parentScope?.allocateSequence() ?? 1;
   let verifiedOutcome:
     | { reversibility: JournalReversibility; affectedCount: number }
     | undefined;
@@ -332,7 +365,7 @@ export async function executeExternalMutation<T>(params: {
     const executed = await executeJournaledStep({
       context,
       actionId,
-      sequence: parentScope?.allocateSequence() ?? 1,
+      sequence,
       plan: params.plan,
       resume: params.recovery?.resume,
       reconcileAfterError: params.reconcileAfterError,
@@ -346,7 +379,7 @@ export async function executeExternalMutation<T>(params: {
             recovery: plan.reason,
           })
         : undefined,
-      execute: async () => params.execute(),
+      execute: async (_plan, step) => params.execute(step),
     });
     verifiedOutcome = {
       reversibility: executed.reversibility,
@@ -376,6 +409,26 @@ export async function executeExternalMutation<T>(params: {
     return {
       content: content as T,
       effect: executed.effect,
+      // The same record a library mutation attaches, for a write that no
+      // library mutation operation describes. It deliberately carries no
+      // verdict: this coordinator sits below the mutation service and cannot
+      // read Zotero state back without closing an import cycle, so the receipt
+      // owner re-reads the post-image and judges it.
+      actionEvidence: [
+        {
+          version: 1,
+          source: "external_mutation",
+          operation: executed.operation,
+          preImage: executed.precondition,
+          postImage: executed.expectedPostcondition,
+          ...(executed.authorizedPostcondition === undefined
+            ? {}
+            : { authorizedPostImage: executed.authorizedPostcondition }),
+          journalStepId: executed.journalStepId,
+          effect: executed.effect,
+        },
+      ],
+      ...(actionId ? { journalStep: { actionId, sequence } } : {}),
     };
   } catch (error) {
     if (actionId && ownsAction) {

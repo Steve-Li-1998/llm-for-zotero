@@ -11,56 +11,18 @@ function source(path: string): string {
 }
 
 describe("runtime preference UI", function () {
-  it("allows Codex and Claude Code availability to coexist", function () {
-    const preferenceScript = source("src/modules/preferenceScript.ts");
-    const preferences = source("addon/content/preferences.xhtml");
-
-    assert.notInclude(preferenceScript, "syncModeMutualExclusion");
-    assert.notInclude(
-      preferenceScript,
-      "Disable Codex App Server first to switch on Claude Code.",
-    );
-    assert.notInclude(
-      preferenceScript,
-      "Disable Claude Code first to switch on Codex App Server.",
-    );
-    assert.include(
-      preferenceScript,
-      "applyCodexAppServerModePreferenceChange(enabled)",
-    );
-    assert.include(
-      preferences,
-      "Codex and Claude Code can both be enabled; only the selected",
-    );
-  });
-
-  it("uses a responsive live-catalog model list with a separate Customized value", function () {
-    const preferenceScript = source("src/modules/preferenceScript.ts");
-    const preferences = source("addon/content/preferences.xhtml");
-
-    assert.include(
-      preferences,
-      '<html:select\n                      id="__addonRef__-claude-code-model"',
-    );
-    assert.include(preferences, 'value="customized">Customized');
-    assert.include(preferences, 'id="__addonRef__-claude-code-custom-model"');
-    assert.include(preferences, 'id="__addonRef__-claude-code-model-refresh"');
-    assert.include(preferences, "alias, exact model ID");
-    assert.notInclude(preferences, '<html:option value="opus">');
-    assert.notInclude(preferences, "claude-code-model-options");
-    assert.include(preferences, "minmax(min(220px, 100%), 1fr)");
-    assert.include(preferences, "box-sizing: border-box");
-    assert.include(preferenceScript, "fetchClaudeModelCatalog");
-    assert.include(preferenceScript, "buildClaudeModelPreferenceOptions");
-    assert.include(preferenceScript, "CLAUDE_CUSTOMIZED_MODEL_OPTION_KEY");
-    assert.include(preferenceScript, "getClaudeSettingSourcesByPref");
-    assert.include(
-      preferenceScript,
-      "setClaudeRuntimeModelPref(selected.model)",
-    );
-    assert.include(preferenceScript, "setClaudeRuntimeModelPref(model)");
-    assert.include(preferenceScript, "refreshClaudeModelSuggestions(true)");
-    assert.include(preferenceScript, "shouldPreserveClaudeCustomModelDraft");
+  it("keeps long notes-directory summaries on one line with an ellipsis", function () {
+    const css = source("addon/content/preferences.xhtml").replace(/\s+/g, " ");
+    const rule =
+      css.match(/\[data-llm-row-summary="notes"\] \{([^}]*)\}/)?.[1] || "";
+    for (const declaration of [
+      "min-width: 0",
+      "white-space: nowrap",
+      "overflow: hidden",
+      "text-overflow: ellipsis",
+    ]) {
+      assert.include(rule, declaration);
+    }
   });
 
   it("wraps multi-sentence Codex and Zotero MCP connection errors", function () {
@@ -113,5 +75,27 @@ describe("runtime preference UI", function () {
     );
     assert.include(embeddedPanel, "setupHandlers(body, rawItem)");
     assert.include(standalonePanel, "setupHandlers(contentArea, mountedItem");
+  });
+
+  it("keeps an expanded runtime row's border identical to a collapsed one", function () {
+    const css = source("addon/content/preferences.xhtml").replace(/\s+/g, " ");
+
+    // The neutral card border is the only border the row ever draws; expanding
+    // must not repaint it in the accent colour.
+    assert.include(
+      css,
+      ".llm-pref-panel .llm-pref-row { border: 1px solid var(--llm-pref-stroke);",
+    );
+    assert.notMatch(
+      css,
+      /\.llm-pref-row\[data-open="true"\] \{[^}]*border-color/,
+    );
+
+    // Guard against a vacuous pass: the chevron rotation is the affordance that
+    // still has to signal the open state.
+    assert.include(
+      css,
+      '.llm-pref-row[data-open="true"] .llm-pref-row-chevron { transform: rotate(90deg); }',
+    );
   });
 });

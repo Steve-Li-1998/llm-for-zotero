@@ -5,7 +5,7 @@ import {
   QUICKSEARCH_MAX_PROBES,
   buildQuicksearchProbes,
 } from "../src/agent/services/libraryRetrieveService";
-import { buildRetrievalQueryPlan } from "../src/modules/contextPanel/retrievalQueryPlan";
+import { buildRetrievalQueryPlan } from "../src/services/retrieval/retrievalQueryPlan";
 import type {
   EditableArticleMetadataSnapshot,
   LibraryItemTarget,
@@ -13,7 +13,7 @@ import type {
 import type {
   PaperContextCandidate,
   PdfContext,
-} from "../src/modules/contextPanel/types";
+} from "../src/services/paperContent/types";
 import type { PaperContextRef } from "../src/shared/types";
 import { normalizeLibraryRetrieveArgs } from "../src/agent/tools/read/libraryRetrieve";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";

@@ -1,13 +1,26 @@
+import { callLLM, callLLMStream } from "../../utils/llmClient";
+import { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
+import { createAgentModelAdapter } from "../../agent/model/factory";
+import { resolveAgentRuntimeRequest } from "../../agent/context/resolvedAgentRequest";
+import { createProviderRequestScope } from "../../utils/providerTransport";
+import { waitForElementGeometrySettled } from "./workflowLayout";
 import { getChatScrollSnapshot } from "./chatScrollSnapshots";
 import {
   exerciseNativePlanReview,
   exerciseNativeQuestionReview,
 } from "./nativePlanReviewReplay";
 import { exercisePlanHistoryReplay } from "./planHistoryReplay";
+import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import { exerciseStreamingReplay } from "./streamingReplay";
+import { exerciseAgentDeliveryReplay } from "./agentDeliveryReplay";
 import { buildUI } from "./buildUI";
 import { getAgentRuntime } from "../../agent";
-import { renderPendingActionCard, renderAgentTrace } from "./agentTrace/render";
+import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
+import {
+  renderPendingActionCard,
+  renderAgentTrace,
+  disposeAgentTrace,
+} from "./agentTrace/render";
 import { disposeSetupHandlers, setupHandlers } from "./setupHandlers";
 import { PLAN_APPROVED_EVENT } from "./planModeState";
 import {
@@ -79,6 +92,7 @@ import {
 } from "../../codexAppServer/permissionProfiles";
 import { readCodexPermissionStatePref } from "../../codexAppServer/prefs";
 import { forcePendingTurnFinalizeFailuresForTests } from "./pendingDeletionWiring";
+import { forceWebChatSessionAnchorFailuresForTests } from "./webchatSessionConversation";
 import {
   pendingDeletionStore,
   PENDING_DELETIONS_TABLE,
@@ -90,6 +104,7 @@ import {
   ensureConversationLoaded,
   getConversationKey,
   hasAgentRunTraceForTests,
+  refreshActiveConversationPanels,
   refreshChat,
   setAgentRunTraceLoaderForTests,
   updateContextUsageSnapshotFromProvider,
@@ -99,7 +114,10 @@ import {
   getSelectedTextContextEntries,
   resolveContextSourceItemAsync,
 } from "./contextResolution";
-import { resolveInitialPanelItemState } from "./portalScope";
+import {
+  resolveConversationBaseItem,
+  resolveInitialPanelItemState,
+} from "./portalScope";
 import { syncNoteEditingSelectedText } from "./noteEditing/selectionController";
 import {
   decorateAssistantCitationLinks,
@@ -114,12 +132,14 @@ import {
 } from "./standaloneWindow";
 import {
   getWorkflowTestSendSettledSequence,
+  getWorkflowTestSendInterceptor,
+  getWorkflowTestFinalRequestInterceptor,
   setWorkflowTestFinalRequestInterceptor,
   setWorkflowTestSendInterceptor,
   type WorkflowTestFinalRequestSnapshot,
 } from "./workflowTestHooks";
 import { dispatchZoteroItemsAsContext } from "./zoteroItemContextMenu";
-import { appendMessage } from "../../utils/chatStore";
+import { appendMessage, getPaperConversation } from "../../utils/chatStore";
 import { appendCodexMessage } from "../../codexAppServer/store";
 import { appendClaudeMessage } from "../../claudeCode/store";
 import {
@@ -1007,36 +1027,38 @@ async function exerciseBackgroundAgentPublication(input: {
     timestamp,
   });
   const tool = getAgentRuntime().getToolDefinition("submit_document")!;
-  const prepared = (await tool.execute(
-    {
-      title: "Background publication fixture",
-      markdown:
-        "# Background publication fixture\n\nThis exact document must survive switching papers.",
-      citations: [],
-      quotes: [],
-      assets: [],
-      groundingReviewed: "passed",
-      groundingIssues: [],
-    },
-    {
-      request: {
-        conversationKey,
-        mode: "agent",
-        libraryID: paperA.libraryID,
-        userText: "Publish a background document.",
-        documentOutcomePolicy: {
-          required: true,
-          documentKind: "custom",
-          integrityPolicy: "authored",
-          trigger: "document_intent",
-        },
+  const prepared = normalizeExecutionOutput(
+    await tool.execute(
+      {
+        title: "Background publication fixture",
+        markdown:
+          "# Background publication fixture\n\nThis exact document must survive switching papers.",
+        citations: [],
+        quotes: [],
+        assets: [],
+        groundingReviewed: "passed",
+        groundingIssues: [],
       },
-      runId: `background-publication-${paperA.key}-${timestamp}`,
-      item: paperA,
-      modelName: "workflow",
-      currentAnswerText: "",
-    } as never,
-  )) as { documentId: string; visibleMarkdown: string };
+      {
+        request: {
+          conversationKey,
+          mode: "agent",
+          libraryID: paperA.libraryID,
+          userText: "Publish a background document.",
+          documentOutcomePolicy: {
+            required: true,
+            documentKind: "custom",
+            integrityPolicy: "authored",
+            trigger: "document_intent",
+          },
+        },
+        runId: `background-publication-${paperA.key}-${timestamp}`,
+        item: paperA,
+        modelName: "workflow",
+        currentAnswerText: "",
+      } as never,
+    ),
+  ).content as { documentId: string; visibleMarkdown: string };
   const paperB = Zotero.Items.get(input.paperBItemId);
   disposeSetupHandlers(panel.body);
   bindTestPanelHost(panel.body, paperB);
@@ -1896,6 +1918,7 @@ async function exercisePanelDraftStateRefresh(
 async function selectPanelModelEntry(
   panelId: string,
   entryId: string,
+  options?: { expectWebChat?: boolean },
 ): Promise<WorkflowTestDiagnostics> {
   assertWorkflowTestEnabled();
   const panel = getPanel(panelId);
@@ -1913,19 +1936,51 @@ async function selectPanelModelEntry(
   if (!option) {
     throw new Error(`Panel ${panelId} model menu has no entry ${entryId}`);
   }
-  const expectWebChat = getModelEntryById(entryId)?.authMode === "webchat";
+  // A WebChat entry normally settles inside WebChat, but a test can say it
+  // expects the fail-closed outcome (entry rejected, panel back on the API
+  // conversation) instead of that inference.
+  const expectWebChat =
+    typeof options?.expectWebChat === "boolean"
+      ? options.expectWebChat
+      : getModelEntryById(entryId)?.authMode === "webchat";
+  const expectedPaper = resolveConversationBaseItem(
+    activeContextPanels.get(panel.body)?.() || panel.item,
+  );
   option.click();
   const deadline = Date.now() + 15000;
   let diagnostics = await getDiagnostics(panelId);
   while (Date.now() < deadline) {
     const key = diagnostics.conversationKey || 0;
-    const settled = expectWebChat
-      ? diagnostics.webChatMode === true &&
+    if (expectWebChat) {
+      if (
+        diagnostics.webChatMode === true &&
         webChatIsolatedConversationKeys.has(key)
-      : diagnostics.webChatMode === false &&
-        !webChatIsolatedConversationKeys.has(key) &&
-        loadedConversationKeys.has(key);
-    if (settled) return diagnostics;
+      ) {
+        // Another panel can isolate the ordinary paper key before this
+        // panel's async switch attaches its dedicated hidden session.
+        const session = await getPaperConversation(key);
+        diagnostics = await getDiagnostics(panelId);
+        if (
+          session?.webchatSession === true &&
+          session.paperItemID === expectedPaper?.id &&
+          session.libraryID === expectedPaper?.libraryID &&
+          diagnostics.webChatMode === true &&
+          diagnostics.conversationSystem === "upstream" &&
+          diagnostics.conversationKey === key &&
+          diagnostics.panelConversationKey === key &&
+          webChatIsolatedConversationKeys.has(key) &&
+          loadedConversationKeys.has(key)
+        ) {
+          return diagnostics;
+        }
+      }
+    } else if (
+      diagnostics.webChatMode === false &&
+      !webChatIsolatedConversationKeys.has(key) &&
+      loadedConversationKeys.has(key)
+    ) {
+      return diagnostics;
+    }
     await Zotero.Promise.delay(25);
     diagnostics = await getDiagnostics(panelId);
   }
@@ -3385,13 +3440,11 @@ async function waitForStandaloneSidebarWidthSettled(
     ".llm-standalone-sidebar",
   ) as HTMLElement | null;
   if (!sidebar) return;
-  let previous = Number.NaN;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const width = sidebar.getBoundingClientRect().width;
-    if (width === previous) return;
-    previous = width;
-    await Zotero.Promise.delay(25);
-  }
+  await waitForElementGeometrySettled({
+    element: sidebar,
+    sample: () => String(sidebar.getBoundingClientRect().width),
+    delay: () => Zotero.Promise.delay(25),
+  });
 }
 
 /**
@@ -3423,15 +3476,15 @@ async function waitForStandaloneSidebarPanelSettled(
     ".llm-standalone-sidebar-panel",
   ) as HTMLElement | null;
   if (!panel) return;
-  let previous = "";
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const rect = panel.getBoundingClientRect();
-    const opacity = doc.defaultView?.getComputedStyle(panel)?.opacity || "";
-    const sample = `${rect.left}:${rect.width}:${opacity}`;
-    if (sample === previous) return;
-    previous = sample;
-    await Zotero.Promise.delay(25);
-  }
+  await waitForElementGeometrySettled({
+    element: panel,
+    sample: () => {
+      const rect = panel.getBoundingClientRect();
+      const opacity = doc.defaultView?.getComputedStyle(panel)?.opacity || "";
+      return `${rect.left}:${rect.width}:${opacity}`;
+    },
+    delay: () => Zotero.Promise.delay(25),
+  });
 }
 
 async function toggleStandaloneSidebar(): Promise<WorkflowTestStandaloneDiagnostics> {
@@ -3692,6 +3745,62 @@ async function seedStandaloneUserMessage(
   refreshChat(contentArea, item);
   await Zotero.Promise.delay(150);
   return readStandaloneDiagnostics();
+}
+
+async function withPendingStandaloneSend(
+  text: string,
+  inspect: () => Promise<void>,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  const { contentArea, item } = await ensureStandaloneWorkflowPanelReady();
+  const conversationKey = getConversationKey(item);
+  let reachedProvider = false;
+  const previousSendInterceptor = getWorkflowTestSendInterceptor();
+  const previousFinalRequestInterceptor =
+    getWorkflowTestFinalRequestInterceptor();
+  let release = () => {};
+  const providerGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  setWorkflowTestSendInterceptor((opts) => {
+    opts.apiBase = "http://127.0.0.1:9/v1";
+    opts.apiKey = "workflow-test-key";
+    opts.authMode = "api_key";
+    lastSend = opts;
+    return true;
+  });
+  setWorkflowTestFinalRequestInterceptor(async (snapshot) => {
+    lastFinalRequest = snapshot;
+    reachedProvider = true;
+    await providerGate;
+    return true;
+  });
+  try {
+    const input = contentArea.querySelector<HTMLTextAreaElement>("#llm-input")!;
+    input.value = text;
+    const EventCtor = contentArea.ownerDocument.defaultView!.Event;
+    input.dispatchEvent(new EventCtor("input", { bubbles: true }));
+    contentArea.querySelector<HTMLButtonElement>("#llm-send")!.click();
+    const deadline = Date.now() + 10_000;
+    while (!reachedProvider && Date.now() < deadline)
+      await Zotero.Promise.delay(25);
+    if (!reachedProvider || !isRequestPending(conversationKey)) {
+      throw new Error(
+        "Standalone send did not reach the pending provider boundary",
+      );
+    }
+    await inspect();
+  } finally {
+    release();
+    const deadline = Date.now() + 10_000;
+    while (isRequestPending(conversationKey) && Date.now() < deadline) {
+      await Zotero.Promise.delay(25);
+    }
+    setWorkflowTestSendInterceptor(previousSendInterceptor);
+    setWorkflowTestFinalRequestInterceptor(previousFinalRequestInterceptor);
+  }
+  if (isRequestPending(conversationKey))
+    throw new Error("Standalone send did not finish");
 }
 
 async function seedStandaloneConversation(
@@ -4632,6 +4741,7 @@ async function reset(): Promise<void> {
     lastFinalRequest = snapshot;
   });
   forcePendingTurnFinalizeFailuresForTests(0);
+  forceWebChatSessionAnchorFailuresForTests(0);
 }
 
 function disposeWorkflowPanels(): void {
@@ -5041,6 +5151,11 @@ async function failNextPendingTurnFinalizes(count: number): Promise<void> {
   forcePendingTurnFinalizeFailuresForTests(count);
 }
 
+async function forceWebChatSessionAnchorFailures(count: number): Promise<void> {
+  assertWorkflowTestEnabled();
+  forceWebChatSessionAnchorFailuresForTests(count);
+}
+
 // Drive a real send through the full request pipeline with intercepting
 // hooks (no network), and return the captured final provider request.
 async function askCapturingFinalRequest(
@@ -5158,6 +5273,82 @@ export function installWorkflowTestHarness(targetAddon: {
 }): void {
   if (__env__ !== "test" && __env__ !== "development") return;
   targetAddon.api.workflowTest = {
+    planRetrievalQuery: resolveRetrievalQueryPlan,
+    async checkProviderConversationTransport(input) {
+      const params = {
+        ...input,
+        prompt: "Say OK",
+        requestScope: createProviderRequestScope(input.conversationKey),
+      };
+      const chat = await callLLM(params);
+      const stream = await callLLMStream(params, () => undefined);
+      const request = resolveAgentRuntimeRequest({
+        ...input,
+        mode: "agent",
+        userText: "Say OK",
+        libraryID: Zotero.Libraries.userLibraryID,
+        conversationKind: "global",
+      });
+      const adapter = createAgentModelAdapter(request);
+      const step = {
+        request,
+        messages: [{ role: "user" as const, content: "Say OK" }],
+        tools: [],
+      };
+      const agent = await adapter.runStep(step);
+      const continuation = await adapter.runStep({
+        ...step,
+        continuationMessages: step.messages,
+      });
+      if (agent.kind !== "final" || continuation.kind !== "final") {
+        throw new Error(
+          "Provider transport probe did not produce a final answer",
+        );
+      }
+      return {
+        chat: chat.text,
+        stream: stream.text,
+        agent: agent.text,
+        continuation: continuation.text,
+      };
+    },
+    mountPublicationTrace: (documentId, text) => {
+      const doc = Zotero.getMainWindow().document;
+      const root = renderAgentTrace({
+        doc,
+        message: {
+          role: "assistant",
+          timestamp: 1,
+          text,
+          documentId,
+          streaming: false,
+        },
+        events: [
+          {
+            runId: "publication-card",
+            seq: 1,
+            createdAt: 1,
+            eventType: "final",
+            payload: { type: "final", text },
+          },
+        ],
+      })!;
+      doc.documentElement.appendChild(root);
+      return {
+        root,
+        deliver: (conversationKey) =>
+          deliverPendingPlanDocumentMessage({
+            conversationKey,
+            documentId,
+            visibleMarkdown: text,
+            messageTimestamp: 1,
+          }).then(() => {}),
+        dispose: () => {
+          disposeAgentTrace(root);
+          root.remove();
+        },
+      };
+    },
     reset,
     enableLiveAgentSending: () => {
       assertWorkflowTestEnabled();
@@ -5182,6 +5373,7 @@ export function installWorkflowTestHarness(targetAddon: {
     createItemNoteFixture,
     createStandaloneNoteFixture,
     renderPanelForItem,
+    refreshActiveConversationPanels,
     exerciseBackgroundAgentPublication,
     exerciseNativePlanReview: () => {
       assertWorkflowTestEnabled();
@@ -5196,6 +5388,44 @@ export function installWorkflowTestHarness(targetAddon: {
       exercisePlanHistoryReplay(getPanel(input.panelId), input),
     exerciseStreamingReplay: (input) =>
       exerciseStreamingReplay(getPanel(input.panelId), input),
+    exerciseNativeStreamingReplay: async (input) => {
+      assertWorkflowTestEnabled();
+      const win =
+        input.surface === "standalone"
+          ? getStandaloneWindowForTest()
+          : Zotero.getMainWindow();
+      const doc = win?.document;
+      const host =
+        input.surface === "standalone"
+          ? doc?.querySelector(".llm-standalone-content")
+          : doc &&
+            (getReaderContextPanelForTab(
+              doc,
+              (win as Window & { Zotero_Tabs?: { selectedID?: string } })
+                ?.Zotero_Tabs?.selectedID,
+            ) ||
+              doc.getElementById("zotero-item-details"));
+      const root = host?.querySelector<HTMLElement>("#llm-main");
+      const body = root?.parentElement;
+      const item = body && activeContextPanels.get(body)?.();
+      if (
+        !root?.isConnected ||
+        !root.getBoundingClientRect().height ||
+        !body ||
+        !item
+      ) {
+        throw new Error(
+          "Native streaming replay requires a visible mounted chat panel",
+        );
+      }
+      await ensureConversationLoaded(item);
+      return exerciseStreamingReplay({ body, item }, input);
+    },
+    exerciseAgentDeliveryReplay: (input) =>
+      exerciseAgentDeliveryReplay(
+        getPanel(input.panelId),
+        input.failFinalRefresh,
+      ),
     renderStartupPanelForItem,
     startNewPanelConversation,
     togglePanelConversationMode,
@@ -5345,6 +5575,7 @@ export function installWorkflowTestHarness(targetAddon: {
     measureStandaloneRuntimeGeometry,
     exerciseStandaloneComposerManualResize,
     askStandalone,
+    withPendingStandaloneSend,
     startNewStandaloneConversation,
     seedStandaloneUserMessage,
     seedStandaloneConversation,
@@ -5395,12 +5626,22 @@ export function installWorkflowTestHarness(targetAddon: {
             Zotero.getActiveZoteroPane()
               .getSelectedItems()
               .some((item) => item.id === options.linkTargetItemId);
-          const started = button.isConnected;
           button.click();
+          // The click handler runs synchronously and marks the link busy; the
+          // selection becomes observable before navigation reveals the window.
+          const started = button.dataset.loading === "true";
           const deadline = Date.now() + 5000;
-          while (!selected() && Date.now() < deadline)
+          while (
+            !(selected() && button.dataset.loading !== "true") &&
+            Date.now() < deadline
+          )
             await Zotero.Promise.delay(25);
-          return { started, finished: selected(), focusRequests, diagnostics };
+          return {
+            started,
+            finished: selected() && button.dataset.loading === "false",
+            focusRequests,
+            diagnostics,
+          };
         }
         const win = button.ownerDocument.defaultView!;
         button.dispatchEvent(
@@ -5460,6 +5701,7 @@ export function installWorkflowTestHarness(targetAddon: {
     sweepPendingDeletionsAsRestart,
     searchPanelHistory,
     failNextPendingTurnFinalizes,
+    forceWebChatSessionAnchorFailures,
     askCapturingFinalRequest,
     simulateProviderContextUsage,
     setWorkflowModelInputCap,

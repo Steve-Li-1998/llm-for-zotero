@@ -51,6 +51,14 @@ describe("workflow: streaming responsiveness", function () {
         assert.isTrue(result.progressUpdatePreserved);
         assert.isTrue(result.finalAnswerVisible);
         assert.isTrue(
+          result.actionCardHiddenWhileStreaming,
+          "action receipts stay hidden through streaming refreshes",
+        );
+        assert.isTrue(
+          result.actionCardAfterFinalAnswer,
+          "the completed answer is followed by its action card",
+        );
+        assert.isTrue(
           result.answerVisibleBeforeFinal,
           "answer text is visible before the final event",
         );

@@ -7,7 +7,15 @@ import { describe, it } from "mocha";
 const here = dirname(fileURLToPath(import.meta.url));
 
 function readSource(relativePath: string): string {
-  return readFileSync(resolve(here, relativePath), "utf8");
+  const source = readFileSync(resolve(here, relativePath), "utf8");
+  // The absence checks below cannot fail against an empty or stubbed file, so
+  // a moved or gutted module would read as a passing scan.
+  assert.isAbove(
+    source.split("\n").length,
+    100,
+    `${relativePath} was read but looks empty; the scan would pass vacuously`,
+  );
+  return source;
 }
 
 describe("plugin startup initialization", function () {
@@ -66,7 +74,7 @@ describe("plugin startup initialization", function () {
     );
     const initialized = startup.indexOf("await initAgentSubsystem();");
     const refreshImport = startup.indexOf('"./modules/contextPanel/chat"');
-    const refresh = startup.indexOf("refreshAllActiveConversationPanels();");
+    const refresh = startup.indexOf("refreshActiveConversationPanels();");
 
     assert.isAtLeast(initialized, 0);
     assert.isAtLeast(refreshImport, 0);

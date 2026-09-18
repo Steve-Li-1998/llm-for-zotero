@@ -217,7 +217,7 @@ export function createSearchLiteratureOnlineTool(
         },
       },
       executionClass: "read",
-      requiresConfirmation: false,
+      workCategory: "retrieval",
     },
     guidance: {
       matches: matchesLiteratureSearchGuidance,

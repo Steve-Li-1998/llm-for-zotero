@@ -492,7 +492,7 @@ export type ResearchProgress = Readonly<{
 }>;
 
 export type ResearchMutationApprovalGrant = Readonly<{
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   authority?: "user" | "auto_policy" | "yolo";
   grantId: string;
   planId: string;
@@ -503,7 +503,11 @@ export type ResearchMutationApprovalGrant = Readonly<{
   researchResultDigest: string;
   scopeLineageDigest?: string;
   targetSetDigest: string;
-  actionContract: AgentActionContract;
+  /** Legacy v1-v3 authority retained for stored executions. */
+  actionContract?: AgentActionContract;
+  /** Exact v5 Plan authority produced by the research approval gate. */
+  effectSpecification?: import("../plans/types").PlanEffectSpecification;
+  effectSpecificationDigest?: string;
   status: "approved" | "invalidated";
   approvedAt: number;
   invalidatedAt?: number;

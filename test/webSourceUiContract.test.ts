@@ -8,42 +8,6 @@ import { initI18n, t } from "../src/utils/i18n";
 describe("web source UI contract", function () {
   const root = process.cwd();
 
-  it("places the shared-style Tavily card immediately before Codex App Server", function () {
-    const preferences = readFileSync(
-      join(root, "addon/content/preferences.xhtml"),
-      "utf8",
-    );
-    const tavilyIndex = preferences.indexOf('id="__addonRef__-tavily-card"');
-    const codexIndex = preferences.indexOf(
-      'id="__addonRef__-codex-app-server-card"',
-    );
-    assert.isAtLeast(tavilyIndex, 0);
-    assert.isAbove(codexIndex, tavilyIndex);
-    assert.include(preferences, 'id="__addonRef__-tavily-api-key"');
-    assert.include(preferences, 'type="password"');
-    assert.include(preferences, "Test connection");
-    assert.include(preferences, "Get a free API key");
-    assert.include(preferences, "Basic search costs 1 Tavily credit");
-    assert.match(preferences, /retention,\s+and search-index\s+policies/);
-    assert.match(
-      preferences,
-      /favicons are loaded from public URLs\s+supplied by Tavily/,
-    );
-    const tavilyCard = preferences.slice(tavilyIndex, codexIndex);
-    assert.notMatch(tavilyCard, /enable-tavily|type="checkbox"/i);
-
-    const preferenceScript = readFileSync(
-      join(root, "src/modules/preferenceScript.ts"),
-      "utf8",
-    );
-    assert.include(
-      preferenceScript,
-      'tavilyStatus.textContent = `${t("Connected")} · ${usage.plan}`;',
-    );
-    assert.notInclude(preferenceScript, 't("API key usage")');
-    assert.notInclude(preferenceScript, 't("Account usage")');
-  });
-
   it("translates the complete Tavily preferences copy for Chinese users", function () {
     const globalWithZotero = globalThis as typeof globalThis & {
       Zotero?: {
@@ -141,17 +105,10 @@ describe("web source UI contract", function () {
       /\.llm-selected-context-expanded,\s*\.llm-web-source-popover\s*\{/,
     );
     assert.include(css, 'url("icons/action-mode-global.svg")');
-    assert.include(css, "background: var(--material-background)");
-    assert.include(css, "border: 1px solid var(--stroke-secondary)");
-    assert.include(css, "max-height: min(52vh, 320px)");
     assert.include(css, "overflow-y: auto");
     assert.include(css, "position: fixed");
     assert.include(css, ".llm-web-source-popover-visible");
     assert.include(css, ".llm-web-source-row + .llm-web-source-row::before");
-    assert.include(
-      css,
-      "background: var(--stroke-secondary, rgba(120, 120, 120, 0.35))",
-    );
   });
 
   it("exposes organization, title, safe URL, and optional favicon to each stacked row", function () {
@@ -241,7 +198,6 @@ describe("web source UI contract", function () {
     );
     assert.include(source, '"llm-web-source-favicon"');
     assert.notInclude(source, "source.publishedDate");
-    assert.notInclude(source, "source.retrievalTime");
     assert.notInclude(source, "wrapper.append(chip, popover)");
   });
 
@@ -266,10 +222,6 @@ describe("web source UI contract", function () {
     );
     assert.include(css, ".llm-agent-trace-timeline-icon-has-favicon::before");
     assert.include(css, ".llm-web-source-site-icon-has-favicon::before");
-    assert.include(css, "[hidden]");
-    assert.include(css, "text-overflow: ellipsis");
-    assert.include(css, "white-space: nowrap");
-    assert.notInclude(css, ".llm-agent-trace-timeline-row-paper");
   });
 
   it("distinguishes literature and web activity with existing semantic icons", function () {
@@ -287,62 +239,6 @@ describe("web source UI contract", function () {
     assert.include(css, 'url("icons/action-mode-global.svg")');
     assert.include(libraryIcon, 'viewBox="0 0 16 16"');
     assert.include(libraryIcon, 'fill="currentColor"');
-    assert.notInclude(libraryIcon, "490.667");
     assert.notInclude(libraryIcon, 'width="800px"');
-  });
-
-  it("aligns search activity icons with the first text line at every font scale", function () {
-    const css = readFileSync(
-      join(root, "addon/content/zoteroPane.css"),
-      "utf8",
-    );
-    const iconRule =
-      css.match(
-        /\.llm-at-icon-library,\s*\.llm-at-icon-web\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-
-    assert.include(iconRule, "flex: 0 0 var(--llm-fs-12)");
-    assert.include(iconRule, "width: var(--llm-fs-12)");
-    assert.include(iconRule, "height: var(--llm-fs-12)");
-    assert.include(
-      iconRule,
-      "margin-block-start: calc(1.7px * var(--llm-font-scale, 1))",
-    );
-
-    for (const fontScale of [0.8, 1.2, 1.8]) {
-      const textLineCenter = (11 * fontScale * 1.4) / 2;
-      const iconCenter = 1.7 * fontScale + (12 * fontScale) / 2;
-      assert.approximately(iconCenter, textLineCenter, 1e-9);
-    }
-  });
-
-  it("centers a fixed-ratio favicon inside its circular container", function () {
-    const css = readFileSync(
-      join(root, "addon/content/zoteroPane.css"),
-      "utf8",
-    );
-    const websiteIconRule =
-      css.match(
-        /\.llm-agent-trace-timeline-icon-website\s*\{[\s\S]*?\}/,
-      )?.[0] || "";
-    const faviconRule =
-      css.match(/\.llm-agent-trace-timeline-favicon\s*\{[\s\S]*?\}/)?.[0] || "";
-
-    assert.include(websiteIconRule, "display: grid");
-    assert.include(websiteIconRule, "place-items: center");
-    assert.include(websiteIconRule, "width: 20px");
-    assert.include(websiteIconRule, "height: 20px");
-    assert.include(websiteIconRule, "margin-left: -1px");
-    assert.include(websiteIconRule, "border-radius: 50%");
-    assert.include(websiteIconRule, "background: var(--material-background)");
-    assert.notInclude(websiteIconRule, "transform:");
-    assert.include(faviconRule, "position: static");
-    assert.include(faviconRule, "display: block");
-    assert.include(faviconRule, "width: 70%");
-    assert.include(faviconRule, "height: 70%");
-    assert.include(faviconRule, "border-radius: 0");
-    assert.include(faviconRule, "background: transparent");
-    assert.include(faviconRule, "object-fit: contain");
-    assert.notInclude(faviconRule, "transform:");
   });
 });

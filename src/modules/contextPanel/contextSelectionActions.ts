@@ -10,19 +10,19 @@ import {
 import {
   isSupportedContextAttachment,
   resolveContextAttachmentSupportFromMetadata,
-} from "./contextAttachmentSupport";
+} from "../../services/paperContent/contextAttachmentSupport";
 import { setPaperModeOverride } from "./contexts/paperContextState";
 import { isSamePaperContextRef } from "./modeBehavior";
-import { readNoteSnapshot } from "./notes";
+import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import {
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import type {
   PaperSearchAttachmentCandidate,
   PaperSearchGroupCandidate,
 } from "./paperSearch";
-import { buildPaperKey } from "./pdfContext";
+import { buildPaperKey } from "../../services/paperContent/pdfContext";
 import {
   buildReferenceSelectorTagContextKey,
   normalizeReferenceSelectorTagIdentityName,

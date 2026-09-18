@@ -3,7 +3,7 @@ import {
   parseDocumentReferences,
   resolveDocumentReferenceMatches,
 } from "../src/shared/documentReferences";
-import type { PdfChunkMeta } from "../src/modules/contextPanel/types";
+import type { PdfChunkMeta } from "../src/services/paperContent/types";
 
 describe("documentReferences", function () {
   it("parses equivalent English and Chinese figure and table references", function () {

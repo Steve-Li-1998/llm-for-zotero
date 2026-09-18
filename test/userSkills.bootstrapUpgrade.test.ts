@@ -381,8 +381,11 @@ describe("user skill bootstrap upgrades", function () {
       canonicalWriteNote,
       "Path pattern: `{papertitle}/{papertitle}.md`",
     );
-    // Version 10 consumes semantic destinations and host-managed exports.
-    assert.equal(parseSkill(canonicalWriteNote).version, 10);
+    // Version 15 also preserves narrow figure-only note requests.
+    assert.equal(parseSkill(canonicalWriteNote).version, 15);
+    assert.include(canonicalWriteNote, "narrowly scoped note");
+    assert.include(canonicalWriteNote, "`sourceMessageId`");
+    assert.include(canonicalWriteNote, "returned `documentId`");
   });
 
   it("migrates declarative supersession without replacing legacy match metadata", function () {

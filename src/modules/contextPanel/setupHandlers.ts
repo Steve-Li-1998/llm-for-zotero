@@ -1,8 +1,9 @@
 import { copyNoteEditingSelectedTextContext } from "./noteEditing/selectionController";
-import { createNoteConversationItem } from "./noteEditing/conversationItem";
+import { createNoteConversationItem } from "../../services/notes/conversationItem";
 /* eslint-disable @typescript-eslint/no-require-imports */
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
+import { observeHistoryActivity } from "./historyActivity";
 import { revealLocalPath } from "../../utils/revealLocalPath";
 import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
@@ -30,7 +31,6 @@ import {
 import {
   buildDefaultUpstreamGlobalConversationKey,
   config,
-  AUTO_SCROLL_BOTTOM_THRESHOLD,
   MAX_FULL_TEXT_PAPER_CONTEXTS,
   MAX_SELECTED_IMAGES,
   MAX_SELECTED_PAPER_CONTEXTS,
@@ -42,11 +42,7 @@ import {
   isUpstreamGlobalConversationKey,
   PREFERENCES_PANE_ID,
 } from "./constants";
-import {
-  isAtAutoFollowBottom,
-  resolveStreamingScrollFollowAction,
-} from "./scrollFollowPolicy";
-import { isChatNavigationActive } from "./chatScrollSnapshots";
+import { bindChatScrollLifecycle } from "./chatScrollLifecycle";
 import {
   createConversationTurnNavigator,
   disposeConversationTurnNavigator,
@@ -112,21 +108,21 @@ import {
   setInlineEditCleanup,
   setInlineEditInputSection,
   setInlineEditSavedDraft,
-  pdfTextCache,
   addAutoLockedGlobalConversationKey,
   removeAutoLockedGlobalConversationKey,
   isAutoLockedGlobalConversation,
   getConversationWriteGeneration,
 } from "./state";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
 import {
-  sanitizeText,
   setStatus,
   buildQuestionWithSelectedTextContexts,
   buildModelPromptWithFileContext,
   resolvePromptText,
   getAttachmentTypeLabel,
-  normalizeSelectedTextSource,
 } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
+import { normalizeSelectedTextSource } from "../../services/context/normalizers";
 import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import {
   formatActionLabel,
@@ -135,7 +131,7 @@ import {
 import {
   normalizeAttachmentContentHash,
   normalizeSelectedTextPaperContexts,
-} from "./normalizers";
+} from "../../services/context/normalizers";
 import {
   positionMenuBelowButton,
   positionMenuAtPointer,
@@ -167,6 +163,7 @@ import { refreshConfiguredProviderModelCatalogs } from "../../utils/modelProvide
 import {
   refreshModelCapabilityRegistry,
   subscribeModelCapabilities,
+  getModelCapabilities,
 } from "../../modelCapabilities";
 import type { ModelProfileOverride } from "../../modelCapabilities";
 import {
@@ -177,9 +174,6 @@ import {
   ensureConversationLoaded,
   persistChatScrollSnapshot,
   disposeChatRendering,
-  isScrollUpdateSuspended,
-  requestChatScrollFollowBottom,
-  cancelChatScrollFollowBottomRequest,
   withScrollGuard,
   copyTextToClipboard,
   refreshConversationPanels,
@@ -194,9 +188,9 @@ import {
   editLatestUserMessageAndRetry,
   editUserTurnAndRetry,
   findLatestRetryPair,
-  scheduleConversationQuoteRevalidation,
   type EditLatestTurnMarker,
 } from "./chat";
+import { scheduleConversationQuoteRevalidation } from "./quoteValidation/scheduling";
 import {
   getWorkflowTestSendInterceptor,
   notifyWorkflowTestSendSettled,
@@ -206,10 +200,12 @@ import {
   bindTestPanelHost,
   canCommitPanelConversation,
   capturePanelOperationLease,
+  evaluatePanelOwnership,
   getPanelHostBinding,
   isPanelHostCompatibleWithPaper,
   isPanelOperationLeaseCurrent,
   requireCurrentPanelOwnership,
+  shouldOwnershipFenceSwallowEvent,
 } from "./panelHostOwnership";
 import {
   getActiveContextAttachmentFromTabs,
@@ -232,7 +228,7 @@ import {
 import {
   isTextLikeAttachmentSourceMode,
   resolvePaperContextRefFromAttachment,
-} from "./paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import {
   filterManualPaperContextsAgainstAutoLoaded,
   isSamePaperContextRef,
@@ -244,9 +240,9 @@ import {
   shouldRenderSkillSlashMenu,
 } from "./slashMenuBehavior";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
-import { buildPaperKey } from "./pdfContext";
-import { isSupportedContextAttachment } from "./contextAttachmentSupport";
-import { getContextSourceModeCssClassName } from "./contextSourceModes";
+import { buildPaperKey } from "../../services/paperContent/pdfContext";
+import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
+import { getContextSourceModeCssClassName } from "../../services/paperContent/contextSourceModes";
 import {
   getPaperModeOverride,
   setPaperModeOverride,
@@ -283,13 +279,13 @@ import {
   retainPinnedTextState as retainPinnedTextState_,
 } from "./contexts/textContextState";
 import { optimizeImageDataUrl } from "./screenshot";
-import { readNoteSnapshot } from "./notes";
+import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import {
   persistAttachmentBlob,
   extractManagedBlobHash,
   isManagedBlobPath,
   removeAttachmentFile,
-} from "./attachmentStorage";
+} from "../../services/attachmentStorage";
 import { conversationRepository } from "../../core/conversations/repository";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import {
@@ -317,6 +313,7 @@ import type {
   SelectedTextContext,
 } from "./types";
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
+import { isReasoningLevelActive } from "../../utils/llmClient";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";
 import {
   browseAllItemCandidates,
@@ -348,7 +345,6 @@ import {
   resolveConversationKeyForNoteFocus,
   createGlobalPortalItem,
   createPaperPortalItem,
-  isGlobalPortalItem,
   resolveActiveNoteSession,
   resolveConversationSystemForItem,
   resolveDisplayConversationKind,
@@ -359,6 +355,7 @@ import {
   resolveNoteFocusSystemSwitch,
   resolveShortcutMode,
 } from "./portalScope";
+import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   RUNTIME_CONVERSATION_SYSTEMS,
@@ -374,7 +371,11 @@ import {
   isAutoLoadedSnapshotForCurrentPaper,
 } from "./paperContextPreloadIdentity";
 import type { SetupHandlersContext } from "./setupHandlers/types";
-import { observeElementDisconnected } from "./setupHandlers/lifecycle";
+import {
+  observeElementDisconnected,
+  PanelLifecycle,
+} from "./setupHandlers/lifecycle";
+import { createWebChatFeature } from "./setupHandlers/features/webChat";
 import {
   MODEL_MENU_OPEN_CLASS,
   REASONING_MENU_OPEN_CLASS,
@@ -387,7 +388,6 @@ import {
 import { createActionLayoutController } from "./setupHandlers/controllers/actionLayoutController";
 import {
   getReasoningLevelDisplayLabel,
-  isReasoningDisplayLabelActive,
   getScreenshotDisabledHint,
   isScreenshotUnsupportedModel,
   getModelPdfSupport,
@@ -464,6 +464,7 @@ import {
 } from "./setupHandlers/controllers/historyLifecycleController";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
+import { updateHeaderSpacing } from "./setupHandlers/controllers/headerSpacing";
 import { attachComposeCaptureController } from "./setupHandlers/controllers/composeCaptureController";
 import { attachFloatingMenuInteractionController } from "./setupHandlers/controllers/floatingMenuInteractionController";
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
@@ -802,6 +803,8 @@ export function setupHandlers(
     return;
   }
 
+  const panelLifecycle = new PanelLifecycle();
+
   const isStandalonePanel = panelRoot.dataset.standalone === "true";
   const chatShell = body.querySelector(
     "#llm-chat-shell",
@@ -840,9 +843,13 @@ export function setupHandlers(
     if (!item) return;
     const target = event.target as Node | null;
     if (target !== body && target && !panelRoot.contains(target)) return;
-    if (requireCurrentPanelOwnership(body, item, `panel-${event.type}`)) {
-      return;
-    }
+    // The decision itself lives in panelHostOwnership.ts: a panel that refuses
+    // its own input must still be escapable, so events aimed at the runtime
+    // toggles (which re-resolve the panel's scope before switching) and
+    // application accelerators the panel does not bind are delivered, while
+    // everything else stays fenced. Without that, any scope bug degrades into a
+    // dead, apparently unquittable UI.
+    if (!shouldOwnershipFenceSwallowEvent(body, item, event)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
@@ -873,23 +880,6 @@ export function setupHandlers(
       registeredQueuedFollowUpThreadKey;
     registerQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
   };
-
-  // Disconnect previous ResizeObservers to prevent accumulation across
-  // successive setupHandlers calls (each call creates fresh observers).
-  const prevObservers = (body as any).__llmResizeObservers as
-    | ResizeObserver[]
-    | undefined;
-  if (prevObservers) {
-    for (const obs of prevObservers) obs.disconnect();
-    delete (body as any).__llmResizeObservers;
-  }
-  const prevResizeSchedulers = (body as any).__llmResizeSchedulers as
-    | Array<{ cancel?: () => void }>
-    | undefined;
-  if (prevResizeSchedulers) {
-    for (const scheduler of prevResizeSchedulers) scheduler.cancel?.();
-    delete (body as any).__llmResizeSchedulers;
-  }
 
   let renderQueuedFollowUpInputs: () => void = () => {};
   let scheduleQueuedFollowUpDrain: () => void = () => {};
@@ -1507,7 +1497,13 @@ export function setupHandlers(
     persistDraftInputForCurrentConversation();
     setConversationSystemPref(nextSystem);
     currentConversationSystem = nextSystem;
-    panelRoot.dataset.conversationSystem = nextSystem;
+    // The mounted DOM scope must keep describing the conversation the panel is
+    // actually on. `dataset.conversationSystem` is half of that scope, so
+    // writing the new system here — before the conversation key has moved —
+    // makes the panel's own ownership check disagree with its own item, and
+    // every later step of this switch is refused by that check. It is written
+    // by `syncConversationIdentity` instead, together with the new key, once
+    // the panel has committed the conversation of the system being entered.
     syncQueuedFollowUpRegistration();
     updateRuntimeSystemToggles();
     if (nextSystem === "claude_code") {
@@ -1666,6 +1662,7 @@ export function setupHandlers(
 
   // Compute conversation key early so all closures can reference it.
   let conversationKey = item ? getConversationKey(item) : null;
+  let syncPlanModeChip = () => {};
   const handleQuoteProvenanceRevalidationRequest = () => {
     const activeConversationKey = item ? getConversationKey(item) : null;
     if (activeConversationKey) {
@@ -1702,13 +1699,14 @@ export function setupHandlers(
     if ((body as HTMLElement).dataset?.standalone === "true") {
       activeContextPanelRawItems.set(body, item || null);
     }
+    const noteSession = resolveCurrentNoteSession();
     panelRoot.dataset.itemId =
       Number.isFinite(conversationKey) && (conversationKey as number) > 0
         ? `${conversationKey}`
         : "";
+    syncPlanModeChip();
     const libraryID = getCurrentLibraryID();
     panelRoot.dataset.libraryId = libraryID > 0 ? `${libraryID}` : "";
-    const noteSession = resolveCurrentNoteSession();
     const mode: "global" | "paper" | null = item
       ? resolveDisplayConversationKind(item)
       : null;
@@ -2049,154 +2047,13 @@ export function setupHandlers(
     return box.clientHeight > 0 && box.getClientRects().length > 0;
   };
 
-  type ChatBoxViewportState = {
-    width: number;
-    height: number;
-    maxScrollTop: number;
-    scrollTop: number;
-    nearBottom: boolean;
-  };
-  const buildChatBoxViewportState = (): ChatBoxViewportState | null => {
-    if (!chatBox) return null;
-    if (!isChatViewportVisible(chatBox)) return null;
-    const width = Math.max(0, Math.round(chatBox.clientWidth));
-    const height = Math.max(0, Math.round(chatBox.clientHeight));
-    const maxScrollTop = Math.max(
-      0,
-      chatBox.scrollHeight - chatBox.clientHeight,
-    );
-    const scrollTop = Math.max(0, Math.min(maxScrollTop, chatBox.scrollTop));
-    const nearBottom = maxScrollTop - scrollTop <= AUTO_SCROLL_BOTTOM_THRESHOLD;
-    return {
-      width,
-      height,
-      maxScrollTop,
-      scrollTop,
-      nearBottom,
-    };
-  };
-  let chatBoxViewportState = buildChatBoxViewportState();
-  const captureChatBoxViewportState = () => {
-    chatBoxViewportState = buildChatBoxViewportState();
-  };
-  const isCurrentConversationStreaming = (): boolean => {
-    if (!item) return false;
-    const conversationKey = getConversationKey(item);
-    return (chatHistory.get(conversationKey) || []).some((msg) =>
-      Boolean(msg.streaming),
-    );
-  };
-  const requestStreamingFollowBottom = () => {
-    if (!item || !chatBox) return;
-    if (!isCurrentConversationStreaming()) return;
-    requestChatScrollFollowBottom(body, item, chatBox);
-    captureChatBoxViewportState();
-  };
-
-  let cleanupStreamingScrollListeners = () => {};
-  if (item && chatBox) {
-    const handleStreamingFollowWheel = (event: WheelEvent) => {
-      noteQuoteValidationUserActivity();
-      if (!item || !chatBox) return;
-      if (!isCurrentConversationStreaming()) return;
-      if (event.deltaY < 0) {
-        cancelChatScrollFollowBottomRequest(item, chatBox || undefined);
-        return;
-      }
-      if (event.deltaY <= 0) return;
-
-      const checkAfterNativeScroll = () => {
-        const current = buildChatBoxViewportState();
-        if (!current) return;
-        const distanceFromBottom = current.maxScrollTop - current.scrollTop;
-        if (isAtAutoFollowBottom(distanceFromBottom)) {
-          requestStreamingFollowBottom();
-        }
-      };
-      const win = body.ownerDocument?.defaultView;
-      if (win) {
-        win.setTimeout(checkAfterNativeScroll, 0);
-      } else {
-        checkAfterNativeScroll();
-      }
-    };
-    const persistScroll = () => {
-      if (!item) return;
-      if (!chatBox.childElementCount) return;
-      if (!isChatViewportVisible(chatBox)) return;
-      const currentWidth = Math.max(0, Math.round(chatBox.clientWidth));
-      const currentHeight = Math.max(0, Math.round(chatBox.clientHeight));
-      const previousViewport = chatBoxViewportState;
-      let viewportResized = false;
-      if (previousViewport) {
-        viewportResized =
-          currentWidth !== previousViewport.width ||
-          currentHeight !== previousViewport.height;
-      }
-      // Ignore resize-induced scroll events so the last pre-resize viewport
-      // state remains available for relative-position restoration.
-      if (viewportResized) return;
-      // Skip persistence when scroll was caused by our own programmatic
-      // scrollTop writes or by layout mutations (e.g. button relayout
-      // changing the flex-sized chat area).
-      if (isScrollUpdateSuspended(chatBox || undefined)) {
-        captureChatBoxViewportState();
-        return;
-      }
-      if (isChatNavigationActive(chatBox)) {
-        captureChatBoxViewportState();
-        return;
-      }
-      const currentViewport = buildChatBoxViewportState();
-      if (previousViewport && currentViewport) {
-        const scrollDelta =
-          currentViewport.scrollTop - previousViewport.scrollTop;
-        const distanceFromBottom =
-          currentViewport.maxScrollTop - currentViewport.scrollTop;
-        const followAction = resolveStreamingScrollFollowAction({
-          scrollDelta,
-          distanceFromBottom,
-          isStreaming: isCurrentConversationStreaming(),
-        });
-        if (followAction === "cancel") {
-          cancelChatScrollFollowBottomRequest(item, chatBox || undefined);
-        } else if (followAction === "follow") {
-          requestChatScrollFollowBottom(body, item, chatBox);
-          captureChatBoxViewportState();
-          return;
-        }
-      }
-      persistChatScrollSnapshot(item, chatBox);
-      captureChatBoxViewportState();
-    };
-    chatBox.addEventListener("wheel", handleStreamingFollowWheel, {
-      passive: true,
-    });
-    chatBox.addEventListener("scroll", persistScroll, { passive: true });
-    const handleStreamingScrollKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("input, textarea, [contenteditable=true]")) return;
-      if (
-        ["ArrowUp", "PageUp", "Home"].includes(event.key) ||
-        (event.key === " " && event.shiftKey)
-      ) {
-        if (item) cancelChatScrollFollowBottomRequest(item, chatBox);
-      }
-    };
-    const handleStreamingTouch = () => {
-      if (item) cancelChatScrollFollowBottomRequest(item, chatBox);
-    };
-    chatBox.addEventListener("keydown", handleStreamingScrollKey);
-    chatBox.addEventListener("touchstart", handleStreamingTouch, {
-      passive: true,
-    });
-    cleanupStreamingScrollListeners = () => {
-      chatBox.removeEventListener("wheel", handleStreamingFollowWheel);
-      chatBox.removeEventListener("scroll", persistScroll);
-      chatBox.removeEventListener("keydown", handleStreamingScrollKey);
-      chatBox.removeEventListener("touchstart", handleStreamingTouch);
-    };
-  }
+  const cleanupChatScroll = chatBox
+    ? bindChatScrollLifecycle(
+        chatBox,
+        () => (item ? getConversationKey(item) : null),
+        noteQuoteValidationUserActivity,
+      )
+    : () => {};
 
   // Capture scroll before click/focus interactions that may trigger a panel
   // re-render, so restore uses the most recent user position.
@@ -2258,7 +2115,7 @@ export function setupHandlers(
   const isPlanAvailable = () =>
     !isWebChatModeActive() &&
     (isRuntimeConversationSystem() || getCurrentRuntimeMode() === "agent");
-  const syncPlanModeChip = () => {
+  syncPlanModeChip = () => {
     if (!planModeChip || !item) return;
     const state = getComposePlanState(getConversationKey(item));
     planModeChip.style.display =
@@ -2445,85 +2302,26 @@ export function setupHandlers(
   const responsiveLayoutScheduler = createCoalescedFrameScheduler({
     getWindow: () => body.ownerDocument?.defaultView || null,
     run: () => {
+      if (!panelRoot.isConnected) return;
       const panelWidth = getRoundedPanelWidth();
-      withScrollGuard(
-        chatBox,
-        conversationKey,
-        () => {
-          applyResponsiveActionButtonsLayout();
-          if (
-            panelWidth <= 0 ||
-            panelWidth !== lastUserContextAlignmentPanelWidth
-          ) {
-            syncUserContextAlignmentWidths(body);
-            if (panelWidth > 0) {
-              lastUserContextAlignmentPanelWidth = panelWidth;
-            }
-          }
-        },
-        "relative",
-      );
+      if (panelWidth <= 0) return;
+      withScrollGuard(chatBox, conversationKey, () => {
+        applyResponsiveActionButtonsLayout();
+        updateHeaderSpacing(headerTop);
+        if (panelWidth !== lastUserContextAlignmentPanelWidth) {
+          syncUserContextAlignmentWidths(body);
+          lastUserContextAlignmentPanelWidth = panelWidth;
+        }
+      });
     },
   });
+  panelLifecycle.add(responsiveLayoutScheduler.dispose);
   const scheduleResponsiveLayoutSync = () => {
     responsiveLayoutScheduler.schedule();
   };
   const flushResponsiveLayoutSyncNow = () => {
     responsiveLayoutScheduler.flush();
   };
-  let pendingChatBoxResizePreviousState: ChatBoxViewportState | null = null;
-  const chatBoxViewportResizeScheduler = createCoalescedFrameScheduler({
-    getWindow: () => body.ownerDocument?.defaultView || null,
-    run: () => {
-      const previous =
-        pendingChatBoxResizePreviousState || chatBoxViewportState;
-      pendingChatBoxResizePreviousState = null;
-      if (!chatBox) return;
-      if (!isChatViewportVisible(chatBox)) return;
-      const current = buildChatBoxViewportState();
-      if (!current) return;
-      const viewportChanged = Boolean(
-        previous &&
-        (current.width !== previous.width ||
-          current.height !== previous.height),
-      );
-      if (viewportChanged && previous && previous.nearBottom) {
-        const targetBottom = Math.max(
-          0,
-          chatBox.scrollHeight - chatBox.clientHeight,
-        );
-        if (Math.abs(chatBox.scrollTop - targetBottom) > 1) {
-          chatBox.scrollTop = chatBox.scrollHeight;
-        }
-        captureChatBoxViewportState();
-        if (item && chatBox.childElementCount) {
-          persistChatScrollSnapshot(item, chatBox);
-        }
-        return;
-      }
-      if (
-        viewportChanged &&
-        previous &&
-        !previous.nearBottom &&
-        previous.maxScrollTop > 0
-      ) {
-        const progress = Math.max(
-          0,
-          Math.min(1, previous.scrollTop / previous.maxScrollTop),
-        );
-        const targetScrollTop = Math.round(current.maxScrollTop * progress);
-        if (Math.abs(chatBox.scrollTop - targetScrollTop) > 1) {
-          chatBox.scrollTop = targetScrollTop;
-        }
-        captureChatBoxViewportState();
-        if (item && chatBox.childElementCount) {
-          persistChatScrollSnapshot(item, chatBox);
-        }
-        return;
-      }
-      chatBoxViewportState = current;
-    },
-  });
 
   const clearSelectedImageState = (itemId: number) =>
     clearSelectedImageState_(pinnedImageKeys, itemId);
@@ -2616,11 +2414,11 @@ export function setupHandlers(
   const mineruAvailableIds = new Set<number>();
   const pendingMineruAvailabilityChecks = new Map<number, Promise<void>>();
   let mineruChipStyleDepsPromise: Promise<{
-    getMineruAvailabilityForAttachmentId: typeof import("./mineruSync").getMineruAvailabilityForAttachmentId;
+    getMineruAvailabilityForAttachmentId: typeof import("../../services/mineru/sync").getMineruAvailabilityForAttachmentId;
   }> | null = null;
   const loadMineruChipStyleDeps = () => {
     if (!mineruChipStyleDepsPromise) {
-      mineruChipStyleDepsPromise = import("./mineruSync").then(
+      mineruChipStyleDepsPromise = import("../../services/mineru/sync").then(
         (mineruSync) => ({
           getMineruAvailabilityForAttachmentId:
             mineruSync.getMineruAvailabilityForAttachmentId,
@@ -3534,7 +3332,7 @@ export function setupHandlers(
 
     try {
       const { ensureMineruCacheDirForAttachment } =
-        await import("./mineruSync");
+        await import("../../services/mineru/sync");
       const cacheDir = await ensureMineruCacheDirForAttachment(attachment);
       if (!cacheDir) {
         if (status) {
@@ -4811,7 +4609,11 @@ export function setupHandlers(
     updateSelectedTextPreview();
   };
   activeContextPanelStateSync.set(body, syncConversationPanelState);
+  const disposeHistoryActivity = historyMenu
+    ? observeHistoryActivity(historyMenu)
+    : null;
   const runPanelStateRefreshNow = () => {
+    if (!panelRoot.isConnected) return;
     const previousHeight = measureContextPreviewHeight();
     if (!item) {
       runWithChatScrollGuard(syncConversationPanelState);
@@ -4831,6 +4633,7 @@ export function setupHandlers(
     getWindow: () => body.ownerDocument?.defaultView || null,
     run: runPanelStateRefreshNow,
   });
+  panelLifecycle.add(panelStateRefreshScheduler.dispose);
   const schedulePanelStateRefresh = () => {
     panelStateRefreshScheduler.schedule();
   };
@@ -5012,6 +4815,28 @@ export function setupHandlers(
     historyLifecycleController.forkConversationFromTurn;
   resetHistorySearchState = historyLifecycleController.resetHistorySearchState;
 
+  /**
+   * The runtime toggle is the reader's way out of a panel whose declared scope
+   * has drifted from the conversation it is showing. Delivering the click is
+   * only half of that: `switchConversationSystem` gates on the same ownership
+   * verdict, so without this the click would arrive and then be refused. A
+   * `stale-candidate` verdict means the panel's own item is sound and only its
+   * declaration is wrong, so re-derive the declaration from the item and carry
+   * on. Any other verdict is a genuine host problem and is left to the gate.
+   */
+  const recoverDriftedPanelScopeForRuntimeToggle = () => {
+    if (!item) return;
+    if (evaluatePanelOwnership(body, item) !== "stale-candidate") return;
+    ztoolkit.log(
+      "LLM: re-resolving a drifted panel scope for the runtime toggle",
+      {
+        conversationKey: getConversationKey(item),
+        declaredSystem: panelRoot.dataset.conversationSystem,
+      },
+    );
+    syncConversationIdentity();
+  };
+
   const switchRuntimeSystemFromControl = async (
     clickedSystem: RuntimeConversationSystem,
   ) => {
@@ -5024,6 +4849,7 @@ export function setupHandlers(
     ) {
       return;
     }
+    recoverDriftedPanelScopeForRuntimeToggle();
     runtimeSystemSwitchInFlight = true;
     updateRuntimeSystemToggles();
     try {
@@ -5485,8 +5311,18 @@ export function setupHandlers(
             void (async () => {
               // Anchor on the paper's dedicated webchat session row (hidden
               // from history, swept at startup) — never a normal draft.
-              await ensureWebChatSessionPaperConversation();
+              const anchored = await ensureWebChatSessionPaperConversation();
               if (!isWebChatMode()) return;
+              if (!anchored) {
+                // Fail closed: webchat must never bind to the paper's real
+                // conversation. Leave webchat (restores the remembered
+                // non-webchat entry) and keep the conversation on screen.
+                await leaveWebChatMode({ restoreConversation: false });
+                if (status) {
+                  setStatus(status, t("Failed to create paper chat"), "error");
+                }
+                return;
+              }
               resetCurrentWebChatConversation();
               refreshChatPreservingScroll();
 
@@ -5496,9 +5332,7 @@ export function setupHandlers(
               ) as HTMLElement | null;
               if (chatShellEl) {
                 try {
-                  abortWebChatPreload();
-                  const token = { aborted: false };
-                  webchatPreloadAbort = token;
+                  const token = webChatFeature.beginPreload();
                   const { showWebChatPreloadScreen } =
                     await import("../../webchat/preloadScreen");
                   const { getWebChatTargetByModelName } =
@@ -5521,7 +5355,7 @@ export function setupHandlers(
                 } catch {
                   // Preload failed or was aborted — still apply UI (dot will show status)
                 } finally {
-                  webchatPreloadAbort = null;
+                  webChatFeature.clearPreload();
                 }
               }
 
@@ -5814,6 +5648,7 @@ export function setupHandlers(
           directSelection.mode === "auto"
             ? "none"
             : (directSelection.mode as ReasoningLevelSelection),
+        activeThinking: directSelection.mode !== "none",
       };
     }
     const selectedProfile = getSelectedModelEntry();
@@ -5853,7 +5688,26 @@ export function setupHandlers(
       reasoningBtn.dataset.reasoningAdjustment =
         "The previous reasoning level is unavailable for this model. Using the provider default.";
     }
-    return { provider, currentModel, options, enabledLevels, selectedLevel };
+    return {
+      provider,
+      currentModel,
+      options,
+      enabledLevels,
+      selectedLevel,
+      // Judged by the request the level sends, not by what it is called.
+      activeThinking:
+        selectedLevel === "auto" ||
+        isReasoningLevelActive(
+          getModelCapabilities({
+            provider,
+            model: currentModel,
+            apiBase: selectedProfile?.apiBase,
+            protocol: selectedProfile?.providerProtocol,
+            profileOverride: selectedProfile?.advanced?.profileOverride,
+          }),
+          selectedLevel,
+        ),
+    };
   };
 
   // [webchat] ChatGPT mode options: maps reasoning levels to ChatGPT modes
@@ -5888,16 +5742,18 @@ export function setupHandlers(
     }
   };
 
-  let webchatConnectionTimer: ReturnType<typeof setInterval> | null = null;
-  // Simple abort token — Zotero's Gecko context lacks AbortController.
-  let webchatPreloadAbort: { aborted: boolean } | null = null;
-
-  const abortWebChatPreload = () => {
-    if (webchatPreloadAbort) {
-      webchatPreloadAbort.aborted = true;
-      webchatPreloadAbort = null;
-    }
-  };
+  // Panel features register their teardown here. cleanupSetupHandlers stays
+  // explicitly ordered, so it calls the handle returned by add() at the exact
+  // position the feature's undo used to sit; dispose() is the safety net for
+  // any feature that is registered but not listed there.
+  const webChatFeature = createWebChatFeature({
+    isWebChatMode: () => isWebChatMode(),
+    hasExistingWebChatSession: () => hasExistingWebChatSessionForCurrentItem(),
+    getCurrentModelName: () => getSelectedModelInfo().currentModel,
+  });
+  const disposeWebChatFeature = panelLifecycle.add(() =>
+    webChatFeature.unmount(),
+  );
 
   markNextWebChatSendAsNewChat = () => {
     if (!item) return;
@@ -5978,11 +5834,11 @@ export function setupHandlers(
     getSelectedModelEntryId: () =>
       getSelectedModelInfo().selectedEntryId || null,
     setSelectedModelEntry,
-    abortPreload: abortWebChatPreload,
+    abortPreload: () => webChatFeature.abortPreload(),
     removePreloadOverlay: () => {
       body.querySelector(".llm-webchat-preload")?.remove();
     },
-    stopConnectionCheck: () => stopWebChatConnectionCheck(),
+    stopConnectionCheck: () => webChatFeature.stopConnectionCheck(),
     clearNewChatIntent: clearNextWebChatNewChatIntent,
     applyWebChatModeUI: () => applyWebChatModeUI(),
     updateModelButton: () => updateModelButton(),
@@ -6010,33 +5866,6 @@ export function setupHandlers(
       leaveWebChatMode({ restoreConversation: false });
   }
 
-  const startWebChatConnectionCheck = (dot: HTMLElement) => {
-    stopWebChatConnectionCheck();
-    const check = async () => {
-      try {
-        // Always use dynamic port — saved apiBase may be stale
-        const { getRelayBaseUrl } = await import("../../webchat/relayServer");
-        const host = getRelayBaseUrl();
-        const { testConnection } = await import("../../webchat/client");
-        const alive = await testConnection(host);
-        dot.className = alive
-          ? "llm-webchat-dot llm-webchat-dot-connected"
-          : "llm-webchat-dot llm-webchat-dot-disconnected";
-      } catch {
-        dot.className = "llm-webchat-dot llm-webchat-dot-disconnected";
-      }
-    };
-    void check(); // immediate first check
-    webchatConnectionTimer = setInterval(check, 5000);
-  };
-
-  const stopWebChatConnectionCheck = () => {
-    if (webchatConnectionTimer !== null) {
-      clearInterval(webchatConnectionTimer);
-      webchatConnectionTimer = null;
-    }
-  };
-
   updateReasoningButton = () => {
     if (!item || !reasoningBtn) return;
     withScrollGuard(chatBox, conversationKey, () => {
@@ -6048,8 +5877,14 @@ export function setupHandlers(
       }
       reasoningBtn.style.display = "";
 
-      const { provider, currentModel, options, enabledLevels, selectedLevel } =
-        getReasoningState();
+      const {
+        provider,
+        currentModel,
+        options,
+        enabledLevels,
+        selectedLevel,
+        activeThinking,
+      } = getReasoningState();
       const directSelection =
         codexDirectController?.resolveReasoningSelection() || {
           mode: "auto",
@@ -6086,8 +5921,7 @@ export function setupHandlers(
                   options,
                 )
               : "Not supported";
-      const active =
-        available && isReasoningDisplayLabelActive(resolvedReasoningLabel);
+      const active = available && activeThinking;
       const reasoningLabel = resolvedReasoningLabel;
       reasoningBtn.disabled = !item;
       reasoningBtn.classList.toggle(
@@ -6468,7 +6302,7 @@ export function setupHandlers(
         modeChipBtn.setAttribute("aria-disabled", "true");
         modeChipBtn.dataset.webchatStatic = "true";
         modeChipBtn.style.cursor = "default";
-        startWebChatConnectionCheck(dot);
+        webChatFeature.startConnectionCheck(dot);
       } else {
         const oldDot = modeChipBtn.querySelector(".llm-webchat-dot");
         if (oldDot) {
@@ -6480,7 +6314,7 @@ export function setupHandlers(
             ? "Switch to paper chat"
             : "Switch to library chat";
         }
-        stopWebChatConnectionCheck();
+        webChatFeature.stopConnectionCheck();
         modeChipBtn.disabled = false;
         modeChipBtn.removeAttribute("aria-disabled");
         delete modeChipBtn.dataset.webchatStatic;
@@ -6535,62 +6369,12 @@ export function setupHandlers(
   syncModelFromPrefs();
   flushResponsiveLayoutSyncNow();
   // Set active_target before applyWebChatModeUI so sidebar filters by the correct site
-  try {
-    if (isWebChatMode()) {
-      const { getWebChatTargetByModelName: getColdTarget } =
-        require("../../webchat/types") as typeof import("../../webchat/types");
-      const { relaySetActiveTarget: setColdTarget } =
-        require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
-      const { currentModel: coldStartModel } = getSelectedModelInfo();
-      const coldEntry = getColdTarget(coldStartModel || "");
-      if (coldEntry?.id) setColdTarget(coldEntry.id);
-    }
-  } catch {
-    /* isWebChatMode may not be ready */
-  }
+  webChatFeature.primeColdStartTarget();
   applyWebChatModeUI();
   resetComposePreviewUI();
   flushPanelStateRefreshNow();
   // [webchat] Cold startup → show preload screen so user knows they're in webchat mode
-  try {
-    if (isWebChatMode() && !hasExistingWebChatSessionForCurrentItem()) {
-      const chatShellEl = body.querySelector(
-        ".llm-chat-shell",
-      ) as HTMLElement | null;
-      if (chatShellEl) {
-        void (async () => {
-          try {
-            abortWebChatPreload();
-            const token = { aborted: false };
-            webchatPreloadAbort = token;
-            const { showWebChatPreloadScreen } =
-              await import("../../webchat/preloadScreen");
-            const { getWebChatTargetByModelName } =
-              await import("../../webchat/types");
-            const { relaySetActiveTarget: relaySetTarget2 } =
-              await import("../../webchat/relayServer");
-            const { currentModel: coldModel } = getSelectedModelInfo();
-            const coldTargetEntry = getWebChatTargetByModelName(
-              coldModel || "",
-            );
-            if (coldTargetEntry?.id) relaySetTarget2(coldTargetEntry.id);
-            await showWebChatPreloadScreen(
-              chatShellEl,
-              token,
-              coldTargetEntry?.label,
-              coldTargetEntry?.modelName,
-            );
-          } catch {
-            // Preload failed or was aborted — dot will show connection status
-          } finally {
-            webchatPreloadAbort = null;
-          }
-        })();
-      }
-    }
-  } catch {
-    // isWebChatMode may not be ready during initial render
-  }
+  webChatFeature.mount(handlerContext);
   restoreDraftInputForCurrentConversation();
   if (isWebChatMode()) {
     initializeWebChatConversationForCurrentItem();
@@ -6624,36 +6408,22 @@ export function setupHandlers(
   });
   const ResizeObserverCtor = body.ownerDocument?.defaultView?.ResizeObserver;
   if (ResizeObserverCtor && panelRoot && modelBtn) {
-    const newObservers: ResizeObserver[] = [];
     const ro = new ResizeObserverCtor(() => {
       // Keep layout mutations on the guarded scheduler so resize callbacks
       // stay cheap during sidebar drags.
       scheduleResponsiveLayoutSync();
     });
-    newObservers.push(ro);
+    panelLifecycle.add(() => ro.disconnect());
     ro.observe(panelRoot);
     if (actionsRow) ro.observe(actionsRow);
     if (actionsLeft) ro.observe(actionsLeft);
     if (headerTop) ro.observe(headerTop);
-    if (chatBox) {
-      const chatBoxResizeObserver = new ResizeObserverCtor(() => {
-        if (!chatBox) return;
-        if (!isChatViewportVisible(chatBox)) return;
-        if (!pendingChatBoxResizePreviousState) {
-          pendingChatBoxResizePreviousState = chatBoxViewportState;
-        }
-        chatBoxViewportResizeScheduler.schedule();
-      });
-      newObservers.push(chatBoxResizeObserver);
-      chatBoxResizeObserver.observe(chatBox);
-    }
-    // Store observers on body so they can be disconnected on next
-    // setupHandlers call (prevents accumulation across tab switches).
-    (body as any).__llmResizeObservers = newObservers;
-    (body as any).__llmResizeSchedulers = [
-      responsiveLayoutScheduler,
-      chatBoxViewportResizeScheduler,
-    ];
+    for (const element of Array.from(
+      headerTop?.querySelectorAll(
+        ".llm-mode-chip, .llm-runtime-system-controls",
+      ) || [],
+    ))
+      ro.observe(element as Element);
   }
 
   function getSelectedProfile() {
@@ -7693,6 +7463,10 @@ export function setupHandlers(
     runtimeModeBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      // Same contract as the runtime-system toggles: the fence delivers this
+      // click even on a drifted panel, so the handler repairs the drift instead
+      // of refusing the only control that can end it.
+      recoverDriftedPanelScopeForRuntimeToggle();
       if (
         !item ||
         !requireCurrentPanelOwnership(body, item, "switch-runtime-mode")
@@ -7802,7 +7576,10 @@ export function setupHandlers(
     });
   }
 
-  // Enter key (Shift+Enter for newline)
+  // Enter key (Shift+Enter for newline).
+  // Every key this handler binds is declared in `composerKeyBindings.ts`; the
+  // panel ownership fence reads that declaration to keep these keys behind the
+  // fence, so a binding added here must be added there too.
   inputBox.addEventListener("keydown", (e: Event) => {
     const ke = e as KeyboardEvent;
     if (isFloatingMenuOpen(slashMenu)) {
@@ -8246,7 +8023,19 @@ export function setupHandlers(
       },
       prepareItemsAsDefaultContextTarget: isStandalonePanel
         ? hooks?.prepareItemsAsDefaultContextTarget
-        : undefined,
+        : async () => {
+            if (isNoteSession() || isWebChatMode()) return false;
+            const lease = capturePanelOperationLease(body);
+            const libraryID = getCurrentLibraryID();
+            if (!lease || !libraryID) return false;
+            const summary = await conversationRepository.createCatalogEntry({
+              system: getConversationSystem(),
+              kind: "global",
+              libraryID,
+            });
+            if (!summary || !isPanelOperationLeaseCurrent(lease)) return false;
+            return switchGlobalConversation(summary.conversationKey);
+          },
     },
   );
 
@@ -8364,10 +8153,9 @@ export function setupHandlers(
   const cleanupSetupHandlers = () => {
     if (setupHandlersCleaned) return;
     setupHandlersCleaned = true;
-    // The connection-check interval and preload token outlive the detached
-    // body otherwise — one leaked 5s timer per abandoned WebChat panel.
-    stopWebChatConnectionCheck();
-    abortWebChatPreload();
+    // WebChat first, exactly where its undo used to sit: the connection-check
+    // interval and preload token outlive the detached body otherwise.
+    disposeWebChatFeature();
     disconnectObserverCleanup?.();
     disconnectObserverCleanup = null;
     cleanupPrefObservers?.();
@@ -8376,9 +8164,10 @@ export function setupHandlers(
     cleanupMineruPaperSourceObservers?.();
     cleanupModelCapabilitySubscription?.();
     cleanupModelCapabilitySubscription = null;
+    disposeHistoryActivity?.();
     disposeConversationTurnNavigator(body);
     disposeChatRendering(body);
-    cleanupStreamingScrollListeners();
+    cleanupChatScroll();
     body.removeEventListener(PLAN_APPROVED_EVENT, handlePlanApproved);
     body.removeEventListener(PLAN_REVISE_EVENT, handlePlanRevise);
     body.removeEventListener(PLAN_CANCEL_EVENT, handlePlanCancel);
@@ -8407,6 +8196,7 @@ export function setupHandlers(
     delete (body as any).__llmScheduleClaudeThreadQueueDrain;
     delete (body as any).__llmQueueTurnDeletion;
     delete (body as any).__llmSearchPanelHistory;
+    panelLifecycle.dispose();
     unregisterContextSurfaceActions();
     disposePendingDeletionSubscriptionForBody(body);
     void releaseClaudeRuntimeForBody(body);
@@ -8416,7 +8206,7 @@ export function setupHandlers(
   };
   setupHandlersCleanupByBody.set(body, cleanupSetupHandlers);
   disconnectObserverCleanup = observeElementDisconnected(
-    body,
+    panelRoot,
     cleanupSetupHandlers,
   );
   panelRoot.dataset.handlersInitialized = thisGen;

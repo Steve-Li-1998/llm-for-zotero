@@ -13,8 +13,8 @@ import {
   readMineruSourceProvenance,
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
-} from "../src/modules/contextPanel/mineruCache";
-import { pdfTextCache } from "../src/modules/contextPanel/state";
+} from "../src/services/mineru/mineruCache";
+import { pdfTextCache } from "../src/services/paperContent/contextCache";
 import {
   buildMineruSyncPackageBytes,
   cleanSyncedMineruPackages,
@@ -31,14 +31,15 @@ import {
   repairSyncedMineruCacheForAttachment,
   restoreSyncedMineruCacheForAttachment,
   shouldIncludeMineruCachePackageEntry,
-} from "../src/modules/contextPanel/mineruSync";
+} from "../src/services/mineru/sync";
 import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
   PDF_FIGURE_CROP_CACHE_VERSION,
   buildPdfFigureCropManifestHash,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
+} from "../src/services/pdf/pdfFigureCropCache";
 import { createReadLibraryTool } from "../src/agent/tools/read/readLibrary";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -324,6 +325,19 @@ function attachPackage(params: {
 }
 
 describe("mineruSync", function () {
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Invalidating cached paper context reaches the panel's retrieval cache
+    // through a host surface bridge the plugin composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   afterEach(function () {
     delete (globalThis as unknown as { IOUtils?: unknown }).IOUtils;
     delete (globalThis as unknown as { Zotero?: unknown }).Zotero;

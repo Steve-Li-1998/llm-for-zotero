@@ -129,7 +129,7 @@ describe("PlanExecutionCoordinator invariants", function () {
     );
   });
 
-  it("accepts exactly one task transition per committed call", function () {
+  it("accepts the single-task shorthand and an atomic batch", function () {
     const validated = createTaskUpdateTool().validate({
       task: { taskId: "execution-1:step-1", status: "completed" },
     });
@@ -138,14 +138,14 @@ describe("PlanExecutionCoordinator invariants", function () {
       assert.equal(validated.value.task.taskId, "execution-1:step-1");
       assert.equal(validated.value.task.status, "completed");
     }
-    assert.isFalse(
-      createTaskUpdateTool().validate({
-        tasks: [
-          { taskId: "execution-1:step-1", status: "completed" },
-          { taskId: "execution-1:step-2", status: "in_progress" },
-        ],
-      }).ok,
-    );
+    const batch = createTaskUpdateTool().validate({
+      tasks: [
+        { taskId: "execution-1:step-1", status: "completed" },
+        { taskId: "execution-1:step-2", status: "in_progress" },
+      ],
+    });
+    assert.isTrue(batch.ok);
+    if (batch.ok) assert.lengthOf(batch.value.tasks, 2);
   });
 
   it("carries approved exhaustive-read authority into the synthetic execution turn", function () {

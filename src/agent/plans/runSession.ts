@@ -1,25 +1,36 @@
 import type {
-  AgentEvent,
   AgentRuntimeRequest,
   AgentToolArtifact,
   AgentToolResult,
 } from "../types";
-import { loadPlanArtifact, loadPlanExecutionLedger } from "./store";
+import {
+  listTaskEvidence,
+  loadPlanArtifact,
+  loadPlanExecutionLedger,
+} from "./store";
 import { planExecutionCoordinator } from "./coordinator";
 import type { PlanExecutionLedger, PlanEvent, TaskEvidence } from "./types";
 import type { PlanRuntimeContext } from "./types";
-import type { ZoteroMcpToolActivityEvent } from "../mcp/server";
+import type { ZoteroMcpToolActivityEvent } from "../mcp/activityTypes";
 import {
   interruptResearchExecution,
   loadLatestResearchMutationApprovalGrant,
 } from "../research/store";
 import { validateResearchMutationGrant } from "../research/mutationApproval";
+import { researchMutationDigest } from "../research/mutationApproval";
 import {
   loadLatestPlanDocumentForExecution,
   loadPlanDocumentOutbox,
 } from "../documents/store";
 import { createTrustedReadObservations } from "./readObservation";
 import { planRequiresModelTaskUpdates } from "./taskOwnership";
+import { projectLegacyPlanArtifactV5 } from "./effectSpecification";
+import type { PlanArtifact, PlanEffectSpecification } from "./types";
+import { getAllSkills } from "../skills/catalog";
+import { resolvePinnedPlanSkills } from "../skills/planBindings";
+import type { ResolvedPlanMaterialBinding } from "./effectAuthorization";
+import { loadMaterialRef } from "../documents/workflowMaterial";
+import { decodePlanEffectSpecification } from "./decoders";
 
 export function buildPlanFinalCorrection(
   failure: string,
@@ -112,6 +123,12 @@ export async function recordMcpPlanEvidence(
       "verified_read",
       `mcp:${event.requestId}`,
       `Verified ${event.toolName} result`,
+      {
+        type: "verified_read",
+        reference: `mcp:${event.requestId}`,
+        sources: event.verifiedReadSources,
+        observations: event.readObservations,
+      },
     );
   }
   if (event.artifacts?.length) {
@@ -148,6 +165,7 @@ export type PlanFinalDecision =
 export class PlanExecutionRunSession {
   private lastCorrectionSuccessfulToolCount = -1;
   private ledger: PlanExecutionLedger | null = null;
+  private artifact: PlanArtifact | null = null;
 
   constructor(
     private readonly request: Pick<
@@ -157,8 +175,10 @@ export class PlanExecutionRunSession {
       | "actionContract"
       | "actionProgress"
       | "classifiedIntent"
+      | "loadedSkillRecords"
     >,
-    private readonly emit: (event: AgentEvent) => Promise<void>,
+    /** Plan events only: the runtime stamps the planning stage around them. */
+    private readonly emit: (event: PlanEvent) => Promise<void>,
   ) {}
 
   async initialize(): Promise<
@@ -195,36 +215,67 @@ export class PlanExecutionRunSession {
           "The approved plan identity no longer matches this conversation.",
       };
     }
-    const artifact = await loadPlanArtifact(plan.planId, plan.revision);
-    if (!artifact || artifact.digest !== plan.approvedDigest) {
+    const storedArtifact = await loadPlanArtifact(plan.planId, plan.revision);
+    if (!storedArtifact || storedArtifact.digest !== plan.approvedDigest) {
       return {
         kind: "failed",
         userMessage: "The approved plan artifact is unavailable or changed.",
       };
     }
     if (
-      artifact.version !== 4 ||
       ledger.version !== 2 ||
-      ledger.tasks.some((task) => task.version !== 2) ||
-      (artifact.actionContract && artifact.actionContract.version !== 4)
+      ledger.tasks.some((task) => task.version !== 2)
     ) {
       return {
         kind: "failed",
         userMessage:
-          "This plan uses a legacy execution schema and is history-only. Create and approve a new plan to continue.",
+          "This plan's legacy progress cannot be converted without losing completion requirements. Review and approve a new revision to continue.",
       };
     }
-    if (artifact.actionContract) {
-      this.request.actionContract = artifact.actionContract;
-      this.request.classifiedIntent = artifact.actionContract.intent;
+    let artifact = storedArtifact;
+    if (storedArtifact.version !== 5) {
+      const projection = await projectLegacyPlanArtifactV5(storedArtifact);
+      if (projection.kind !== "compatible") {
+        return {
+          kind: "failed",
+          userMessage: `This legacy plan requires renewed approval: ${projection.reason}`,
+        };
+      }
+      artifact = projection.artifact;
+    } else if (
+      ledger.effectSpecificationDigest !== artifact.contractDigest ||
+      ledger.grant.effectSpecificationDigest !== artifact.contractDigest
+    ) {
+      return {
+        kind: "failed",
+        userMessage: "The approved effect specification changed after review.",
+      };
+    }
+    const skillResolution = await resolvePinnedPlanSkills({
+      bindings: artifact.skillBindings || [],
+      installedSkills: getAllSkills(),
+    });
+    if (skillResolution.kind !== "compatible") {
+      return {
+        kind: "failed",
+        userMessage: skillResolution.reason,
+      };
+    }
+    this.request.loadedSkillRecords = skillResolution.loadedSkills.map(
+      (entry) => entry.loadedSkill,
+    );
+    if (storedArtifact.version !== 5 && storedArtifact.actionContract) {
+      // Compatibility execution keeps the old concrete contract after the v5
+      // projection proves that no approved target or restriction was lost.
+      this.request.actionContract = storedArtifact.actionContract;
+      this.request.classifiedIntent = storedArtifact.actionContract.intent;
       if (
-        this.request.actionProgress?.contractId !== artifact.actionContract.id
+        this.request.actionProgress?.contractId !==
+        storedArtifact.actionContract.id
       ) {
         this.request.actionProgress = undefined;
       }
-    } else if (
-      artifact.contract?.effects?.libraryMutation.approval === "after_research"
-    ) {
+    } else if (artifact.effectSpecification?.deferredEffects.length) {
       // Never retain an action contract inferred from the synthetic execution
       // prompt. Only the separately approved exact-target grant is authority.
       this.request.actionContract = undefined;
@@ -234,16 +285,34 @@ export class PlanExecutionRunSession {
       );
       if (grant?.status === "approved") {
         try {
-          this.request.actionContract = await validateResearchMutationGrant({
+          if (
+            grant.version === 4 &&
+            ledger.researchEffectSpecificationDigest !==
+              grant.effectSpecificationDigest
+          ) {
+            throw new Error(
+              "The research-selected effects changed after approval",
+            );
+          }
+          const validated = await validateResearchMutationGrant({
             grant,
-            artifact,
+            artifact: storedArtifact,
           });
+          if (validated.kind === "v5_effects") {
+            artifact = {
+              ...artifact,
+              effectSpecification: validated.effectSpecification,
+            };
+          } else {
+            this.request.actionContract = validated.contract;
+          }
         } catch {
           // A stale grant is never authority. The model must show a refreshed
           // exact-target preview before attempting another write.
         }
       }
     }
+    this.artifact = artifact;
     this.ledger = await planExecutionCoordinator.startNextTask(
       plan.executionId,
     );
@@ -264,6 +333,117 @@ export class PlanExecutionRunSession {
         (task) => task.taskId === this.ledger?.activeTaskId,
       )?.obligationIds || []
     );
+  }
+
+  activeWorkflowEffectIds(): readonly string[] | undefined {
+    const plan = this.request.planContext;
+    if (!plan) return undefined;
+    if (plan.phase !== "executing") return [];
+    const task = this.ledger?.tasks.find(
+      (entry) => entry.taskId === this.ledger?.activeTaskId,
+    );
+    if (task?.effectIds?.length) return task.effectIds;
+    if (!task || !this.artifact?.effectSpecification) return [];
+    return (
+      this.artifact.steps.find((step) => step.planStepId === task.planStepId)
+        ?.effectIds || []
+    );
+  }
+
+  approvedEffectSpecification(): PlanEffectSpecification | undefined {
+    return this.artifact?.effectSpecification;
+  }
+
+  async resolvedWorkflowMaterials(): Promise<
+    readonly ResolvedPlanMaterialBinding[]
+  > {
+    if (!this.artifact?.effectSpecification || !this.ledger) return [];
+    const bindings = [
+      ...this.artifact.effectSpecification.effects,
+      ...this.artifact.effectSpecification.deferredEffects,
+    ].flatMap((effect) =>
+      effect.materialBindings.filter(
+        (
+          binding,
+        ): binding is Extract<
+          (typeof effect.materialBindings)[number],
+          { producedByStepId: string }
+        > => "producedByStepId" in binding,
+      ),
+    );
+    const resolved: ResolvedPlanMaterialBinding[] = [];
+    for (const binding of bindings) {
+      const task = this.ledger.tasks.find(
+        (entry) =>
+          entry.planStepId === binding.producedByStepId &&
+          entry.materialOutputId === binding.outputId,
+      );
+      if (!task) continue;
+      const evidence = (
+        await listTaskEvidence(this.ledger.executionId, task.taskId)
+      ).find(
+        (entry) =>
+          entry.verified &&
+          entry.payload?.type === "material_integrity" &&
+          entry.payload.materialOutputId === binding.outputId &&
+          entry.payload.documentVersion !== undefined,
+      );
+      if (evidence?.payload?.type !== "material_integrity") continue;
+      const material = {
+        documentId: evidence.payload.documentId,
+        documentVersion: evidence.payload.documentVersion!,
+        contentHash: evidence.payload.contentHash,
+      };
+      if (!(await loadMaterialRef(material, this.request.conversationKey))) {
+        continue;
+      }
+      resolved.push({
+        producedByStepId: binding.producedByStepId,
+        outputId: binding.outputId,
+        ...material,
+      });
+    }
+    return resolved;
+  }
+
+  async resolvedWorkflowTargetBindings(): Promise<
+    Readonly<Record<string, readonly string[]>>
+  > {
+    if (!this.artifact?.effectSpecification || !this.ledger) return {};
+    const result: Record<string, string[]> = {};
+    for (const effect of this.artifact.effectSpecification.effects) {
+      if (!effect.targetBindings.length) continue;
+      const resolved = new Set<string>();
+      for (const binding of effect.targetBindings) {
+        const producerTask = this.ledger.tasks.find((task) =>
+          task.effectIds?.includes(binding.producedByEffectId),
+        );
+        if (!producerTask) continue;
+        const evidence = await listTaskEvidence(
+          this.ledger.executionId,
+          producerTask.taskId,
+        );
+        for (const entry of evidence) {
+          if (
+            !entry.verified ||
+            entry.kind !== "mutation_receipt" ||
+            entry.payload?.type !== "mutation_receipts" ||
+            !entry.payload.effectIds?.includes(binding.producedByEffectId) ||
+            entry.receipt?.verification !== "verified"
+          ) {
+            continue;
+          }
+          for (const target of [
+            ...(entry.receipt.appliedTargets || []),
+            ...(entry.receipt.alreadySatisfiedTargets || []),
+          ]) {
+            resolved.add(target);
+          }
+        }
+      }
+      if (resolved.size) result[effect.effectId] = [...resolved].sort();
+    }
+    return result;
   }
 
   workflowProgress() {
@@ -301,6 +481,36 @@ export class PlanExecutionRunSession {
     let ledger = await loadPlanExecutionLedger(plan.executionId);
     const taskId = ledger?.activeTaskId;
     if (!ledger || !taskId) return;
+    if (
+      params.result.ok &&
+      params.toolName === "approve_research_mutation" &&
+      ledger.researchEffectSpecificationDigest
+    ) {
+      const content =
+        params.result.content &&
+        typeof params.result.content === "object" &&
+        !Array.isArray(params.result.content)
+          ? (params.result.content as Record<string, unknown>)
+          : undefined;
+      const effectSpecification = decodePlanEffectSpecification(
+        content?.effectSpecification,
+      );
+      if (
+        (await researchMutationDigest(effectSpecification)) !==
+        ledger.researchEffectSpecificationDigest
+      ) {
+        throw new Error(
+          "The research-selected effects changed after their approval was persisted.",
+        );
+      }
+      if (!this.artifact) {
+        throw new Error("The approved Plan effect context is unavailable.");
+      }
+      // The approval tool can be followed by the actual write in the same
+      // agent run. Refresh the in-memory matcher from the persisted digest so
+      // the derived effect IDs are immediately usable.
+      this.artifact = { ...this.artifact, effectSpecification };
+    }
     if (params.result.actionReceipts.length) {
       ledger = await planExecutionCoordinator.attachReceiptEvidence({
         executionId: plan.executionId,
@@ -495,7 +705,7 @@ export class PlanExecutionRunSession {
         this.lastCorrectionSuccessfulToolCount = successfulToolResultCount;
         const artifact = await loadPlanArtifact(plan.planId, plan.revision);
         const requiresDocument =
-          artifact?.version === 4 &&
+          (artifact?.version === 4 || artifact?.version === 5) &&
           artifact.contract?.deliverable.kind === "document";
         const activeTask = this.ledger?.tasks.find(
           (task) => task.taskId === this.ledger?.activeTaskId,

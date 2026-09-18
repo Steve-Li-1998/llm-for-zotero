@@ -7,7 +7,7 @@ import {
 } from "../../utils/llmClient";
 import { normalizeTemperature } from "../../utils/normalization";
 import {
-  buildProviderTransportHeaders,
+  buildProviderAuthHeaders,
   resolveProviderTransportEndpoint,
 } from "../../utils/providerTransport";
 import type {
@@ -481,6 +481,7 @@ async function parseAnthropicStepStream(
   let buffer = "";
   let text = "";
   let completion: ModelTurnCompletion = { status: "complete" };
+  let receivedTerminal = false;
   const contentBlocks = new Map<number, AnthropicStreamBlockState>();
 
   const handleFrame = async (payload: string) => {
@@ -511,6 +512,10 @@ async function parseAnthropicStepStream(
     const stopReason = parsed.delta?.stop_reason ?? parsed.message?.stop_reason;
     if (typeof stopReason === "string") {
       completion = normalizeProviderCompletion(stopReason);
+    }
+    if (eventType === "message_stop") {
+      receivedTerminal = true;
+      return;
     }
     if (eventType === "content_block_start" && index >= 0) {
       const contentBlock = normalizeAnthropicContentBlock(parsed.content_block);
@@ -608,15 +613,15 @@ async function parseAnthropicStepStream(
   };
 
   try {
-    while (true) {
+    while (!receivedTerminal) {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      while (true) {
-        const marker = buffer.indexOf("\n\n");
-        if (marker < 0) break;
-        const frame = buffer.slice(0, marker);
-        buffer = buffer.slice(marker + 2);
+      while (!receivedTerminal) {
+        const separator = /\r?\n\r?\n/.exec(buffer);
+        if (!separator) break;
+        const frame = buffer.slice(0, separator.index);
+        buffer = buffer.slice(separator.index + separator[0].length);
         const lines = frame.split(/\r?\n/);
         const dataLines = lines
           .map((line) => line.trim())
@@ -627,6 +632,10 @@ async function parseAnthropicStepStream(
       }
     }
   } finally {
+    if (receivedTerminal) {
+      // The response is complete; transport cleanup must not delay its result.
+      void reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
 
@@ -797,8 +806,9 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
     });
     const response = await postWithReasoningFallback({
       url,
+      scope: { conversationKey: request.conversationKey },
       auth: { mode: "api_key", token: request.apiKey || "" },
-      headers: buildProviderTransportHeaders({
+      headers: buildProviderAuthHeaders({
         protocol: "anthropic_messages",
         apiKey: request.apiKey || "",
       }),

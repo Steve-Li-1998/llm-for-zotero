@@ -1,3 +1,4 @@
+import { withChatContentScrollGuard } from "./chatScrollSnapshots";
 import { marked } from "marked";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
@@ -37,34 +38,36 @@ export function renderStreamingMarkdownInto(
       getWindow: () => doc.defaultView,
       run: () => {
         if (!target.isConnected || streams.get(target) !== next) return;
-        // The plugin sandbox has no global performance object. Use the
-        // clock belonging to the window whose frame we are rendering.
-        const now = () => doc.defaultView?.performance.now() ?? Date.now();
-        const started = now();
-        const remainder = next.pending.slice(next.committed.length);
-        const tokens = marked.lexer(remainder);
-        // Retain the last two tokens: blank lines can still extend a list/table.
-        const stable = tokens.slice(0, -2);
-        for (const token of stable) {
-          if (now() - started >= 8) {
-            next.scheduler.schedule();
-            return;
+        withChatContentScrollGuard(target, () => {
+          // The plugin sandbox has no global performance object. Use the
+          // clock belonging to the window whose frame we are rendering.
+          const now = () => doc.defaultView?.performance.now() ?? Date.now();
+          const started = now();
+          const remainder = next.pending.slice(next.committed.length);
+          const tokens = marked.lexer(remainder);
+          // Retain the last two tokens: blank lines can still extend a list/table.
+          const stable = tokens.slice(0, -2);
+          for (const token of stable) {
+            if (now() - started >= 8) {
+              next.scheduler.schedule();
+              return;
+            }
+            const block = doc.createElement("div");
+            block.style.display = "contents";
+            renderRenderedMarkdownInto(block, token.raw, doc, {
+              onAsyncContentRendered: onResize,
+            });
+            target.insertBefore(block, next.tail);
+            next.committed += token.raw;
           }
-          const block = doc.createElement("div");
-          block.style.display = "contents";
-          renderRenderedMarkdownInto(block, token.raw, doc, {
-            onAsyncContentRendered: onResize,
-          });
-          target.insertBefore(block, next.tail);
-          next.committed += token.raw;
-        }
-        renderRenderedMarkdownInto(
-          next.tail,
-          next.pending.slice(next.committed.length),
-          doc,
-          { onAsyncContentRendered: onResize, deferEnrichment: true },
-        );
-        onResize();
+          renderRenderedMarkdownInto(
+            next.tail,
+            next.pending.slice(next.committed.length),
+            doc,
+            { onAsyncContentRendered: onResize, deferEnrichment: true },
+          );
+          onResize();
+        });
       },
     });
     streams.set(target, next);

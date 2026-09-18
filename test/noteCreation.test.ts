@@ -45,4 +45,22 @@ describe("recoverable note creation", function () {
     assert.equal(imports, 1);
     assert.equal([...native.notes.values()][0].stored, "<p>Requested text</p>");
   });
+  it("deduplicates a retry by logical action, not by equal content", async function () {
+    const first = await executeNoteCreation({
+      ...params(),
+      logicalActionId: "action:first-note",
+    } as never);
+    const retry = await executeNoteCreation({
+      ...params(),
+      logicalActionId: "action:first-note",
+    } as never);
+    const intentionalDuplicate = await executeNoteCreation({
+      ...params(),
+      logicalActionId: "action:second-note",
+    } as never);
+
+    assert.equal(retry.content.noteId, first.content.noteId);
+    assert.notEqual(intentionalDuplicate.content.noteId, first.content.noteId);
+    assert.equal(native.notes.size, 2);
+  });
 });

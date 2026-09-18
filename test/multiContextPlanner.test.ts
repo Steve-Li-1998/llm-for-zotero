@@ -8,22 +8,19 @@ import {
 } from "../src/modules/contextPanel/multiContextPlanner";
 import {
   COLLECTION_RETRIEVAL_MAX_PAPERS,
-  COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
   MAX_FULL_TEXT_PAPER_CONTEXTS,
 } from "../src/modules/contextPanel/constants";
+import { COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS } from "../src/services/retrieval/constants";
 import { estimateTextTokens } from "../src/utils/modelInputCap";
 import {
   buildChunkMetadata,
   buildPaperKey,
-} from "../src/modules/contextPanel/pdfContext";
-import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
-import { buildRetrievalQueryPlan } from "../src/modules/contextPanel/retrievalQueryPlan";
-import { pdfTextCache } from "../src/modules/contextPanel/state";
-import type {
-  ChunkStat,
-  PaperContextRef,
-  PdfContext,
-} from "../src/modules/contextPanel/types";
+} from "../src/services/paperContent/pdfContext";
+import { tokenizeRetrievalText } from "../src/services/retrieval/retrievalTokenizer";
+import { buildRetrievalQueryPlan } from "../src/services/retrieval/retrievalQueryPlan";
+import { pdfTextCache } from "../src/services/paperContent/contextCache";
+import type { PaperContextRef } from "../src/modules/contextPanel/types";
+import type { ChunkStat, PdfContext } from "../src/services/paperContent/types";
 
 function tokenize(text: string): string[] {
   return tokenizeRetrievalText(text);

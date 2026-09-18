@@ -1,4 +1,6 @@
 import { assert } from "chai";
+import { readFileSync, readdirSync, statSync } from "fs";
+import { join, relative } from "path";
 import {
   prohibitedInvocationPlan,
   readOnlyInvocationPlan,
@@ -10,7 +12,9 @@ import { evaluateActionContract } from "../src/agent/contracts/actionEvaluation"
 import { PlanAmendmentService } from "../src/agent/plans/amendments";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
+import { describeLibraryMutationInput } from "../src/agent/contracts/actionContract";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import { createBuiltInToolRegistry } from "../src/agent/tools";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import {
@@ -29,6 +33,21 @@ const describeTestMutation = () => [
     destinationCollectionIds: [],
   },
 ];
+
+const root = process.cwd();
+
+function collectAgentSourceFiles(dir: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const fullPath = join(dir, entry);
+    if (statSync(fullPath).isDirectory()) {
+      files.push(...collectAgentSourceFiles(fullPath));
+    } else if (fullPath.endsWith(".ts")) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
 
 describe("AgentToolRegistry", function () {
   const originalZotero = globalThis.Zotero;
@@ -77,6 +96,7 @@ describe("AgentToolRegistry", function () {
           let writes = 0,
             confirmations = 0;
           registry.register({
+            effectOperations: ["settings_update"],
             spec: {
               name: "interaction_write",
               description: "fixture",
@@ -111,12 +131,7 @@ describe("AgentToolRegistry", function () {
             },
             { ...baseContext, request },
           );
-          const expected =
-            entryPoint === "action_ui" ||
-            preference === "review" ||
-            mode === "safe"
-              ? 1
-              : 0;
+          const expected = preference === "review" || mode === "safe" ? 1 : 0;
           if (prepared.kind === "confirmation") {
             confirmations++;
             assert.equal(writes, 0);
@@ -143,6 +158,7 @@ describe("AgentToolRegistry", function () {
     let executions = 0;
     let checkpoints = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "settings_test",
         description: "fixture",
@@ -203,6 +219,7 @@ describe("AgentToolRegistry", function () {
     let targets = ["setting:original"],
       writes = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "changing_settings",
         description: "fixture",
@@ -300,6 +317,7 @@ describe("AgentToolRegistry", function () {
     ]) {
       const registry = new AgentToolRegistry(contracts);
       registry.register({
+        effectOperations: ["settings_update"],
         spec: {
           name: "zotero_script",
           description: "Confined read",
@@ -334,6 +352,7 @@ describe("AgentToolRegistry", function () {
     const contracts = new ActionContractService({} as never);
     const registry = new AgentToolRegistry(contracts);
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "library_settings",
         description: "Protected fixture",
@@ -407,6 +426,7 @@ describe("AgentToolRegistry", function () {
     const registry = new AgentToolRegistry(contracts);
     const written: number[] = [];
     registry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "checkpoint_tag",
         description: "Add an approved tag",
@@ -518,6 +538,7 @@ describe("AgentToolRegistry", function () {
       );
       let imports = 0;
       registry.register({
+        effectOperations: ["import_identifiers"],
         spec: {
           name: "library_import",
           description: "Import fixture",
@@ -711,6 +732,8 @@ describe("AgentToolRegistry", function () {
     );
     let validateCalls = 0;
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["zotero_script_execute"],
       spec: {
         name: "zotero_script",
         description: "run a Zotero script",
@@ -760,6 +783,7 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "mutate_library",
         description: "apply changes",
@@ -864,7 +888,7 @@ describe("AgentToolRegistry", function () {
       ["selectedOperations", "operationsJson"],
       "internal authorization diagnostics must not become user-editable review fields",
     );
-    assert.equal(result.deny().result.ok, false);
+    assert.equal((await result.deny()).result.ok, false);
     const approved = await result.execute({
       approved: true,
       data: {
@@ -881,7 +905,7 @@ describe("AgentToolRegistry", function () {
   });
 
   for (const permissionMode of ["safe", "auto", "yolo"]) {
-    it(`creates a contract-matched new note in ${permissionMode} without confirmation`, async function () {
+    it(`applies ${permissionMode} mode to a contract-matched new note`, async function () {
       globalThis.Zotero = {
         DB: new ChangeJournalTestDb(),
         Prefs: { get: () => permissionMode },
@@ -899,6 +923,7 @@ describe("AgentToolRegistry", function () {
       const registry = new AgentToolRegistry(contracts);
       let executions = 0;
       registry.register({
+        effectOperations: ["note_create"],
         spec: {
           name: "write_note",
           description: "write a Zotero note",
@@ -970,8 +995,16 @@ describe("AgentToolRegistry", function () {
         { callerKind: "model" },
       );
 
-      assert.equal(prepared.kind, "result");
-      assert.equal(executions, 1);
+      assert.equal(
+        prepared.kind,
+        permissionMode === "safe" ? "confirmation" : "result",
+      );
+      assert.equal(executions, permissionMode === "safe" ? 0 : 1);
+      if (prepared.kind === "confirmation") {
+        const approved = await prepared.execute({ approved: true });
+        assert.equal(approved.kind, "result");
+        assert.equal(executions, 1);
+      }
     });
   }
 
@@ -988,6 +1021,7 @@ describe("AgentToolRegistry", function () {
     let planCalls = 0;
     const executedTargets: string[] = [];
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "editable_write",
         description: "write a target",
@@ -1094,6 +1128,7 @@ describe("AgentToolRegistry", function () {
     );
     let executions = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "boundary_write",
         description: "write a target",
@@ -1186,6 +1221,8 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["import_identifiers"],
       spec: {
         name: "mutate_library",
         description: "apply changes",
@@ -1273,6 +1310,7 @@ describe("AgentToolRegistry", function () {
     );
     let executions = 0;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "mutate_library",
         description: "apply changes",
@@ -1329,6 +1367,8 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["note_edit"],
       spec: {
         name: "edit_current_note",
         description: "edit the active note",
@@ -1400,6 +1440,8 @@ describe("AgentToolRegistry", function () {
       execute: async () => ({ value: "read" }),
     });
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["settings_update"],
       spec: {
         name: "write_tool_list",
         description: "list write-tool state",
@@ -1461,6 +1503,7 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "write_tool",
         description: "write",
@@ -1548,6 +1591,8 @@ describe("AgentToolRegistry", function () {
       new ActionContractService({} as never),
     );
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["settings_update"],
       spec: {
         name: "unknown_write",
         description: "write",
@@ -1629,6 +1674,8 @@ describe("AgentToolRegistry", function () {
     );
     let executions = 0;
     registry.register({
+      describeAction: describeLibraryMutationInput,
+      effectOperations: ["settings_update"],
       spec: {
         name: "unknown_external_effect",
         description: "unknown write",
@@ -1671,6 +1718,7 @@ describe("AgentToolRegistry", function () {
     const registry = new AgentToolRegistry();
     let executed = false;
     registry.register({
+      effectOperations: ["settings_update"],
       spec: {
         name: "unverified_write",
         description: "write",
@@ -1734,6 +1782,7 @@ describe("AgentToolRegistry", function () {
     options: { withPendingAction?: boolean } = {},
   ) {
     registry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "judgment_tags",
         description: "fixture",
@@ -1845,6 +1894,7 @@ describe("AgentToolRegistry", function () {
     let targets = ["item:41"],
       writes = 0;
     registry.register({
+      effectOperations: ["apply_tags"],
       spec: {
         name: "judgment_tags",
         description: "fixture",
@@ -1943,7 +1993,7 @@ describe("AgentToolRegistry", function () {
     assert.isEmpty(request.actionProgress.authorizationGrants || []);
   });
 
-  it("yolo executes a reviewed judgment write after the user approves it", async function () {
+  it("yolo executes a judgment write without honoring a generic forced permission prompt", async function () {
     globalThis.Zotero = {
       DB: new ChangeJournalTestDb(),
       Prefs: { get: () => "yolo" },
@@ -1972,9 +2022,7 @@ describe("AgentToolRegistry", function () {
       },
       { forceConfirmation: true },
     );
-    assert.equal(prepared.kind, "confirmation");
-    if (prepared.kind !== "confirmation") return;
-    const executed = await prepared.execute({ approved: true });
+    const executed = prepared;
     assert.equal(executed.kind, "result");
     if (executed.kind !== "result") return;
     assert.isTrue(
@@ -1989,13 +2037,10 @@ describe("AgentToolRegistry", function () {
           grant.status,
         ],
       ),
-      [["safe_confirmation", "executed"]],
-      "user approval takes precedence over the agent's judgment",
+      [["yolo_judgment", "executed"]],
+      "the exact action records delegated judgment",
     );
-    assert.isUndefined(
-      executed.execution.result.authority,
-      "a write the user reviewed is not labelled as the agent's own call",
-    );
+    assert.equal(executed.execution.result.authority, "yolo_judgment");
   });
 
   it("yolo ledgers an off-plan judgment write as yolo_judgment inside an executing plan", async function () {
@@ -2050,5 +2095,327 @@ describe("AgentToolRegistry", function () {
       "the judgment marker, not the plan-approval policy, decides the authority",
     );
     assert.equal(prepared.execution.result.authority, "yolo_judgment");
+  });
+
+  describe("external_effect registration", function () {
+    const effectDefinition = () => ({
+      spec: {
+        name: "registered_effect",
+        description: "fixture",
+        inputSchema: { type: "object" },
+        executionClass: "external_effect" as const,
+        workCategory: "zotero_action" as const,
+      },
+      effectOperations: ["settings_update" as const],
+      validate: (args: unknown) => ({ ok: true as const, value: args }),
+      describeAction: describeTestMutation,
+      execute: async () => ({ content: {}, effect: "applied" as const }),
+    });
+
+    it("accepts an external_effect tool that declares its adapter and operations", function () {
+      const registry = new AgentToolRegistry();
+      registry.register(effectDefinition());
+      assert.isDefined(registry.getTool("registered_effect"));
+    });
+
+    it("refuses an external_effect tool with no typed action adapter", function () {
+      const registry = new AgentToolRegistry();
+      const { describeAction, ...withoutAdapter } = effectDefinition();
+      assert.isFunction(describeAction);
+      assert.throws(
+        () => registry.register(withoutAdapter as never),
+        /registered_effect.*describeAction/s,
+      );
+      assert.isUndefined(registry.getTool("registered_effect"));
+    });
+
+    it("refuses an external_effect tool that declares no effect operations", function () {
+      const registry = new AgentToolRegistry();
+      const { effectOperations, ...withoutOperations } = effectDefinition();
+      assert.isArray(effectOperations);
+      assert.throws(
+        () => registry.register(withoutOperations as never),
+        /registered_effect.*effectOperations/s,
+      );
+      assert.throws(
+        () =>
+          registry.register({ ...effectDefinition(), effectOperations: [] }),
+        /registered_effect.*effectOperations/s,
+      );
+    });
+
+    it("refuses an effect operation that is not in the operation catalog", function () {
+      const registry = new AgentToolRegistry();
+      assert.throws(
+        () =>
+          registry.register({
+            ...effectDefinition(),
+            effectOperations: ["settings_update", "teleport_items"] as never,
+          }),
+        /teleport_items.*operation catalog/s,
+      );
+    });
+
+    it("exempts control and read classes by class, not by tool name", function () {
+      const registry = new AgentToolRegistry();
+      const control = effectDefinition();
+      registry.register({
+        ...control,
+        spec: {
+          ...control.spec,
+          name: "control_shaped_like_library_batch",
+          executionClass: "control",
+        },
+        describeAction: undefined,
+        effectOperations: undefined,
+      } as never);
+      registry.register({
+        ...control,
+        spec: {
+          ...control.spec,
+          name: "plain_read",
+          executionClass: "read",
+          workCategory: "retrieval",
+        },
+        describeAction: undefined,
+        effectOperations: undefined,
+      } as never);
+      assert.isDefined(registry.getTool("control_shaped_like_library_batch"));
+      assert.isDefined(registry.getTool("plain_read"));
+    });
+
+    it("refuses a described operation the tool never declared", async function () {
+      const registry = new AgentToolRegistry(
+        new ActionContractService({} as never),
+      );
+      registry.register({
+        ...effectDefinition(),
+        spec: { ...effectDefinition().spec, name: "drifting_effect" },
+        effectOperations: ["settings_update"],
+        describeAction: () => [
+          {
+            id: "annotation_write:1",
+            proofDomain: "zotero_state" as const,
+            capability: "zotero.annotations" as const,
+            operation: "annotation_write" as const,
+            source: "zotero_native" as const,
+            requestedTargets: [],
+            destinationCollectionIds: [],
+          },
+        ],
+        planInvocation: () =>
+          stateChangeInvocationPlan({ reason: "Drifted test effect." }),
+      });
+
+      const prepared = await registry.prepareExecution(
+        { id: "drift", name: "drifting_effect", arguments: {} },
+        baseContext,
+      );
+      assert.equal(prepared.kind, "result");
+      if (prepared.kind !== "result") return;
+      assert.isFalse(prepared.execution.result.ok);
+      assert.include(
+        JSON.stringify(prepared.execution.result.content),
+        'Typed action adapter for drifting_effect described \\"annotation_write\\", which it never declared: effectOperations is [settings_update].',
+      );
+    });
+
+    it("refuses the shared library-mutation adapter's read_full branch when the tool never declared it", async function () {
+      const registry = new AgentToolRegistry(
+        new ActionContractService({} as never),
+      );
+      registry.register({
+        ...effectDefinition(),
+        spec: { ...effectDefinition().spec, name: "full_read_effect" },
+        effectOperations: ["settings_update"],
+        describeAction: describeLibraryMutationInput,
+        validate: () => ({ ok: true as const, value: { mode: "full" } }),
+        planInvocation: () =>
+          stateChangeInvocationPlan({ reason: "Full-read test effect." }),
+      });
+
+      const prepared = await registry.prepareExecution(
+        { id: "full-read", name: "full_read_effect", arguments: {} },
+        baseContext,
+      );
+      assert.equal(prepared.kind, "result");
+      if (prepared.kind !== "result") return;
+      assert.isFalse(prepared.execution.result.ok);
+      assert.include(
+        JSON.stringify(prepared.execution.result.content),
+        'Typed action adapter for full_read_effect described \\"read_full\\", which it never declared: effectOperations is [settings_update].',
+      );
+    });
+
+    it("keeps every production external_effect tool declaring its operations", function () {
+      const production = createBuiltInToolRegistry({
+        zoteroGateway: {} as never,
+        pdfService: {} as never,
+        pdfPageService: {} as never,
+        retrievalService: {} as never,
+      });
+      const undeclared = production
+        .listToolDefinitions()
+        .filter(
+          (tool) =>
+            tool.spec.executionClass === "external_effect" &&
+            !(tool.describeAction && tool.effectOperations?.length),
+        )
+        .map((tool) => tool.spec.name);
+      assert.deepEqual(undeclared, []);
+    });
+  });
+  describe("requiresConfirmation scope", function () {
+    const production = () =>
+      createBuiltInToolRegistry({
+        zoteroGateway: {} as never,
+        pdfService: {} as never,
+        pdfPageService: {} as never,
+        retrievalService: {} as never,
+      });
+
+    it("keeps the flag only on the specs the controller reads it for", function () {
+      const specs = production()
+        .listToolDefinitions()
+        .map((tool) => tool.spec);
+      const userInput = specs
+        .filter((spec) => spec.interaction === "user_input")
+        .map((spec) => spec.name)
+        .sort();
+      assert.deepEqual(userInput, [
+        "amend_plan",
+        "approve_research_expansion",
+        "approve_research_mutation",
+        "request_user_input",
+      ]);
+      for (const spec of specs) {
+        if (spec.interaction === "user_input") {
+          assert.isBoolean(
+            spec.requiresConfirmation,
+            `${spec.name} must still declare its pause`,
+          );
+          continue;
+        }
+        assert.notProperty(
+          spec,
+          "requiresConfirmation",
+          `${spec.name} must not carry a tool-private confirmation rule`,
+        );
+      }
+    });
+
+    it("stamps the interaction kind on the card an interaction tool raises", async function () {
+      // The trace renders a planning question differently from an approval.
+      // It must read that from the action, not recognise the host's own
+      // interaction tool by name.
+      globalThis.Zotero = {
+        DB: new ChangeJournalTestDb(),
+        Prefs: { get: () => "auto" },
+        debug: () => undefined,
+      } as never;
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry(
+        new ActionContractService({} as never),
+      );
+      registry.register({
+        spec: {
+          name: "ask_the_user",
+          description: "fixture",
+          inputSchema: { type: "object" },
+          executionClass: "control",
+          workCategory: "planning",
+          requiresConfirmation: true,
+          interaction: "user_input",
+        },
+        validate: (args) => ({ ok: true, value: args }),
+        planInvocation: () =>
+          readOnlyInvocationPlan({
+            domains: [],
+            reason: "The fixture only records an answer.",
+          }),
+        createPendingAction: () => ({
+          toolName: "ask_the_user",
+          title: "Agent needs your input",
+          mode: "review",
+          confirmLabel: "Continue",
+          cancelLabel: "Cancel",
+          fields: [],
+        }),
+        execute: async () => ({ answered: true }),
+      } as never);
+      const asked = await registry.prepareExecution(
+        { id: "ask-1", name: "ask_the_user", arguments: {} },
+        baseContext,
+      );
+      assert.equal(asked.kind, "confirmation");
+      if (asked.kind !== "confirmation") return;
+      assert.equal(asked.action.interaction, "user_input");
+
+      registry.register({
+        spec: {
+          name: "confirm_something",
+          description: "fixture",
+          inputSchema: { type: "object" },
+          executionClass: "external_effect",
+          workCategory: "zotero_action",
+          requiresConfirmation: true,
+        },
+        effectOperations: ["settings_update"],
+        validate: (args) => ({ ok: true, value: args }),
+        describeAction: describeTestMutation,
+        planInvocation: () =>
+          stateChangeInvocationPlan({
+            domains: ["zotero_library"],
+            effects: ["modify"],
+            reason: "Apply exact requested setting",
+          }),
+        createPendingAction: () => ({
+          toolName: "confirm_something",
+          title: "Approve",
+          mode: "review",
+          confirmLabel: "Run",
+          cancelLabel: "Cancel",
+          fields: [],
+        }),
+        execute: async () => ({ content: { ok: true }, effect: "applied" }),
+      } as never);
+      (globalThis.Zotero.Prefs as any).get = () => "safe";
+      const approval = await registry.prepareExecution(
+        { id: "confirm-1", name: "confirm_something", arguments: {} },
+        JSON.parse(JSON.stringify(baseContext)),
+        { forceConfirmation: true },
+      );
+      assert.equal(approval.kind, "confirmation");
+      if (approval.kind !== "confirmation") return;
+      assert.isUndefined(
+        approval.action.interaction,
+        "an approval is not a question the run is waiting on an answer to",
+      );
+    });
+
+    it("leaves no spec literal in the source tree declaring one outside user input", function () {
+      const offenders: string[] = [];
+      let inspected = 0;
+      for (const path of collectAgentSourceFiles(join(root, "src/agent"))) {
+        const lines = readFileSync(path, "utf8").split("\n");
+        lines.forEach((line, index) => {
+          if (!/^\s*requiresConfirmation: (true|false),$/.test(line)) return;
+          inspected += 1;
+          const window = lines.slice(index - 4, index + 5).join("\n");
+          if (/interaction: "user_input"/.test(window)) return;
+          offenders.push(`${relative(root, path)}:${index + 1}`);
+        });
+      }
+      assert.deepEqual(
+        offenders,
+        [],
+        "requiresConfirmation is read only for interaction: 'user_input' specs",
+      );
+      assert.equal(
+        inspected,
+        4,
+        "the source scan lost or gained requiresConfirmation sites; update the count deliberately",
+      );
+    });
   });
 });

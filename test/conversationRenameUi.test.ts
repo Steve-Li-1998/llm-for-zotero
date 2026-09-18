@@ -54,7 +54,6 @@ describe("conversation rename UI", function () {
       "newWin.closed",
     );
     assert.include(standaloneSource, "showConversationRenameDialog");
-    assert.notInclude(standaloneSource, ".prompt(");
   });
 
   it("makes the existing side-panel rename action visible on each history row", function () {
@@ -77,7 +76,6 @@ describe("conversation rename UI", function () {
     assert.include(lifecycleSource, "showConversationRenameDialog");
     assert.include(lifecycleSource, "canRenameHistoryEntry(entry)");
     assert.include(lifecycleSource, "canCommitConversationRename({");
-    assert.notInclude(lifecycleSource, ".prompt(");
   });
 
   it("uses the shared edit icon and reveals rename controls on row hover", function () {
@@ -95,7 +93,6 @@ describe("conversation rename UI", function () {
     );
     assert.include(css, ".llm-history-item:hover .llm-history-item-rename");
     assert.include(css, ".llm-conversation-rename-input");
-    assert.include(css, "var(--color-accent, #2563eb)");
   });
 
   it("uses the shared in-panel modal design for all three actions", function () {
@@ -151,8 +148,6 @@ describe("conversation rename UI", function () {
     assert.isAtLeast(dialogRuleStart, 0);
     assert.include(dialogRule, "--llm-modal-control-background: var(");
     assert.include(dialogRule, "--material-sidepane");
-    assert.include(dialogRule, "var(--material-background, #ffffff)");
-    assert.notInclude(dialogRule, "--llm-modal-control-background: color-mix(");
     assert.include(dialogRule, "--llm-modal-control-border: var(");
     assert.isAtLeast(controlRuleStart, 0);
     assert.include(

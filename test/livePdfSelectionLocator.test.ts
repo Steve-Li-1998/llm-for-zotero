@@ -6,8 +6,6 @@ import {
   locateQuoteInLivePdfReader,
   locateSelectionInPageTexts,
   resolvePageIndexForLabel,
-  stripBoundaryEllipsis,
-  splitQuoteAtEllipsis,
   getCachedPageTextForAttachment,
   getCurrentSelectionPageLocationFromReader,
   getPageLabelForIndex,
@@ -23,6 +21,10 @@ import {
   warmQuoteLocationCacheForAttachment,
   waitForFindControllerPageMatchesForTests,
 } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import {
+  splitQuoteAtEllipsis,
+  stripBoundaryEllipsis,
+} from "../src/services/quotes/quoteTextSearch";
 
 function installPdfWorkerStub(
   handler: (

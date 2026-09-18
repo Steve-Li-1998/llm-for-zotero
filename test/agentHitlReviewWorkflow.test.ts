@@ -20,10 +20,6 @@ import type {
   AgentRuntimeRequest,
   AgentToolDefinition,
 } from "../src/agent/types";
-import {
-  classifiedFixture,
-  declaredSemanticInterpreter,
-} from "./helpers/semanticIntent";
 
 type MockDbRow = Record<string, unknown>;
 
@@ -135,7 +131,6 @@ function makeRequest(
   overrides: Partial<AgentRuntimeRequest> = {},
 ): AgentRuntimeRequest {
   return {
-    classifiedIntent: classifiedFixture(),
     conversationKey: 51,
     mode: "agent",
     userText: "Find related papers from the internet",
@@ -188,6 +183,7 @@ function createStubFacadeTool(
   acceptActionIds: string[] = [],
 ): AgentToolDefinition<Record<string, unknown>, unknown> {
   return {
+    effectOperations: ["settings_update"],
     spec: {
       name: toolName,
       description: toolName,
@@ -332,7 +328,6 @@ describe("AgentRuntime HITL review workflow", function () {
         },
       ]);
       const runtime = new AgentRuntime({
-        semanticInterpreter: declaredSemanticInterpreter,
         registry,
         adapterFactory: () => adapter,
       });
@@ -468,7 +463,6 @@ describe("AgentRuntime HITL review workflow", function () {
                 },
               };
             };
-            const bypassProse = mode === "auto" && !approve;
             const adapter = new StepAdapter([
               callStep("literature_search", {
                 mode: "search",
@@ -476,14 +470,6 @@ describe("AgentRuntime HITL review workflow", function () {
                 query: "population coding",
                 limit: 12,
               }),
-              ...(bypassProse
-                ? [
-                    {
-                      kind: "final",
-                      text: "Here are my recommendations.",
-                    } as AgentModelStep,
-                  ]
-                : []),
               () =>
                 callStep("literature_review", {
                   selections: [8, 2, 10, 4, 1].map((candidateIndex) => ({
@@ -495,10 +481,6 @@ describe("AgentRuntime HITL review workflow", function () {
                 }),
               ...(expand
                 ? [
-                    {
-                      kind: "final",
-                      text: "Already showed the card.",
-                    } as AgentModelStep,
                     () =>
                       callStep("literature_review", {
                         sessionId,
@@ -513,20 +495,12 @@ describe("AgentRuntime HITL review workflow", function () {
                 : []),
             ]);
             const runtime = new AgentRuntime({
-              semanticInterpreter: declaredSemanticInterpreter,
               registry,
               adapterFactory: () => adapter,
             });
             const cards: string[] = [];
             const outcome = await runtime.runTurn({
               request: makeRequest({
-                classifiedIntent: {
-                  ...classifiedFixture(),
-                  semantic: {
-                    ...classifiedFixture().semantic!,
-                    literature: "select_then_import",
-                  },
-                },
                 userText:
                   "Find five papers relevant to this paper. Let me review them before importing.",
                 metadata: { permissionMode: mode },

@@ -48,8 +48,129 @@ function changeValue(
   element.dispatchEvent(event);
 }
 
+async function assertIconLoads(win: Window, icon: Element, asset: string) {
+  const style = win.getComputedStyle(icon);
+  const image =
+    style.backgroundImage !== "none" ? style.backgroundImage : style.maskImage;
+  assert.include(image, asset, "native CSS resolves the bundled asset");
+  const url = image.match(/url\(["']?(.*?)["']?\)/)![1];
+  const img = win.document.createElementNS(
+    "http://www.w3.org/1999/xhtml",
+    "img",
+  ) as HTMLImageElement;
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error(`Could not load ${asset}`));
+    img.src = url;
+  });
+  assert.isAbove(img.naturalWidth, 0, "SVG decodes in Zotero");
+}
+
 describe("workflow: explicit provider selection", function () {
   this.timeout(30000);
+
+  it("renders bundled logos and refreshes the header when switching presets", async function () {
+    const keys = [
+      "modelProviderGroups",
+      "modelProviderGroupsMigrationVersion",
+      "lastUsedModelEntryId",
+      "outputTokenAutoMigrationNoticePending",
+    ];
+    const previous = new Map(
+      keys.map((key) => [key, Zotero.Prefs.get(`${prefix}.${key}`, true)]),
+    );
+    let win: Window | undefined;
+    try {
+      setModelProviderGroups([
+        {
+          id: groupId,
+          authMode: "api_key",
+          apiBase: "https://api.openai.com/v1",
+          apiKey: "",
+          presetIdOverride: "openai",
+          providerProtocol: "openai_chat_compat",
+          models: [
+            {
+              id: "workflow-logo-model",
+              model: "demo-model",
+              temperature: 0.3,
+              outputTokenLimit: { mode: "auto" },
+            },
+          ],
+        },
+        {
+          id: "workflow-webchat-icon",
+          authMode: "webchat",
+          apiBase: "",
+          apiKey: "",
+          providerProtocol: "webchat_bridge",
+          models: ["chatgpt.com", "chat.deepseek.com"].map((model, index) => ({
+            id: `workflow-webchat-model-${index}`,
+            model,
+            temperature: 0.3,
+            outputTokenLimit: { mode: "auto" as const },
+          })),
+        },
+      ]);
+      win = await openPreferences();
+      for (const [preset, modifier, label, asset] of [
+        ["openai", "preset-openai", "OpenAI · API", "providers/openai.svg"],
+        ["gemini", "preset-gemini", "Gemini · API", "providers/gemini.svg"],
+        ["customized", "provider", "Customized · API", "custom-api.svg"],
+      ]) {
+        const select = win.document.querySelector(
+          presetSelector,
+        ) as HTMLSelectElement;
+        if (select.value !== preset) {
+          changeValue(select, preset, "change");
+          await waitFor(
+            () => !select.isConnected,
+            "preset selection rerenders the card",
+          );
+        }
+        const row = win.document.querySelector(
+          `[data-llm-provider-row="${groupId}"]`,
+        )!;
+        const icon = row.querySelector(`.llm-pref-row-icon--${modifier}`)!;
+        assert.isOk(icon, `${preset} header icon`);
+        assert.include(
+          row.querySelector(".llm-pref-row-sub")!.textContent!,
+          label,
+        );
+        await assertIconLoads(win, icon, asset);
+        const toggle = row.querySelector(
+          ".llm-pref-row-toggle",
+        ) as HTMLButtonElement;
+        if (row.getAttribute("data-open") === "true") toggle.click();
+        toggle.click();
+        assert.equal(row.getAttribute("data-open"), "true");
+        toggle.click();
+        assert.equal(row.getAttribute("data-open"), "false");
+      }
+      await closePreferences(win);
+      win = await openPreferences();
+      assert.isOk(
+        win.document.querySelector(".llm-pref-row-icon--provider"),
+        "customized icon survives reopening",
+      );
+      const webchatIcon = win.document.querySelector(
+        ".llm-pref-row-icon--webchat",
+      )!;
+      assert.isOk(webchatIcon, "mixed WebChat keeps its generic icon");
+      assert.equal(
+        win.getComputedStyle(webchatIcon).maskImage,
+        "none",
+        "WebChat artwork retains its colors",
+      );
+      await assertIconLoads(win, webchatIcon, "webchat-connection.svg");
+    } finally {
+      if (win && !win.closed) await closePreferences(win);
+      for (const [key, value] of previous) {
+        if (value === undefined) Zotero.Prefs.clear(`${prefix}.${key}`, true);
+        else Zotero.Prefs.set(`${prefix}.${key}`, value, true);
+      }
+    }
+  });
 
   for (const scenario of [
     {

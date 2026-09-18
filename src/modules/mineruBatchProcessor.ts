@@ -2,19 +2,21 @@ import {
   parsePdfWithMineru,
   MineruRateLimitError,
   MineruCancelledError,
+  MineruPageLimitError,
 } from "../utils/mineruClient";
 import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
   getMineruCacheDir,
-} from "./contextPanel/mineruCache";
-import { invalidateCachedContextText } from "./contextPanel/pdfContext";
+} from "../services/mineru/mineruCache";
+import { invalidateCachedContextText } from "../services/paperContent/pdfContext";
 import {
   setItemProcessing,
   setItemCached,
   setItemFailed,
   clearAllCachedStatuses,
   clearItemCachedStatus,
+  clearItemStatus,
   runMineruTaskOnce,
 } from "./mineruProcessingStatus";
 import {
@@ -23,14 +25,16 @@ import {
   getMineruAvailabilityForAttachment,
   publishMineruCachePackageForAttachment,
   type MineruAvailabilityStatus,
-} from "./contextPanel/mineruSync";
+} from "../services/mineru/sync";
 import { normalizeMineruTagName } from "./mineruTagIndex";
 import {
   getMineruParseEligibility,
+  updateMineruPdfPageCount,
   type MineruParseExclusionReason,
 } from "./mineruParseEligibility";
 import {
   buildMineruFilenameMatcher,
+  getMineruMaxAutoPages,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
 
@@ -58,6 +62,7 @@ type QueueEntry = {
   parentItemId: number;
   attachmentId: number;
   title: string;
+  overrideEligibility: boolean;
 };
 
 // ── Singleton state ──────────────────────────────────────────────────────────
@@ -294,6 +299,7 @@ async function buildQueue(): Promise<void> {
         parentItemId: parentItem?.id || pdfAtt.id,
         attachmentId: pdfAtt.id,
         title,
+        overrideEligibility: false,
       });
     }
   }
@@ -361,6 +367,9 @@ async function processNext(): Promise<void> {
           pdfPath as string,
           report,
           sharedSignal,
+          entry.overrideEligibility
+            ? {}
+            : { maxPages: getMineruMaxAutoPages() },
         );
         if (sharedSignal?.aborted) throw new MineruCancelledError();
         if (!parsed?.mdContent) return parsed;
@@ -439,6 +448,15 @@ async function processNext(): Promise<void> {
       queue.unshift(entry);
       currentAbort = null;
       notify();
+      return;
+    }
+    if (e instanceof MineruPageLimitError) {
+      updateMineruPdfPageCount(entry.attachmentId, e.pageCount);
+      clearItemStatus(entry.attachmentId);
+      state.totalCount--;
+      ztoolkit.log(`MinerU batch: skipped "${entry.title}" - ${e.message}`);
+      currentAbort = null;
+      scheduleNext();
       return;
     }
     const errMsg = (e as Error).message || String(e);
@@ -520,9 +538,15 @@ export async function processSelectedItems(
     });
     if (eligibility.excluded && !options.overrideEligibility) continue;
     const title = parentItem?.getField?.("title") || `Item ${attId}`;
-    queue.push({ parentItemId: parentId || attId, attachmentId: attId, title });
+    queue.push({
+      parentItemId: parentId || attId,
+      attachmentId: attId,
+      title,
+      overrideEligibility: options.overrideEligibility === true,
+    });
   }
 
+  queueBuilt = true;
   state.paused = false;
   state.rateLimited = false;
   state.error = null;

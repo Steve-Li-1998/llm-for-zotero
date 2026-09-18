@@ -29,10 +29,11 @@ export function resolveActionInteraction(
   return {
     entryPoint:
       request.actionEntryPoint || (forceReview ? "action_ui" : "conversation"),
-    reviewPreference: preferences.includes("review")
-      ? "review"
-      : preferences.includes("direct")
-        ? "direct"
-        : "default",
+    reviewPreference:
+      forceReview || preferences.includes("review")
+        ? "review"
+        : preferences.includes("direct")
+          ? "direct"
+          : "default",
   };
 }

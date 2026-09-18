@@ -56,17 +56,15 @@ export function failedTurnError(
 }
 
 export function confirmationDecision(
-  mode: Mode,
+  _mode: Mode,
   expected: ConfirmationExpectation,
   kind: string,
   effectful = kind === "approval",
 ) {
   if (expected === "review" && kind === "review" && !effectful)
     return { approve: false };
-  if (mode === "safe" && effectful) {
-    if (expected === "approval") return { approve: true };
-    if (expected === "cancel") return { approve: false };
-  }
+  if (effectful && expected === "approval") return { approve: true };
+  if (effectful && expected === "cancel") return { approve: false };
   return { approve: false, failure: "Unexpected confirmation" };
 }
 

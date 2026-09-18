@@ -1,6 +1,6 @@
 import { assert } from "chai";
-import { normalizeNoteSourceText } from "../src/modules/contextPanel/notes";
-import { stripNoteHtml } from "../src/modules/contextPanel/noteSnapshot";
+import { normalizeNoteSourceText } from "../src/services/notes/noteRendering";
+import { stripNoteHtml } from "../src/services/notes/noteSnapshot";
 import { renderMarkdownForNote } from "../src/utils/markdown";
 import { noteContentMatches } from "../src/agent/services/libraryMutation/handlerUtilities";
 

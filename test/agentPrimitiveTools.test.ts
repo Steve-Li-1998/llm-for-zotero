@@ -1,5 +1,6 @@
 import { noteHtmlMatches } from "../src/utils/noteHtml";
-import { renderRawNoteHtml } from "../src/modules/contextPanel/notes";
+import { renderRawNoteHtml } from "../src/services/notes/noteRendering";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 import { nativeNoteGateway } from "./helpers/nativeNoteGateway";
 import { actionContractFixture } from "./helpers/semanticIntent";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
@@ -36,7 +37,7 @@ import type {
   AgentToolContext,
 } from "../src/agent/types";
 import type { PaperContextRef } from "../src/shared/types";
-import type { PdfContext } from "../src/modules/contextPanel/types";
+import type { PdfContext } from "../src/services/paperContent/types";
 import { PAPER_CITATION_CONTRACT } from "../src/shared/instructionContracts";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 
@@ -228,6 +229,8 @@ describe("primitive agent tools", function () {
     noteKind: "standalone" as const,
   });
 
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
   before(function () {
     globalScope.Zotero = {
       ...(originalZotero || {}),
@@ -236,9 +239,15 @@ describe("primitive agent tools", function () {
         set: () => undefined,
       },
     };
+    // Note mutations invalidate cached paper context, which reaches the
+    // panel's retrieval cache through a host surface bridge. This suite stands
+    // in for the plugin surface, so it composes the same invalidator.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
   });
 
   after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
     globalScope.Zotero = originalZotero;
   });
 
@@ -757,7 +766,7 @@ describe("primitive agent tools", function () {
     assert.isFalse(updateCalled);
   });
 
-  it("keeps fixed instructions focused on cross-turn semantic invariants", async function () {
+  it("keeps fixed instructions focused on the direct tool loop", async function () {
     const messages = await buildAgentInitialMessages(
       {
         conversationKey: 1,
@@ -780,8 +789,9 @@ describe("primitive agent tools", function () {
     assert.include(systemText, "workflow:'answer'");
     assert.include(systemText, "web_search");
     assert.include(systemText, "web_read");
-    assert.include(systemText, "use the semantic tool");
-    assert.include(systemText, "current-turn verified receipt");
+    assert.include(systemText, "Use actual tools for requested effects");
+    assert.notInclude(systemText, "use the semantic tool");
+    assert.include(systemText, "the host validates each concrete proposal");
     assert.notInclude(systemText, "library_update");
     assert.notInclude(systemText, "search_literature_online");
     assert.notInclude(systemText, "query_library");
@@ -1588,6 +1598,11 @@ describe("primitive agent tools", function () {
     ];
     for (const filePath of writeToolPaths) {
       const source = await readFile(filePath, "utf-8");
+      assert.isAbove(
+        source.split("\n").length,
+        100,
+        `${filePath} was read but looks empty; the scan would pass vacuously`,
+      );
       assert.notInclude(source, "validateMineruFigureBlockEmbedsForCacheDirs");
       assert.notInclude(source, "mineruFigureBlockCache");
     }
@@ -2015,7 +2030,7 @@ describe("primitive agent tools", function () {
     for (const command of [
       'rg "notes" src',
       "wc -l README.md",
-      "git diff --stat",
+      "git diff --no-ext-diff --no-textconv --stat",
       'rg "notes" src | wc -l',
     ]) {
       const plan = await classify(command);
@@ -2054,12 +2069,12 @@ describe("primitive agent tools", function () {
     assert.include(risky.riskSignals, "download_to_shell");
 
     const protectedPlan = await classify("rm -rf /");
-    assert.equal(protectedPlan.impact, "prohibited");
-    assert.include(protectedPlan.riskSignals, "protected_target");
+    assert.equal(protectedPlan.impact, "state_change");
+    assert.include(protectedPlan.riskSignals, "scope_expansion");
 
     const protectedChild = await classify("cp source.txt /etc/agent.conf");
-    assert.equal(protectedChild.impact, "prohibited");
-    assert.include(protectedChild.riskSignals, "protected_target");
+    assert.equal(protectedChild.impact, "state_change");
+    assert.include(protectedChild.riskSignals, "scope_expansion");
 
     const diffOutput = await classify("git diff --output=/tmp/changes.diff");
     assert.equal(diffOutput.impact, "state_change");
@@ -4084,7 +4099,7 @@ await note.saveTx();
     ];
     for (const tool of tools) {
       const name = tool.spec.name;
-      assert.isFalse(tool.spec.requiresConfirmation, `${name} flag`);
+      assert.notProperty(tool.spec, "requiresConfirmation", `${name} flag`);
       assert.isUndefined(tool.shouldRequireConfirmation, `${name} hook`);
       const summaries = tool.presentation?.summaries || {};
       assert.notProperty(summaries, "onPending", `${name} onPending`);

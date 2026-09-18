@@ -3,6 +3,7 @@ import {
   config,
   GLOBAL_CONVERSATION_KEY_BASE,
 } from "./constants";
+import { isConversationKeyForKind } from "../../shared/conversationKeySpace";
 import {
   activeContextPanels,
   activeContextPanelRawItems,
@@ -24,8 +25,8 @@ import {
   resolveShortcutMode,
   createGlobalPortalItem,
   createPaperPortalItem,
-  isGlobalPortalItem,
 } from "./portalScope";
+import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   applyPanelFontScale,
@@ -40,6 +41,10 @@ import {
   setStandaloneSidebarWidthPref,
 } from "./prefHelpers";
 import { buildUI } from "./buildUI";
+import {
+  createHistoryActivityIndicator,
+  observeHistoryActivity,
+} from "./historyActivity";
 import {
   disposeSetupHandlers,
   setupHandlers,
@@ -678,6 +683,7 @@ export function openStandaloneChat(options?: {
   let initialRuntimeModeSeeded = false;
   let standaloneAttachmentGcTimer: number | null = null;
   let unsubscribeStandalonePendingDeletions: (() => void) | null = null;
+  let disposeHistoryActivity: (() => void) | null = null;
   let themeObserver: {
     observe(target: Node, options: MutationObserverInit): void;
     disconnect(): void;
@@ -987,6 +993,7 @@ export function openStandaloneChat(options?: {
       lowerArea.className = "llm-standalone-lower";
 
       const sidebarView = createStandaloneSidebarView(doc, t);
+      disposeHistoryActivity = observeHistoryActivity(sidebarView.list);
       const sidebar = sidebarView.root;
       const sidebarPanel = sidebarView.panel;
       const iconSidebarToggle = sidebarView.toggleButton;
@@ -1936,7 +1943,16 @@ export function openStandaloneChat(options?: {
             deleteBtn.setAttribute("aria-label", t("Delete conversation"));
             deleteBtn.title = t("Delete conversation");
             deleteBtn.dataset.action = "delete";
-            btn.append(titleSpan, renameBtn, deleteBtn);
+            btn.append(
+              createHistoryActivityIndicator(
+                doc,
+                conv.conversationKey,
+                t("Working"),
+              ),
+              titleSpan,
+              renameBtn,
+              deleteBtn,
+            );
             btn.title = conv.title || t("Untitled chat");
             sidebarList.appendChild(btn);
           }
@@ -3392,6 +3408,24 @@ export function openStandaloneChat(options?: {
         row.click();
       });
 
+      /**
+       * The conversation on screen may belong to the runtime the window is
+       * leaving: `currentConversationSystem` flips before the key moves. Only a
+       * key from the entered runtime's own key space may be offered as that
+       * runtime's current draft, or the window would mount the new runtime on
+       * the old runtime's conversation and its declared scope would stop
+       * describing what it is showing.
+       */
+      const currentDraftCandidateForSystem = (
+        kind: "global" | "paper",
+      ): number => {
+        const key = Math.floor(Number(activeConversationKey || 0));
+        if (!Number.isFinite(key) || key <= 0) return 0;
+        return isConversationKeyForKind(currentConversationSystem, kind, key)
+          ? key
+          : 0;
+      };
+
       const resolveFreshStandaloneGlobalConversation = async (
         options: boolean | StandaloneCreateConversationOptions = false,
       ): Promise<number> => {
@@ -3403,7 +3437,7 @@ export function openStandaloneChat(options?: {
           system: currentConversationSystem,
           kind: "global",
           libraryID: currentLibraryID,
-          currentConversationKey: activeConversationKey,
+          currentConversationKey: currentDraftCandidateForSystem("global"),
           excludeConversationKey,
         });
         return result.conversationKey;
@@ -3429,7 +3463,7 @@ export function openStandaloneChat(options?: {
           kind: "paper",
           libraryID: paperLibraryID,
           paperItemID: paperId,
-          currentConversationKey: activeConversationKey,
+          currentConversationKey: currentDraftCandidateForSystem("paper"),
           excludeConversationKey,
         });
         return {
@@ -4256,6 +4290,8 @@ export function openStandaloneChat(options?: {
 
   const cleanupWindow = () => {
     cancelled = true;
+    disposeHistoryActivity?.();
+    disposeHistoryActivity = null;
     unsubscribeStandalonePendingDeletions?.();
     unsubscribeStandalonePendingDeletions = null;
     cleanupStandalonePrefObserver?.();

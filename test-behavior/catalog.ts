@@ -26,12 +26,43 @@ const contract = (
 ): Contract => ({ id, journey, mode, smoke, acceptance, dependsOn, evidence });
 
 export const catalog: Contract[] = [
+  ...(["auto", "yolo"] as const).map((mode) =>
+    contract(
+      `figures.crop-note.${mode}`,
+      "figures",
+      mode,
+      false,
+      "The Geva crop-to-note request loads semantic skills before tools, uses the bundled Python extractor on the active PDF despite a misleading sibling, creates one native note with byte-identical images, and asks for no confirmation.",
+    ),
+  ),
+  contract(
+    "figures.auto-script",
+    "figures",
+    "auto",
+    false,
+    "A requested temporary Python image-inspection script is written and executed through real Auto review without confirmation or Zotero mutations.",
+    ["figures.crop-note.auto"],
+  ),
+  contract(
+    "conversation.delivery",
+    "conversation",
+    "auto",
+    false,
+    "A paper summary is saved as one verified child note, the exact final chat answer and completed run survive storage reload, and the visible action card and stopped Working indicator precede the Ready composer.",
+  ),
+  contract(
+    "conversation.retention",
+    "conversation",
+    "auto",
+    false,
+    "A long answer survives fresh provider sessions and memory reload, supports an explanation without retrieval, and saves unchanged by message identity into one native standalone note with measured tool rounds and provider usage.",
+  ),
   contract(
     "semantic.create-file",
     "semantic",
     "auto",
     false,
-    "Create a named destination, carry its verified native identity into a move, preserve unrelated memberships, and complete both steps without execution-model rounds.",
+    "Create a named destination, carry its verified native identity into a move, preserve unrelated memberships, and complete both steps with zero preliminary interpretation calls.",
   ),
   contract(
     "semantic.compound-clarified",
@@ -52,14 +83,14 @@ export const catalog: Contract[] = [
     "semantic",
     "auto",
     false,
-    "Paraphrases, multilingual moves, additive filing, real source clarification, and collection deletion execute with native verification and no execution-model rounds.",
+    "Paraphrases, multilingual moves, additive filing, real source clarification, and collection deletion execute through the direct model/tool loop with native verification.",
   ),
   contract(
     "semantic.move",
     "semantic",
     "auto",
     false,
-    "The exact ordinary move request resolves its implicit source, executes once without execution-model rounds, and verifies native source absence and destination presence.",
+    "The exact ordinary move request reaches the main model with zero preliminary interpretation calls, executes once, and verifies native source absence and destination presence.",
   ),
   contract(
     "semantic.compound",
@@ -88,15 +119,6 @@ export const catalog: Contract[] = [
     "auto",
     false,
     "Plan, approve, and execute the complete compound workflow with native evidence.",
-  ),
-  contract(
-    "semantic.transport",
-    "diagnostic",
-    "auto",
-    false,
-    "Read-only diagnostic: measure one semantic interpretation with the configured reasoning and a 180-second bounded transport; never execute its actions.",
-    [],
-    ["semantic-transport", "native-before", "native-after"],
   ),
   contract(
     "semantic.filing",
@@ -252,7 +274,9 @@ export const catalog: Contract[] = [
       "modes",
       mode,
       true,
-      "Exactly one child note is persisted without confirmation, with a saved-note card linking the exact native note.",
+      mode === "safe"
+        ? "Exactly one child note is persisted after Safe review, with a saved-note card linking the exact native note."
+        : "Exactly one child note is persisted without confirmation, with a saved-note card linking the exact native note.",
     ),
     contract(
       `modes.${mode}.metadata`,

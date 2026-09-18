@@ -8,7 +8,7 @@ import {
   buildPaperQuoteCitationGuidance,
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "../../modules/contextPanel/paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import type { ContextCachePlan } from "../../contextCache/manager";
 import {
   buildAgentEvidenceContextBlock,

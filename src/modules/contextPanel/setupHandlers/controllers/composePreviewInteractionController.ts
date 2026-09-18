@@ -2,7 +2,6 @@ import { t } from "../../../../utils/i18n";
 import { clearUserAddedContextForItem } from "../../contextSelectionActions";
 import {
   getActiveContextAttachmentFromTabs,
-  getActiveReaderForSelectedTab,
   getSelectedTextContextEntries,
   getSelectedTextContexts,
   getSelectedTextExpandedIndex,
@@ -14,11 +13,12 @@ import {
   setSelectedTextExpandedIndex,
   formatSelectedTextContextPageLabel,
 } from "../../contextResolution";
+import { getActiveReaderForSelectedTab } from "../../../../services/pdf/zoteroReaderTabs";
 import {
   isManagedBlobPath,
   removeAttachmentFile,
-} from "../../attachmentStorage";
-import { buildPaperKey } from "../../pdfContext";
+} from "../../../../services/attachmentStorage";
+import { buildPaperKey } from "../../../../services/paperContent/pdfContext";
 import { navigateSelectedTextContextToPage as navigateSelectedTextContextToReader } from "../../selectedTextContextNavigation";
 import {
   clearSelectedPaperState,

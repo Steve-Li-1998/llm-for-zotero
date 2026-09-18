@@ -3,6 +3,7 @@ import {
   attachPlanMaterialEvidence,
 } from "../../plans/materialEvidence";
 import {
+  materialRefFromDocument,
   resolveMaterialOutput,
   recordMaterialOutput,
 } from "../../documents/workflowMaterial";
@@ -14,6 +15,7 @@ import type {
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { DirectDocumentFinalizer } from "../../documents/directFinalization";
 import { PlanDocumentFinalizer } from "../../documents/planFinalization";
+import type { MaterialRef } from "../../documents/materialRef";
 import type {
   DocumentAssetProvenance,
   PlanCitationCluster,
@@ -27,6 +29,7 @@ import { fail, ok, validateObject } from "../shared";
 type SubmitPlanDocumentResult = {
   documentId: string;
   contentHash: string;
+  materialRef: MaterialRef;
   visibleMarkdown: string;
 };
 
@@ -224,11 +227,36 @@ function validateSubmitPlanDocument(
     ) {
       return fail("groundingReviewed must record the completed model review");
     }
+    const documentKinds = new Set([
+      "research_brief",
+      "literature_review",
+      "comparison",
+      "report",
+      "guide",
+      "custom",
+    ]);
+    if (
+      args.documentKind !== undefined &&
+      !documentKinds.has(String(args.documentKind))
+    ) {
+      return fail("documentKind is not supported");
+    }
+    if (
+      args.integrityPolicy !== undefined &&
+      args.integrityPolicy !== "authored" &&
+      args.integrityPolicy !== "research_grounded"
+    ) {
+      return fail("integrityPolicy is not supported");
+    }
     return ok({
       materialOutputId:
         args.materialOutputId === undefined
           ? undefined
           : requiredString(args.materialOutputId, "materialOutputId"),
+      documentKind:
+        args.documentKind as SubmitPlanDocumentInput["documentKind"],
+      integrityPolicy:
+        args.integrityPolicy as SubmitPlanDocumentInput["integrityPolicy"],
       title: requiredString(args.title, "title"),
       markdown: requiredString(args.markdown, "markdown"),
       citations: args.citations.map(parseCitation),
@@ -270,7 +298,26 @@ export function createSubmitDocumentTool(
           materialOutputId: {
             type: "string",
             description:
-              "The frozen material output ID when generating content for later workflow actions.",
+              "Only for an intermediate authored output listed in the frozen workflow's materialOutputs and used by later actions. Omit this field when publishing the approved final document in chat, even if its Plan step has a materialOutputId label.",
+          },
+          documentKind: {
+            type: "string",
+            enum: [
+              "research_brief",
+              "literature_review",
+              "comparison",
+              "report",
+              "guide",
+              "custom",
+            ],
+            description:
+              "Document shape for direct Agent submissions. Approved Plans use their frozen document specification.",
+          },
+          integrityPolicy: {
+            type: "string",
+            enum: ["authored", "research_grounded"],
+            description:
+              "Use research_grounded when the document makes claims from retrieved literature evidence.",
           },
           title: { type: "string" },
           markdown: { type: "string" },
@@ -435,9 +482,15 @@ export function createSubmitDocumentTool(
         },
       },
       executionClass: "control",
-      requiresConfirmation: false,
+      workCategory: "generation",
     },
-    isAvailable: (request) => request.documentOutcomePolicy?.required === true,
+    /**
+     * The plan machinery itself. Its calls are how a plan is drafted and
+     * advanced, and the plan card already shows the reader the outcome, so a
+     * row for each of them would report the trace's own plumbing.
+     */
+    presentation: { hiddenInTrace: true },
+    isAvailable: (request) => request.planContext?.phase !== "planning",
     guidance: {
       matches: (request) => request.documentOutcomePolicy?.required === true,
       instruction:
@@ -452,9 +505,6 @@ export function createSubmitDocumentTool(
       }),
     execute: async (input, context) => {
       const policy = context.request.documentOutcomePolicy;
-      if (!policy?.required) {
-        throw new Error("submit_document is not authorized for this turn");
-      }
       const plan = context.request.planContext;
       const material = resolveMaterialOutput(
         context.request,
@@ -464,6 +514,11 @@ export function createSubmitDocumentTool(
       const { document } =
         plan?.phase === "executing" && !material
           ? await (async () => {
+              if (!policy?.required) {
+                throw new Error(
+                  "The approved Plan does not contain a document deliverable",
+                );
+              }
               if (!plan.activeTaskId) {
                 throw new Error("No active plan task can accept the document");
               }
@@ -492,10 +547,20 @@ export function createSubmitDocumentTool(
           document,
         );
       }
+      const materialRef = materialRefFromDocument(document);
       return {
-        documentId: document.documentId,
-        contentHash: document.contentHash,
-        visibleMarkdown: document.visibleMarkdown,
+        // The model reads the reference from the payload; the host reads it
+        // from the typed result and announces it as a run event.
+        content: {
+          documentId: document.documentId,
+          contentHash: document.contentHash,
+          materialRef,
+          visibleMarkdown: document.visibleMarkdown,
+        },
+        materialRef,
+        materialKind:
+          document.version === 2 ? document.documentKind : undefined,
+        materialTitle: document.title,
       };
     },
     resolveTerminalResult: (_input, result: AgentToolResult) => {
@@ -525,6 +590,9 @@ export function createSubmitPlanDocumentTool(
 ): AgentToolDefinition<SubmitPlanDocumentInput, SubmitPlanDocumentResult> {
   const tool = createSubmitDocumentTool(gateway);
   return {
+    // Everything but the spec is inherited, `presentation` included, so this
+    // tool stays out of the trace exactly as the one it wraps does. The
+    // registry test in `test/agentTraceNoNameMeaning.test.ts` pins that.
     ...tool,
     spec: {
       ...tool.spec,

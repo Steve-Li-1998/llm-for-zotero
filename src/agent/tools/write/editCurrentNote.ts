@@ -1,27 +1,33 @@
 import { executeNoteCreation } from "../../services/noteCreation";
 import { executePreparedNoteChange } from "./preparedNoteChange";
-import { importLocalImagesIntoNote } from "../../../modules/contextPanel/noteImages";
+import { importLocalImagesIntoNote } from "../../../services/notes/noteImages";
 import {
   isLikelyHtmlNoteContent,
   normalizeNoteSourceText,
-  readNoteSnapshot,
   renderRawNoteHtml,
-  resolveParentItemForNoteTarget,
+} from "../../../services/notes/noteRendering";
+import {
+  readNoteSnapshot,
   stripNoteHtml,
   type NoteSnapshot,
-} from "../../../modules/contextPanel/notes";
+} from "../../../services/notes/noteSnapshot";
+import { resolveParentItemForNoteTarget } from "../../../services/notes/noteTarget";
 import {
   replaceTextContentInHtml,
   replaceNoteSelectionHtml,
 } from "../../../utils/noteEdit";
-import { synthesizeSelectedTextContexts } from "../../../modules/contextPanel/normalizers";
+import { synthesizeSelectedTextContexts } from "../../../services/context/normalizers";
 import { noteHtmlMatches } from "../../../utils/noteHtml";
 import { stateChangeInvocationPlan } from "../../authorization/invocationPlan";
 import {
   savePlanDocumentAsNote,
   finalizeDocumentNoteHtml,
 } from "../../documents/actions";
-import { resolveWorkflowNoteDocument } from "../../documents/workflowMaterial";
+import {
+  materialRefFromDocument,
+  resolveWorkflowNoteDocument,
+} from "../../documents/workflowMaterial";
+import type { MaterialRef } from "../../documents/materialRef";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
@@ -41,6 +47,7 @@ import {
   resolveVerifiedNoteEditCompletion,
 } from "./noteChangePresentation";
 import { buildSavedNoteResultCards } from "./noteResultPresentation";
+import { readAgentConversationAnswer } from "../../store/transcriptStore";
 
 type NotePatch = {
   find: string;
@@ -77,7 +84,9 @@ function sanitizeNoteHtml(html: string): string {
 
 type EditCurrentNoteInput = {
   documentId?: string;
-  _documentContentHash?: string;
+  sourceMessageId?: string;
+  /** The exact material this proposal is frozen to, resolved once in preparation. */
+  _documentMaterialRef?: MaterialRef;
   _documentHasAssets?: boolean;
   mode: "edit" | "create" | "append";
   content: string;
@@ -401,12 +410,14 @@ async function prepareWorkflowDocumentNote(
 ): Promise<void> {
   if (!input.documentId) return;
   const document = await resolveWorkflowNoteDocument(
-    context.request,
+    context,
     input.documentId,
     input.mode === "create"
       ? input.targetItemId
       : input.targetNoteId || input.noteId,
     input.mode,
+    // Preparation freezes the reference; every later pass re-checks against it.
+    input._documentMaterialRef,
   );
   if (input.content && input.content !== document.visibleHtml)
     throw new Error(
@@ -414,7 +425,7 @@ async function prepareWorkflowDocumentNote(
     );
   input.content = document.visibleHtml;
   input._isHtml = true;
-  input._documentContentHash = document.contentHash;
+  input._documentMaterialRef = materialRefFromDocument(document);
   input._documentHasAssets = document.assets.length > 0;
 }
 
@@ -437,7 +448,8 @@ export function createEditCurrentNoteTool(
         parameters: {
           noteMode: input.mode,
           documentId: input.documentId,
-          contentHash: input._documentContentHash,
+          documentVersion: input._documentMaterialRef?.documentVersion,
+          contentHash: input._documentMaterialRef?.contentHash,
           targetItemId: input.targetItemId,
           targetNoteId: input.targetNoteId || input.noteId,
           expectedText: input.content
@@ -458,6 +470,7 @@ export function createEditCurrentNoteTool(
         destinationCollectionIds: input.collections || [],
       },
     ],
+    effectOperations: ["note_create", "note_edit", "note_append"],
     spec: {
       name: "edit_current_note",
       description:
@@ -506,6 +519,11 @@ export function createEditCurrentNoteTool(
             type: "number",
             description:
               "For mode 'create' only: copy this existing note's complete native content and embedded images. Use instead of content when making a standalone/child copy, preserving formatting and provenance without generating a second header.",
+          },
+          sourceMessageId: {
+            type: "string",
+            description:
+              "Save this exact prior assistant answer without reauthoring it. Use instead of content, patches, documentId or sourceNoteId.",
           },
           patches: {
             type: "array",
@@ -560,7 +578,7 @@ export function createEditCurrentNoteTool(
         },
       },
       executionClass: "external_effect",
-      requiresConfirmation: true,
+      workCategory: "zotero_action",
     },
     guidance: {
       matches: () => true,
@@ -572,7 +590,7 @@ export function createEditCurrentNoteTool(
         "For finalized workflow material, call `note_write` with documentId returned by submit_document and omit content. Use mode:create with exact parent targetItemId, or mode:edit/append with exact targetNoteId. For standalone notes, call `edit_current_note` with mode 'create', target 'standalone', and `content`. " +
         SOURCE_NOTE_COPY_GUIDANCE +
         " " +
-        "Requested new notes are created directly; the UI shows the saved content and a link to the native note after verification. Do not ask the user to approve a new-note draft or repeat the full saved note in your completion message. Auto applies edits and appends directly, then displays the verified diff; explicit review and Safe wait on the note card first. " +
+        "The UI shows saved content and a link to the native note after verification. Do not repeat the full saved note in the completion message. Auto applies routine same-library note changes directly and then displays the verified diff; explicit review and Safe wait on the note card before every write, including creation. " +
         "Pass Markdown by default. When the user explicitly requests HTML output (e.g. for styled note templates), pass well-formed HTML with inline styles directly. " +
         "When the note discusses a specific figure, first use `paper_read({ mode:'figures' })` and embed the extracted PDF crop path: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment. " +
         "Treat paper_read mode:'figures' as the authority for figure crop cache reuse/regeneration; use returned crop paths as-is and do not inspect or validate `figure_crops` metadata before writing. " +
@@ -657,6 +675,22 @@ export function createEditCurrentNoteTool(
       const hasContent =
         typeof args.content === "string" && args.content.trim();
       const sourceNoteId = normalizePositiveInt(args.sourceNoteId);
+      const sourceMessageId =
+        typeof args.sourceMessageId === "string"
+          ? args.sourceMessageId.trim()
+          : undefined;
+      if (
+        args.sourceMessageId !== undefined &&
+        (!sourceMessageId ||
+          args.content !== undefined ||
+          args.patches !== undefined ||
+          args.documentId !== undefined ||
+          args.sourceNoteId !== undefined ||
+          selection !== undefined)
+      )
+        return fail(
+          "sourceMessageId requires one exact assistant answer without content, patches, documentId, sourceNoteId or selection",
+        );
       const documentId =
         typeof args.documentId === "string"
           ? args.documentId.trim()
@@ -686,12 +720,18 @@ export function createEditCurrentNoteTool(
       }
 
       if (mode === "create" || mode === "append") {
-        if (!hasContent && !sourceNoteId && !documentId) {
+        if (!hasContent && !sourceNoteId && !documentId && !sourceMessageId) {
           return fail(
             `content is required for mode '${mode}': provide the note body as a string`,
           );
         }
-      } else if (!hasContent && !hasPatches && !documentId && !selection) {
+      } else if (
+        !hasContent &&
+        !hasPatches &&
+        !documentId &&
+        !selection &&
+        !sourceMessageId
+      ) {
         return fail(
           "Either 'content' (full note text) or 'patches' (find-and-replace pairs) is required for mode 'edit'",
         );
@@ -745,6 +785,7 @@ export function createEditCurrentNoteTool(
       return ok<EditCurrentNoteInput>({
         mode,
         documentId,
+        sourceMessageId,
         content,
         sourceNoteId,
         _rawHtmlContent: contentHasHtml ? rawContent.trim() : undefined,
@@ -932,6 +973,11 @@ export function createEditCurrentNoteTool(
       });
     },
     async planInvocation(input, context) {
+      if (input.sourceMessageId && !input.content)
+        input.content = await readAgentConversationAnswer(
+          context.request.conversationKey,
+          input.sourceMessageId,
+        );
       await prepareWorkflowDocumentNote(input, context);
       prepareNoteWriteInput(zoteroGateway, input, context);
       const hasLocalImages =
@@ -964,7 +1010,7 @@ export function createEditCurrentNoteTool(
             forward: {
               documentId,
               targetItemId: input.targetItemId,
-              contentHash: input._documentContentHash,
+              contentHash: input._documentMaterialRef?.contentHash,
             },
             reversibility: "full",
             deferredInverse: true,
@@ -982,6 +1028,7 @@ export function createEditCurrentNoteTool(
                 title: note.getNoteTitle(),
                 status: saved.created ? "created" : "already_satisfied",
                 warnings: saved.warnings,
+                noteVerification: saved.noteVerification,
               },
               effect: saved.created ? ("applied" as const) : ("none" as const),
               affectedCount: saved.created ? 1 : 0,
@@ -1139,10 +1186,11 @@ export function createEditCurrentNoteTool(
           input.documentId && input._documentHasAssets
             ? async () => {
                 const document = await resolveWorkflowNoteDocument(
-                  context.request,
+                  context,
                   input.documentId!,
                   targetNote.id,
                   input.mode,
+                  input._documentMaterialRef,
                 );
                 const finalized = await finalizeDocumentNoteHtml(document, {
                   noteId: targetNote.id,

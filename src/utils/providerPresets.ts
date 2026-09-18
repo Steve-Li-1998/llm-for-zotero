@@ -11,6 +11,7 @@ export type SupportedProviderPresetId =
   | "qwen"
   | "kimi"
   | "mimo"
+  | "opencode"
   | "copilot"
   | "ollama"
   | "local_openai";
@@ -50,6 +51,8 @@ export type ProviderPreset = {
   matches: (apiBase: string) => boolean;
   /** When true, prefer /v1/responses over /v1/chat/completions when calling the API. */
   supportsResponsesEndpoint?: boolean;
+  /** File uploads are a separate capability from Responses inference. */
+  supportsFileUploads?: boolean;
   /** Whether this provider exposes an OpenAI-compatible /v1/embeddings endpoint. */
   supportsEmbeddings?: boolean;
   /** Default embedding model name for providers that support embeddings. */
@@ -242,6 +245,19 @@ const KIMI_PATHS = [
   "/coding/v1/chat/completions",
 ];
 const MIMO_PATHS = ["/", "/v1", "/v1/chat/completions"];
+// Zen serves the same catalog on two tiers: /zen/v1 and the cheaper /zen/go/v1
+// the reporter of #439 uses. Everything else on opencode.ai is the website and
+// the agent's own server, so the host alone must not claim the preset.
+const OPENCODE_PATHS = [
+  "/zen/v1",
+  "/zen/v1/chat/completions",
+  "/zen/v1/responses",
+  "/zen/v1/messages",
+  "/zen/go/v1",
+  "/zen/go/v1/chat/completions",
+  "/zen/go/v1/responses",
+  "/zen/go/v1/messages",
+];
 const COPILOT_PATHS = ["/", "/chat/completions", "/models"];
 
 const OLLAMA_DEFAULT_PORT = "11434";
@@ -273,6 +289,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     helperText: "Preset uses OpenAI's official Responses endpoint.",
     matches: makeHostAndPathMatcher(["api.openai.com"], OPENAI_PATHS),
     supportsResponsesEndpoint: true,
+    supportsFileUploads: true,
     supportsEmbeddings: true,
     defaultEmbeddingModel: "text-embedding-3-small",
   },
@@ -322,7 +339,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportedProtocols: ["anthropic_messages", "openai_chat_compat"],
     helperText:
       "Preset uses GLM's Claude-compatible endpoint for agent tool use.",
-    matches: makeHostAndPathMatcher(["open.bigmodel.cn"], GLM_PATHS),
+    matches: makeHostAndPathMatcher(
+      ["open.bigmodel.cn", "api.z.ai"],
+      GLM_PATHS,
+    ),
     supportsEmbeddings: false,
   },
   {
@@ -346,6 +366,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     helperText: "Preset uses xAI's official Responses endpoint.",
     matches: makeHostAndPathMatcher(["api.x.ai"], GROK_PATHS),
     supportsResponsesEndpoint: true,
+    supportsFileUploads: true,
     supportsEmbeddings: false,
   },
   {
@@ -364,6 +385,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       QWEN_PATHS,
     ),
     supportsResponsesEndpoint: true,
+    supportsFileUploads: true,
     supportsEmbeddings: true,
     defaultEmbeddingModel: "text-embedding-v4",
   },
@@ -390,6 +412,22 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportedProtocols: ["openai_chat_compat"],
     helperText: "Preset uses Xiaomi MiMo's OpenAI-compatible API base (v1).",
     matches: makeHostAndPathMatcher(["api.xiaomimimo.com"], MIMO_PATHS),
+    supportsEmbeddings: false,
+  },
+  {
+    id: "opencode",
+    supportsResponsesEndpoint: true,
+    label: "OpenCode Zen",
+    defaultApiBase: "https://opencode.ai/zen/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: [
+      "openai_chat_compat",
+      "anthropic_messages",
+      "responses_api",
+    ],
+    helperText:
+      "Gateway for a curated set of models from several vendors, billed on one key.",
+    matches: makeHostAndPathMatcher(["opencode.ai"], OPENCODE_PATHS),
     supportsEmbeddings: false,
   },
   {
@@ -496,4 +534,12 @@ export function providerSupportsResponsesEndpoint(apiBase: string): boolean {
   if (id === "customized") return false;
   const preset = getProviderPreset(id);
   return Boolean(preset.supportsResponsesEndpoint);
+}
+
+/** Whether Responses requests may upload files to this provider. */
+export function providerSupportsFileUploads(apiBase: string): boolean {
+  const id = detectProviderPreset(apiBase);
+  return (
+    id !== "customized" && Boolean(getProviderPreset(id).supportsFileUploads)
+  );
 }

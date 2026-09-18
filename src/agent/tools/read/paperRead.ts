@@ -19,12 +19,12 @@ import { joinLocalPath } from "../../../utils/localPath";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "../../../modules/contextPanel/paperAttribution";
-import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../modules/contextPanel/mineruCache";
+} from "../../../services/paperContent/paperAttribution";
+import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../services/mineru/mineruCache";
 import {
   buildQuoteCitation,
   mergeQuoteCitations,
-} from "../../../modules/contextPanel/quoteCitations";
+} from "../../../services/quotes/quoteCitations";
 import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 import {
   PAPER_TARGET_SELECTOR_SCHEMA,
@@ -66,6 +66,8 @@ type PaperReadInput = {
   target?: PdfTarget;
   targets?: PdfTarget[];
   query?: string;
+  figureLabels?: string[];
+  includeSupplementary?: boolean;
   queryVariants?: string[];
   sections?: string[];
   pages?: number[];
@@ -176,13 +178,28 @@ function resolveFullReadTargets(params: {
         )
       : [];
   const request = params.context.request;
+  const legacyPlanAuthorization = hasApprovedFullReadAuthorization(request);
+  const isLegacySemanticTurn = Boolean(request.classifiedIntent?.semantic);
   if (
+    isLegacySemanticTurn &&
     request.classifiedIntent?.semantic?.reading.coverage !== "exhaustive" &&
-    !hasApprovedFullReadAuthorization(request)
-  ) {
+    !legacyPlanAuthorization
+  )
     throw new Error(
-      "Exhaustive reading requires a resolved semantic reading intent or approved full-read contract.",
+      "Exhaustive reading requires compatible legacy turn intent or an approved full-read contract.",
     );
+
+  // In the direct workflow the main agent chooses reading depth through the
+  // actual paper_read call. Explicit selectors are already host-resolved and
+  // therefore define the intended read set without a preliminary model gate.
+  if (!isLegacySemanticTurn && !legacyPlanAuthorization) {
+    if (explicitTargets.length) return explicitTargets;
+    const active = getTurnPapersWithRoles(request, ["active"]).slice(0, 1);
+    if (!active.length)
+      throw new Error(
+        "The full-read target is unresolved. Pass explicit paper targets or open an active paper.",
+      );
+    return active;
   }
   const available = dedupePaperContexts(
     params.zoteroGateway.listPaperContexts(request),
@@ -845,6 +862,28 @@ async function readExplicitPageTargets(params: {
   };
 }
 
+/**
+ * The mode a call asked for, however its arguments arrived.
+ *
+ * A call relayed from a connected client can carry its arguments as the JSON
+ * text the model produced rather than as an object.
+ */
+function readPaperReadModeFromArgs(args: unknown): string {
+  let value = args;
+  if (typeof value === "string") {
+    const clean = value.trim();
+    if (!clean.startsWith("{")) return "";
+    try {
+      value = JSON.parse(clean) as unknown;
+    } catch {
+      return "";
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const mode = (value as Record<string, unknown>).mode;
+  return typeof mode === "string" ? mode.trim() : "";
+}
+
 export function createPaperReadTool(
   pdfService: PdfService,
   retrievalService: RetrievalService,
@@ -900,6 +939,13 @@ export function createPaperReadTool(
             items: PAPER_TARGET_SELECTOR_SCHEMA,
           },
           query: { type: "string" },
+          figureLabels: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "For figures mode: exact labels such as Figure 1 or Supplementary Figure S2; [] selects all main figures.",
+          },
+          includeSupplementary: { type: "boolean" },
           queryVariants: {
             type: "array",
             items: { type: "string" },
@@ -920,12 +966,30 @@ export function createPaperReadTool(
         },
       },
       executionClass: "read",
-      requiresConfirmation: false,
+      workCategory: "retrieval",
       exposure: "model",
       tier: "normal",
     },
     presentation: {
       label: "Read Paper",
+      /**
+       * The same figure count, for a call a connected client relayed.
+       *
+       * Such a call reaches the trace with its image artifacts and no result
+       * payload, so the count comes from the artifacts the extraction
+       * produced rather than from the figures the result would have listed.
+       */
+      buildTraceSummary: ({ args, artifacts, phase, ok: succeeded }) => {
+        if (phase !== "completed" || succeeded === false) return null;
+        if (readPaperReadModeFromArgs(args) !== "figures") return null;
+        const figures = (artifacts || []).filter(
+          (artifact) => artifact?.kind === "image",
+        );
+        if (!figures.length) return null;
+        return figures.length === 1
+          ? "Extracted 1 figure"
+          : `Extracted ${figures.length} figures`;
+      },
       summaries: {
         onCall: ({ args }) => {
           const mode =
@@ -1007,6 +1071,23 @@ export function createPaperReadTool(
         return fail("Expected an object");
       }
       const mode = normalizeMode(args.mode);
+      if (
+        args.figureLabels !== undefined &&
+        (!Array.isArray(args.figureLabels) ||
+          args.figureLabels.some(
+            (label) => typeof label !== "string" || !label.trim(),
+          ))
+      ) {
+        return fail(
+          "figureLabels must be an array of non-empty labels, or [] for all figures.",
+        );
+      }
+      if (
+        args.includeSupplementary !== undefined &&
+        typeof args.includeSupplementary !== "boolean"
+      ) {
+        return fail("includeSupplementary must be a boolean.");
+      }
       const maxTargets =
         mode === "overview"
           ? MAX_FULL_TARGETS
@@ -1040,6 +1121,13 @@ export function createPaperReadTool(
             ? [...targetSyntax.selectors]
             : undefined,
         query: normalizeString(args.query),
+        figureLabels: Array.isArray(args.figureLabels)
+          ? (args.figureLabels as string[]).map((label) => label.trim())
+          : undefined,
+        includeSupplementary:
+          typeof args.includeSupplementary === "boolean"
+            ? args.includeSupplementary
+            : undefined,
         queryVariants: normalizeStringArray(args.queryVariants),
         sections: normalizeStringArray(args.sections),
         pages: normalizePages(args.pages),

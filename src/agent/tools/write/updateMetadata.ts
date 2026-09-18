@@ -7,6 +7,7 @@
  *   internally by review cards
  */
 import type { PaperContextRef } from "../../../shared/types";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import type { AgentWriteToolDefinition } from "../../types";
 import {
   buildPagedReviewActionConfig,
@@ -79,6 +80,8 @@ export function createUpdateMetadataTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["update_metadata"],
     spec: {
       name: "update_metadata",
       description:
@@ -161,7 +164,7 @@ export function createUpdateMetadataTool(
         },
       },
       executionClass: "external_effect",
-      requiresConfirmation: true,
+      workCategory: "zotero_action",
     },
 
     guidance: {

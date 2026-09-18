@@ -1,7 +1,7 @@
 ---
 id: write-note
-description: Write a long-form reading or literature note for a specific paper, saved as a Zotero note or Markdown file. Use ONLY when the user explicitly asks to write, draft, or edit a note.
-version: 10
+description: Create, save, or edit a Zotero note or Markdown note, including requested figures or an existing answer. Use only when the user explicitly requests a note.
+version: 15
 contexts: any
 activation: auto
 ---
@@ -28,22 +28,34 @@ activation: auto
 
 ## Write Note
 
-### Use the prepared intent and action contract
+### Follow the current request and workspace facts
 
-The shared semantic service determines the destination, reading depth, note operation, filenames, preservation constraints, and requested deliverables.
-Use those typed decisions and resolved obligations throughout this playbook.
-Do not classify the request again from words such as folder, note, save, append, or Obsidian.
-Skill activation alone does not authorize any persistence.
-Missing destinations or targets require resolution through the host preparation flow.
+Determine the requested note outcome from the current user message, supplied history, clarification answers, and workspace facts.
+Keep every requested destination, preservation rule, output, and ordering constraint in the workflow.
+Skill activation alone does not authorize persistence.
+Resolve a missing or ambiguous destination with read/search tools or `request_user_input` before proposing the write.
 
-### Step 1 — Read the authorized evidence
+If the user asks to save an existing answer unchanged, use `note_write` with its `sourceMessageId` and the requested destination.
+Use `conversation_read` only when the source identity or exact text needs recovery.
+Preserve the existing answer instead of applying the template, rereading papers, or generating a second body.
+The reading and composition steps below apply when the user requests new or revised content.
 
-Use the shared reading source and coverage decision, retrieval purpose, and source boundary.
+For a narrowly scoped note, such as saving selected figures with captions, preserve that scope instead of expanding it into the full reading-note template below.
+For a crop-only request, the note contains only the requested images, figure labels, brief source captions, and the standard footer.
+Do not add panel interpretations, Summary, Key Findings, Methodology, My Notes, or a References section unless the user requests that additional content.
+Use `paper_read` in `figures` mode and pass its returned crop paths as Markdown `file://` image links to `note_write`.
+The note tool imports the images and verifies native attachment bytes; do not implement this with shell commands or Zotero scripts.
+Use the full template only for a requested reading or literature note without a narrower format.
+After composing a crop-only note, proceed directly to Step 4a; the reading-note template and its checklist do not apply.
+
+### Step 1 — Read sufficient evidence
+
+Choose the lightest reading mode that can support the requested note.
 Use `paper_read` for paper evidence and `library_retrieve` for the resolved corpus.
 Use cached section offsets only as an implementation detail of that evidence request.
 Keep claims tied to the actual evidence returned.
 
-### Step 2 — Compose the note using the template below
+### Step 2 — Compose a requested reading or literature note
 
 Look up `title` (the paper's full title), `citekey`, `doi`, `journal`, `year`, and **authors** from Zotero item metadata via `library_read({ sections:['metadata'] })`. Cite papers using **Pandoc citation syntax** `[@citekey]` **only when `citekey` is non-empty**. If `citekey` is missing or empty (common when Better BibTeX is not installed), reference papers in prose instead (`First-Author et al. (Year)`) and rely on the full citation in the `## References` section. **Never emit `[@]`** — an empty citation is a bug.
 
@@ -53,9 +65,10 @@ For **file-based notes** (`file_io`): include the full template with YAML frontm
 
 ## Note template
 
-### Template for paper notes
+### Template for full paper reading notes
 
-Use this template **exactly**.
+Use this template exactly for full reading notes.
+Requests to save existing material or selected figures use their requested content instead.
 
 **FRONTMATTER LOCK**: the 7 fields listed below (`title`, `citekey`, `doi`, `year`, `journal`, `created`, `tags`) are the COMPLETE AND EXCLUSIVE list. You are FORBIDDEN from adding any other field. Explicitly forbidden (non-exhaustive): `authors`, `note_type`, `figure`, `abstract`, `source`, `url`, `keywords`, `added`, `updated`, `status`, `rating`. If you want to record author names, figure labels, abstracts, or any other metadata, put them in the **body text** of the note, not in frontmatter. Do not invent new fields under any circumstance.
 
@@ -138,7 +151,7 @@ Written by LLM-for-Zotero.
 
 ### Step 3 — Include figures
 
-The semantic figure selection determines the required figures and tables.
+Use the figure and table labels requested by the user or identified through inspected paper evidence.
 Include the selected assets when verified crops are available.
 For Zotero library PDFs, first call `paper_read({ mode:'figures', query:'<figure request>' })`.
 Treat `paper_read({ mode:'figures' })` as the authority for figure crop cache reuse/regeneration.
@@ -162,23 +175,23 @@ This failure path does not restrict images the user manually attached or pasted;
 #### For file-based notes (`file_io`)
 
 Finalize the complete document with `submit_document`, including its host-issued figure assets and evidence references.
-Then call `file_io` with the resolved destination path and the exact finalized `visibleMarkdown` returned by the host.
+Then call `file_io` with the returned `documentId`, the resolved destination path, and the exact finalized `visibleMarkdown` returned by the host.
 The host exports verified assets into a sibling asset directory, writes relative Markdown image links, and reads every file back against its expected hash.
 Do not copy image files with shell commands or manufacture relative image paths.
 A failed export leaves the finalized document available for retry.
 
-### Step 4a — Save the resolved Zotero note operation
+### Step 4a — Save the exact Zotero note operation
 
-Use the operation, target note or parent paper, and destination collections in the concrete action contract.
+Call the note tool with the exact operation, target note or parent paper, and destination collections required by the request.
 `note_write` supports create, append, and edit as distinct operations.
-Use the contract's mode; the active editor or this playbook cannot override it.
+Do not substitute one mode for another.
 Creation and existing-note review follow the host's central policy.
-Use Markdown content unless the semantic deliverable specifies a different supported format.
+Use Markdown content unless the user requests a different supported format.
 
 ### Step 4b — Export the finalized file
 
-Use the exact path resolved during semantic preparation.
-Configured directories, naming templates, and skill customizations inform that preparation; they do not independently authorize new paths.
+Use the exact path requested by the user or formed from the configured output directory, naming template, and native metadata.
+These settings do not authorize a path outside the configured boundary.
 Missing parent directories are created by the host file writer.
 Use the current runtime date and native paper metadata for any resolved naming template.
 Report persistence failure separately from the preserved generated content.
@@ -186,8 +199,8 @@ Report persistence failure separately from the preserved generated content.
 ### User customizations
 
 USER CUSTOMIZATIONS COME FIRST among formatting defaults.
-The semantic service receives configured skill content and resolves applicable user preferences before constructing the action contract.
-Customizations cannot override the user's current restrictions, expand resolved execution authority, or reinterpret the destination during execution.
+Loaded skill instructions include applicable user customizations.
+Customizations cannot override the user's current restrictions, expand execution authority, or reinterpret the destination.
 Add a `## Your customizations` section after the managed block to keep formatting preferences across updates.
 
 ### Key rules
@@ -195,7 +208,7 @@ Add a `## Your customizations` section after the managed block to keep formattin
 - Preserve the finalized material independently of any saving action.
 - Use the selected template and valid citation labels from native metadata.
 - Use the native path separator supplied by the runtime.
-- Execute only the resolved obligations and verify their receipts.
+- Execute only the requested concrete operations and check their receipts.
 - Keep generated prose and figures readable in the document view even after persistence fails.
 
 <!-- LLM-FOR-ZOTERO:MANAGED-END -->

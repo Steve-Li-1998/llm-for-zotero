@@ -13,9 +13,9 @@
  */
 
 import { listAgentRunEvents } from "../../agent/store/traceStore";
-import { MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE } from "./quoteCitations";
-import { summarizeQuoteTextSupport } from "./quoteTextSearch";
-import { sanitizeText } from "./textUtils";
+import { MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE } from "../../services/quotes/quoteCitations";
+import { summarizeQuoteTextSupport } from "../../services/quotes/quoteTextSearch";
+import { sanitizeText } from "../../utils/textSanitization";
 
 export type QuoteEvidenceProvenance = {
   itemId: number;

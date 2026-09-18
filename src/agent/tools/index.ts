@@ -1,4 +1,3 @@
-import { ModelSemanticReferenceResolver } from "../model/semanticReferenceResolver";
 import { LibraryRetrieveService } from "../services/libraryRetrieveService";
 import { PdfService } from "../services/pdfService";
 import { RetrievalService } from "../services/retrievalService";
@@ -8,6 +7,7 @@ import { createDelegatingTool, createRenamedTool } from "./facade";
 import { registerPreparedLibraryActions } from "./preparedLibraryActions";
 import { createCiteExportTool } from "./read/citeExport";
 import { createLibraryRetrieveTool } from "./read/libraryRetrieve";
+import { createLoadSkillTool } from "./read/loadSkill";
 import { createPaperReadTool } from "./read/paperRead";
 import { clearPdfToolCaches } from "./read/pdfToolUtils";
 import { createQueryLibraryTool } from "./read/queryLibrary";
@@ -22,6 +22,7 @@ import {
 } from "./read/searchLiteratureOnline";
 import { createSearchPaperTool } from "./read/searchPaper";
 import { createToolResultReadTool } from "./read/toolResultRead";
+import { createConversationReadTool } from "./read/conversationRead";
 import { createViewPdfPagesTool } from "./read/viewPdfPages";
 import { createWebReadTool } from "./read/webRead";
 import { createWebSearchTool } from "./read/webSearch";
@@ -117,14 +118,9 @@ const LIBRARY_UPDATE_OPERATION_SCHEMA = {
 };
 
 const LIBRARY_SEARCH_GUIDANCE: ToolGuidance = {
-  matches: (request) =>
-    Boolean(
-      request.classifiedIntent &&
-      (request.classifiedIntent.retrievalIntent !== "none" ||
-        request.classifiedIntent.actionIntents.length),
-    ),
+  matches: () => false,
   instruction:
-    "Use the host-resolved action contract for library operations. For a move_to_collection obligation, use its exact frozen item IDs and destinationCollectionId (or destination scope.collectionId). Set mode:'move' only when constraints.collectionMode is 'move', and set from only to the authorized sourceCollectionId. Otherwise use mode:'add' to preserve every existing membership. Never infer removal from the original wording or use from:'all' without that exact contract parameter. Missing or ambiguous references require semantic preparation or request_user_input before a mutation proposal. library_search({ entity:'collections', mode:'list', view:'tree' }) supplies collection metadata for permitted reference discovery." +
+    "Use library_search to resolve named library targets. Bounded results supply native identities and metadata; they never grant permission. If a descriptive name still matches several candidates, ask the user instead of guessing." +
     "\n\nFor anything the simple filters cannot express, pass conditions[] — Zotero's own advanced-search vocabulary. Each clause is {condition, operator, value}. Useful conditions: fulltextContent (the PDF text), abstractNote, DOI, ISBN, publisher, publicationTitle, dateAdded, dateModified, note, annotationText, citationKey, retracted, itemType, tag, collection. If a condition and operator do not pair up, the error lists the operators that condition accepts — read it and retry rather than falling back to a plain text search." +
     "\n\nTwo rules that decide whether an advanced search works at all:" +
     "\n- fulltextContent, annotationText and childNote match a child item (an attachment or a note), so pass resolveToParents:true or those matches are dropped and the search looks empty." +
@@ -169,7 +165,7 @@ const NOTE_WRITE_GUIDANCE: ToolGuidance = {
       ),
     ),
   instruction:
-    "Execute a resolved note_edit obligation with note_write mode:'edit' against its exact note target. For a bound Selected text passage, pass selection:{index:<1-based Selected text number>,replacement:<final Markdown>}. The host binds its owning note, replaces the selected structure, preserves surrounding content and embedded assets, and saves and verifies in one action. Preserve headings and list structure in the replacement unless the user requests changing them. Do not copy find text, reconstruct native HTML, or call a separate readback tool after verified success. For precise edits without a bound selection, use patches with plain replacement text; findFormat:'markdown' interprets Markdown copied from library_read. Do not substitute chat alternatives for the requested edit. Auto applies clear edits directly and displays the actual verified diff afterward. Requested review and Safe use the existing diff card before applying. Map the resolved note_append obligation to mode:'append' and note_create to mode:'create'. Use only the contract's resolved parent or collection destination; unresolved names return to semantic preparation. Pass the finalized asset in its declared format. The requested note must be written with note_write rather than returned as note-ready prose in chat. Requested new notes ordinarily need no draft confirmation, except for action UI or an explicit review preference; after verification the UI displays the saved content and a direct link to the native note. Do not repeat the full saved content in the completion message. After an edit or append tool returns verified success, the change is saved; do not claim a diff is still awaiting review. " +
+    "Use note_write mode:'edit' against the exact note target. For a bound Selected text passage, pass selection:{index:<1-based Selected text number>,replacement:<final Markdown>}. The host binds its owning note, replaces the selected structure, preserves surrounding content and embedded assets, and saves and verifies in one action. Preserve headings and list structure unless the user requests changing them. For precise edits without a bound selection, use patches with plain replacement text; findFormat:'markdown' interprets Markdown copied from library_read. Use mode:'append' to append and mode:'create' for a new note. Resolve a named parent or collection before proposing the write. Pass finalized material by documentId so retries reuse exact content. Safe reviews every note write, including creation; Auto may apply routine same-library note changes directly. After verified success, do not claim that a diff is still awaiting review. " +
     SOURCE_NOTE_COPY_GUIDANCE,
 };
 
@@ -218,7 +214,7 @@ function markInternalTool<TInput, TResult>(
   tool: AgentToolDefinition<TInput, TResult>,
 ): AgentToolDefinition<TInput, TResult> {
   tool.spec.exposure = "internal";
-  tool.spec.description = `Legacy internal primitive. Prefer the semantic facade tools in model-visible workflows. ${tool.spec.description}`;
+  tool.spec.description = `Legacy internal primitive. Prefer the concrete facade tools in model-visible workflows. ${tool.spec.description}`;
   return tool;
 }
 
@@ -246,7 +242,7 @@ function createLibraryUpdateTool(tools: {
     description:
       "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links.",
     executionClass: "external_effect",
-    requiresConfirmation: true,
+    workCategory: "zotero_action",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -322,7 +318,7 @@ function createLibraryUpdateTool(tools: {
           type: "string",
           enum: ["add", "move"],
           description:
-            "For kind:'collections' with action:'add', follow the resolved obligation: constraints.collectionMode:'move' requires mode:'move' and from equal to its exact sourceCollectionId. Otherwise mode:'add' preserves all existing memberships. The original request wording cannot override this contract.",
+            "For kind:'collections' with action:'add': mode:'add' preserves every existing membership. mode:'move' additionally removes only the membership named by from. Omission means add-only and is never treated as a move.",
         },
         from: {
           description:
@@ -356,6 +352,7 @@ function createLibraryUpdateTool(tools: {
             : "Library updated",
     },
     guidance: LIBRARY_UPDATE_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with kind");
@@ -424,8 +421,10 @@ function createLibraryImportTool(tools: {
     label: "Import to Library",
     description:
       "Add items to Zotero. kind:'identifiers' for DOI/ISBN/arXiv lookups, kind:'files' for local files, kind:'manual' to create items from scratch when neither applies (a book with no DOI, a thesis, a dataset).",
+    // Adding items to Zotero. A files-mode call resolves to import_local_files
+    // and is labelled external_system for that call.
     executionClass: "external_effect",
-    requiresConfirmation: true,
+    workCategory: "zotero_action",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -472,6 +471,7 @@ function createLibraryImportTool(tools: {
       onSuccess: "Import completed",
     },
     guidance: LIBRARY_IMPORT_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with kind");
@@ -503,7 +503,7 @@ function createLibraryDeleteTool(tools: {
     description:
       "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item.",
     executionClass: "external_effect",
-    requiresConfirmation: true,
+    workCategory: "zotero_action",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -546,6 +546,7 @@ function createLibraryDeleteTool(tools: {
       onSuccess: "Library delete/restore/merge completed",
     },
     guidance: LIBRARY_DELETE_GUIDANCE,
+    delegates: Object.values(tools),
     chooseDelegate(args) {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with mode");
@@ -571,10 +572,7 @@ export function createBuiltInToolRegistry(
 ): AgentToolRegistry {
   const planAmendments = new PlanAmendmentService(deps.zoteroGateway);
   const registry = new AgentToolRegistry(
-    new ActionContractService(
-      deps.zoteroGateway,
-      new ModelSemanticReferenceResolver(),
-    ),
+    new ActionContractService(deps.zoteroGateway),
     planAmendments,
   );
   registry.register(
@@ -695,7 +693,7 @@ export function createBuiltInToolRegistry(
       name: "note_write",
       label: "Write Note",
       description:
-        "Create, append to, or edit a single Zotero note. Requested new notes are created directly and shown as saved-note cards. Use this for note writing instead of returning note-ready text in chat. To write a note onto many items, use note_write_batch instead.",
+        "Create, append to, or edit one Zotero note and verify native post-state. Use documentId for finalized authored material so retries reuse the exact stored version. Safe reviews every write, including creation. Use note_write_batch for many items.",
       guidance: NOTE_WRITE_GUIDANCE,
     }),
   );
@@ -705,7 +703,7 @@ export function createBuiltInToolRegistry(
       name: "note_write_batch",
       label: "Write Notes",
       description:
-        "Write a note onto each of many items in one batch operation. Use this for resolved per-item note_create obligations covering those exact papers.",
+        "Write a note onto each of many explicitly identified items in one checkpointed batch operation. To continue an interrupted batch, pass resumeBatchId alone: written items are skipped and the rest are written from the bodies already prepared, so no note is written again or regenerated.",
     }),
   );
   registry.register(savedSearchUpdate);
@@ -737,13 +735,11 @@ export function createBuiltInToolRegistry(
   registry.register(markToolTier(runCommand, "advanced"));
   registry.register(markToolTier(zoteroScript, "advanced"));
   registry.register(createToolResultReadTool());
+  registry.register(createConversationReadTool());
+  registry.register(createLoadSkillTool());
   registry.register(createUpdatePlanTool(deps.zoteroGateway));
   registry.register(createPreparePlanExecutionTool(deps.zoteroGateway));
-  registry.register(
-    createRequestUserInputTool((request) =>
-      registry.createActionContract(request),
-    ),
-  );
+  registry.register(createRequestUserInputTool());
   registry.register(createTaskUpdateTool());
   registry.register(createSubmitDocumentTool(deps.zoteroGateway));
   registry.register(createSubmitPlanDocumentTool(deps.zoteroGateway));

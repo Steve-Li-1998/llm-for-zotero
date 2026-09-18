@@ -2,6 +2,7 @@ import type { ResolvedContextSource, SendQuestionOptions } from "./types";
 import type { ConversationSystem, QuoteCitation } from "../../shared/types";
 import type { WorkflowTestFinalRequestSnapshot } from "./workflowTestHooks";
 import type { RuntimeConversationSystem } from "./runtimeSystemControls";
+import type { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
 
 export type WorkflowTestFixture = {
   parentItemId: number;
@@ -423,6 +424,30 @@ export type WorkflowTestCrossPaperHistoryIsolationResult = {
 };
 
 export type WorkflowTestApi = {
+  planRetrievalQuery: typeof resolveRetrievalQueryPlan;
+  checkProviderConversationTransport: (params: {
+    conversationKey: number;
+    model: string;
+    apiBase: string;
+    apiKey: string;
+    providerProtocol:
+      | "openai_chat_compat"
+      | "anthropic_messages"
+      | "responses_api";
+  }) => Promise<{
+    chat: string;
+    stream: string;
+    agent: string;
+    continuation: string;
+  }>;
+  mountPublicationTrace(
+    documentId: string,
+    text: string,
+  ): {
+    root: HTMLElement;
+    deliver(conversationKey: number): Promise<void>;
+    dispose(): void;
+  };
   reset: () => Promise<void>;
   enableLiveAgentSending: () => void;
   createPaperWithPdfFixture: (input: {
@@ -476,6 +501,7 @@ export type WorkflowTestApi = {
     noteHtml: string;
   }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  refreshActiveConversationPanels: (conversationKey?: number) => void;
   exerciseNativePlanReview: typeof import("./nativePlanReviewReplay").exerciseNativePlanReview;
   exerciseNativeQuestionReview: (
     panelId: string,
@@ -490,8 +516,19 @@ export type WorkflowTestApi = {
       ReturnType<typeof import("./planHistoryReplay").exercisePlanHistoryReplay>
     >
   >;
+  exerciseAgentDeliveryReplay: (input: {
+    panelId: string;
+    failFinalRefresh?: boolean;
+  }) => ReturnType<
+    typeof import("./agentDeliveryReplay").exerciseAgentDeliveryReplay
+  >;
   exerciseStreamingReplay: (input: {
     panelId: string;
+    historyTurns: number;
+    chunks: number;
+  }) => Promise<import("./streamingReplay").StreamingReplayResult>;
+  exerciseNativeStreamingReplay: (input: {
+    surface: "embedded" | "standalone";
     historyTurns: number;
     chunks: number;
   }) => Promise<import("./streamingReplay").StreamingReplayResult>;
@@ -546,6 +583,7 @@ export type WorkflowTestApi = {
   selectPanelModelEntry: (
     panelId: string,
     entryId: string,
+    options?: { expectWebChat?: boolean },
   ) => Promise<WorkflowTestDiagnostics>;
   exerciseWebChatPdfToggleWorkflow: (
     panelId: string,
@@ -645,6 +683,10 @@ export type WorkflowTestApi = {
   }) => Promise<WorkflowTestRuntimeGeometry>;
   exerciseStandaloneComposerManualResize: () => Promise<WorkflowTestStandaloneComposerResizeDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
+  withPendingStandaloneSend: (
+    text: string,
+    inspect: () => Promise<void>,
+  ) => Promise<void>;
   startNewStandaloneConversation: () => Promise<WorkflowTestStandaloneDiagnostics>;
   clickStandaloneReasoningOption: (label: string) => Promise<void>;
   getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;
@@ -773,6 +815,7 @@ export type WorkflowTestApi = {
     query: string,
   ) => Promise<WorkflowTestHistorySearchResult>;
   failNextPendingTurnFinalizes: (count: number) => Promise<void>;
+  forceWebChatSessionAnchorFailures: (count: number) => Promise<void>;
   askCapturingFinalRequest: (
     panelId: string,
     text: string,

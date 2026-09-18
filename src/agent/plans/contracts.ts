@@ -17,6 +17,7 @@ import type {
   AgentActionReceipt,
 } from "../contracts/types";
 import { isActionIndexList } from "../contracts/workflowDependencies";
+import type { MaterialRef } from "../documents/materialRef";
 import type { DocumentSpec } from "../documents/types";
 import { parseActionIntents } from "../model/actionIntent";
 import { decodeStoredSemanticIntent } from "../model/semanticIntentSchema";
@@ -116,6 +117,7 @@ function decodeActionParameters(
     "filePath",
     "contentHash",
     "documentId",
+    "documentVersion",
     "commandFingerprint",
     "settingsKey",
     "settingsValue",
@@ -237,12 +239,29 @@ function decodeActionParameters(
     filePath: optionalText(input.filePath, `${label}.filePath`),
     contentHash: optionalText(input.contentHash, `${label}.contentHash`),
     documentId: optionalText(input.documentId, `${label}.documentId`),
+    documentVersion: positive("documentVersion"),
     commandFingerprint: optionalText(
       input.commandFingerprint,
       `${label}.commandFingerprint`,
     ),
     settingsKey: optionalText(input.settingsKey, `${label}.settingsKey`),
     settingsValue: optionalText(input.settingsValue, `${label}.settingsValue`),
+  };
+}
+
+function decodeMaterialRef(
+  value: unknown,
+  label: string,
+): MaterialRef | undefined {
+  if (value === undefined) return undefined;
+  const input = record(value, label);
+  return {
+    documentId: text(input.documentId, `${label}.documentId`),
+    documentVersion: positiveInteger(
+      input.documentVersion,
+      `${label}.documentVersion`,
+    ),
+    contentHash: text(input.contentHash, `${label}.contentHash`),
   };
 }
 
@@ -320,6 +339,7 @@ export function decodeActionReceipt(
     ),
     reasons: stringArray(input.reasons, `${label}.reasons`),
     verifiedFacts: stringArray(input.verifiedFacts, `${label}.verifiedFacts`),
+    materialRef: decodeMaterialRef(input.materialRef, `${label}.materialRef`),
     evidenceRef: optionalText(input.evidenceRef, `${label}.evidenceRef`),
   };
 }

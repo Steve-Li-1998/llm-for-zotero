@@ -10,6 +10,9 @@ import {
 import { CODEX_REASONING_OPTIONS } from "./constants";
 import { listCodexAppServerModels } from "./nativeClient";
 
+/** Escape hatch in the model picker: the user names a model by hand. */
+export const CODEX_CUSTOMIZED_MODEL_OPTION_KEY = "customized";
+
 const DEFAULT_MODEL_LIST_LIMIT = 100;
 const CODEX_APP_SERVER_GROUP_ID = "codex_app_server";
 const CODEX_APP_SERVER_PROVIDER_LABEL = "Codex";

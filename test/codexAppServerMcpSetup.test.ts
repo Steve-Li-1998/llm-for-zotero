@@ -140,8 +140,8 @@ describe("Codex app-server MCP setup", function () {
     assert.equal(value?.default_tools_approval_mode, "auto");
     assert.deepEqual(value?.enabled_tools, getZoteroMcpAllowedToolNames());
     assert.include(value?.enabled_tools as string[], "note_write");
-    assert.notInclude(value?.enabled_tools as string[], "run_command");
-    assert.notInclude(value?.enabled_tools as string[], "file_io");
+    assert.include(value?.enabled_tools as string[], "run_command");
+    assert.include(value?.enabled_tools as string[], "file_io");
     assert.notInclude(
       value?.enabled_tools as string[],
       "zotero_confirm_action",
@@ -152,7 +152,8 @@ describe("Codex app-server MCP setup", function () {
     >;
     assert.equal(toolApprovals.library_search.approval_mode, "approve");
     assert.equal(toolApprovals.note_write.approval_mode, "auto");
-    assert.notProperty(toolApprovals, "run_command");
+    assert.equal(toolApprovals.run_command.approval_mode, "auto");
+    assert.equal(toolApprovals.file_io.approval_mode, "auto");
     assert.notProperty(toolApprovals, "zotero_confirm_action");
     assert.deepEqual(value?.http_headers, {
       Authorization: `Bearer ${prefStore.get(
@@ -529,7 +530,16 @@ describe("Codex app-server MCP setup", function () {
       servers[scoped.serverName].tools.note_write.approval_mode,
       "auto",
     );
-    assert.notInclude(servers[scoped.serverName].enabled_tools, "run_command");
+    assert.include(servers[scoped.serverName].enabled_tools, "run_command");
+    assert.include(servers[scoped.serverName].enabled_tools, "file_io");
+    assert.equal(
+      servers[scoped.serverName].tools.run_command.approval_mode,
+      "auto",
+    );
+    assert.equal(
+      servers[scoped.serverName].tools.file_io.approval_mode,
+      "auto",
+    );
     assert.notInclude(
       servers[scoped.serverName].enabled_tools,
       "zotero_confirm_action",
@@ -567,6 +577,14 @@ describe("Codex app-server MCP setup", function () {
     assert.include(
       config.allowedTools,
       "mcp__llm_for_zotero_profile_dev_one__library_retrieve",
+    );
+    assert.notInclude(
+      config.allowedTools,
+      "mcp__llm_for_zotero_profile_dev_one__file_io",
+    );
+    assert.notInclude(
+      config.allowedTools,
+      "mcp__llm_for_zotero_profile_dev_one__run_command",
     );
     assert.notInclude(
       config.allowedTools,
@@ -638,7 +656,7 @@ describe("Codex app-server MCP setup", function () {
           toolNames: ["library_search"],
           errors: [],
         }),
-      /missing required tools: library_read, paper_read/,
+      /missing required tools: library_read, paper_read, file_io, run_command/,
     );
   });
 
@@ -651,7 +669,12 @@ describe("Codex app-server MCP setup", function () {
           serverUrl: "http://127.0.0.1:24680/llm-for-zotero/mcp",
           configured: true,
           connected: true,
-          toolNames: ["library_search", "library_read"],
+          toolNames: [
+            "library_search",
+            "library_read",
+            "file_io",
+            "run_command",
+          ],
           errors: [],
         }),
       /missing required tools: paper_read/,

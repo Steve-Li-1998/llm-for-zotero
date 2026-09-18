@@ -1,9 +1,9 @@
 import { assert } from "chai";
+import type { PaperContextRef } from "../src/modules/contextPanel/types";
 import type {
   PaperContextCandidate,
-  PaperContextRef,
   PdfContext,
-} from "../src/modules/contextPanel/types";
+} from "../src/services/paperContent/types";
 import { RetrievalService } from "../src/agent/services/retrievalService";
 
 describe("RetrievalService", function () {

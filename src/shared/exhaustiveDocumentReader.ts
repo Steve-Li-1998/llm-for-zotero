@@ -1,5 +1,5 @@
 import type { PaperContextRef } from "./types";
-import type { PdfContext } from "../modules/contextPanel/types";
+import type { PdfContext } from "../services/paperContent/types";
 import {
   estimateTextTokens,
   sliceTextToTokenBudget,

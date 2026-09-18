@@ -4,6 +4,7 @@ import type {
   AgentPendingField,
   AgentToolResult,
 } from "../types";
+import { isUserDeniedToolResult } from "../execution/toolResultLifecycle";
 
 export type PagedActionInput = {
   limit?: number;
@@ -342,5 +343,5 @@ export function readToolResultError(result: AgentToolResult): string {
 }
 
 export function isUserCancelledToolResult(result: AgentToolResult): boolean {
-  return readToolResultError(result).toLowerCase() === "user denied action";
+  return isUserDeniedToolResult(result);
 }

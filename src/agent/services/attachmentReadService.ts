@@ -1,12 +1,12 @@
-import { readAttachmentBytes } from "../../modules/contextPanel/attachmentStorage";
-import { extractTextAttachmentContent } from "../../modules/contextPanel/textAttachmentExtraction";
-import type { TextAttachmentSourceMode } from "../../modules/contextPanel/contextAttachmentTypes";
-import { resolveContextAttachmentSupportFromMetadata } from "../../modules/contextPanel/contextAttachmentSupport";
+import { readAttachmentBytes } from "../../services/attachmentStorage";
+import { extractTextAttachmentContent } from "../../services/paperContent/textAttachmentExtraction";
+import type { TextAttachmentSourceMode } from "../../services/paperContent/contextAttachmentTypes";
+import { resolveContextAttachmentSupportFromMetadata } from "../../services/paperContent/contextAttachmentSupport";
 import {
   formatAttachmentSourceType,
   formatPaperCitationLabel,
   formatPaperSourceLabel,
-} from "../../modules/contextPanel/paperAttribution";
+} from "../../services/paperContent/paperAttribution";
 import type { PaperContextRef } from "../../shared/types";
 import type { ZoteroGateway } from "./zoteroGateway";
 

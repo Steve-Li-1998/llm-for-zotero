@@ -5,19 +5,25 @@ import {
   getMineruItemList,
   pauseBatchProcessing,
   processSelectedItems,
+  resetBatchQueue,
   startBatchProcessing,
 } from "../src/modules/mineruBatchProcessor";
 import {
   hasCachedMineruMd,
   writeMineruCacheFiles,
-} from "../src/modules/contextPanel/mineruCache";
+} from "../src/services/mineru/mineruCache";
 import {
   clearAllStatuses,
   getMineruStatus,
   runMineruTaskOnce,
   setItemCached,
 } from "../src/modules/mineruProcessingStatus";
-import { MINERU_SYNC_ATTACHMENT_TITLE_PREFIX } from "../src/modules/contextPanel/mineruSync";
+import {
+  clearMineruEligibilityCacheForTests,
+  getMineruParseEligibility,
+} from "../src/modules/mineruParseEligibility";
+import { MINERU_SYNC_ATTACHMENT_TITLE_PREFIX } from "../src/services/mineru/sync";
+import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 
 const encoder = new TextEncoder();
 
@@ -60,13 +66,14 @@ function setupZotero(
     pref?: (key: string) => unknown;
     files?: Record<string, string | Uint8Array>;
   } = {},
-): void {
+): { files: Map<string, Uint8Array> } {
   const files = new Map<string, Uint8Array>();
   for (const [path, value] of Object.entries(options.files || {})) {
     files.set(path, typeof value === "string" ? encoder.encode(value) : value);
   }
   (globalThis as unknown as { Zotero: unknown }).Zotero = {
     DataDirectory: { dir: "/tmp/zotero" },
+    getTempDirectory: () => ({ path: "/tmp" }),
     Libraries: { userLibraryID: 1 },
     Prefs: {
       get: (key: string) => {
@@ -115,6 +122,7 @@ function setupZotero(
       }
     },
   };
+  return { files };
 }
 
 function createRawPdf(): MockItem {
@@ -140,20 +148,177 @@ function createRawPdf(): MockItem {
 async function waitForBatchState(
   predicate: (state: ReturnType<typeof getMineruBatchState>) => boolean,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt++) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
     if (predicate(getMineruBatchState())) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
   assert.fail("Timed out waiting for MinerU batch state");
 }
 
+function setupAuthoritativePageCount(
+  estimatedPages: number | null,
+  maxPages = 100,
+) {
+  const pdf = createRawPdf();
+  pdf.getFilePathAsync = async () => "/tmp/authoritative.pdf";
+  const { files } = setupZotero(new Map([[pdf.id, pdf]]), {
+    files: {
+      "/tmp/authoritative.pdf":
+        estimatedPages === null ? "%PDF-1.7" : pdfText(estimatedPages),
+    },
+    pref: (key) => {
+      if (key.endsWith(".mineruApiKey")) return "test-key";
+      if (key.endsWith(".mineruMaxAutoPages")) return maxPages;
+      return undefined;
+    },
+  });
+  const splitPageCounts = new Map<string, number>();
+  let requestCount = 0;
+  (globalThis as any).Zotero.HTTP = {
+    request: async () => {
+      requestCount++;
+      // Stop at the upload boundary without requiring a cloud connection.
+      return { status: 429, responseText: "" };
+    },
+  };
+  (globalThis as any).ChromeUtils = {
+    importESModule: () => ({
+      Subprocess: {
+        call: async ({ arguments: args }: { arguments: string[] }) => {
+          let stdout = "";
+          if (args[0] === "pdftk") {
+            stdout = "/mock/pdftk\n";
+          } else if (args[1] === "dump_data") {
+            files.set(
+              args[3],
+              encoder.encode(
+                `NumberOfPages: ${splitPageCounts.get(args[0]) ?? 412}\n`,
+              ),
+            );
+          } else if (args[1] === "cat") {
+            const [start, end] = args[2].split("-").map(Number);
+            splitPageCounts.set(args[4], end - start + 1);
+            files.set(args[4], encoder.encode("%PDF-1.7"));
+          } else {
+            throw new Error(`Unexpected pdftk arguments: ${args}`);
+          }
+          return {
+            stdout: {
+              readString: async () => {
+                const value = stdout;
+                stdout = "";
+                return value;
+              },
+            },
+            stderr: { readString: async () => "" },
+            wait: async () => ({ exitCode: 0 }),
+            kill: () => {},
+          };
+        },
+      },
+    }),
+  };
+  return { pdf, getRequestCount: () => requestCount };
+}
+
 describe("mineruBatchProcessor", function () {
+  let restoreRetrievalInvalidator: (() => void) | null = null;
+
+  before(function () {
+    // Invalidating cached paper context reaches the panel's retrieval cache
+    // through a host surface bridge the plugin composes at startup.
+    restoreRetrievalInvalidator = composeRetrievalCandidateInvalidation();
+  });
+
+  after(function () {
+    restoreRetrievalInvalidator?.();
+    restoreRetrievalInvalidator = null;
+  });
+
   afterEach(function () {
     clearAllStatuses();
+    clearMineruEligibilityCacheForTests();
     delete (globalThis as unknown as { Zotero?: unknown }).Zotero;
     delete (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit;
     delete (globalThis as unknown as { IOUtils?: unknown }).IOUtils;
+    delete (globalThis as unknown as { ChromeUtils?: unknown }).ChromeUtils;
   });
+
+  it("preserves a confirmed selected-item override when resuming its queue", async function () {
+    // Exercise the first selected queue before Start All has built any queue.
+    const { pdf, getRequestCount } = setupAuthoritativePageCount(412);
+    await processSelectedItems([pdf.id], { overrideEligibility: true });
+    await waitForBatchState((state) => !state.running);
+    assert.equal(getRequestCount(), 1);
+    assert.isTrue(getMineruBatchState().rateLimited);
+
+    await startBatchProcessing();
+    await waitForBatchState((state) => !state.running);
+    assert.equal(getRequestCount(), 2, "resume retains the confirmed override");
+    assert.equal(getMineruBatchState().totalCount, 1);
+  });
+
+  for (const action of ["all", "selected", "filtered"] as const) {
+    for (const estimate of [null, 50]) {
+      it(`skips an authoritative over-limit PDF in ${action} with estimate ${estimate}`, async function () {
+        const { pdf, getRequestCount } = setupAuthoritativePageCount(estimate);
+        await resetBatchQueue();
+        if (action === "all") {
+          await startBatchProcessing();
+        } else {
+          await processSelectedItems([pdf.id], {
+            ...(action === "filtered" ? { overrideEligibility: false } : {}),
+          });
+        }
+        await waitForBatchState((state) => !state.running);
+
+        assert.equal(getRequestCount(), 0, "skip before requesting an upload");
+        const state = getMineruBatchState();
+        assert.equal(state.processedCount, 0);
+        assert.equal(state.failedCount, 0, "a page exclusion is not a failure");
+        assert.equal(
+          state.totalCount,
+          0,
+          "exclude the skipped PDF from the batch",
+        );
+        assert.isFalse(state.rateLimited);
+        assert.isNull(state.lastFailedItemId);
+        assert.equal(await getMineruStatus(pdf.id), "idle");
+
+        const eligibility = await getMineruParseEligibility(
+          null,
+          pdf as Zotero.Item,
+        );
+        assert.isTrue(
+          eligibility.excluded,
+          "the next selection recognizes the actual count before offering an override",
+        );
+        assert.equal(eligibility.pageCount, 412);
+      });
+    }
+  }
+
+  for (const estimate of [null, 50, 412]) {
+    it(`honors a confirmed selected-item override with estimate ${estimate}`, async function () {
+      const { pdf, getRequestCount } = setupAuthoritativePageCount(estimate);
+      await resetBatchQueue();
+      await processSelectedItems([pdf.id], { overrideEligibility: true });
+      await waitForBatchState((state) => !state.running);
+      assert.equal(getRequestCount(), 1);
+      assert.isTrue(getMineruBatchState().rateLimited);
+    });
+  }
+
+  for (const limit of [412, 500]) {
+    it(`allows ordinary batch processing with an automatic limit of ${limit}`, async function () {
+      const { getRequestCount } = setupAuthoritativePageCount(50, limit);
+      await resetBatchQueue();
+      await startBatchProcessing();
+      await waitForBatchState((state) => !state.running);
+      assert.equal(getRequestCount(), 1);
+    });
+  }
 
   it("includes top-level raw PDF attachments in the MinerU manager list", async function () {
     const rawPdf = createRawPdf();
@@ -543,6 +708,7 @@ describe("mineruBatchProcessor", function () {
       },
     );
 
+    await resetBatchQueue();
     await startBatchProcessing();
 
     const state = getMineruBatchState();

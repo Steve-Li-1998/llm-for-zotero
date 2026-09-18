@@ -2,6 +2,8 @@ import { Marked } from "marked";
 import type { DocumentCitationEvidence } from "./citationService";
 import type { PlanVerifiedQuote, SubmitPlanDocumentInput } from "./types";
 import { ToolInputRejection } from "../tools/execution/failure";
+import { getAllOpenReaders } from "../../services/pdf/zoteroReaderTabs";
+import { verifyCompleteQuoteInLivePdf } from "../../services/pdf/readerTextBridge";
 const QUOTE_TOKEN = /\[\[quote:([A-Za-z0-9._:-]+)\]\]/g;
 export async function resolveVerifiedQuotes(params: {
   markdown: string;
@@ -45,11 +47,6 @@ export async function resolveVerifiedQuotes(params: {
   }
   if (!mappings.size) return { markdown: params.markdown, verifiedQuotes: [] };
 
-  const [{ getAllOpenReaders }, { verifyCompleteQuoteInLivePdfJs }] =
-    await Promise.all([
-      import("../../modules/contextPanel/contextResolution"),
-      import("../../modules/contextPanel/livePdfSelectionLocator"),
-    ]);
   const readers = new Map<number, unknown>();
   for (const reader of getAllOpenReaders()) {
     const itemId = Math.floor(Number(reader?._item?.id || reader?.itemID || 0));
@@ -110,7 +107,7 @@ export async function resolveVerifiedQuotes(params: {
         `Quote ${quoteId} requires the source PDF to be open for strict PDF.js verification`,
       );
     }
-    const verification = await verifyCompleteQuoteInLivePdfJs(
+    const verification = await verifyCompleteQuoteInLivePdf(
       reader,
       Number(attachment.id),
       quote.text,

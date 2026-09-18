@@ -2,7 +2,7 @@ import type { ChatParams } from "../../utils/llmClient";
 import type { AdvancedModelParams, PaperContextRef } from "./types";
 import { parseDocumentReferences } from "../../shared/documentReferences";
 import { resolveProviderCapabilities } from "../../providers";
-import { readAttachmentBytes } from "./attachmentStorage";
+import { readAttachmentBytes } from "../../services/attachmentStorage";
 
 export type NormalChatFigureInputs = {
   images: string[];

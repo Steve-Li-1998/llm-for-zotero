@@ -1,7 +1,7 @@
+import { extractPdfPageCountFromText } from "../src/utils/pdfPageCount";
 import { assert } from "chai";
 import {
   clearMineruEligibilityCacheForTests,
-  extractPdfPageCountFromText,
   getMineruParseEligibility,
 } from "../src/modules/mineruParseEligibility";
 import { buildMineruFilenameMatcher } from "../src/utils/mineruConfig";

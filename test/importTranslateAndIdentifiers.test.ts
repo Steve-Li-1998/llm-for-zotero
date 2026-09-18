@@ -302,6 +302,100 @@ describe("import translation and identifier parsing", function () {
       assert.isNull(reason);
     });
   });
+
+  /**
+   * `translatorJsonToPatch` is what turns a `libraryID: false` translator
+   * result into the patch `fetchMetadataByIdentifier` hands back, and it had
+   * no test of its own — so nothing pinned which fields survive the trip.
+   * That matters most right before the method is moved to a new owner: these
+   * assertions are the contract the move has to reproduce exactly.
+   */
+  describe("translator JSON to metadata patch", function () {
+    function toPatch(gw: ZoteroGateway, raw: Record<string, unknown>) {
+      return (
+        gw as unknown as {
+          translatorJsonToPatch: (
+            value: Record<string, unknown>,
+          ) => Record<string, unknown> | null;
+        }
+      ).translatorJsonToPatch(raw);
+    }
+
+    it("keeps the editable fields, trims them, and drops everything else", function () {
+      install();
+      const patch = toPatch(gateway(), {
+        // Editable string fields, one of them padded.
+        title: "  Hippocampal replay  ",
+        DOI: "10.1000/example",
+        date: "2021-03-04",
+        // Editable numeric field: stringified rather than dropped.
+        issue: 4,
+        // Editable but empty: carries no information, so it is left out.
+        abstractNote: "   ",
+        // Not editable metadata at all — an item type, the tags Zotero
+        // returns for every translated item, and identity columns.
+        itemType: "journalArticle",
+        tags: [{ tag: "memory" }, { tag: "replay" }],
+        key: "ABCD1234",
+        libraryID: 1,
+        notes: [{ note: "<p>from the translator</p>" }],
+        attachments: [{ title: "Full Text PDF" }],
+        creators: [
+          { firstName: "Ada", lastName: "Lovelace", creatorType: "author" },
+          // No creatorType: defaults to author.
+          { firstName: "Alan", lastName: "Turing" },
+          // Single-field name: fieldMode 1.
+          { name: "The Allen Institute", creatorType: "contributor" },
+          // Nothing nameable: dropped.
+          { creatorType: "editor" },
+        ],
+      });
+
+      assert.deepEqual(patch, {
+        title: "Hippocampal replay",
+        date: "2021-03-04",
+        DOI: "10.1000/example",
+        issue: "4",
+        creators: [
+          {
+            creatorType: "author",
+            firstName: "Ada",
+            lastName: "Lovelace",
+            name: undefined,
+            fieldMode: 0,
+          },
+          {
+            creatorType: "author",
+            firstName: "Alan",
+            lastName: "Turing",
+            name: undefined,
+            fieldMode: 0,
+          },
+          {
+            creatorType: "contributor",
+            firstName: undefined,
+            lastName: undefined,
+            name: "The Allen Institute",
+            fieldMode: 1,
+          },
+        ],
+      });
+    });
+
+    it("reports nothing rather than an empty patch", function () {
+      install();
+      // Everything here is outside the editable set, so there is no patch to
+      // apply and the caller must be able to tell that apart from an empty
+      // object it would happily "apply".
+      assert.isNull(
+        toPatch(gateway(), {
+          itemType: "journalArticle",
+          tags: [{ tag: "memory" }],
+          creators: [{ creatorType: "author" }],
+        }),
+      );
+    });
+  });
 });
 
 /**

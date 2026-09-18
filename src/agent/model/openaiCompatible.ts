@@ -484,10 +484,11 @@ async function parseOpenAIChatCompletionStream(
   let reasoningText = "";
   let reasoningContentText = "";
   let finishReason: string | undefined;
+  let receivedTerminal = false;
   const toolCallMap = new Map<number, StreamedToolCallAccumulator>();
 
   try {
-    while (true) {
+    while (!receivedTerminal) {
       const { value, done } = await reader.read();
       if (done) break;
 
@@ -499,7 +500,11 @@ async function parseOpenAIChatCompletionStream(
         const trimmed = line.trim();
         if (!trimmed.startsWith("data:")) continue;
         const data = trimmed.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
+        if (data === "[DONE]") {
+          receivedTerminal = true;
+          break;
+        }
+        if (!data) continue;
 
         try {
           const parsed = JSON.parse(data);
@@ -588,6 +593,10 @@ async function parseOpenAIChatCompletionStream(
       }
     }
   } finally {
+    if (receivedTerminal) {
+      // The response is complete; transport cleanup must not delay its result.
+      void reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
 
@@ -664,6 +673,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
     );
     const response = await postWithReasoningFallback({
       url,
+      scope: { conversationKey: request.conversationKey },
       auth,
       modelName: request.model,
       initialReasoning: request.reasoning,

@@ -1,0 +1,38 @@
+import type { QuoteCitation } from "../../shared/types";
+import type { AgentActionReceipt } from "../contracts/types";
+import type {
+  TrustedReadObservation,
+  VerifiedReadSource,
+} from "../plans/types";
+import type { AgentToolArtifact, AgentWorkCategory } from "../types";
+
+export type ZoteroMcpToolActivityEvent = {
+  requestId: string;
+  runId?: string;
+  conversationGeneration?: number;
+  phase: "started" | "completed";
+  toolName: string;
+  toolLabel?: string;
+  serverName: string;
+  arguments?: unknown;
+  ok?: boolean;
+  error?: string;
+  artifacts?: AgentToolArtifact[];
+  actionReceipts?: AgentActionReceipt[];
+  workCategory?: AgentWorkCategory;
+  /**
+   * The research job this call advanced, as the tool's own result declared
+   * it. A bridge shows the reader that progress from this field instead of
+   * recognising the research tool by its name.
+   */
+  researchJobId?: string;
+  mutability?: "read" | "write";
+  profileSignature?: string;
+  conversationKey?: number;
+  libraryID?: number;
+  kind?: "global" | "paper";
+  quoteCitations?: QuoteCitation[];
+  verifiedReadSources?: VerifiedReadSource[];
+  readObservations?: readonly TrustedReadObservation[];
+  timestamp: number;
+};

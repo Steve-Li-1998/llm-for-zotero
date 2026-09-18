@@ -4,12 +4,16 @@ import type { AgentRuntimeRequest, AgentToolArtifact } from "../types";
 import type { DocumentCitationEvidence } from "./citationService";
 import { finalizeDocument, persistFinalizedDocument } from "./finalizer";
 import {
+  directDocumentId,
+  loadDocumentForRunByContentHash,
   loadLatestDocumentForRun,
   loadPlanDocument,
   loadPlanDocumentOutbox,
+  nextDirectDocumentSequence,
 } from "./store";
 import type {
   DocumentCoverageItem,
+  DocumentOutcomePolicy,
   PlanDocument,
   PlanDocumentAsset,
   PlanDocumentOutboxRecord,
@@ -21,17 +25,28 @@ import {
   resolveMaterialOutput,
 } from "./workflowMaterial";
 import { ToolInputRejection } from "../tools/execution/failure";
+import { normalizeNoteSourceText } from "../../services/notes/noteRendering";
+import type { MaterialOutputIntent } from "../contracts/workflowDependencies";
+
+/** The already stored document, with the outbox record that published it. */
+async function storedDocumentResult(document: PlanDocument): Promise<{
+  document: PlanDocument;
+  outbox: PlanDocumentOutboxRecord;
+}> {
+  const outbox = await loadPlanDocumentOutbox(document.documentId);
+  if (!outbox) throw new Error("The document exists without its outbox");
+  return { document, outbox };
+}
 function directDocumentSpec(params: {
   request: AgentRuntimeRequest;
+  policy: DocumentOutcomePolicy;
   title: string;
   hasCitations: boolean;
 }) {
-  const policy = params.request.documentOutcomePolicy;
-  if (!policy?.required)
-    throw new Error("This turn does not require a document");
-  const researchGrounded = policy.integrityPolicy === "research_grounded";
+  const researchGrounded =
+    params.policy.integrityPolicy === "research_grounded";
   return {
-    kind: policy.documentKind,
+    kind: params.policy.documentKind,
     title: params.title,
     requiredSections: researchGrounded ? ["Scope and limitations"] : [],
     requiresReferences: researchGrounded || params.hasCitations,
@@ -40,7 +55,10 @@ function directDocumentSpec(params: {
     citationStyle: {
       styleId: "http://www.zotero.org/styles/apa",
       styleTitle: "APA",
-      locale: params.request.classifiedIntent?.queryLanguage || "en-US",
+      locale:
+        typeof params.request.metadata?.queryLanguage === "string"
+          ? params.request.metadata.queryLanguage
+          : "en-US",
     },
   } as const;
 }
@@ -184,7 +202,7 @@ export class DirectDocumentFinalizer {
     input: SubmitPlanDocumentInput;
     now?: number;
   }): Promise<{ document: PlanDocument; outbox: PlanDocumentOutboxRecord }> {
-    const policy = params.request.documentOutcomePolicy;
+    const configuredPolicy = params.request.documentOutcomePolicy;
     const material = resolveMaterialOutput(
       params.request,
       params.input.materialOutputId,
@@ -192,25 +210,93 @@ export class DirectDocumentFinalizer {
     const stableDocumentId = material
       ? materialDocumentId(params.request, material.id)
       : undefined;
-    if (
-      !policy?.required ||
-      (params.request.planContext?.phase === "executing" && !material)
-    ) {
+    if (params.request.planContext?.phase === "planning") {
       throw new Error("Direct document finalization is not authorized");
     }
+    if (params.request.planContext?.phase === "executing" && !material) {
+      throw new Error("Plan document finalization must use the approved spec");
+    }
+    const policy: DocumentOutcomePolicy = configuredPolicy?.required
+      ? configuredPolicy
+      : {
+          required: true,
+          documentKind: params.input.documentKind || "custom",
+          integrityPolicy: params.input.integrityPolicy || "authored",
+          trigger: "document_intent",
+        };
+    return this.publish({
+      request: params.request,
+      runId: params.runId,
+      input: params.input,
+      policy,
+      material,
+      stableDocumentId,
+      now: params.now,
+    });
+  }
+
+  /**
+   * Finalize one batch item's note body as its own durable document.
+   *
+   * A batch item is not the turn's deliverable, so it never inherits the
+   * turn's document policy: a note written during a literature-review turn is
+   * still a note, and holding it to that turn's grounding rules would reject
+   * the whole batch. It is always authored material of kind `note`, titled
+   * after the item it is written onto.
+   */
+  async finalizeNoteBody(params: {
+    request: AgentRuntimeRequest;
+    runId: string;
+    title: string;
+    markdown: string;
+    now?: number;
+  }): Promise<{ document: PlanDocument; outbox: PlanDocumentOutboxRecord }> {
+    return this.publish({
+      request: params.request,
+      runId: params.runId,
+      input: {
+        title: params.title,
+        // Exactly what `note_write` would store for the same body, so the
+        // note carries the model's text and nothing the host invented.
+        markdown: normalizeNoteSourceText(params.markdown),
+        citations: [],
+        quotes: [],
+        assets: [],
+        groundingReviewed: "passed",
+        groundingIssues: [],
+      },
+      policy: {
+        required: true,
+        documentKind: "note",
+        integrityPolicy: "authored",
+        trigger: "document_intent",
+      },
+      now: params.now,
+    });
+  }
+
+  private async publish(params: {
+    request: AgentRuntimeRequest;
+    runId: string;
+    input: SubmitPlanDocumentInput;
+    policy: DocumentOutcomePolicy;
+    material?: MaterialOutputIntent;
+    stableDocumentId?: string;
+    now?: number;
+  }): Promise<{ document: PlanDocument; outbox: PlanDocumentOutboxRecord }> {
+    const { material, stableDocumentId, policy } = params;
     const prior = stableDocumentId
       ? await loadPlanDocument(stableDocumentId)
       : await loadLatestDocumentForRun(params.runId);
-    if (prior) {
-      if (prior.conversationKey !== params.request.conversationKey)
-        throw new Error(
-          "The finalized material belongs to another conversation.",
-        );
-      const priorOutbox = await loadPlanDocumentOutbox(prior.documentId);
-      if (!priorOutbox)
-        throw new Error("The document exists without its outbox");
-      return { document: prior, outbox: priorOutbox };
-    }
+    if (prior && prior.conversationKey !== params.request.conversationKey)
+      throw new Error(
+        "The finalized material belongs to another conversation.",
+      );
+    // A workflow material output has one frozen identity, so its stored
+    // version is the answer. A direct run has no such identity: it may author
+    // several documents, and whether this submission is a retry of the stored
+    // one is only known once its content hash is computed below.
+    if (prior && stableDocumentId) return storedDocumentResult(prior);
     if (material) assertMaterialReady(params.request, material, this.gateway);
     const now = params.now ?? Date.now();
     const title = params.input.title.trim();
@@ -235,6 +321,7 @@ export class DirectDocumentFinalizer {
     }
     const spec = directDocumentSpec({
       request: params.request,
+      policy,
       title,
       hasCitations: params.input.citations.length > 0,
     });
@@ -245,7 +332,12 @@ export class DirectDocumentFinalizer {
     const coverageItems = researchGrounded
       ? coverageFromObservations(observations)
       : [];
-    const documentId = stableDocumentId || `${params.runId}:document:1`;
+    const documentId =
+      stableDocumentId ||
+      directDocumentId(
+        params.runId,
+        await nextDirectDocumentSequence(params.runId),
+      );
     const finalized = await finalizeDocument({
       gateway: this.gateway,
       input: params.input,
@@ -281,6 +373,24 @@ export class DirectDocumentFinalizer {
           }),
       },
     });
+    // The stored document is this submission only when its content is
+    // identical: a retry keeps the identity the run already published.
+    // Different content is a new document, never a silent substitution of
+    // older content for the input the model just submitted. One run may
+    // publish many documents — a note batch publishes one per item — so the
+    // retry it is looking for is not always the newest one.
+    if (!stableDocumentId) {
+      const duplicate = await loadDocumentForRunByContentHash({
+        runId: params.runId,
+        contentHash: finalized.document.contentHash,
+        documentKind: spec.kind,
+      });
+      if (
+        duplicate &&
+        duplicate.conversationKey === params.request.conversationKey
+      )
+        return storedDocumentResult(duplicate);
+    }
     await persistFinalizedDocument(finalized);
     return finalized;
   }

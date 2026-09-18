@@ -123,7 +123,7 @@ export function createReadLibraryTool(
         },
       },
       executionClass: "read",
-      requiresConfirmation: false,
+      workCategory: "retrieval",
     },
     presentation: {
       label: "Read Library",

@@ -9,6 +9,7 @@ import {
   readPagedOperationLabel,
   readPagedOperationMeta,
 } from "../../actions/pagedWorkflow";
+import { describeLibraryMutationInput } from "../../contracts/actionContract";
 import {
   LibraryMutationService,
   type ApplyTagsOperation,
@@ -42,6 +43,8 @@ export function createApplyTagsTool(
   const mutationService = new LibraryMutationService(zoteroGateway);
 
   return {
+    describeAction: describeLibraryMutationInput,
+    effectOperations: ["apply_tags", "remove_tags"],
     spec: {
       name: "apply_tags",
       description: "Add or remove tags on one or more Zotero papers.",
@@ -89,7 +92,7 @@ export function createApplyTagsTool(
         additionalProperties: false,
       },
       executionClass: "external_effect",
-      requiresConfirmation: true,
+      workCategory: "zotero_action",
     },
 
     guidance: {

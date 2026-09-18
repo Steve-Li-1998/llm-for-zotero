@@ -43,11 +43,17 @@ import type {
   PlanArtifact,
   PlanCompletionRequirementKind,
   PlanExecutionLedger,
+  PlanEffectSpecification,
   PlanStep,
   TaskEvidence,
   TaskTransitionRequest,
 } from "./types";
 import { planStepObligationIds } from "./workflowBindings";
+import { operationCatalogEntry } from "../contracts/operationCatalog";
+import {
+  matchPlanEffectReceipt,
+  planEffectTargets,
+} from "./effectAuthorization";
 export {
   canonicalizePlanResearchEvidenceDepth,
   canonicalizePlanVerifierOwnership,
@@ -65,6 +71,72 @@ function makeId(prefix: string): string {
 }
 
 export class PlanExecutionCoordinator {
+  async bindResearchDerivedEffects(params: {
+    executionId: string;
+    effectSpecification: PlanEffectSpecification;
+    effectSpecificationDigest: string;
+    now?: number;
+    alreadyInTransaction?: boolean;
+  }): Promise<PlanExecutionLedger> {
+    const ledger = await this.requireLedger(params.executionId);
+    assertExecutionMutable(ledger);
+    const artifact = await loadPlanArtifact(ledger.planId, ledger.revision);
+    if (
+      !artifact ||
+      artifact.version !== 5 ||
+      artifact.digest !== ledger.planDigest ||
+      !artifact.effectSpecification?.deferredEffects.length
+    ) {
+      throw new Error("The Plan has no deferred v5 effects to bind");
+    }
+    const derived = params.effectSpecification.effects.filter((effect) =>
+      Boolean(effect.derivedFromDeferredEffectId),
+    );
+    if (!derived.length) {
+      throw new Error("The research approval contains no concrete effects");
+    }
+    const deferredIds = new Set(
+      artifact.effectSpecification.deferredEffects.map(
+        (effect) => effect.effectId,
+      ),
+    );
+    if (
+      derived.some(
+        (effect) =>
+          !effect.derivedFromDeferredEffectId ||
+          !deferredIds.has(effect.derivedFromDeferredEffectId),
+      )
+    ) {
+      throw new Error("A research-derived effect is outside the approved Plan");
+    }
+    const now = params.now ?? Date.now();
+    const tasks = ledger.tasks.map((task) => {
+      if (!task.effectIds?.some((id) => deferredIds.has(id))) return task;
+      const effectIds = task.effectIds.flatMap((effectId) => {
+        if (!deferredIds.has(effectId)) return [effectId];
+        return derived
+          .filter((effect) => effect.derivedFromDeferredEffectId === effectId)
+          .map((effect) => effect.effectId);
+      });
+      if (!effectIds.length) {
+        throw new Error(
+          "The exact research approval does not cover every deferred mutation task",
+        );
+      }
+      return { ...task, effectIds, updatedAt: now };
+    });
+    const updated: PlanExecutionLedger = {
+      ...ledger,
+      researchEffectSpecificationDigest: params.effectSpecificationDigest,
+      tasks,
+      updatedAt: now,
+    };
+    await savePlanExecutionLedger(updated, undefined, {
+      alreadyInTransaction: params.alreadyInTransaction,
+    });
+    return updated;
+  }
+
   async bindResearchDerivedActionContract(params: {
     executionId: string;
     contract: AgentActionContract;
@@ -77,7 +149,10 @@ export class PlanExecutionCoordinator {
     if (
       !artifact ||
       artifact.digest !== ledger.planDigest ||
-      artifact.contract?.effects?.libraryMutation.approval !== "after_research"
+      (artifact.version === 5
+        ? !artifact.effectSpecification?.deferredEffects.length
+        : artifact.contract?.effects?.libraryMutation.approval !==
+          "after_research")
     ) {
       throw new Error("The plan does not authorize research-derived writes");
     }
@@ -144,11 +219,22 @@ export class PlanExecutionCoordinator {
     }
     const contract = artifact.actionContract;
     if (params.expectedEffect === "mutation") {
-      const matching = contract?.obligations.filter(
-        (obligation) =>
-          !params.expectedCapability ||
-          obligation.capability === params.expectedCapability,
-      );
+      const matching =
+        artifact.version === 5
+          ? artifact.effectSpecification?.effects.filter((effect) => {
+              const authority = operationCatalogEntry(effect.operation);
+              return (
+                (!params.expectedCapability ||
+                  authority?.capability === params.expectedCapability) &&
+                (!parent.effectIds?.length ||
+                  parent.effectIds.includes(effect.effectId))
+              );
+            })
+          : contract?.obligations.filter(
+              (obligation) =>
+                !params.expectedCapability ||
+                obligation.capability === params.expectedCapability,
+            );
       if (!matching?.length) {
         throw new Error(
           "Supporting task is outside the approved action contract",
@@ -156,9 +242,12 @@ export class PlanExecutionCoordinator {
       }
       if (params.targetIds?.length) {
         const authorized = new Set(
-          matching.flatMap(
-            (obligation) =>
-              obligation.targetBoundary?.frozenTargetIds.map(String) || [],
+          matching.flatMap((entry) =>
+            "targets" in entry
+              ? entry.targets.flatMap((target) =>
+                  target.domain === "zotero" ? target.targetIds : [],
+                )
+              : entry.targetBoundary?.frozenTargetIds.map(String) || [],
           ),
         );
         if (
@@ -212,6 +301,7 @@ export class PlanExecutionCoordinator {
       completionRequirements: supportingStep.completionRequirements,
       expectedCapability: params.expectedCapability,
       obligationIds: parent.obligationIds,
+      effectIds: parent.effectIds,
       status: "pending",
       attemptCount: 0,
       evidenceIds: [],
@@ -278,10 +368,13 @@ export class PlanExecutionCoordinator {
     if (artifact.status !== "awaiting_approval") {
       throw new Error("Only a plan awaiting approval can be approved");
     }
-    const actionContract = resolvePreResearchActionContract(
-      artifact.contract,
-      artifact.actionContract || params.actionContract,
-    );
+    const actionContract =
+      artifact.version === 5
+        ? undefined
+        : resolvePreResearchActionContract(
+            artifact.contract,
+            artifact.actionContract || params.actionContract,
+          );
     if (
       artifact.actionContractId &&
       actionContract?.id !== artifact.actionContractId
@@ -289,6 +382,7 @@ export class PlanExecutionCoordinator {
       throw new Error("The action contract changed after planning");
     }
     if (
+      artifact.version !== 5 &&
       artifact.steps.some((step) => step.expectedEffect === "mutation") &&
       artifact.contract?.effects?.libraryMutation.approval !== "after_research"
     ) {
@@ -322,7 +416,9 @@ export class PlanExecutionCoordinator {
         }
         const proposalPayloadDigest = await amendmentService.digest({
           contract: artifact.contract,
+          effectSpecification: artifact.effectSpecification,
           steps: artifact.steps,
+          skillBindings: artifact.skillBindings,
         });
         if (
           amendment.kind !== "contract_revision" ||
@@ -357,6 +453,8 @@ export class PlanExecutionCoordinator {
       conversationKey: artifact.conversationKey,
       conversationGeneration: params.conversationGeneration,
       actionContractId: artifact.actionContractId,
+      effectSpecificationDigest:
+        artifact.version === 5 ? artifact.contractDigest : undefined,
       authority: params.authority || "user",
       approvedAt: now,
     };
@@ -376,6 +474,7 @@ export class PlanExecutionCoordinator {
       acceptanceCriteria: step.acceptanceCriteria,
       expectedEffect: step.expectedEffect,
       actionIndexes: step.actionIndexes,
+      effectIds: step.effectIds,
       materialOutputId: step.materialOutputId,
       completionRequirements: approvedScopeDigest
         ? bindResearchRequirementsToScope(
@@ -413,6 +512,8 @@ export class PlanExecutionCoordinator {
           ? artifact.nativePlanning.threadId
           : undefined),
       actionContractId: artifact.actionContractId,
+      effectSpecificationDigest:
+        artifact.version === 5 ? artifact.contractDigest : undefined,
       grant,
       status: "pending",
       tasks,
@@ -816,7 +917,47 @@ export class PlanExecutionCoordinator {
     receipts: readonly AgentActionReceipt[];
     now?: number;
   }): Promise<PlanExecutionLedger> {
-    return updatePlanTask({ ...params, kind: "receipts" });
+    const ledger = await this.requireLedger(params.executionId);
+    const task = ledger.tasks.find((entry) => entry.taskId === params.taskId);
+    if (!task) throw new Error("Execution task not found");
+    const artifact =
+      ledger.effectSpecificationDigest || task.effectIds?.length
+        ? await loadPlanArtifact(ledger.planId, ledger.revision)
+        : null;
+    if (
+      (ledger.effectSpecificationDigest || task.effectIds?.length) &&
+      (!artifact || artifact.digest !== ledger.planDigest)
+    ) {
+      throw new Error("Approved plan identity changed");
+    }
+    const receiptEffects =
+      artifact?.version === 5 && artifact.effectSpecification
+        ? params.receipts.map((receipt) => {
+            const effectIds = matchPlanEffectReceipt({
+              specification: artifact.effectSpecification!,
+              activeEffectIds: task.effectIds || [],
+              receipt,
+            });
+            if (!effectIds.length) {
+              throw new Error(
+                `Receipt '${receipt.id}' does not match an active approved effect`,
+              );
+            }
+            return {
+              receiptId: receipt.id,
+              effectIds,
+              effectTargets: effectIds.map((effectId) => ({
+                effectId,
+                targetIds: planEffectTargets(
+                  artifact.effectSpecification!.effects.find(
+                    (effect) => effect.effectId === effectId,
+                  )!,
+                ),
+              })),
+            };
+          })
+        : undefined;
+    return updatePlanTask({ ...params, kind: "receipts", receiptEffects });
   }
 
   async attachEvidence(
@@ -860,6 +1001,43 @@ export class PlanExecutionCoordinator {
       request: params.request,
       evidence: [params.evidence],
       now: params.now,
+    });
+  }
+
+  /** Commit a model-supplied transition batch as one database transaction. */
+  async requestTransitionBatch(
+    updates: readonly Readonly<{
+      request: TaskTransitionRequest;
+      evidence?: TaskEvidence;
+    }>[],
+    now = Date.now(),
+  ): Promise<PlanExecutionLedger> {
+    if (!updates.length)
+      throw new Error("At least one task transition is required");
+    const executionIds = new Set(
+      updates.map((entry) => entry.request.executionId),
+    );
+    const taskIds = new Set(updates.map((entry) => entry.request.taskId));
+    if (executionIds.size !== 1) {
+      throw new Error("A task transition batch must belong to one execution");
+    }
+    if (taskIds.size !== updates.length) {
+      throw new Error("A task may appear only once in one transition batch");
+    }
+    return Zotero.DB.executeTransaction(async () => {
+      let ledger: PlanExecutionLedger | undefined;
+      for (const update of updates) {
+        ledger = await updatePlanTask({
+          kind: "transition",
+          executionId: update.request.executionId,
+          taskId: update.request.taskId,
+          request: update.request,
+          evidence: update.evidence ? [update.evidence] : undefined,
+          now,
+          alreadyInTransaction: true,
+        });
+      }
+      return ledger!;
     });
   }
 

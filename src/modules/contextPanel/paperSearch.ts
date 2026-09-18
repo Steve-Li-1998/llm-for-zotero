@@ -1,4 +1,4 @@
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import {
   libraryIndexService,
   type LibraryIndexItem,

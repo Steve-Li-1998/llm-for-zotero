@@ -14,8 +14,8 @@ import {
 import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
-} from "./contextPanel/mineruCache";
-import { invalidateCachedContextText } from "./contextPanel/pdfContext";
+} from "../services/mineru/mineruCache";
+import { invalidateCachedContextText } from "../services/paperContent/pdfContext";
 import {
   setItemProcessing,
   setItemCached,
@@ -29,8 +29,11 @@ import {
   cleanupMineruArtifactsForRemovedAttachment,
   getMineruAvailabilityForAttachment,
   publishMineruCachePackageForAttachment,
-} from "./contextPanel/mineruSync";
-import { getMineruParseEligibility } from "./mineruParseEligibility";
+} from "../services/mineru/sync";
+import {
+  getMineruParseEligibility,
+  updateMineruPdfPageCount,
+} from "./mineruParseEligibility";
 
 type QueueEntry = {
   attachmentId: number;
@@ -527,6 +530,7 @@ async function processQueue(): Promise<void> {
         break;
       }
       if (e instanceof MineruPageLimitError) {
+        updateMineruPdfPageCount(entry.attachmentId, e.pageCount);
         clearItemStatus(entry.attachmentId);
         ztoolkit.log(
           `MinerU auto-parse: skipped ${entry.title} - ${e.message}`,

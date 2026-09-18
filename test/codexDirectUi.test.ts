@@ -18,8 +18,8 @@ import {
 } from "../src/codexAuth/reasoningPrefs";
 import { initI18n, t } from "../src/utils/i18n";
 import {
-  PROVIDER_MODEL_CONTROL_STYLE,
-  createProviderCardSectionDivider,
+  PROVIDER_MODEL_SELECT_CLASS,
+  PROVIDER_MODEL_SLOT_CLASS,
   createProviderModelRowBlueprint,
   createProviderModelSectionBlueprint,
 } from "../src/utils/providerCardModelSection";
@@ -58,6 +58,7 @@ class FakeElement {
   readonly children: FakeElement[] = [];
   readonly attributes = new Map<string, string>();
   readonly style: Record<string, string> = {};
+  className = "";
   textContent = "";
   title = "";
   type = "";
@@ -144,21 +145,17 @@ describe("Codex Direct provider-card behavior", function () {
     const doc = new FakeDocument() as unknown as Document;
     const section = createProviderModelSectionBlueprint({
       doc,
-      sectionLabelStyle: "section-label",
-      title: "Model names",
+      title: "Models",
       addTitle: "Add model",
     });
     const directRow = createProviderModelRowBlueprint({
       doc,
-      outlineButtonStyle: "outline-button",
       testLabel: "Test",
     });
     const genericRow = createProviderModelRowBlueprint({
       doc,
-      outlineButtonStyle: "outline-button",
       testLabel: "Test",
     });
-    const divider = createProviderCardSectionDivider(doc);
 
     const fakeSection = section.section as unknown as FakeElement;
     const fakeHeader = section.header as unknown as FakeElement;
@@ -169,26 +166,32 @@ describe("Codex Direct provider-card behavior", function () {
     const fakeGenericRow = genericRow.row as unknown as FakeElement;
 
     assert.strictEqual(fakeSection.children[0], fakeHeader);
-    assert.equal(fakeHeader.children[0].textContent, "Model names");
+    assert.equal(fakeHeader.children[0].textContent, "Models");
     assert.equal(fakeHeader.children[1].textContent, "+");
     assert.equal(fakeAddButton.title, "Add model");
     assert.strictEqual(
       fakeRow.children[0],
       directRow.controls as unknown as FakeElement,
     );
+
+    // Appearance now comes from the shared `.llm-pref-*` stylesheet, so the
+    // blueprint hands back class names and declares no inline style of its
+    // own. Direct and generic rows must still be indistinguishable.
+    assert.equal(fakeSection.className, "llm-pref-section");
+    assert.equal(fakeHeader.className, "llm-pref-section-head");
+    assert.equal(fakeRow.className, "llm-pref-model-row");
+    assert.equal(fakeRow.className, fakeGenericRow.className);
     assert.equal(
-      fakeRow.attributes.get("style"),
-      fakeGenericRow.attributes.get("style"),
+      (directRow.controls as unknown as FakeElement).className,
+      (genericRow.controls as unknown as FakeElement).className,
     );
-    assert.equal(
-      (directRow.controls as unknown as FakeElement).attributes.get("style"),
-      (genericRow.controls as unknown as FakeElement).attributes.get("style"),
-    );
+    assert.isUndefined(fakeRow.attributes.get("style"));
     assert.equal(fakeTestButton.textContent, "Test");
-    assert.equal(fakeTestButton.attributes.get("style"), "outline-button");
-    assert.include(fakeStatus.attributes.get("style") || "", "display: none");
-    assert.include(PROVIDER_MODEL_CONTROL_STYLE, "flex: 1; min-width: 0");
-    assert.equal((divider as unknown as FakeElement).tagName, "hr");
+    assert.equal(fakeTestButton.className, "llm-pref-button");
+    assert.equal(fakeStatus.className, "llm-pref-status");
+    assert.equal(fakeStatus.style.display, "none");
+    assert.equal(PROVIDER_MODEL_SELECT_CLASS, "llm-pref-select");
+    assert.equal(PROVIDER_MODEL_SLOT_CLASS, "llm-pref-model-control-slot");
   });
 
   it("builds a picker that excludes catalog models used by other rows", function () {

@@ -1,13 +1,13 @@
 import { t } from "../../utils/i18n";
 import { stripWebSourceMarkersForDisplay } from "../../webAccess/attribution";
-import { stripQuoteCitationAnchorsFromDisplayText } from "./quoteCitations";
+import { stripQuoteCitationAnchorsFromDisplayText } from "../../services/quotes/quoteCitations";
 import { getMessageQuoteDisplay } from "./quoteRenderPlan";
 import {
   cancelChatNavigation,
   navigateChatToMessage,
   withScrollGuard,
 } from "./chatScrollSnapshots";
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../../utils/textSanitization";
 import type { Message } from "./types";
 
 export const SIDEBAR_TURN_NAVIGATOR_MIN_WIDTH_PX = 400;
@@ -550,28 +550,23 @@ export function createConversationTurnNavigator(params: {
 
   const applyEligibility = () => {
     const previousVisible = visible;
-    withScrollGuard(
-      chatBox,
-      conversationKey,
-      () => {
-        chatShell.classList.remove("llm-turn-navigator-visible");
-        nav.hidden = true;
-        void chatBox.offsetWidth;
-        const shellWidth =
-          chatShell.getBoundingClientRect().width || chatShell.clientWidth || 0;
-        const eligible = isConversationTurnNavigatorEligible({
-          shellWidth,
-          scrollHeight: chatBox.scrollHeight,
-          clientHeight: chatBox.clientHeight,
-          turnCount: entries.length,
-          minimumWidthPx,
-        });
-        visible = eligible;
-        nav.hidden = !eligible;
-        chatShell.classList.toggle("llm-turn-navigator-visible", eligible);
-      },
-      "anchor",
-    );
+    withScrollGuard(chatBox, conversationKey, () => {
+      chatShell.classList.remove("llm-turn-navigator-visible");
+      nav.hidden = true;
+      void chatBox.offsetWidth;
+      const shellWidth =
+        chatShell.getBoundingClientRect().width || chatShell.clientWidth || 0;
+      const eligible = isConversationTurnNavigatorEligible({
+        shellWidth,
+        scrollHeight: chatBox.scrollHeight,
+        clientHeight: chatBox.clientHeight,
+        turnCount: entries.length,
+        minimumWidthPx,
+      });
+      visible = eligible;
+      nav.hidden = !eligible;
+      chatShell.classList.toggle("llm-turn-navigator-visible", eligible);
+    });
     if (!visible) hidePreview();
     if (visible !== previousVisible) {
       dirty.geometry = true;

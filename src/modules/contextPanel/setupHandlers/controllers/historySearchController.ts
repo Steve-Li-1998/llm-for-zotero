@@ -1,5 +1,5 @@
 import { createElement } from "../../../../utils/domHelpers";
-import { sanitizeText } from "../../textUtils";
+import { sanitizeText } from "../../../../utils/textSanitization";
 import type { ConversationHistoryEntry } from "./conversationHistoryController";
 import { formatHistoryRowDisplayTitle } from "./conversationHistoryController";
 

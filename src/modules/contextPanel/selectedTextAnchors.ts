@@ -3,20 +3,16 @@ import type {
   ResolvedSelectedTextAnchor,
   SelectedTextContext,
 } from "../../shared/types";
-import { ensurePDFTextCached } from "./pdfContext";
+import { ensurePDFTextCached } from "../../services/paperContent/pdfContext";
 import { warmPageTextCacheForAttachment } from "./livePdfSelectionLocator";
 import type { LivePdfPageText } from "./livePdfSelectionLocator";
-import { normalizeSelectedTextContexts } from "./normalizers";
+import { normalizeSelectedTextContexts } from "../../services/context/normalizers";
 import {
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
-} from "./quoteTextSearch";
-export {
-  formatSelectedTextLocator,
-  renderSelectedTextAnchorContext,
-} from "./selectedTextAnchorFormatting";
-import { pdfTextCache } from "./state";
-import { sanitizeText } from "./textUtils";
+} from "../../services/quotes/quoteTextSearch";
+import { pdfTextCache } from "../../services/paperContent/contextCache";
+import { sanitizeText } from "../../utils/textSanitization";
 
 export const SELECTED_TEXT_ANCHOR_MAX_CHARS = 6_500;
 export const SELECTED_TEXT_ANCHORS_MAX_TOTAL_CHARS = 12_000;

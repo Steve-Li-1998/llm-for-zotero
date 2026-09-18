@@ -203,7 +203,7 @@ describe("native selection structure and boundaries", function () {
       assert.include(String(error), "must belong to the target note");
     }
   });
-  it("offers only the note tools needed by a self-contained edit and keeps research tools for requested source work", function () {
+  it("keeps direct read, clarification, and document tools available for a note edit", function () {
     const registry = new AgentToolRegistry();
     for (const name of [
       "note_write",
@@ -232,18 +232,14 @@ describe("native selection structure and boundaries", function () {
     };
     assert.deepEqual(
       registry.listToolsForRequest(request).map((t) => t.name),
-      ["note_write", "library_read", "request_user_input"],
-    );
-    request.documentOutcomePolicy = { required: true } as never;
-    assert.include(
-      registry.listToolsForRequest(request).map((t) => t.name),
-      "submit_document",
-    );
-    request.documentOutcomePolicy = undefined;
-    request.classifiedIntent.semantic!.reading.source = "document_text";
-    assert.include(
-      registry.listToolsForRequest(request).map((t) => t.name),
-      "paper_read",
+      [
+        "note_write",
+        "library_read",
+        "request_user_input",
+        "paper_read",
+        "library_search",
+        "submit_document",
+      ],
     );
   });
 });
@@ -355,6 +351,17 @@ describe("selection recovery and embedded content", function () {
         '<ul><li><strong>Revised.</strong><img data-attachment-key="IMAGE123"></li></ul><p>Keep.</p>',
       ),
       result!,
+    );
+  });
+  it("escapes every HTML-significant character in replacement text", function () {
+    const result = replaceTextContentInHtml(
+      "<p>Replace me.</p>",
+      "Replace me.",
+      "a & b < c > d \" e ' f",
+    );
+    assert.strictEqual(
+      result,
+      "<p>a &amp; b &lt; c &gt; d &quot; e &#39; f</p>",
     );
   });
   it("rejects a note changed since selection instead of rebasing the edit", async function () {

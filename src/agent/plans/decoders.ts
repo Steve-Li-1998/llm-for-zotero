@@ -7,21 +7,32 @@ import type {
   PlanArtifactStatus,
   PlanCompletionRequirement,
   PlanCompletionRequirementKind,
+  PlanEffectMaterialBinding,
+  PlanEffectSpecification,
+  PlanEffectTarget,
   PlanExecutionLedger,
   PlanExecutionStatus,
   PlanProvider,
   PlanStep,
   PlanStepEffect,
+  PlanSkillBinding,
   TaskEvidence,
   TaskEvidenceKind,
   TaskEvidencePayload,
 } from "./types";
 import type { PlanSkillRoutingReceipt } from "../skills/routingTypes";
+import type {
+  ActionConstraint,
+  ActionDomain,
+  ActionEffect,
+} from "../authorization/types";
+import { operationCatalogEntry } from "../contracts/operationCatalog";
 import {
   decodeActionContract,
   decodeActionReceipt,
   decodePlanContract,
 } from "./contracts";
+import { validatePlanEffectBindings } from "./workflowBindings";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -69,6 +80,450 @@ function stringList(value: unknown, label: string): string[] {
   return value.map((entry, index) =>
     requiredString(entry, `${label}[${index}]`),
   );
+}
+
+function uniqueStringList(value: unknown, label: string): string[] {
+  const result = stringList(value, label);
+  if (new Set(result).size !== result.length) {
+    throw new Error(`${label} must contain unique values`);
+  }
+  return result;
+}
+
+function jsonRecord(value: unknown, label: string): Record<string, unknown> {
+  const input = requiredRecord(value, label);
+  const validate = (entry: unknown, path: string): void => {
+    if (
+      entry === null ||
+      typeof entry === "string" ||
+      typeof entry === "boolean"
+    ) {
+      return;
+    }
+    if (typeof entry === "number") {
+      if (!Number.isFinite(entry)) throw new Error(`${path} must be finite`);
+      return;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach((item, index) => validate(item, `${path}[${index}]`));
+      return;
+    }
+    if (isRecord(entry)) {
+      Object.entries(entry).forEach(([key, item]) =>
+        validate(item, `${path}.${key}`),
+      );
+      return;
+    }
+    throw new Error(`${path} must be JSON-compatible`);
+  };
+  validate(input, label);
+  return input;
+}
+
+function decodeEffectRestrictions(
+  value: unknown,
+  label: string,
+): ActionConstraint[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  const validEffects = new Set<ActionEffect>([
+    "read",
+    "create",
+    "modify",
+    "delete",
+    "execute",
+    "egress",
+  ]);
+  const validDomains = new Set<ActionDomain>([
+    "zotero_library",
+    "filesystem",
+    "local_execution",
+    "network",
+    "privileged_zotero",
+  ]);
+  return value.map((entry, index) => {
+    const input = requiredRecord(entry, `${label}[${index}]`);
+    const description = requiredString(
+      input.description,
+      `${label}[${index}].description`,
+    );
+    if (input.kind === "deny_mechanisms") {
+      const mechanisms = uniqueStringList(
+        input.mechanisms,
+        `${label}[${index}].mechanisms`,
+      );
+      if (
+        !mechanisms.length ||
+        mechanisms.some(
+          (mechanism) => mechanism !== "shell" && mechanism !== "zotero_script",
+        )
+      ) {
+        throw new Error(`${label}[${index}].mechanisms is invalid`);
+      }
+      return {
+        kind: "deny_mechanisms",
+        mechanisms: mechanisms as ("shell" | "zotero_script")[],
+        description,
+      };
+    }
+    if (input.kind !== "deny_effects") {
+      throw new Error(`${label}[${index}].kind is unsupported`);
+    }
+    const effects = uniqueStringList(
+      input.effects,
+      `${label}[${index}].effects`,
+    ) as ActionEffect[];
+    const domains = uniqueStringList(
+      input.domains,
+      `${label}[${index}].domains`,
+    ) as ActionDomain[];
+    if (
+      !effects.length ||
+      effects.some((effect) => !validEffects.has(effect))
+    ) {
+      throw new Error(`${label}[${index}].effects is invalid`);
+    }
+    if (
+      !domains.length ||
+      domains.some((domain) => !validDomains.has(domain))
+    ) {
+      throw new Error(`${label}[${index}].domains is invalid`);
+    }
+    return {
+      kind: "deny_effects",
+      effects,
+      domains,
+      ...(input.exceptOperations === undefined
+        ? {}
+        : {
+            exceptOperations: uniqueStringList(
+              input.exceptOperations,
+              `${label}[${index}].exceptOperations`,
+            ),
+          }),
+      ...(input.operations === undefined
+        ? {}
+        : {
+            operations: uniqueStringList(
+              input.operations,
+              `${label}[${index}].operations`,
+            ),
+          }),
+      description,
+    };
+  });
+}
+
+function decodeEffectTarget(value: unknown, label: string): PlanEffectTarget {
+  const input = requiredRecord(value, label);
+  if (input.domain === "zotero") {
+    const targetIds = uniqueStringList(input.targetIds, `${label}.targetIds`);
+    if (!targetIds.length)
+      throw new Error(`${label}.targetIds cannot be empty`);
+    return {
+      domain: "zotero",
+      libraryID: requiredInteger(input.libraryID, `${label}.libraryID`, 1),
+      targetIds,
+      scopeDigest: requiredString(input.scopeDigest, `${label}.scopeDigest`),
+    };
+  }
+  if (input.domain === "filesystem") {
+    const paths = uniqueStringList(input.paths, `${label}.paths`);
+    if (!paths.length) throw new Error(`${label}.paths cannot be empty`);
+    return {
+      domain: "filesystem",
+      paths,
+    };
+  }
+  if (input.domain === "execution") {
+    const fingerprints = uniqueStringList(
+      input.fingerprints,
+      `${label}.fingerprints`,
+    );
+    if (!fingerprints.length) {
+      throw new Error(`${label}.fingerprints cannot be empty`);
+    }
+    return {
+      domain: "execution",
+      fingerprints,
+    };
+  }
+  throw new Error(`${label}.domain is invalid`);
+}
+
+function decodeMaterialBinding(
+  value: unknown,
+  label: string,
+): PlanEffectMaterialBinding {
+  const input = requiredRecord(value, label);
+  const role = requiredString(input.role, `${label}.role`);
+  if (input.material !== undefined) {
+    if (input.producedByStepId !== undefined || input.outputId !== undefined) {
+      throw new Error(`${label} must use one material binding form`);
+    }
+    const material = requiredRecord(input.material, `${label}.material`);
+    const contentHash = requiredString(
+      material.contentHash,
+      `${label}.material.contentHash`,
+    );
+    return {
+      role,
+      material: {
+        documentId: requiredString(
+          material.documentId,
+          `${label}.material.documentId`,
+        ),
+        documentVersion: requiredInteger(
+          material.documentVersion,
+          `${label}.material.documentVersion`,
+          1,
+        ),
+        contentHash,
+      },
+    };
+  }
+  return {
+    role,
+    producedByStepId: requiredString(
+      input.producedByStepId,
+      `${label}.producedByStepId`,
+    ),
+    outputId: requiredString(input.outputId, `${label}.outputId`),
+  };
+}
+
+export function decodePlanEffectSpecification(
+  value: unknown,
+): PlanEffectSpecification {
+  const input = requiredRecord(value, "effectSpecification");
+  if (input.version !== 1) {
+    throw new Error("effectSpecification.version is unsupported");
+  }
+  if (!Array.isArray(input.effects) || !Array.isArray(input.deferredEffects)) {
+    throw new Error("effectSpecification effects must be arrays");
+  }
+  const seen = new Set<string>();
+  const effects = input.effects.map((entry, index) => {
+    const label = `effectSpecification.effects[${index}]`;
+    const effect = requiredRecord(entry, label);
+    const effectId = requiredString(effect.effectId, `${label}.effectId`);
+    if (seen.has(effectId)) {
+      throw new Error(
+        `effectSpecification contains duplicate effect ${effectId}`,
+      );
+    }
+    const operation = requiredString(effect.operation, `${label}.operation`);
+    const operationEntry = operationCatalogEntry(operation);
+    if (!operationEntry) {
+      throw new Error(`${label}.operation is invalid`);
+    }
+    if (effect.approval !== "initial" && effect.approval !== "after_research") {
+      throw new Error(`${label}.approval is invalid`);
+    }
+    if (!Array.isArray(effect.targets) || !effect.targets.length) {
+      throw new Error(`${label} requires a frozen target`);
+    }
+    const dependsOnEffectIds = uniqueStringList(
+      effect.dependsOnEffectIds,
+      `${label}.dependsOnEffectIds`,
+    );
+    if (dependsOnEffectIds.some((id) => !seen.has(id))) {
+      throw new Error(`${label} dependency must reference an earlier effect`);
+    }
+    if (!Array.isArray(effect.targetBindings)) {
+      throw new Error(`${label}.targetBindings must be an array`);
+    }
+    const targetBindings = effect.targetBindings.map(
+      (binding, bindingIndex) => {
+        const bindingLabel = `${label}.targetBindings[${bindingIndex}]`;
+        const input = requiredRecord(binding, bindingLabel);
+        const producedByEffectId = requiredString(
+          input.producedByEffectId,
+          `${bindingLabel}.producedByEffectId`,
+        );
+        if (!seen.has(producedByEffectId)) {
+          throw new Error(`${bindingLabel} must reference an earlier effect`);
+        }
+        return {
+          role: requiredString(input.role, `${bindingLabel}.role`),
+          producedByEffectId,
+        };
+      },
+    );
+    const targets = effect.targets.map((target, targetIndex) =>
+      decodeEffectTarget(target, `${label}.targets[${targetIndex}]`),
+    );
+    const expectedTargetDomain =
+      operationEntry.proofDomain === "zotero_state"
+        ? "zotero"
+        : operationEntry.proofDomain === "file_state"
+          ? "filesystem"
+          : "execution";
+    if (targets.some((target) => target.domain !== expectedTargetDomain)) {
+      throw new Error(`${label}.targets do not match the operation domain`);
+    }
+    const materialBindings = Array.isArray(effect.materialBindings)
+      ? effect.materialBindings.map((binding, bindingIndex) =>
+          decodeMaterialBinding(
+            binding,
+            `${label}.materialBindings[${bindingIndex}]`,
+          ),
+        )
+      : (() => {
+          throw new Error(`${label}.materialBindings must be an array`);
+        })();
+    if (
+      targetBindings.some(
+        (binding) => !dependsOnEffectIds.includes(binding.producedByEffectId),
+      )
+    ) {
+      throw new Error(
+        `${label} target producer must be an explicit earlier dependency`,
+      );
+    }
+    seen.add(effectId);
+    return {
+      effectId,
+      approval: effect.approval as "initial" | "after_research",
+      operation:
+        operation as PlanEffectSpecification["effects"][number]["operation"],
+      targets,
+      targetBindings,
+      parameters: jsonRecord(effect.parameters, `${label}.parameters`),
+      review:
+        effect.review === undefined
+          ? "default"
+          : ((["default", "review", "direct"].includes(String(effect.review))
+              ? effect.review
+              : (() => {
+                  throw new Error(`${label}.review is invalid`);
+                })()) as "default" | "review" | "direct"),
+      restrictions: decodeEffectRestrictions(
+        effect.restrictions,
+        `${label}.restrictions`,
+      ),
+      dependsOnEffectIds,
+      materialBindings,
+      derivedFromDeferredEffectId: optionalString(
+        effect.derivedFromDeferredEffectId,
+      ),
+    };
+  });
+  const deferredEffects = input.deferredEffects.map((entry, index) => {
+    const label = `effectSpecification.deferredEffects[${index}]`;
+    const effect = requiredRecord(entry, label);
+    const effectId = requiredString(effect.effectId, `${label}.effectId`);
+    if (seen.has(effectId)) {
+      throw new Error(
+        `effectSpecification contains duplicate effect ${effectId}`,
+      );
+    }
+    const operation = requiredString(effect.operation, `${label}.operation`);
+    if (!operationCatalogEntry(operation)) {
+      throw new Error(`${label}.operation is invalid`);
+    }
+    if (effect.approval !== "after_research") {
+      throw new Error(`${label}.approval must be after_research`);
+    }
+    const dependsOnEffectIds = uniqueStringList(
+      effect.dependsOnEffectIds,
+      `${label}.dependsOnEffectIds`,
+    );
+    if (dependsOnEffectIds.some((id) => !seen.has(id))) {
+      throw new Error(`${label} dependency must reference an earlier effect`);
+    }
+    if (!Array.isArray(effect.targetBindings)) {
+      throw new Error(`${label}.targetBindings must be an array`);
+    }
+    const targetBindings = effect.targetBindings.map(
+      (binding, bindingIndex) => {
+        const bindingLabel = `${label}.targetBindings[${bindingIndex}]`;
+        const input = requiredRecord(binding, bindingLabel);
+        const producedByEffectId = requiredString(
+          input.producedByEffectId,
+          `${bindingLabel}.producedByEffectId`,
+        );
+        if (!seen.has(producedByEffectId)) {
+          throw new Error(`${bindingLabel} must reference an earlier effect`);
+        }
+        return {
+          role: requiredString(input.role, `${bindingLabel}.role`),
+          producedByEffectId,
+        };
+      },
+    );
+    const materialBindings = Array.isArray(effect.materialBindings)
+      ? effect.materialBindings.map((binding, bindingIndex) =>
+          decodeMaterialBinding(
+            binding,
+            `${label}.materialBindings[${bindingIndex}]`,
+          ),
+        )
+      : (() => {
+          throw new Error(`${label}.materialBindings must be an array`);
+        })();
+    if (
+      targetBindings.some(
+        (binding) => !dependsOnEffectIds.includes(binding.producedByEffectId),
+      )
+    ) {
+      throw new Error(
+        `${label} target producer must be an explicit earlier dependency`,
+      );
+    }
+    seen.add(effectId);
+    return {
+      effectId,
+      approval: "after_research" as const,
+      operation:
+        operation as PlanEffectSpecification["deferredEffects"][number]["operation"],
+      targetSelectionDescription: requiredString(
+        effect.targetSelectionDescription,
+        `${label}.targetSelectionDescription`,
+      ),
+      targetBindings,
+      parameters: jsonRecord(effect.parameters, `${label}.parameters`),
+      review:
+        effect.review === undefined
+          ? "default"
+          : ((["default", "review", "direct"].includes(String(effect.review))
+              ? effect.review
+              : (() => {
+                  throw new Error(`${label}.review is invalid`);
+                })()) as "default" | "review" | "direct"),
+      restrictions: decodeEffectRestrictions(
+        effect.restrictions,
+        `${label}.restrictions`,
+      ),
+      dependsOnEffectIds,
+      materialBindings,
+    };
+  });
+  const deferredIds = new Set(deferredEffects.map((effect) => effect.effectId));
+  for (const effect of effects) {
+    if (
+      effect.approval === "after_research" &&
+      (!effect.derivedFromDeferredEffectId ||
+        !deferredIds.has(effect.derivedFromDeferredEffectId))
+    ) {
+      throw new Error(
+        `effectSpecification effect ${effect.effectId} requires deferred approval lineage`,
+      );
+    }
+    if (effect.approval === "initial" && effect.derivedFromDeferredEffectId) {
+      throw new Error(
+        `effectSpecification effect ${effect.effectId} has invalid deferred approval lineage`,
+      );
+    }
+  }
+  return {
+    version: 1,
+    constraints: decodeEffectRestrictions(
+      input.constraints || [],
+      "effectSpecification.constraints",
+    ),
+    effects,
+    deferredEffects,
+  };
 }
 
 const PROVIDERS = new Set<PlanProvider>(["original", "codex", "claude"]);
@@ -280,6 +735,10 @@ export function decodePlanStep(
               throw new Error("Invalid plan action indexes");
             return input.actionIndexes;
           })(),
+    effectIds:
+      input.effectIds === undefined
+        ? undefined
+        : uniqueStringList(input.effectIds, `steps[${index}].effectIds`),
     materialOutputId: optionalString(input.materialOutputId),
     completionRequirements: decodeRequirements(
       input.completionRequirements,
@@ -335,13 +794,43 @@ function decodeSkillRoutingReceipt(
   };
 }
 
+export function decodeSkillBindings(value: unknown): PlanSkillBinding[] {
+  if (!Array.isArray(value)) {
+    throw new Error("skillBindings must be an array");
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    const input = requiredRecord(entry, `skillBindings[${index}]`);
+    const id = requiredString(input.id, `skillBindings[${index}].id`);
+    if (seen.has(id)) throw new Error(`skillBindings contains duplicate ${id}`);
+    seen.add(id);
+    if (input.source !== "loaded" && input.source !== "forced") {
+      throw new Error(`skillBindings[${index}].source is invalid`);
+    }
+    return {
+      id,
+      version: requiredInteger(
+        input.version,
+        `skillBindings[${index}].version`,
+        1,
+      ),
+      instructionFingerprint: requiredString(
+        input.instructionFingerprint,
+        `skillBindings[${index}].instructionFingerprint`,
+      ),
+      source: input.source,
+    };
+  });
+}
+
 export function decodePlanArtifact(value: unknown): PlanArtifact {
   const input = requiredRecord(value, "plan artifact");
   if (
     input.version !== 1 &&
     input.version !== 2 &&
     input.version !== 3 &&
-    input.version !== 4
+    input.version !== 4 &&
+    input.version !== 5
   ) {
     throw new Error("Plan artifact version is unsupported");
   }
@@ -351,14 +840,85 @@ export function decodePlanArtifact(value: unknown): PlanArtifact {
   if (!Array.isArray(input.steps) || !input.steps.length) {
     throw new Error("Plan artifact requires steps");
   }
+  if (
+    input.version !== 5 &&
+    (input.effectSpecification !== undefined ||
+      input.approvalProvenance !== undefined)
+  ) {
+    throw new Error("Concrete effects are only supported by Plan artifact v5");
+  }
   const status = input.status as PlanArtifactStatus;
   const contract =
-    input.version === 3 || input.version === 4
+    input.version === 3 || input.version === 4 || input.version === 5
       ? decodePlanContract(input.contract, {
           requireSnapshot:
             status === "awaiting_approval" || status === "approved",
         })
       : undefined;
+  const effectSpecification =
+    input.version === 5
+      ? decodePlanEffectSpecification(input.effectSpecification)
+      : undefined;
+  const steps = input.steps.map((step, index) =>
+    decodePlanStep(step, index, input.version === 4 || input.version === 5),
+  );
+  if (input.version === 5) {
+    if (contract?.effects) {
+      throw new Error("Plan v5 effects must use effectSpecification only");
+    }
+    if (
+      input.actionContract !== undefined ||
+      input.actionContractId !== undefined ||
+      input.skillRoutingReceipt !== undefined
+    ) {
+      throw new Error(
+        "Plan v5 cannot carry a legacy action contract or semantic routing receipt",
+      );
+    }
+    if (!Array.isArray(input.skillBindings)) {
+      throw new Error("Plan v5 requires host-observed skillBindings");
+    }
+    const effectIds = new Set([
+      ...(effectSpecification?.effects || []).map((effect) => effect.effectId),
+      ...(effectSpecification?.deferredEffects || []).map(
+        (effect) => effect.effectId,
+      ),
+    ]);
+    for (const [index, step] of steps.entries()) {
+      if (step.actionIndexes !== undefined) {
+        throw new Error(`steps[${index}] cannot use legacy action indexes`);
+      }
+      if (step.effectIds?.some((id) => !effectIds.has(id))) {
+        throw new Error(`steps[${index}] references an unknown effect`);
+      }
+      if (step.expectedEffect === "mutation" && !step.effectIds?.length) {
+        throw new Error(`steps[${index}] requires concrete effect identities`);
+      }
+    }
+    validatePlanEffectBindings(effectSpecification!, steps);
+  }
+  const provenance =
+    input.approvalProvenance === undefined
+      ? undefined
+      : (() => {
+          const value = requiredRecord(
+            input.approvalProvenance,
+            "approvalProvenance",
+          );
+          if (![1, 2, 3, 4].includes(Number(value.sourceArtifactVersion))) {
+            throw new Error(
+              "approvalProvenance.sourceArtifactVersion is invalid",
+            );
+          }
+          return {
+            sourceArtifactVersion: value.sourceArtifactVersion as 1 | 2 | 3 | 4,
+            sourceDigest: requiredString(
+              value.sourceDigest,
+              "approvalProvenance.sourceDigest",
+            ),
+            sourceContractDigest: optionalString(value.sourceContractDigest),
+          };
+        })();
   return {
     version: input.version,
     planId: requiredString(input.planId, "plan artifact planId"),
@@ -380,14 +940,18 @@ export function decodePlanArtifact(value: unknown): PlanArtifact {
       ? { nativePlanning: decodeNativePlanBinding(input.nativePlanning) }
       : {}),
     skillRoutingReceipt: decodeSkillRoutingReceipt(input.skillRoutingReceipt),
+    skillBindings:
+      input.version === 5
+        ? decodeSkillBindings(input.skillBindings)
+        : undefined,
     contract,
     contractDigest:
-      input.version === 3 || input.version === 4
+      input.version === 3 || input.version === 4 || input.version === 5
         ? requiredString(input.contractDigest, "plan artifact contractDigest")
         : optionalString(input.contractDigest),
-    steps: input.steps.map((step, index) =>
-      decodePlanStep(step, index, input.version === 4),
-    ),
+    effectSpecification,
+    approvalProvenance: provenance,
+    steps,
     createdAt: requiredNumber(input.createdAt, "plan artifact createdAt"),
     updatedAt: requiredNumber(input.updatedAt, "plan artifact updatedAt"),
     approvedAt:
@@ -436,6 +1000,10 @@ export function decodeExecutionTask(value: unknown): ExecutionTask {
               throw new Error("Invalid plan action indexes");
             return input.actionIndexes;
           })(),
+    effectIds:
+      input.effectIds === undefined
+        ? undefined
+        : uniqueStringList(input.effectIds, "execution task effectIds"),
     materialOutputId: optionalString(input.materialOutputId),
     completionRequirements: decodeRequirements(
       input.completionRequirements,
@@ -494,6 +1062,10 @@ export function decodePlanExecutionLedger(value: unknown): PlanExecutionLedger {
     provider: decodeProvider(input.provider, "provider"),
     providerContinuationId: optionalString(input.providerContinuationId),
     actionContractId: optionalString(input.actionContractId),
+    effectSpecificationDigest: optionalString(input.effectSpecificationDigest),
+    researchEffectSpecificationDigest: optionalString(
+      input.researchEffectSpecificationDigest,
+    ),
     grant: {
       version: 1,
       planId: requiredString(grant.planId, "grant.planId"),
@@ -508,6 +1080,9 @@ export function decodePlanExecutionLedger(value: unknown): PlanExecutionLedger {
         "grant.conversationGeneration",
       ),
       actionContractId: optionalString(grant.actionContractId),
+      effectSpecificationDigest: optionalString(
+        grant.effectSpecificationDigest,
+      ),
       authority:
         grant.authority === "auto_policy" || grant.authority === "yolo"
           ? grant.authority
@@ -792,6 +1367,10 @@ export function decodeTaskEvidence(value: unknown): TaskEvidence {
           "materialOutputId",
         ),
         documentId: requiredString(rawPayload.documentId, "documentId"),
+        documentVersion:
+          rawPayload.documentVersion === undefined
+            ? undefined
+            : requiredInteger(rawPayload.documentVersion, "documentVersion", 1),
         contentHash: requiredString(rawPayload.contentHash, "contentHash"),
         integrityValidated: true,
       };
@@ -828,12 +1407,43 @@ export function decodeTaskEvidence(value: unknown): TaskEvidence {
         ),
       };
     } else if (type === "mutation_receipts") {
+      if (
+        rawPayload.effectTargets !== undefined &&
+        !Array.isArray(rawPayload.effectTargets)
+      ) {
+        throw new Error("evidence.payload.effectTargets must be an array");
+      }
       payload = {
         type,
         receiptIds: stringList(
           rawPayload.receiptIds,
           "evidence.payload.receiptIds",
         ),
+        effectIds:
+          rawPayload.effectIds === undefined
+            ? undefined
+            : uniqueStringList(
+                rawPayload.effectIds,
+                "evidence.payload.effectIds",
+              ),
+        effectTargets: Array.isArray(rawPayload.effectTargets)
+          ? rawPayload.effectTargets.map((entry, index) => {
+              const binding = requiredRecord(
+                entry,
+                `evidence.payload.effectTargets[${index}]`,
+              );
+              return {
+                effectId: requiredString(
+                  binding.effectId,
+                  `evidence.payload.effectTargets[${index}].effectId`,
+                ),
+                targetIds: uniqueStringList(
+                  binding.targetIds,
+                  `evidence.payload.effectTargets[${index}].targetIds`,
+                ),
+              };
+            })
+          : undefined,
       };
     } else if (type === "user_decision") {
       payload = {

@@ -8,7 +8,7 @@ import {
   syncSelectedTextContextForSource,
 } from "../src/modules/contextPanel/contextResolution";
 import { retainPinnedTextState } from "../src/modules/contextPanel/contexts/textContextState";
-import { resolvePaperContextRefFromAttachment } from "../src/modules/contextPanel/paperAttribution";
+import { resolvePaperContextRefFromAttachment } from "../src/services/paperContent/paperAttribution";
 
 describe("contextResolution note-edit sync", function () {
   const itemId = 777;

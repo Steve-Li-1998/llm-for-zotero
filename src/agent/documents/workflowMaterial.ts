@@ -1,24 +1,129 @@
 import { getInterpretedTurnPapers } from "../context/turnPaperScope";
-import type { AgentRuntimeRequest } from "../types";
+import type { AgentRuntimeRequest, AgentToolContext } from "../types";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import {
   actionIsComplete,
   obligationsForAction,
   type MaterialOutputIntent,
 } from "../contracts/workflowDependencies";
+import type { MaterialRef } from "./materialRef";
 import type { PlanDocument } from "./types";
 import { loadPlanDocument } from "./store";
+
+function requiredIdentity(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${label} is required.`);
+  }
+  return value.trim();
+}
+
+/** Stable identity supplied by the host-owned execution or Plan lifecycle. */
+export function materialDocumentIdForWorkflow(
+  workflowId: string,
+  outputId: string,
+): string {
+  const workflow = requiredIdentity(
+    workflowId,
+    "The material workflow identity",
+  );
+  const output = requiredIdentity(outputId, "The material output identity");
+  return `material:${encodeURIComponent(workflow)}:${encodeURIComponent(output)}`;
+}
+
+function legacyMaterialDocumentId(
+  request: AgentRuntimeRequest,
+  outputId: string,
+): string | undefined {
+  const identity =
+    request.actionContract?.intent?.semantic?.id ||
+    request.classifiedIntent?.semantic?.id;
+  return identity ? `material:${identity}:${outputId}` : undefined;
+}
 
 export function materialDocumentId(
   request: AgentRuntimeRequest,
   outputId: string,
 ): string {
-  const identity =
-    request.actionContract?.intent?.semantic?.id ||
-    request.classifiedIntent?.semantic?.id;
-  if (!identity)
-    throw new Error("The authored material has no frozen semantic identity.");
-  return `material:${identity}:${outputId}`;
+  if (request.executionContext?.executionId) {
+    return materialDocumentIdForWorkflow(
+      request.executionContext.executionId,
+      outputId,
+    );
+  }
+  const legacyId = legacyMaterialDocumentId(request, outputId);
+  if (legacyId) return legacyId;
+  throw new Error("The authored material has no frozen workflow identity.");
+}
+
+export function materialRefFromDocument(
+  document: Pick<
+    PlanDocument,
+    "documentId" | "documentVersion" | "contentHash"
+  >,
+): MaterialRef {
+  if (
+    !Number.isSafeInteger(document.documentVersion) ||
+    document.documentVersion < 1
+  ) {
+    throw new Error(
+      "The material document version must be a positive integer.",
+    );
+  }
+  const contentHash = requiredIdentity(
+    document.contentHash,
+    "The material content hash",
+  );
+  return {
+    documentId: requiredIdentity(
+      document.documentId,
+      "The material document ID",
+    ),
+    documentVersion: document.documentVersion,
+    contentHash,
+  };
+}
+
+export function assertMaterialRefMatches(
+  document: Pick<
+    PlanDocument,
+    "documentId" | "documentVersion" | "contentHash"
+  >,
+  reference: MaterialRef,
+): void {
+  materialRefFromDocument(reference);
+  // Name the part that moved: the user approved one exact material, and a
+  // refusal is only actionable when it says which half of that identity broke.
+  if (document.documentId !== reference.documentId) {
+    throw new Error(
+      `The finalized material identity has changed: the approved document ID '${reference.documentId}' is not stored document '${document.documentId}'.`,
+    );
+  }
+  if (document.documentVersion !== reference.documentVersion) {
+    throw new Error(
+      `The finalized material version or content has changed: the approved document version ${reference.documentVersion} is no longer the stored version ${document.documentVersion}.`,
+    );
+  }
+  if (document.contentHash !== reference.contentHash) {
+    throw new Error(
+      `The finalized material version or content has changed: the approved content hash '${reference.contentHash}' is no longer the stored content hash '${document.contentHash}'.`,
+    );
+  }
+}
+
+export async function loadMaterialRef(
+  reference: MaterialRef,
+  conversationKey?: number,
+): Promise<PlanDocument | null> {
+  const document = await loadPlanDocument(reference.documentId);
+  if (!document) return null;
+  assertMaterialRefMatches(document, reference);
+  if (
+    conversationKey !== undefined &&
+    document.conversationKey !== conversationKey
+  ) {
+    throw new Error("The finalized material belongs to another conversation.");
+  }
+  return document;
 }
 export function resolveMaterialOutput(
   request: AgentRuntimeRequest,
@@ -113,9 +218,7 @@ export function recordMaterialOutput(
     throw new Error("The output's action progress is unavailable.");
   const receipt = {
     outputId: output.id,
-    documentId: document.documentId,
-    documentVersion: document.documentVersion,
-    contentHash: document.contentHash,
+    ...materialRefFromDocument(document),
   };
   progress.materialOutputs = [
     ...(progress.materialOutputs || []).filter(
@@ -153,12 +256,36 @@ export async function loadWorkflowMaterial(
 
 /** Binds a save proposal to the material receipt and the frozen native parent. */
 export async function resolveWorkflowNoteDocument(
-  request: AgentRuntimeRequest,
+  context: Pick<AgentToolContext, "request">,
   documentId: string,
   targetItemId?: number,
   mode: "create" | "edit" | "append" = "create",
+  /** The MaterialRef frozen into the authorized proposal, when one exists. */
+  frozenRef?: MaterialRef,
 ): Promise<PlanDocument> {
+  const request = context.request;
+  const document = await loadPlanDocument(documentId);
+  if (!document || document.conversationKey !== request.conversationKey) {
+    throw new Error(
+      "The finalized workflow document identity or content has changed.",
+    );
+  }
   const progress = request.actionProgress;
+  // Fresh ordinary Agent work has no semantic contract. Its direct document is
+  // still an exact, host-persisted material version. The journey spans two
+  // turns — generate, then save — so the run that finalized it is not the run
+  // that saves it; what may not change is the material the user approved, so
+  // the frozen MaterialRef is re-checked here. The invocation controller
+  // authorizes the concrete target separately.
+  if (!request.actionContract && !progress) {
+    if (document.version !== 2 || document.origin.kind !== "direct") {
+      throw new Error(
+        "The finalized document is not a direct version 2 Agent document.",
+      );
+    }
+    if (frozenRef) assertMaterialRefMatches(document, frozenRef);
+    return document;
+  }
   const receipt = progress?.materialOutputs?.find(
     (entry) => entry.documentId === documentId,
   );
@@ -176,16 +303,7 @@ export async function resolveWorkflowNoteDocument(
     throw new Error(
       "The note must use the finalized workflow document and its exact authorized destination.",
     );
-  const document = await loadPlanDocument(documentId);
-  if (
-    !document ||
-    document.documentId !== documentId ||
-    document.conversationKey !== request.conversationKey ||
-    document.documentVersion !== receipt.documentVersion ||
-    document.contentHash !== receipt.contentHash
-  )
-    throw new Error(
-      "The finalized workflow document identity or content has changed.",
-    );
+  assertMaterialRefMatches(document, receipt);
+  if (frozenRef) assertMaterialRefMatches(document, frozenRef);
   return document;
 }

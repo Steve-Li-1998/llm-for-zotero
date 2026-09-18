@@ -2,7 +2,7 @@ import { assert } from "chai";
 import {
   normalizeSelectedTextContexts,
   synthesizeSelectedTextContexts,
-} from "../src/modules/contextPanel/normalizers";
+} from "../src/services/context/normalizers";
 
 describe("selected text context normalization", function () {
   it("sanitizes invalid stable locator values", function () {

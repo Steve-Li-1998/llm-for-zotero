@@ -6,7 +6,7 @@ import {
   setItemFailed,
   setItemProcessing,
 } from "../src/modules/mineruProcessingStatus";
-import { writeMineruCacheFiles } from "../src/modules/contextPanel/mineruCache";
+import { writeMineruCacheFiles } from "../src/services/mineru/mineruCache";
 import { MineruCancelledError } from "../src/utils/mineruClient";
 
 type MockItem = {

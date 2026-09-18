@@ -1,5 +1,10 @@
 import { assert } from "chai";
+import { DatabaseSync } from "node:sqlite";
 import { DirectDocumentFinalizer } from "../src/agent/documents/directFinalization";
+import {
+  initPlanDocumentStore,
+  loadPlanDocument,
+} from "../src/agent/documents/store";
 import type {
   DocumentOutcomePolicy,
   PlanCitationCluster,
@@ -8,6 +13,7 @@ import type { TrustedReadObservation } from "../src/agent/plans/types";
 import type { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import type { AgentRuntimeRequest } from "../src/agent/types";
 import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import { composePdfReaderText } from "./helpers/hostSurfaces";
 import { ToolInputRejection } from "../src/agent/tools/execution/failure";
 
 const observation: TrustedReadObservation = {
@@ -102,12 +108,17 @@ describe("DirectDocumentFinalizer", function () {
   let originalZotero: unknown;
   let originalZtoolkit: unknown;
   let finalizer: DirectDocumentFinalizer;
+  let restorePdfReaderTextBridge: (() => void) | null = null;
   const queries: Array<{ sql: string; params: unknown[] }> = [];
 
   before(function () {
     originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown })
       .Zotero;
     originalZtoolkit = (globalThis as any).ztoolkit;
+    // Quote verification reaches the live PDF through a host surface bridge.
+    // This suite stands in for the plugin surface, so it composes the same
+    // reader adapter the panel composes at startup.
+    restorePdfReaderTextBridge = composePdfReaderText();
   });
 
   beforeEach(function () {
@@ -165,6 +176,8 @@ describe("DirectDocumentFinalizer", function () {
   });
 
   after(function () {
+    restorePdfReaderTextBridge?.();
+    restorePdfReaderTextBridge = null;
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
       originalZotero;
     (globalThis as any).ztoolkit = originalZtoolkit;
@@ -607,6 +620,75 @@ describe("DirectDocumentFinalizer", function () {
       now: 301,
     });
     assert.include(cited.document.visibleMarkdown, "## References");
+  });
+  it("reuses a run's document only for identical content and sequences new content", async function () {
+    const policy: DocumentOutcomePolicy = {
+      required: true,
+      documentKind: "guide",
+      integrityPolicy: "authored",
+      trigger: "document_intent",
+    };
+    const zotero = (globalThis as any).Zotero;
+    const fakeDB = zotero.DB;
+    const db = new DatabaseSync(":memory:");
+    zotero.DB = {
+      queryAsync: async (sql: string, params: unknown[] = []) => {
+        const statement = db.prepare(sql);
+        const values = params.map((value) =>
+          value === undefined ? null : value,
+        ) as never[];
+        if (/^\s*(SELECT|PRAGMA|WITH)/i.test(sql))
+          return statement.all(...values);
+        statement.run(...values);
+        return [];
+      },
+      executeTransaction: async (task: () => Promise<unknown>) => {
+        db.exec("BEGIN");
+        try {
+          const result = await task();
+          db.exec("COMMIT");
+          return result;
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
+      },
+    };
+    try {
+      await initPlanDocumentStore();
+      const submit = (markdown?: string, now?: number) =>
+        finalizer.finalize({
+          request: request(policy),
+          runId: "session-run",
+          input: input(markdown ? { markdown } : undefined),
+          now,
+        });
+
+      const first = await submit(undefined, 400);
+      const retried = await submit(undefined, 401);
+      assert.equal(first.document.documentId, "session-run:document:1");
+      assert.equal(retried.document.documentId, first.document.documentId);
+      assert.equal(retried.document.contentHash, first.document.contentHash);
+
+      const second = await submit(
+        "# Representational drift\n\nA second, different guide.",
+        402,
+      );
+      assert.equal(second.document.documentId, "session-run:document:2");
+      assert.notEqual(second.document.contentHash, first.document.contentHash);
+
+      assert.equal(
+        (await loadPlanDocument(first.document.documentId))?.visibleMarkdown,
+        first.document.visibleMarkdown,
+      );
+      assert.equal(
+        (await loadPlanDocument(second.document.documentId))?.visibleMarkdown,
+        second.document.visibleMarkdown,
+      );
+    } finally {
+      zotero.DB = fakeDB;
+      db.close();
+    }
   });
   it("rejects citation expansion past the final byte limit before persisting a document", async function () {
     const max = 2 * 1024 * 1024;

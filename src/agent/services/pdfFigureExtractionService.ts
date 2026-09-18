@@ -2,7 +2,7 @@ import {
   getManifestFigureBaseLabel,
   pruneMineruSourceImagesWhenFigureCropsReady,
   type MineruManifest,
-} from "../../modules/contextPanel/mineruCache";
+} from "../../services/mineru/mineruCache";
 import {
   PDF_FIGURE_CROP_ALGORITHM_VERSION,
   PDF_FIGURE_CROP_CACHE_VERSION,
@@ -17,7 +17,7 @@ import {
   type ExpectedPdfFigure,
   type ExtractedPdfFigure,
   type PdfFigureCropCache,
-} from "../../modules/contextPanel/pdfFigureCropCache";
+} from "../../services/pdf/pdfFigureCropCache";
 import { joinLocalPath } from "../../utils/localPath";
 import type { PaperReadFigureExtractionResult } from "../tools/read/paperRead";
 import type { PdfTarget } from "../tools/read/pdfToolUtils";
@@ -31,6 +31,8 @@ const FIGURE_EXTRACTION_RENDER_SCALE = 1.8;
 
 type FigureExtractionInput = {
   query?: string;
+  figureLabels?: string[];
+  includeSupplementary?: boolean;
   pages?: number[];
   target?: PdfTarget;
 };
@@ -63,6 +65,54 @@ type FigureCropPageService = PdfPageService & {
       }
   >;
 };
+
+/**
+ * Ordinary Agent and MCP calls use the same concrete read selectors.
+ * Frozen Plan selections are resolved by the caller before this fallback.
+ * Queries remain supported for existing clients; no preliminary classifier
+ * is required to read a figure.
+ */
+function resolveDirectFigureSelection(
+  input: FigureExtractionInput,
+  context: AgentToolContext,
+): SemanticDecisions["figures"] | undefined {
+  if (input.figureLabels) {
+    return {
+      labels: input.figureLabels,
+      kind: "figures",
+      includeSupplementary:
+        input.includeSupplementary ??
+        input.figureLabels.some((label) =>
+          /supplement|extended\s+data|\bS\d/i.test(label),
+        ),
+    };
+  }
+  const userText = normalizeText(input.query || context.request.userText);
+  if (!/\b(?:fig(?:ure)?s?|images?)\b/i.test(userText)) return undefined;
+
+  const labels = new Set<string>();
+  const labelPattern =
+    /\b((?:extended\s+data\s+|supplement(?:ary|al)\s+)?fig(?:ure)?\.?)\s*(S?\d+[A-Za-z]?)/gi;
+  for (const match of userText.matchAll(labelPattern)) {
+    const prefix = normalizeText(match[1]).toLowerCase();
+    const number = normalizeText(match[2]);
+    if (!number) continue;
+    labels.add(
+      prefix.startsWith("extended data")
+        ? `Extended Data Figure ${number}`
+        : prefix.startsWith("supplement")
+          ? `Supplementary Figure ${number}`
+          : `Figure ${number}`,
+    );
+  }
+  return {
+    labels: [...labels],
+    kind: "figures",
+    includeSupplementary:
+      input.includeSupplementary ??
+      /\b(?:supplement(?:ary|al)|extended\s+data|S\d)\b/i.test(userText),
+  };
+}
 
 function normalizeText(value: unknown): string {
   return `${value ?? ""}`.replace(/\s+/g, " ").trim();
@@ -494,7 +544,8 @@ export class PdfFigureExtractionService {
   ): Promise<PaperReadFigureExtractionResult> {
     const selection =
       params.selection ||
-      params.context.request.classifiedIntent?.semantic?.figures;
+      params.context.request.classifiedIntent?.semantic?.figures ||
+      resolveDirectFigureSelection(params.input, params.context);
     const query = params.input.query || selection?.labels.join(", ") || "";
     if (!selection)
       return {
@@ -504,7 +555,7 @@ export class PdfFigureExtractionService {
         figures: [],
         artifacts: [],
         warnings: [
-          "Figure selection is unresolved. Prepare semantic figure intent before extracting crops.",
+          "Figure selection is unresolved. Supply figureLabels (for example ['Figure 1'], or [] for all figures) or name the figure in query.",
         ],
       };
     const figures: Array<
@@ -541,7 +592,8 @@ export class PdfFigureExtractionService {
       const recordFigures = async (rows: ExtractedPdfFigure[]) => {
         let sourceFingerprint = pdfFingerprint;
         const needsDocumentAssets =
-          params.context.request.documentOutcomePolicy?.required;
+          params.context.request.documentOutcomePolicy?.required ||
+          params.context.authorization?.kind === "external_runtime";
         if (needsDocumentAssets && rows.length) {
           const attachment = Zotero.Items.get(attachmentId);
           const sourcePath = await attachment?.getFilePathAsync();

@@ -129,6 +129,34 @@ export function assertTaskCompletionEvidence(
                     entry.receipt.status,
                   ),
               );
+              if (task.effectIds?.length) {
+                return task.effectIds.every((effectId) => {
+                  const effectEvidence = valid.filter(
+                    (entry) =>
+                      entry.payload?.type === "mutation_receipts" &&
+                      entry.payload.effectIds?.includes(effectId),
+                  );
+                  if (!effectEvidence.length) return false;
+                  const expected = new Set(
+                    effectEvidence.flatMap((entry) =>
+                      entry.payload?.type === "mutation_receipts"
+                        ? entry.payload.effectTargets
+                            ?.filter((binding) => binding.effectId === effectId)
+                            .flatMap((binding) => binding.targetIds) || []
+                        : [],
+                    ),
+                  );
+                  const observed = new Set(
+                    effectEvidence.flatMap(
+                      (entry) => entry.receipt?.requestedTargets || [],
+                    ),
+                  );
+                  return (
+                    expected.size > 0 &&
+                    [...expected].every((target) => observed.has(target))
+                  );
+                });
+              }
               return task.obligationIds.length
                 ? task.obligationIds.every((obligationId) =>
                     valid.some(

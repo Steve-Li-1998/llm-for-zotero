@@ -10,7 +10,7 @@ import {
   splitQuoteAtPairedInlineMath,
   splitQuoteAtEllipsis,
   summarizeQuoteTextSupport,
-} from "../src/modules/contextPanel/quoteTextSearch";
+} from "../src/services/quotes/quoteTextSearch";
 
 describe("quoteTextSearch", function () {
   it("keeps exact repetitive quotes searchable above the fragment state ceiling", function () {

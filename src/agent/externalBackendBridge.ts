@@ -1,6 +1,4 @@
-import { loadWorkflowMaterial } from "./documents/workflowMaterial";
 import { evaluatePreparedActionContract } from "./contracts/actionEvaluation";
-import { hasCurrentSemanticIntent } from "./model/semanticTransport";
 import { config } from "../../package.json";
 import {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -32,10 +30,17 @@ import {
 } from "../codexAppServer/mcpSetup";
 import { dbg, dbgError } from "../utils/debugLogger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
+import {
+  externalRuntimeCommandEffect,
+  externalRuntimeFileEffect,
+  recordExternalRuntimeEffect,
+  type ExternalRuntimeEffect,
+} from "./contracts/externalRuntimeEffects";
 import type { AgentRuntime } from "./runtime";
 import {
   addZoteroMcpToolActivityObserver,
   registerScopedZoteroMcpScope,
+  resolveConversationScopeToken,
   updateScopedZoteroMcpScope,
   type ZoteroMcpActiveScope,
   type ZoteroMcpToolActivityEvent,
@@ -75,8 +80,8 @@ import type {
   ResolvedSelectedTextAnchor,
   SelectedTextContext,
 } from "../shared/types";
-import { synthesizeSelectedTextContexts } from "../modules/contextPanel/normalizers";
-import { formatSelectedTextLocator } from "../modules/contextPanel/selectedTextAnchorFormatting";
+import { synthesizeSelectedTextContexts } from "../services/context/normalizers";
+import { formatSelectedTextLocator } from "../services/context/selectedTextAnchorFormatting";
 import {
   buildTurnContextEnvelope,
   renderTurnContextEnvelopeForModel,
@@ -96,10 +101,7 @@ import {
   loadLatestDocumentForRun,
   loadLatestPlanDocumentForExecution,
 } from "./documents/store";
-import {
-  detectTurnIntent,
-  resolvePlanSkillRoutingReceipt,
-} from "./model/semanticIntentService";
+import { resolvePlanSkillRoutingReceipt } from "./model/semanticSkillRouting";
 import { getAllSkills, getMatchedSkillIds } from "./skills";
 import { resolveDocumentOutcomePolicy } from "./documents/outcomePolicy";
 import {
@@ -149,7 +151,7 @@ export type AgentRuntimeLike = Pick<
   | "getToolDefinition"
   | "unregisterTool"
   | "registerTool"
-  | "createActionContractForRequest"
+  | "prepareExecutionRequest"
   | "registerPendingConfirmation"
   | "resolveConfirmation"
   | "getRunTrace"
@@ -274,6 +276,9 @@ type SessionInvalidationResponse = {
 };
 
 const EXTERNAL_ACTION_PREFIX = "cc_tool::";
+
+/** Distinguishes two provider actions dispatched within the same millisecond. */
+let externalActionSequence = 0;
 
 type ContextEnvelope = {
   activeItemId?: number;
@@ -448,6 +453,7 @@ type BridgeRuntimeRequest = {
   apiBase?: string;
   authMode?: string;
   providerProtocol?: string;
+  executionContext?: AgentRuntimeRequest["executionContext"];
   selectedTextContexts?: SelectedTextContext[];
   resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
@@ -691,7 +697,7 @@ function buildClaudeBridgeNotesDirectoryInstruction(): string {
     "- The notes directory is already configured by the user. Do not use Bash, Glob, Find, LS, or Read to rediscover the vault path, inspect likely note folders, or probe write access when this section is present.",
     "- When the user asks to save a file-based note into the configured notes directory, use the configured Default target path unless the user explicitly names a different folder or absolute path.",
     "- Do not create a Papers, papers, Notes, or other alternate subfolder unless the user explicitly requested that exact folder.",
-    "- If using Claude Code's Write tool for a Markdown note, pass a `.md` file path under the configured Default target path. Use the configured Attachments path for copied figure or image assets.",
+    "- For a requested file-based note, finalize it with submit_document and call the Zotero MCP file_io tool with its documentId, exact visibleMarkdown, and a `.md` path under the configured Default target path. file_io exports and verifies the complete figure bundle without native shell or Write access.",
   ].join("\n");
 }
 
@@ -707,6 +713,10 @@ function buildClaudeBridgeCustomInstruction(
       ? "Claude Code receives Zotero MCP access for metadata and write operations. For raw-PDF identities, use the exact current-turn local paths instead of Zotero paper-content retrieval."
       : "Claude Code receives Zotero access through the scoped MCP tools for this turn. When those tools are available, use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets. Use zotero_script for Zotero-native API inspection or scripted library operations only when the semantic Zotero tools cannot cover the request.",
     'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", "inside this folder", and "this tag" against those selected Zotero scopes. Do not ask the user which folder or tag they mean unless no selected scope is present or multiple selected scopes make the reference genuinely ambiguous.',
+    // Unconditional on purpose: where notes belong is a property of Zotero, not
+    // of whether this user happens to have configured a notes directory. The
+    // directory block below only carves out the file writes that are not notes.
+    "A note you are asked to write is a Zotero note: use the Zotero note_write tool, not Claude Code's Write tool. note_write is the only note path Zotero can authorize, journal, and verify against the saved note, so a note written straight to disk leaves the host with no record of what changed.",
     buildClaudeBridgeNotesDirectoryInstruction(),
     options.rawPdfMode ? RAW_PDF_TRANSPORT_POLICY_BLOCK : "",
   ]
@@ -949,6 +959,60 @@ async function invalidateExternalBridgeSession(params: {
 
 function toExternalActionName(toolName: string): string {
   return `${EXTERNAL_ACTION_PREFIX}${toolName}`;
+}
+
+/**
+ * Claude Code's own tools that change something outside the host.
+ *
+ * Only these need a receipt: everything else Claude Code runs here is a read,
+ * and every Zotero effect arrives instead as an MCP tool call that already has
+ * the full proposal, authorization, journal and verification path.
+ */
+const CLAUDE_RUNTIME_EFFECT_TOOLS: Readonly<
+  Record<string, "file_write" | "command_execute">
+> = {
+  Write: "file_write",
+  Edit: "file_write",
+  MultiEdit: "file_write",
+  NotebookEdit: "file_write",
+  Bash: "command_execute",
+};
+
+const CLAUDE_RUNTIME_FILE_PATH_KEYS = [
+  "file_path",
+  "filePath",
+  "notebook_path",
+  "notebookPath",
+  "path",
+] as const;
+
+/** The catalogued effect one of Claude Code's own tool calls performs. */
+export function describeClaudeRuntimeToolEffect(
+  toolName: string,
+  input: unknown,
+): ExternalRuntimeEffect | null {
+  const operation = Object.prototype.hasOwnProperty.call(
+    CLAUDE_RUNTIME_EFFECT_TOOLS,
+    toolName,
+  )
+    ? CLAUDE_RUNTIME_EFFECT_TOOLS[toolName]
+    : undefined;
+  if (!operation) return null;
+  const record =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+  if (operation === "command_execute") {
+    return externalRuntimeCommandEffect(
+      "claude_code",
+      typeof record.command === "string" ? record.command : "",
+    );
+  }
+  const path = CLAUDE_RUNTIME_FILE_PATH_KEYS.map((key) => record[key]).find(
+    (value): value is string =>
+      typeof value === "string" && Boolean(value.trim()),
+  );
+  return externalRuntimeFileEffect("claude_code", path ? [path] : []);
 }
 
 function fromExternalActionName(actionName: string): string | null {
@@ -1288,6 +1352,34 @@ function resolveFallbackLibraryId(
   );
 }
 
+/**
+ * Resolves the scope header token for a bridge turn.
+ *
+ * The adapter binds the MCP scope header when it creates the hot runtime and
+ * keeps sending it on resume, so a token that only lives for one turn changes
+ * the runtime's MCP config signature every turn and forces a full runtime
+ * rebuild.  A conversation-stable token lets every turn re-register its own
+ * scope under the same header value while the runtime stays hot.
+ */
+export function resolveClaudeBridgeMcpScopeToken(
+  request: Pick<AgentRuntimeRequest, "conversationKey" | "metadata">,
+  profileSignature: string,
+): string {
+  const requestMetadata =
+    request.metadata && typeof request.metadata === "object"
+      ? (request.metadata as Record<string, unknown>)
+      : {};
+  const instanceID =
+    typeof requestMetadata.conversationInstanceID === "string"
+      ? requestMetadata.conversationInstanceID.trim()
+      : "";
+  return resolveConversationScopeToken({
+    profileSignature,
+    conversationKey: request.conversationKey,
+    ...(instanceID ? { instanceID } : {}),
+  });
+}
+
 function buildClaudeZoteroMcpScope(
   request: AgentRuntimeRequest,
   profileSignature: string,
@@ -1308,16 +1400,14 @@ function buildClaudeZoteroMcpScope(
     runtimeAuthority: "claude",
     sourceMessageTimestamp: Number(request.metadata?.sourceMessageTimestamp),
     planContext: request.planContext,
+    executionContext: request.executionContext,
     actionContract: request.actionContract,
     actionProgress: request.actionProgress,
     clarificationHistory: request.clarificationHistory,
-    classifiedIntent: request.classifiedIntent,
     actionPreparation: request.actionPreparation,
-    semanticProvider: request.semanticProvider,
     documentOutcomePolicy: request.documentOutcomePolicy,
     documentReadObservations: request.documentReadObservations,
     documentArtifactObservations: request.documentArtifactObservations,
-    skillRoutingReceipt: request.skillRoutingReceipt,
     profileSignature,
     conversationGeneration: request.conversationGeneration,
     conversationKey: normalizePositiveInt(request.conversationKey),
@@ -1342,7 +1432,14 @@ function buildClaudeZoteroMcpScope(
   };
 }
 
-function buildClaudeMcpToolActivityEvent(
+/**
+ * The trace row for a Zotero MCP call Claude made.
+ *
+ * The receipts travel with the row: they are what the verification chip reads,
+ * so a write the connected client ran over MCP would otherwise reach the trace
+ * with no verdict at all — indistinguishable from one nobody verified.
+ */
+export function buildClaudeMcpToolActivityEvent(
   event: ZoteroMcpToolActivityEvent,
 ): AgentEvent {
   return {
@@ -1356,6 +1453,9 @@ function buildClaudeMcpToolActivityEvent(
     ok: event.ok,
     text: event.error,
     artifacts: event.artifacts,
+    actionReceipts: event.actionReceipts,
+    workCategory: event.workCategory,
+    mutability: event.mutability,
   };
 }
 
@@ -1840,6 +1940,7 @@ async function buildBridgeRuntimeRequest(
     apiBase: request.apiBase,
     authMode: request.authMode,
     providerProtocol: request.providerProtocol,
+    executionContext: request.executionContext,
     selectedTextContexts: Array.isArray(request.selectedTextContexts)
       ? request.selectedTextContexts
       : undefined,
@@ -2618,8 +2719,8 @@ export function createExternalBackendBridgeRuntime(options: {
 
   return {
     listTools: () => coreRuntime.listTools(),
-    createActionContractForRequest: (request) =>
-      coreRuntime.createActionContractForRequest(request),
+    prepareExecutionRequest: (request, options) =>
+      coreRuntime.prepareExecutionRequest(request, options),
     getToolDefinition: (name: string) => coreRuntime.getToolDefinition(name),
     unregisterTool: (name: string) => coreRuntime.unregisterTool(name),
     registerTool: (tool) => coreRuntime.registerTool(tool),
@@ -2745,6 +2846,12 @@ export function createExternalBackendBridgeRuntime(options: {
           ? getConversationWriteGeneration(actionConversationKey)
           : 0;
       const actionScope = conversationScopeByKey.get(actionConversationKey);
+      const actionCallId = `${toolName}:${Date.now()}:${++externalActionSequence}`;
+      // Set when the host never let the action run at all — the user answered
+      // the review card with No, or the conversation moved on first. That is a
+      // different outcome from a run that was attempted and failed, and only
+      // one of the two may claim an effect was even started.
+      let cancelled = false;
 
       onProgress({
         type: "step_start",
@@ -2763,6 +2870,7 @@ export function createExternalBackendBridgeRuntime(options: {
               actionGeneration,
             ))
         ) {
+          cancelled = true;
           return {
             ok: false,
             error:
@@ -2852,16 +2960,19 @@ export function createExternalBackendBridgeRuntime(options: {
                   actionGeneration,
                 ))
             ) {
+              cancelled = true;
               return {
                 ok: false,
                 error: "Conversation lifecycle changed before action approval",
               };
             }
             if (!resolution.approved) {
+              cancelled = true;
               return { ok: false, error: "User denied action" };
             }
             return doRun(true);
           }
+          cancelled = true;
           return { ok: false, error: "Approval required" };
         }
 
@@ -2872,6 +2983,18 @@ export function createExternalBackendBridgeRuntime(options: {
       };
 
       const result = await doRun(false);
+      // A `cc_tool::` action is Claude Code's own Write/Edit/Bash, run inside
+      // the connected runtime. The host authorized it and can never re-read
+      // what it did, so the receipt says exactly that and no more.
+      const effect = describeClaudeRuntimeToolEffect(toolName, input);
+      if (effect)
+        await recordExternalRuntimeEffect({
+          effect,
+          outcome: result.ok ? "executed" : cancelled ? "declined" : "failed",
+          callId: actionCallId,
+          reason: result.ok ? undefined : result.error,
+          conversationKey: actionConversationKey,
+        });
       onProgress({
         type: "step_done",
         step: `Run ${toolName}`,
@@ -2889,6 +3012,13 @@ export function createExternalBackendBridgeRuntime(options: {
       };
       params.request.conversationGeneration ??= getConversationWriteGeneration(
         params.request.conversationKey,
+      );
+      params.request = await coreRuntime.prepareExecutionRequest(
+        params.request,
+        {
+          signal: params.signal,
+          permissionOwner: "external_runtime",
+        },
       );
       const requestMetadata =
         params.request.metadata && typeof params.request.metadata === "object"
@@ -3046,45 +3176,8 @@ export function createExternalBackendBridgeRuntime(options: {
             );
           }
           routedSkillIds = reused.skillIds;
-          params.request.classifiedIntent =
-            approvedPlanArtifact?.actionContract?.intent;
-        } else if (await hasCurrentSemanticIntent(params.request)) {
-          routedSkillIds =
-            params.request.skillRoutingReceipt?.skills.map(
-              (skill) => skill.id,
-            ) || [];
         } else {
-          params.request.actionContract = undefined;
-          params.request.actionProgress = undefined;
-          params.request.semanticProvider = {
-            kind: "claude",
-            baseUrl: getBridgeUrl(),
-          };
-          const intent = await detectTurnIntent(
-            params.request,
-            getAllSkills(),
-            { signal: params.signal },
-          );
-          routedSkillIds = intent.skillIds;
-          params.request.classifiedIntent =
-            intent.classifiedIntent || undefined;
-          if (!params.request.classifiedIntent?.semantic)
-            throw new Error(
-              "Semantic interpretation is unavailable. No actions were authorized.",
-            );
-          params.request.skillRoutingReceipt = intent.routingReceipt;
-          if (intent.degraded) {
-            const degradedEvent: AgentEvent = {
-              type: "provider_event",
-              providerType: "turn_intent_classifier",
-              payload: {
-                status: "degraded_no_automatic_skills",
-                reason: intent.failureReason,
-              },
-            };
-            await appendPersistedEvent(degradedEvent);
-            await notifyIfLive(degradedEvent);
-          }
+          routedSkillIds = params.request.forcedSkillIds || [];
         }
         const matchedSkillIds = getMatchedSkillIds(
           params.request,
@@ -3101,10 +3194,6 @@ export function createExternalBackendBridgeRuntime(options: {
             approvedPlanArtifact?.contract?.investigation,
           ),
         });
-        if (!params.request.actionContract) {
-          params.request.actionContract =
-            await coreRuntime.createActionContractForRequest(params.request);
-        }
         const contextEnvelope = buildContextEnvelope(params.request);
         await appendPersistedEvent(
           makeProfilingEvent("frontend.context_envelope.ready"),
@@ -3318,7 +3407,12 @@ export function createExternalBackendBridgeRuntime(options: {
                 coreRuntime.resolveConfirmation(requestId, false);
               }
             };
-            const scopedMcp = registerScopedZoteroMcpScope(mcpScope);
+            const scopedMcp = registerScopedZoteroMcpScope(mcpScope, {
+              token: resolveClaudeBridgeMcpScopeToken(
+                params.request,
+                profileSignature,
+              ),
+            });
             scopedMcpToken = scopedMcp.token;
             currentMcpScope = scopedMcp.getState;
             clearScopedMcpScope = scopedMcp.clear;
@@ -3376,7 +3470,7 @@ export function createExternalBackendBridgeRuntime(options: {
                   if (
                     event.phase === "completed" &&
                     event.ok &&
-                    event.toolName === "research_update" &&
+                    event.researchJobId &&
                     params.request.planContext?.phase === "executing"
                   ) {
                     const job = await loadResearchJobForExecution(
@@ -3526,13 +3620,11 @@ export function createExternalBackendBridgeRuntime(options: {
               resolveExternalConfirmation,
             });
           const loadFinalizedDocument = async () =>
-            params.request.classifiedIntent?.semantic?.materialOutputs?.length
-              ? loadWorkflowMaterial(params.request)
-              : params.request.planContext?.phase === "executing"
-                ? loadLatestPlanDocumentForExecution(
-                    params.request.planContext.executionId,
-                  )
-                : loadLatestDocumentForRun(persistedRunId);
+            params.request.planContext?.phase === "executing"
+              ? loadLatestPlanDocumentForExecution(
+                  params.request.planContext.executionId,
+                )
+              : loadLatestDocumentForRun(persistedRunId);
 
           let outcome = await runBridge(params.request, runtimeRequest);
           await Promise.all(pendingPlanEvidence);

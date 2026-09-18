@@ -2,6 +2,7 @@ import {
   parsePdfWithMineru,
   MineruRateLimitError,
   MineruCancelledError,
+  MineruPageLimitError,
 } from "../utils/mineruClient";
 import {
   writeMineruCacheFiles,
@@ -15,6 +16,8 @@ import {
   setItemFailed,
   clearAllCachedStatuses,
   clearItemCachedStatus,
+  clearItemStatus,
+  runMineruTaskOnce,
 } from "./mineruProcessingStatus";
 import {
   cleanSyncedMineruPackages,
@@ -26,10 +29,12 @@ import {
 import { normalizeMineruTagName } from "./mineruTagIndex";
 import {
   getMineruParseEligibility,
+  updateMineruPdfPageCount,
   type MineruParseExclusionReason,
 } from "./mineruParseEligibility";
 import {
   buildMineruFilenameMatcher,
+  getMineruMaxAutoPages,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
 
@@ -57,6 +62,7 @@ type QueueEntry = {
   parentItemId: number;
   attachmentId: number;
   title: string;
+  overrideEligibility: boolean;
 };
 
 // ── Singleton state ──────────────────────────────────────────────────────────
@@ -293,6 +299,7 @@ async function buildQueue(): Promise<void> {
         parentItemId: parentItem?.id || pdfAtt.id,
         attachmentId: pdfAtt.id,
         title,
+        overrideEligibility: false,
       });
     }
   }
@@ -321,8 +328,6 @@ async function processNext(): Promise<void> {
   state.statusMessage = `Starting: ${entry.title}`;
   state.error = null;
   notify();
-
-  setItemProcessing(entry.attachmentId);
 
   // Create an AbortController for this item so pause/stop can cancel it
   const AbortCtor = getAbortControllerCtor();
@@ -353,36 +358,56 @@ async function processNext(): Promise<void> {
       return;
     }
 
-    const result = await parsePdfWithMineru(
-      pdfPath as string,
+    let lastProgressStage = "";
+    const { value: result } = await runMineruTaskOnce(
+      entry.attachmentId,
+      async (report, sharedSignal) => {
+        setItemProcessing(entry.attachmentId);
+        const parsed = await parsePdfWithMineru(
+          pdfPath as string,
+          report,
+          sharedSignal,
+          entry.overrideEligibility
+            ? {}
+            : { maxPages: getMineruMaxAutoPages() },
+        );
+        if (sharedSignal?.aborted) throw new MineruCancelledError();
+        if (!parsed?.mdContent) return parsed;
+
+        await writeMineruCacheFiles(
+          entry.attachmentId,
+          parsed.mdContent,
+          parsed.files,
+        );
+        await writeMineruSourceProvenanceForAttachment(pdfItem);
+        setItemCached(entry.attachmentId);
+        void publishMineruCachePackageForAttachment(entry.attachmentId).then(
+          (published) => {
+            if (published.status === "error") {
+              ztoolkit.log(
+                "LLM: MinerU sync package publish failed",
+                published,
+              );
+            }
+          },
+        );
+        // Flush stale in-memory text cache and disk embedding cache so the
+        // next query picks up MinerU-quality chunks and re-generates embeddings.
+        invalidateCachedContextText(entry.attachmentId);
+        return parsed;
+      },
       (stage) => {
+        lastProgressStage = stage;
         state.statusMessage = stage;
         notify();
       },
       abort?.signal,
     );
     if (result?.mdContent) {
-      await writeMineruCacheFiles(
-        entry.attachmentId,
-        result.mdContent,
-        result.files,
-      );
-      await writeMineruSourceProvenanceForAttachment(pdfItem);
-      setItemCached(entry.attachmentId);
-      void publishMineruCachePackageForAttachment(entry.attachmentId).then(
-        (published) => {
-          if (published.status === "error") {
-            ztoolkit.log("LLM: MinerU sync package publish failed", published);
-          }
-        },
-      );
-      // Flush stale in-memory text cache and disk embedding cache so the
-      // next query picks up MinerU-quality chunks and re-generates embeddings.
-      invalidateCachedContextText(entry.attachmentId);
       state.processedCount++;
       state.lastFailedItemId = null;
     } else {
-      const failReason = state.statusMessage || "No content returned";
+      const failReason = lastProgressStage || "No content returned";
       ztoolkit.log(
         `MinerU batch: no content returned for "${entry.title}", skipping`,
       );
@@ -423,6 +448,15 @@ async function processNext(): Promise<void> {
       queue.unshift(entry);
       currentAbort = null;
       notify();
+      return;
+    }
+    if (e instanceof MineruPageLimitError) {
+      updateMineruPdfPageCount(entry.attachmentId, e.pageCount);
+      clearItemStatus(entry.attachmentId);
+      state.totalCount--;
+      ztoolkit.log(`MinerU batch: skipped "${entry.title}" - ${e.message}`);
+      currentAbort = null;
+      scheduleNext();
       return;
     }
     const errMsg = (e as Error).message || String(e);
@@ -504,9 +538,15 @@ export async function processSelectedItems(
     });
     if (eligibility.excluded && !options.overrideEligibility) continue;
     const title = parentItem?.getField?.("title") || `Item ${attId}`;
-    queue.push({ parentItemId: parentId || attId, attachmentId: attId, title });
+    queue.push({
+      parentItemId: parentId || attId,
+      attachmentId: attId,
+      title,
+      overrideEligibility: options.overrideEligibility === true,
+    });
   }
 
+  queueBuilt = true;
   state.paused = false;
   state.rateLimited = false;
   state.error = null;

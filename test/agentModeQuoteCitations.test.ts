@@ -117,6 +117,37 @@ describe("used quote anchor selection", function () {
     );
   });
 
+  it("does not bind an anchor to a short blockquote by containment", function () {
+    const drift = buildCitation(
+      "Representational drift increases over days in the hippocampus.",
+      LABEL,
+    );
+    const training = buildCitation(TRAINING_QUOTE, LABEL);
+
+    assert.isEmpty(
+      selectUsedQuoteCitations({
+        text: ["The paper calls this:", "", "> drift"].join("\n"),
+        quoteCitations: [drift, training],
+      }),
+      "a one-word blockquote could sit inside many anchors",
+    );
+  });
+
+  it("binds a short blockquote that matches an anchor exactly", function () {
+    const short = buildCitation("Drift is bounded.", LABEL);
+    const training = buildCitation(TRAINING_QUOTE, LABEL);
+
+    const selected = selectUsedQuoteCitations({
+      text: ["The paper states:", "", "> Drift is bounded."].join("\n"),
+      quoteCitations: [short, training],
+    });
+
+    assert.deepEqual(
+      selected.map((citation) => citation.id),
+      [short.id],
+    );
+  });
+
   it("keeps selected-text citations the reply never quotes", function () {
     const selectedText = buildCitation(HIGHLIGHT_QUOTE, LABEL, {
       sourceMatchKind: "selected-text",

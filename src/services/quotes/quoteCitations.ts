@@ -1108,6 +1108,14 @@ function collectBlockquoteTextsForMatch(text: string): string[] {
   return blocks;
 }
 
+/**
+ * Shortest text a containment match may use. A blockquote the model shortened
+ * or extended still identifies its anchor, but a handful of characters
+ * ("> drift") sits inside many anchors and identifies none of them; below this
+ * length only an exact match binds.
+ */
+const MIN_BLOCKQUOTE_CONTAINMENT_CHARS = 24;
+
 function isQuoteCitationShownAsBlockquote(
   citation: QuoteCitation,
   blockquoteTexts: readonly string[],
@@ -1115,12 +1123,16 @@ function isQuoteCitationShownAsBlockquote(
   if (!blockquoteTexts.length) return false;
   const quoteText = normalizeQuoteTextForMatch(citation.quoteText);
   if (!quoteText) return false;
-  return blockquoteTexts.some(
-    (block) =>
-      block === quoteText ||
-      block.includes(quoteText) ||
-      quoteText.includes(block),
-  );
+  return blockquoteTexts.some((block) => {
+    if (block === quoteText) return true;
+    if (
+      block.length < MIN_BLOCKQUOTE_CONTAINMENT_CHARS ||
+      quoteText.length < MIN_BLOCKQUOTE_CONTAINMENT_CHARS
+    ) {
+      return false;
+    }
+    return block.includes(quoteText) || quoteText.includes(block);
+  });
 }
 
 /**

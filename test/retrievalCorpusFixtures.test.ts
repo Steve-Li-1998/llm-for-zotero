@@ -1,7 +1,22 @@
 import { assert } from "chai";
-import { buildFixturePdfContext } from "./helpers/retrievalCorpus";
+import {
+  buildFixturePdfContext,
+  restoreTestGlobals,
+  snapshotTestGlobals,
+  type TestGlobalSnapshot,
+} from "./helpers/retrievalCorpus";
 
 describe("retrieval corpus fixtures", function () {
+  let globalsBefore: TestGlobalSnapshot;
+
+  before(function () {
+    globalsBefore = snapshotTestGlobals();
+  });
+
+  after(function () {
+    restoreTestGlobals(globalsBefore);
+  });
+
   it("builds a MinerU-backed context for the math fixture", async function () {
     const ctx = await buildFixturePdfContext("mathDoubleHash", 9001);
     assert.equal(ctx.sourceType, "mineru");

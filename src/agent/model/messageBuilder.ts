@@ -36,14 +36,7 @@ import {
   buildAgentStableResourceContextBlock,
   type AgentResourceContextPlan,
 } from "../context/resourceContextPlan";
-import {
-  buildAgentCoverageContextBlock,
-  listVisibleAgentCoverageEntries,
-} from "../context/coverageLedger";
-import {
-  renderTurnReadingRule,
-  resolveTurnEvidencePolicy,
-} from "../context/evidencePolicy";
+import { buildAgentCoverageContextBlock } from "../context/coverageLedger";
 import { buildVisibleTurnContextBlock } from "../context/turnContextEnvelope";
 import { getSelectedPassagePaper } from "../context/turnPaperScope";
 import { buildApprovedPlanExecutionInstructions } from "../plans/executionInstructions";
@@ -577,29 +570,6 @@ function buildTurnGuidanceBlock(instructions: string[]): string {
   return ["Current-turn dynamic agent guidance:", ...lines].join("\n\n");
 }
 
-function buildReadingInstruction(request: AgentRuntimeRequest): string {
-  const policy = resolveTurnEvidencePolicy(request, {
-    priorCoverage: listVisibleAgentCoverageEntries({
-      conversationKey: request.conversationKey,
-      request,
-    }),
-  });
-  if (!policy) return "";
-  const rule = renderTurnReadingRule(policy);
-  if (policy.source === "provided_context") {
-    const noteEdit =
-      request.classifiedIntent?.actionIntents.length === 1 &&
-      request.classifiedIntent.actionIntents[0].operation === "note_edit";
-    return (
-      rule +
-      (noteEdit
-        ? " Generate the requested replacement, call note_write once, then report its verified result concisely. The host handles native range replacement, save, readback and diff; do not reconstruct HTML or perform a second cleanup edit after success."
-        : "")
-    );
-  }
-  return rule;
-}
-
 function getInScopePaperContexts(request: AgentRuntimeRequest) {
   return request.turnPaperScope.papers.map((entry) => entry.paper);
 }
@@ -671,12 +641,10 @@ export async function renderAgentPromptEnvelope(
   } = {},
 ): Promise<RenderedAgentPromptEnvelope> {
   const continuityNotes = await loadAgentTurnMemory(request.conversationKey);
-  const autoReadInstruction = buildReadingInstruction(request);
   const workflowParityInstructions = [
     buildFigureMineruInstruction(request, matchedSkillIds),
   ].filter(Boolean);
   const dynamicGuidanceInstructions = [
-    autoReadInstruction,
     request.workingDirectory
       ? `Command working directory retained from this conversation: ${request.workingDirectory}. run_command uses it when cwd is omitted; pass cwd explicitly to change it. This directory does not confer filesystem permission.`
       : "",

@@ -73,7 +73,7 @@ describe("selected note replacement contract", function () {
     assert.include(input.value._patchedHtml, "<h2>Methodology</h2>");
     assert.include(input.value._patchedHtml, "<p>Keep this.</p>");
   });
-  it("represents supplied prose as the reading source instead of requiring paper evidence", async function () {
+  it("never tells a supplied-prose note edit to read paper evidence", async function () {
     const { request } = fixture();
     const semantic = semanticFixture({
       reading: { source: "provided_context", coverage: "targeted" } as never,
@@ -92,7 +92,7 @@ describe("selected note replacement contract", function () {
     );
     const text = JSON.stringify(messages);
     assert.notInclude(text, "Use paper_read mode");
-    assert.include(text, "provided context");
+    assert.notInclude(text, "TURN RULE");
   });
 });
 

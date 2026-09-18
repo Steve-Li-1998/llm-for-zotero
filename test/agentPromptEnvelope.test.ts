@@ -833,23 +833,18 @@ describe("agent prompt envelope evidence sufficiency", function () {
     });
   }
 
-  it("renders held selection context as satisfying targeted coverage instead of mandating a read", async function () {
-    const messages = await buildAgentInitialMessages(request(true), [], []);
-    const prompt = messages.map(messageText).join("\n");
-    assert.include(prompt, "Already held");
-    assert.include(prompt, "selected text 1");
-    assert.include(prompt, "only for a specific claim in your draft");
-    assert.notInclude(prompt, "requires document_text evidence");
-  });
-
-  it("keeps the mandatory read rule when no evidence is held", async function () {
-    const messages = await buildAgentInitialMessages(request(false), [], []);
-    const prompt = messages.map(messageText).join("\n");
-    assert.include(
-      prompt,
-      "requires document_text evidence at targeted coverage",
-    );
-    assert.notInclude(prompt, "Already held");
+  it("renders no per-turn reading rule for a targeted paper turn", async function () {
+    for (const withAnchor of [true, false]) {
+      const messages = await buildAgentInitialMessages(
+        request(withAnchor),
+        [],
+        [],
+      );
+      const prompt = messages.map(messageText).join("\n");
+      assert.notInclude(prompt, "TURN RULE");
+      assert.notInclude(prompt, "The shared reading intent requires");
+      assert.notInclude(prompt, "Already held");
+    }
   });
 
   it("explains the answer_now retrieval state in the stable persona", async function () {

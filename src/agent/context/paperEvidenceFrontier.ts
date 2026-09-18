@@ -1,6 +1,7 @@
 import { canonicalJson } from "../services/libraryMutation/canonicalJson";
 import { sha256Text } from "../store/journalRecoveryBlobStore";
 import {
+  READ_BUDGET_BY_COVERAGE,
   resolveReadStopGuidance,
   type ReadStopPolicy,
   type ReadStopRecommendation,
@@ -20,15 +21,11 @@ export type PaperEvidenceProgress = {
   readBudget?: number;
 };
 
-const EXHAUSTIVE_STOP_POLICY: ReadStopPolicy = {
-  coverage: "exhaustive",
-  readBudget: Number.POSITIVE_INFINITY,
-};
-
+/** The requested read mode is the only source of this turn's stop policy. */
 function stopPolicyForReadMode(mode: string): ReadStopPolicy {
-  if (mode === "overview") return { coverage: "overview", readBudget: 1 };
-  if (mode === "targeted") return { coverage: "targeted", readBudget: 2 };
-  return EXHAUSTIVE_STOP_POLICY;
+  const coverage =
+    mode === "overview" || mode === "targeted" ? mode : "exhaustive";
+  return { coverage, readBudget: READ_BUDGET_BY_COVERAGE[coverage] };
 }
 
 export type PaperEvidenceReference = {
@@ -482,18 +479,15 @@ export class PaperEvidenceFrontier {
   private readonly seenOccurrences = new Map<string, StoredOccurrence>();
   private readonly occurrencesByContentHash = new Map<string, Set<string>>();
   private readonly cachedCalls = new Map<string, CachedCall>();
-  private readonly stopPolicy?: ReadStopPolicy;
   private readonly planExecuting: boolean;
   private readsThisTurn = 0;
 
   constructor(
     options: {
-      evidencePolicy?: ReadStopPolicy | null;
       /** True while an approved plan executes; reads then never stop the turn. */
       planExecuting?: boolean;
     } = {},
   ) {
-    this.stopPolicy = options.evidencePolicy || undefined;
     this.planExecuting = options.planExecuting === true;
   }
 
@@ -537,8 +531,7 @@ export class PaperEvidenceFrontier {
       newOccurrenceIds: [],
       repeatedOccurrenceIds,
       cumulativeOccurrenceCount: this.seenOccurrences.size,
-      stopPolicy:
-        this.stopPolicy || stopPolicyForReadMode(paperReadMode(params.input)),
+      stopPolicy: stopPolicyForReadMode(paperReadMode(params.input)),
       readsThisTurn: this.readsThisTurn,
       planExecuting: this.planExecuting,
     });
@@ -665,7 +658,7 @@ export class PaperEvidenceFrontier {
         .filter((entry): entry is string => Boolean(entry)),
       repeatedOccurrenceIds,
       cumulativeOccurrenceCount: this.seenOccurrences.size,
-      stopPolicy: this.stopPolicy || stopPolicyForReadMode(mode),
+      stopPolicy: stopPolicyForReadMode(mode),
       readsThisTurn: this.readsThisTurn,
       planExecuting: this.planExecuting,
     });

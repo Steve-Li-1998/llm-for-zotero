@@ -89,6 +89,12 @@ describe("retrievalTokenizer", function () {
       "nabla",
       "delta",
     ]);
+    assert.includeMembers(tokenizeRetrievalQuery("why is ∇Δh singular at ∂ω"), [
+      "nabla",
+      "delta",
+      "partial",
+      "singular",
+    ]);
 
     for (const [symbol, token] of Object.entries(MATH_SYMBOL_TOKENS)) {
       assert.include(
@@ -100,6 +106,20 @@ describe("retrievalTokenizer", function () {
 
     // Plain Greek letters are not operators and keep their own token.
     assert.include(tokenizeRetrievalText("the σ term"), "σ");
+
+    // U+2206 INCREMENT is a different character from Δ and survives NFKC;
+    // PDF extraction emits it often.
+    assert.include(
+      tokenizeRetrievalText("the increment ∆h across the film"),
+      "delta",
+    );
+  });
+
+  it("keeps Greek-letter compounds intact instead of rewriting them", function () {
+    const tokens = tokenizeRetrievalText("δ-opioid receptor binding");
+
+    assert.include(tokens, "δ-opioid");
+    assert.include(tokens, "opioid");
   });
 
   it("keeps semantic LaTeX commands and drops formatting commands", function () {

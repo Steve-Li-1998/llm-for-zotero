@@ -462,6 +462,55 @@ describe("bounded section prior", function () {
     }
   });
 
+  it("demotes real reference lists but not prose that cites sources", async function () {
+    const context = buildStructuredContext([
+      {
+        text: `Gamma delta epsilon set the bed roughness (Smith et al., 2019). ${LONG_BODY} Received 8 October; accepted 26 November 2001.`,
+        chunkKind: "body",
+        kindSource: "manifest",
+        sectionIndex: 0,
+        sectionLabel: "Bed roughness",
+      },
+      {
+        text: [
+          "[1] J. Smith, Gamma delta epsilon over rough beds, J. Fluid Mech. 431, 2001.",
+          "[2] R. Lee, Sediment transport in gravel rivers, Water Resour. Res. 38, 2002.",
+          "[3] M. Novak, Roughness length of river beds, Earth Surf. Proc. 27, 2003.",
+          "[4] T. Ibarra, Drag partition on mobile beds, J. Geophys. Res. 109, 2004.",
+          "[5] K. Oyama, Bedload flux and shear stress, Sedimentology 52, 2005.",
+          "[6] P. Duarte, Grain size and flow resistance, Geomorphology 71, 2006.",
+        ].join("\n"),
+        chunkKind: "body",
+        kindSource: "heuristic",
+        sectionIndex: 1,
+        sectionLabel: "Works consulted",
+      },
+    ]);
+
+    const candidates = await buildPaperRetrievalCandidates(
+      PAPER,
+      context,
+      "gamma delta epsilon",
+      undefined,
+      { topK: 2, mode: "evidence", disableEmbeddings: true },
+    );
+
+    const byIndex = new Map(
+      candidates.map((candidate) => [candidate.chunkIndex, candidate]),
+    );
+    assert.equal(
+      byIndex.get(0)?.why?.priorShift,
+      0,
+      "prose with an inline citation and a received-date line keeps its rank",
+    );
+    assert.equal(
+      byIndex.get(1)?.why?.priorShift,
+      Number.POSITIVE_INFINITY,
+      "six numbered reference entries are a reference list",
+    );
+    assert.equal(indexesOf(candidates)[0], 0);
+  });
+
   it("keeps a reference-locked caption first and a locked chunk present", async function () {
     const context = buildStructuredContext([
       {

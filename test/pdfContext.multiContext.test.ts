@@ -1255,4 +1255,71 @@ describe("pdfContext multi-context helpers", function () {
     assert.equal(results?.chunkKind, "results");
     assert.equal(results?.kindSource, "manifest");
   });
+
+  it("keeps prose with inline author-year citations classified as body", function () {
+    const metadata = buildChunkMetadata([
+      [
+        "Bed roughness controls the near-bed turbulence of gravel-bed rivers",
+        "(Smith et al., 2019), and the drag partition follows the same scaling",
+        "reported for laboratory flumes. Received 8 October; accepted 26",
+        "November 2001.",
+      ].join(" "),
+    ]);
+    assert.lengthOf(metadata, 1);
+    assert.equal(metadata[0].chunkKind, "body");
+  });
+
+  it("classifies a numbered reference list as references", function () {
+    const metadata = buildChunkMetadata([
+      [
+        "[1] J. Smith and A. Jones, Turbulent drag over rough beds, J. Fluid Mech. 431, 2001.",
+        "[2] R. Lee, Sediment transport in gravel rivers, Water Resour. Res. 38, 2002.",
+        "[3] M. Novak, Roughness length of river beds, Earth Surf. Proc. 27, 2003.",
+        "[4] T. Ibarra, Drag partition on mobile beds, J. Geophys. Res. 109, 2004.",
+        "[5] K. Oyama, Bedload flux and shear stress, Sedimentology 52, 2005.",
+        "[6] P. Duarte, Grain size and flow resistance, Geomorphology 71, 2006.",
+      ].join("\n"),
+    ]);
+    assert.lengthOf(metadata, 1);
+    assert.equal(metadata[0].chunkKind, "references");
+  });
+
+  it("classifies an author-year reference list as references", function () {
+    const metadata = buildChunkMetadata([
+      [
+        "Ernst MO, Banks MS (2002) Humans integrate visual and haptic information in a statistically optimal fashion. Nature 415:429-433.",
+        "Fetsch CR, Turner AH (2009) Dynamic reweighting of visual and vestibular cues. J Neurosci 29:15601-15612.",
+        "Knill DC, Pouget A (2004) The Bayesian brain: the role of uncertainty in neural coding. Trends Neurosci 27:712-719.",
+        "Angelaki DE, Cullen KE (2008) Vestibular system: the many facets of a multimodal sense. Annu Rev Neurosci 31:125-150.",
+      ].join("\n"),
+    ]);
+    assert.lengthOf(metadata, 1);
+    assert.equal(metadata[0].chunkKind, "references");
+  });
+
+  it("keeps sectioned prose under a non-standard heading as body", async function () {
+    setupMemoryIO();
+    const attachmentId = 1207;
+    const rawMd = [
+      "# Sediment transport over rough beds",
+      "## Bed roughness",
+      "The roughness length of a gravel bed scales with the median grain size (Smith et al., 2019), and the drag partition follows the relation measured in laboratory flumes since 1999.",
+      "## Results",
+      "The measured transport rate matched the predicted scaling in every run.",
+    ].join("\n\n");
+
+    await writeMineruCacheFiles(attachmentId, rawMd, [
+      { relativePath: "paper/full.md", data: bytes(rawMd) },
+    ]);
+    await ensurePDFTextCached(mockPdfAttachment(attachmentId));
+    const context = pdfTextCache.get(attachmentId);
+    assert.exists(context);
+
+    const roughness = context!.chunkMeta.find((meta) =>
+      meta.text.includes("roughness length of a gravel bed"),
+    );
+    assert.equal(roughness?.sectionLabel, "Bed roughness");
+    assert.equal(roughness?.chunkKind, "body");
+    assert.equal(roughness?.kindSource, "heuristic");
+  });
 });

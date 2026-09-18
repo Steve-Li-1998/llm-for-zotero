@@ -54,8 +54,11 @@ describe("retrieval structure benchmark", function () {
       });
       console.log(`${name} ${JSON.stringify(metrics)}`);
 
-      // Every corpus: the label must name the enclosing heading.
+      // Every corpus: the label must name the enclosing heading, and a
+      // chunk's own text must retrieve that chunk — the floor that the loose
+      // reference heuristic used to break on author-year papers.
       assert.isAtLeast(metrics.labelAccuracy ?? 0, 0.95, "labelAccuracy");
+      assert.isAtLeast(metrics.selfRetrievalTop1, 0.5, "selfRetrievalTop1");
       if (name !== "mathDoubleHash") return;
 
       assert.isAtLeast(metrics.labelCoverage, 0.95, "labelCoverage");

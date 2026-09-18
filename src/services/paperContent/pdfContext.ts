@@ -1039,13 +1039,14 @@ function buildChunkMetadataFromManifest(
     const headingKind = section
       ? classifyHeadingKind(section.heading)
       : undefined;
+    // Inside a section the heading is the authority. When it names no
+    // standard section ("Bed roughness") the chunk is body text: only a
+    // caption still reads its own kind off the text, because the text
+    // heuristics cannot tell prose from a reference list reliably enough to
+    // demote a whole section. Outside every section (the preamble) the text
+    // is all there is.
     const chunkKind =
-      headingKind?.kind ??
-      resolveChunkKind({
-        chunkText,
-        normalizedText: normalizeEvidenceText(chunkText),
-        sectionHeading: matchSectionHeading(chunkText),
-      });
+      headingKind?.kind ?? resolveSectionedChunkKind(chunkText, section);
 
     const normalizedText = normalizeEvidenceText(chunkText);
     const textWithoutHeading = sectionLabel
@@ -1352,29 +1353,38 @@ function trimLeadingSectionHeading(
   return trimmed.replace(inlinePattern, "").trim() || trimmed;
 }
 
-function looksLikeReferenceEntry(text: string): boolean {
-  const normalized = normalizeEvidenceText(text);
-  if (!normalized) return false;
-  const tokenCount = normalized.split(/\s+/).length;
-  if (tokenCount < 4) return false;
-  return (
-    /\b(?:19|20)\d{2}[a-z]?\b/.test(normalized) ||
-    /\bdoi\b/i.test(normalized) ||
-    /https?:\/\//i.test(normalized) ||
-    /^\[\d+\]/.test(normalized) ||
-    /^\d{1,3}[.)]/.test(normalized)
-  );
-}
+/** Numbered reference entry: "[12] ..." or "12. ...". */
+const REFERENCE_ENTRY_NUMBERED_PATTERN = /^(?:\[\d+\]|\d{1,3}[.)])\s+\S/;
+/** Author-year reference entry: "Ernst MO, Banks MS (2002) ...". */
+const REFERENCE_ENTRY_AUTHOR_YEAR_PATTERN =
+  /^[A-Z][^\n]{0,120}?\b(?:19|20)\d{2}[a-z]?\b/;
+/** What every reference entry carries somewhere: a year, a DOI or a URL. */
+const REFERENCE_ENTRY_EVIDENCE_PATTERN =
+  /\b(?:19|20)\d{2}[a-z]?\b|\bdoi\b|https?:\/\//i;
 
-function looksLikeCitationList(text: string): boolean {
-  const normalized = normalizeEvidenceText(text);
-  if (!normalized) return false;
-  return (
-    looksLikeReferenceEntry(normalized) ||
-    /^[A-Z][A-Za-z'`.-]+(?:,\s*[A-Z][A-Za-z'`.-]+){2,}.*\b(?:19|20)\d{2}[a-z]?\b/.test(
-      normalized,
-    )
-  );
+/**
+ * Is this chunk a reference list rather than prose that cites sources? A
+ * single year is not evidence — most body paragraphs of an author-year paper
+ * contain one. A list is a run of entry lines: at least three of them, and at
+ * least 40% of the chunk's non-empty lines.
+ */
+function looksLikeReferenceList(text: string): boolean {
+  const lines = sanitizePdfText(text)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length < 3) return false;
+  let entries = 0;
+  for (const line of lines) {
+    if (!REFERENCE_ENTRY_EVIDENCE_PATTERN.test(line)) continue;
+    if (
+      REFERENCE_ENTRY_NUMBERED_PATTERN.test(line) ||
+      REFERENCE_ENTRY_AUTHOR_YEAR_PATTERN.test(line)
+    ) {
+      entries += 1;
+    }
+  }
+  return entries >= 3 && entries >= lines.length * 0.4;
 }
 
 function looksLikeFigureCaption(text: string): boolean {
@@ -1439,10 +1449,7 @@ function resolveChunkKind(params: {
   if (sectionHeading?.kind) {
     return sectionHeading.kind;
   }
-  if (
-    looksLikeReferenceEntry(normalizedText) ||
-    looksLikeCitationList(normalizedText)
-  ) {
+  if (looksLikeReferenceList(chunkText)) {
     return "references";
   }
   if (looksLikeFigureCaption(chunkText)) {
@@ -1455,6 +1462,28 @@ function resolveChunkKind(params: {
     return "appendix";
   }
   return normalizedText ? "body" : "unknown";
+}
+
+/**
+ * Kind of a chunk that a manifest section encloses. A heading that names no
+ * standard section still says "this is document body", so only a figure or
+ * table caption overrides it; the reference and appendix text heuristics are
+ * for unsectioned text, where the heading cannot speak.
+ */
+function resolveSectionedChunkKind(
+  chunkText: string,
+  section: ManifestSection | undefined,
+): PdfChunkKind {
+  if (!section) {
+    return resolveChunkKind({
+      chunkText,
+      normalizedText: normalizeEvidenceText(chunkText),
+      sectionHeading: matchSectionHeading(chunkText),
+    });
+  }
+  if (looksLikeFigureCaption(chunkText)) return "figure-caption";
+  if (looksLikeTableCaption(chunkText)) return "table-caption";
+  return normalizeEvidenceText(chunkText) ? "body" : "unknown";
 }
 
 function getSupportLevelLabel(chunkKind: PdfChunkKind | undefined): string {
@@ -2243,7 +2272,9 @@ function priorShiftFor(params: {
   const chunkText = normalizeEvidenceText(params.chunkText);
   const wordCount = chunkText ? chunkText.split(/\s+/).length : 0;
   if (wordCount < MIN_EVIDENCE_WORD_COUNT) return Number.POSITIVE_INFINITY;
-  if (looksLikeCitationList(chunkText)) return Number.POSITIVE_INFINITY;
+  if (looksLikeReferenceList(params.chunkText)) {
+    return Number.POSITIVE_INFINITY;
+  }
 
   const profile = SECTION_BOOST_PROFILES[params.intent || "general"];
   const kind = params.chunkKind as PdfChunkKind | undefined;

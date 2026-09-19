@@ -4,6 +4,7 @@ import {
   copyRenderedMarkdownToClipboard,
   copyTextToClipboard,
   resolveAssistantResponseMenuContent,
+  runAnswerCheckForResponseTarget,
 } from "../../chat";
 import { getMessageCitationPaperContexts } from "../../citationContexts";
 import {
@@ -493,6 +494,12 @@ export async function runResponseMenuAction(
     }
     if (action === "note") {
       await saveResponseTargetAsNote(deps, target, setStatusMessage);
+      return;
+    }
+    if (action === "check") {
+      // The panel owns the check: it resolves the conversation's model, calls
+      // it once, and redraws the turn with the verdicts it got back.
+      await runAnswerCheckForResponseTarget(deps.body, target);
       return;
     }
     if (action === "expand") {

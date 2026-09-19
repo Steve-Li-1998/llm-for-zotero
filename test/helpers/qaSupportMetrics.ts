@@ -7,6 +7,8 @@ const ABBREVIATIONS =
 const TOKEN_RE = /\[\[quote:([A-Za-z0-9._:-]+)\]\]/g;
 /** A run of quote tokens opening a span: they cite what came before them. */
 const LEADING_TOKENS = /^\s*(?:\[\[quote:[A-Za-z0-9._:-]+\]\]\s*)+/;
+/** Closing marks a sentence may end on, after its terminator. */
+const CLOSERS = /^["'”’)\]」』》]+/;
 const STOPWORDS = new Set(
   "a an the and or of to in on at by for with from as is are was were be been it its this that these those we they he she their our not no than then which who whom whose what when where how also into over under between during after before about".split(
     " ",
@@ -30,13 +32,21 @@ export function splitSentencesForEval(text: string): EvalSentence[] {
     const decimal =
       ch === "." && /\d/.test(text[i - 1] || "") && /\d/.test(next || "");
     if (decimal) continue;
+    // A quotation mark or bracket closing after the terminator belongs to the
+    // sentence it ends: `… by day 10." Next sentence.`
+    const closing = CLOSERS.exec(text.slice(i + 1))?.[0] || "";
+    const end = i + 1 + closing.length;
+    const after = text[end];
     const boundary =
-      next === undefined || /\s/.test(next) || /[。！？]/.test(ch);
+      after === undefined || /\s/.test(after) || /[。！？]/.test(ch);
     if (!boundary) continue;
-    const candidate = text.slice(start, i + 1).trim();
-    if (ch === "." && ABBREVIATIONS.test(candidate)) continue;
-    if (candidate) out.push({ text: candidate, start, end: i + 1 });
-    start = i + 1;
+    const candidate = text.slice(start, end).trim();
+    const terminated = closing
+      ? candidate.slice(0, -closing.length)
+      : candidate;
+    if (ch === "." && ABBREVIATIONS.test(terminated)) continue;
+    if (candidate) out.push({ text: candidate, start, end });
+    start = end;
   }
   const tail = text.slice(start).trim();
   if (tail) out.push({ text: tail, start, end: text.length });

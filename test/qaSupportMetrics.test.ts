@@ -58,6 +58,35 @@ describe("qaSupportMetrics", function () {
     assert.isNull(measureGrounding("Nothing here.", new Set()));
   });
 
+  it("ends a sentence before a closing quotation mark", function () {
+    const answer =
+      'The authors write that accuracy fell by day 10." [[quote:q1]] A later sentence about mice.';
+    assert.deepEqual(
+      splitSentencesForEval(answer).map((s) => s.text),
+      [
+        'The authors write that accuracy fell by day 10."',
+        "[[quote:q1]] A later sentence about mice.",
+      ],
+    );
+    const result = measureSupport(answer, [
+      { id: "q1", quoteText: "Accuracy fell by day 10 in the fixed decoder." },
+    ]);
+    assert.equal(result.tokens.length, 1);
+    assert.equal(
+      result.tokens[0].claimSentence,
+      'The authors write that accuracy fell by day 10."',
+    );
+  });
+
+  it("keeps a closing bracket with the sentence it ends", function () {
+    const result = measureSupport(
+      "Values were (84% and 85%). [[quote:q2]] Next.",
+      [{ id: "q2", quoteText: "Median accuracy values were 84% and 85%." }],
+    );
+    assert.equal(result.tokens.length, 1);
+    assert.equal(result.tokens[0].claimSentence, "Values were (84% and 85%).");
+  });
+
   it("ends a sentence on a standalone No.", function () {
     assert.deepEqual(
       splitSentencesForEval("No. The decoder fell to 62%.").map((s) => s.text),

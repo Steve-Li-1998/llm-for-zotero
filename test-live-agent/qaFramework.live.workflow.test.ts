@@ -30,6 +30,10 @@ import {
   writeMineruSourceProvenanceForAttachment,
 } from "../src/services/mineru/mineruCache";
 import {
+  checkEmbeddingAvailability,
+  getEmbeddingUnavailableReason,
+} from "../src/utils/llmClient";
+import {
   resolveLiveAgentCredentials,
   stringPrefFromContents,
 } from "./liveAgentCredentials";
@@ -93,11 +97,15 @@ const deliveredSectionsOf = (content: any): string[] => {
   ];
 };
 
-const EMBEDDING_PREF_KEYS = [
+const SEMANTIC_PREF_KEYS = [
   "embeddingApiBase",
   "embeddingModel",
   "embeddingApiKey",
   "embeddingProvider",
+  // The dev profile leaves embeddingApiKey empty: the plugin resolves the key
+  // from a provider group that serves embeddings, so the groups must travel
+  // with the embedding settings or the scaffold has no key to embed with.
+  "modelProviderGroups",
 ];
 /** Fixes the retrieval setting for the run.
  *
@@ -115,7 +123,7 @@ async function applyRetrievalPrefs(): Promise<string[]> {
   );
   const contents = String(await Zotero.File.getContentsAsync(profilePath));
   const copied: string[] = [];
-  for (const key of EMBEDDING_PREF_KEYS) {
+  for (const key of SEMANTIC_PREF_KEYS) {
     const value = stringPrefFromContents(contents, `${prefix}.${key}`);
     if (!value) continue;
     Zotero.Prefs.set(`${prefix}.${key}`, value, true);
@@ -129,6 +137,15 @@ async function applyRetrievalPrefs(): Promise<string[]> {
       required,
       `a semantic run needs ${required} in the live profile prefs.js`,
     );
+  // The prefs can all be present and still resolve no usable endpoint, so the
+  // plugin's own availability check has the last word. The reason it returns
+  // names a provider and a setting, never a credential.
+  assert.isTrue(
+    checkEmbeddingAvailability(),
+    `the copied settings cannot embed: ${
+      getEmbeddingUnavailableReason() || "no reason reported"
+    }`,
+  );
   return copied;
 }
 

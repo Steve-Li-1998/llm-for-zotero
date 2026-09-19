@@ -138,7 +138,7 @@ describe("quote guidance prompts", function () {
   });
   it("preserves the proven evidence wording inside one canonical contract", function () {
     assert.include(PAPER_CITATION_CONTRACT, BALANCED_EVIDENCE_GUIDANCE);
-    assert.equal(fingerprintText(PAPER_CITATION_CONTRACT), "fnv1a32-67d08dae");
+    assert.equal(fingerprintText(PAPER_CITATION_CONTRACT), "fnv1a32-4be434bd");
     assertCanonicalCitationContract(PAPER_CITATION_CONTRACT);
   });
 

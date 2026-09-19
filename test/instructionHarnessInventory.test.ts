@@ -127,6 +127,7 @@ describe("instruction harness inventory", function () {
       PAPER_CITATION_CONTRACT,
       "whether the paper itself states the reason",
     );
+    assert.include(PAPER_CITATION_CONTRACT, "no separate caveat paragraph");
     for (const prompt of [persona, DEFAULT_SYSTEM_PROMPT]) {
       assert.include(prompt, "derived from the paper's stated premises");
     }

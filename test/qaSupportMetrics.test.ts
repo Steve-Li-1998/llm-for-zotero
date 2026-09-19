@@ -199,6 +199,13 @@ describe("qaSupportMetrics", function () {
       assert.equal(labelled.overlap, 1);
     });
 
+    it("keeps a three-token sentence under a block as its own claim", function () {
+      const token = claimOf(
+        `> ${quote}\n\nAccuracy stayed stable [[quote:q1]].`,
+      );
+      assert.equal(token.claimSentence, "Accuracy stayed stable.");
+    });
+
     it("keeps a real sentence under a block as its own claim", function () {
       const token = claimOf(
         `> ${quote}\n\nThe animals nevertheless kept their accuracy across sessions [[quote:q1]].`,

@@ -163,9 +163,17 @@ function boundSentences(text: string): EvalSentence[] {
 
 type Claim = { text: string; ids: string[] };
 
-/** At most this many content tokens is a citation label, not a claim:
- * "(Orion, 2025)" or "Source: (Orion, 2025)" under a quoted block. */
-const LABEL_MAX_TOKENS = 3;
+/** Fewer than this many non-numeric content tokens is a citation label rather
+ * than a claim: "(Orion, 2025)" is 1, "Source: (Orion, 2025)" is 2. A bare
+ * number carries no claim of its own, so years and figures do not count. */
+const MIN_CLAIM_TOKENS = 3;
+
+function claimWeight(text: string): number {
+  let weight = 0;
+  for (const token of tokensForEval(text))
+    if (!/^\p{N}+$/u.test(token)) weight++;
+  return weight;
+}
 
 /** Sentences of one prose line as claims, tokens attached. */
 function lineClaims(text: string): Claim[] {
@@ -237,10 +245,7 @@ function supportClaims(markdown: string): Claim[] {
       ) {
         pending.push(...claim.ids);
         claim.ids = [];
-      } else if (
-        quotedAbove &&
-        tokensForEval(claim.text).size <= LABEL_MAX_TOKENS
-      ) {
+      } else if (quotedAbove && claimWeight(claim.text) < MIN_CLAIM_TOKENS) {
         // Too thin to be a claim of its own: it attributes the block above it.
         quotedAbove.ids.push(...claim.ids);
         claim.ids = [];

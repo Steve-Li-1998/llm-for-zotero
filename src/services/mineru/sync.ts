@@ -16,7 +16,7 @@ import {
   MINERU_SOURCE_PROVENANCE_FILE,
   readMineruSourceProvenance,
   writeMineruSourceProvenanceForAttachment,
-  writeMineruCacheFiles,
+  withMineruCacheWrite,
   type MineruCacheFile,
 } from "./mineruCache";
 import {
@@ -91,6 +91,7 @@ export type MineruSyncRestoreResult = {
     | "restored"
     | "disabled"
     | "already_cached"
+    | "busy"
     | "not_pdf"
     | "missing_key"
     | "not_found"
@@ -1385,47 +1386,54 @@ export async function ensureMineruRuntimeCacheForAttachment(
   if (!sourceKey) return { status: "missing_key", attachmentId };
 
   try {
-    if (await hasCachedMineruMd(attachmentId)) {
-      return { status: "already_cached", attachmentId };
-    }
+    return (
+      (await withMineruCacheWrite<MineruSyncRestoreResult>(
+        attachmentId,
+        async (write) => {
+          if (await hasCachedMineruMd(attachmentId)) {
+            return { status: "already_cached", attachmentId };
+          }
 
-    const candidates = await findPackageCandidatesForSource(sourceAttachment, {
-      loadBytes: true,
-      requireReadable: false,
-    });
-    if (!candidates.length) return { status: "no_package", attachmentId };
+          const candidates = await findPackageCandidatesForSource(
+            sourceAttachment,
+            {
+              loadBytes: true,
+              requireReadable: false,
+            },
+          );
+          if (!candidates.length) return { status: "no_package", attachmentId };
 
-    const selected = selectBestPackageCandidate(candidates);
-    if (!selected?.extracted) {
-      return { status: "invalid_package", attachmentId };
-    }
+          const selected = selectBestPackageCandidate(candidates);
+          if (!selected?.extracted) {
+            return { status: "invalid_package", attachmentId };
+          }
 
-    const packageContentHash = selected.extracted.contentHash;
+          const packageContentHash = selected.extracted.contentHash;
 
-    await removePath(getMineruItemDir(attachmentId));
-    await writeMineruCacheFiles(
-      attachmentId,
-      selected.extracted.mdContent,
-      selected.extracted.files,
+          await removePath(getMineruItemDir(attachmentId));
+          await write(selected.extracted.mdContent, selected.extracted.files);
+          await writeRestoredSourceProvenance({
+            sourceAttachment,
+            packageAttachmentId: selected.item.id,
+            cacheContentHash: packageContentHash,
+          });
+          await writeLocalSyncState({
+            attachmentId,
+            sourceAttachmentKey: sourceKey,
+            packageAttachmentId: selected.item.id,
+            cacheContentHash: packageContentHash,
+          });
+          await invalidateMineruRuntimeCache(attachmentId);
+          return {
+            status: "restored",
+            attachmentId,
+            packageAttachmentId: selected.item.id,
+            packageContentHash,
+          };
+        },
+        { skipIfBusy: true },
+      )) ?? { status: "busy", attachmentId }
     );
-    await writeRestoredSourceProvenance({
-      sourceAttachment,
-      packageAttachmentId: selected.item.id,
-      cacheContentHash: packageContentHash,
-    });
-    await writeLocalSyncState({
-      attachmentId,
-      sourceAttachmentKey: sourceKey,
-      packageAttachmentId: selected.item.id,
-      cacheContentHash: packageContentHash,
-    });
-    await invalidateMineruRuntimeCache(attachmentId);
-    return {
-      status: "restored",
-      attachmentId,
-      packageAttachmentId: selected.item.id,
-      packageContentHash,
-    };
   } catch (error) {
     return {
       status: "error",
@@ -1480,76 +1488,85 @@ export async function repairSyncedMineruCacheForAttachment(
   if (!sourceKey) return { status: "missing_key", attachmentId };
 
   try {
-    const candidates = await findPackageCandidatesForSource(sourceAttachment, {
-      loadBytes: true,
-      requireReadable: false,
-    });
-    if (!candidates.length) return { status: "no_package", attachmentId };
-
-    const selected = selectBestPackageCandidate(candidates);
-    if (!selected?.extracted) {
-      return { status: "invalid_package", attachmentId };
-    }
-    await prunePackageCandidates(candidates, selected.item.id);
-
-    const uniqueHashes = new Set(
-      candidates
-        .map((candidate) => candidate.contentHash)
-        .filter((hash): hash is string => Boolean(hash)),
-    );
-    const diverged = uniqueHashes.size > 1;
-    if (diverged) {
-      ztoolkit.log("LLM: MinerU sync package divergence detected", sourceKey, [
-        ...uniqueHashes,
-      ]);
-    }
-    const packageContentHash = selected.extracted.contentHash;
-    const localContentHash =
-      await computeLocalMineruCacheContentHash(attachmentId);
-
-    if (localContentHash && localContentHash === packageContentHash) {
-      await writeLocalSyncState({
+    return (
+      (await withMineruCacheWrite<MineruSyncRestoreResult>(
         attachmentId,
-        sourceAttachmentKey: sourceKey,
-        packageAttachmentId: selected.item.id,
-        cacheContentHash: packageContentHash,
-      });
-      return {
-        status: "already_cached",
-        attachmentId,
-        packageAttachmentId: selected.item.id,
-        localContentHash,
-        packageContentHash,
-        diverged,
-      };
-    }
+        async (write) => {
+          const candidates = await findPackageCandidatesForSource(
+            sourceAttachment,
+            {
+              loadBytes: true,
+              requireReadable: false,
+            },
+          );
+          if (!candidates.length) return { status: "no_package", attachmentId };
 
-    await removePath(getMineruItemDir(attachmentId));
-    await writeMineruCacheFiles(
-      attachmentId,
-      selected.extracted.mdContent,
-      selected.extracted.files,
+          const selected = selectBestPackageCandidate(candidates);
+          if (!selected?.extracted) {
+            return { status: "invalid_package", attachmentId };
+          }
+          await prunePackageCandidates(candidates, selected.item.id);
+
+          const uniqueHashes = new Set(
+            candidates
+              .map((candidate) => candidate.contentHash)
+              .filter((hash): hash is string => Boolean(hash)),
+          );
+          const diverged = uniqueHashes.size > 1;
+          if (diverged) {
+            ztoolkit.log(
+              "LLM: MinerU sync package divergence detected",
+              sourceKey,
+              [...uniqueHashes],
+            );
+          }
+          const packageContentHash = selected.extracted.contentHash;
+          const localContentHash =
+            await computeLocalMineruCacheContentHash(attachmentId);
+
+          if (localContentHash && localContentHash === packageContentHash) {
+            await writeLocalSyncState({
+              attachmentId,
+              sourceAttachmentKey: sourceKey,
+              packageAttachmentId: selected.item.id,
+              cacheContentHash: packageContentHash,
+            });
+            return {
+              status: "already_cached",
+              attachmentId,
+              packageAttachmentId: selected.item.id,
+              localContentHash,
+              packageContentHash,
+              diverged,
+            };
+          }
+
+          await removePath(getMineruItemDir(attachmentId));
+          await write(selected.extracted.mdContent, selected.extracted.files);
+          await writeRestoredSourceProvenance({
+            sourceAttachment,
+            packageAttachmentId: selected.item.id,
+            cacheContentHash: packageContentHash,
+          });
+          await writeLocalSyncState({
+            attachmentId,
+            sourceAttachmentKey: sourceKey,
+            packageAttachmentId: selected.item.id,
+            cacheContentHash: packageContentHash,
+          });
+          await invalidateMineruRuntimeCache(attachmentId);
+          return {
+            status: "restored",
+            attachmentId,
+            packageAttachmentId: selected.item.id,
+            localContentHash: localContentHash || undefined,
+            packageContentHash,
+            diverged,
+          };
+        },
+        { skipIfBusy: true },
+      )) ?? { status: "busy", attachmentId }
     );
-    await writeRestoredSourceProvenance({
-      sourceAttachment,
-      packageAttachmentId: selected.item.id,
-      cacheContentHash: packageContentHash,
-    });
-    await writeLocalSyncState({
-      attachmentId,
-      sourceAttachmentKey: sourceKey,
-      packageAttachmentId: selected.item.id,
-      cacheContentHash: packageContentHash,
-    });
-    await invalidateMineruRuntimeCache(attachmentId);
-    return {
-      status: "restored",
-      attachmentId,
-      packageAttachmentId: selected.item.id,
-      localContentHash: localContentHash || undefined,
-      packageContentHash,
-      diverged,
-    };
   } catch (error) {
     return {
       status: "error",

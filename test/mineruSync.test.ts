@@ -8,6 +8,7 @@ import {
   buildManifest,
   getMineruItemDir,
   hasCachedMineruMd,
+  hasPendingCacheWrite,
   MINERU_SOURCE_PROVENANCE_FILE,
   readCachedMineruMd,
   readMineruSourceProvenance,
@@ -919,6 +920,111 @@ describe("mineruSync", function () {
       "# Intro\n# Results\ncontent",
     );
   });
+
+  for (const [label, restore] of [
+    ["runtime restore", ensureMineruRuntimeCacheForAttachment],
+    ["manual repair", repairSyncedMineruCacheForAttachment],
+  ] as const) {
+    it(`${label} cannot replace a parse that is publishing`, async function () {
+      const io = setupMemoryIO();
+      const items = new Map<number, MockItem>();
+      const parent = createParent();
+      const pdf = createAttachment({
+        id: 77,
+        key: "PDFPUBLISH",
+        parentID: parent.id,
+        contentType: "application/pdf",
+        filename: "publishing.pdf",
+      });
+      parent.attachmentIDs!.push(pdf.id);
+      items.set(parent.id, parent);
+      items.set(pdf.id, pdf);
+      setupZotero(items, io);
+      setMineruSyncEnabled(true);
+      await writeMineruCacheFiles(pdf.id, "# Old synced result", []);
+      const packageBytes = await buildMineruSyncPackageBytes(
+        pdf as unknown as Zotero.Item,
+      );
+      attachPackage({
+        io,
+        items,
+        parent,
+        id: 88,
+        key: "PKGPUBLISH",
+        sourceKey: pdf.key,
+        bytes: packageBytes!,
+      });
+
+      const fresh = "# Fresh parse\n\nNew extraction settings.";
+      await writeMineruCacheFiles(pdf.id, fresh, [], {
+        beforeCommit: async () => {
+          assert.isTrue(await hasPendingCacheWrite(pdf.id));
+          assert.isFalse(await hasCachedMineruMd(pdf.id));
+          const result = await restore(pdf as unknown as Zotero.Item);
+          assert.equal(result.status, "busy");
+          assert.isTrue(await hasPendingCacheWrite(pdf.id));
+          assert.isNull(await readCachedMineruMd(pdf.id));
+        },
+      });
+      assert.equal(await readCachedMineruMd(pdf.id), fresh);
+      assert.isFalse(await hasPendingCacheWrite(pdf.id));
+
+      // If restoration owns the cache first, a new parse must publish after it,
+      // including when restoration is still reading the ZIP before deletion.
+      await io.remove(getMineruItemDir(pdf.id));
+      const nativeIO = (globalThis as any).IOUtils;
+      const originalRead = nativeIO.read;
+      let entered!: () => void;
+      let release!: () => void;
+      const readingPackage = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const continueRestore = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      nativeIO.read = async (path: string) => {
+        if (path === "/tmp/zotero/package-88.zip") {
+          entered();
+          await continueRestore;
+        }
+        return originalRead(path);
+      };
+      const restoring = restore(pdf as unknown as Zotero.Item);
+      let publishing: Promise<void> | undefined;
+      try {
+        await readingPackage;
+        publishing = writeMineruCacheFiles(pdf.id, fresh, []);
+        // Cache ownership is scoped to one attachment.
+        await writeMineruCacheFiles(99, "# Other PDF", []);
+        assert.equal(await readCachedMineruMd(99), "# Other PDF");
+      } finally {
+        release();
+        nativeIO.read = originalRead;
+        assert.equal((await restoring).status, "restored");
+        await publishing;
+      }
+      assert.equal(await readCachedMineruMd(pdf.id), fresh);
+
+      // A durable marker from an interrupted write must remain recoverable
+      // once there is no active publisher in this process.
+      try {
+        await writeMineruCacheFiles(pdf.id, "# Interrupted", [], {
+          beforeCommit: async () => {
+            throw new Error("interrupted");
+          },
+        });
+        assert.fail("expected interrupted publication");
+      } catch (error) {
+        assert.include(String(error), "interrupted");
+      }
+      assert.isTrue(await hasPendingCacheWrite(pdf.id));
+      assert.equal(
+        (await restore(pdf as unknown as Zotero.Item)).status,
+        "restored",
+      );
+      assert.equal(await readCachedMineruMd(pdf.id), "# Old synced result");
+    });
+  }
 
   it("restores legacy synced packages with native MinerU content-list filenames", async function () {
     const io = setupMemoryIO();

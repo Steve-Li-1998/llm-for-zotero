@@ -4054,13 +4054,9 @@ function createPanelUpdateHelpers(
     });
   };
   /**
-   * Turn completion. The finished answer and the prompt that asked it are the
-   * only messages whose presentation changed: the answer stops streaming, and
-   * the prompt regains its edit and delete-turn controls, which are decided at
-   * render time from the paired answer's streaming state. Rebuilding just that
-   * pair keeps the cost of ending a turn independent of conversation length;
-   * a full rebuild re-parses every earlier message. Panels that no longer have
-   * those wrappers rendered fall back to a full rebuild inside refreshChat.
+   * Turn completion rebuilds the finished answer and its prompt's controls.
+   * refreshChat also updates earlier prompts' editability in place, preserving
+   * historical answer DOM. Panels missing the pair fall back to a full rebuild.
    */
   const refreshCompletedAssistantTurnSafely = (message: Message) => {
     const history = chatHistory.get(conversationKey) || [];
@@ -10514,13 +10510,14 @@ export function refreshChat(
   // closes; they are only hidden from the render.
   const history = filterMessagesInPendingTurns(conversationKey, rawHistory);
   const requestedRerenders = options.rerenderAssistantMessages;
+  const renderedWrappers = requestedRerenders?.size
+    ? (Array.from(chatBox.children) as HTMLElement[])
+    : [];
   const { useTargetedRerender, targetedMessageWrappers } =
     resolveTargetedAssistantRerenders(
       history,
       requestedRerenders,
-      requestedRerenders?.size
-        ? (Array.from(chatBox.children) as HTMLElement[])
-        : [],
+      renderedWrappers,
     );
   const forkLink = conversationForkLinks.get(conversationKey) || null;
   if (tokenUsageEl && !useTargetedRerender) {
@@ -10628,6 +10625,27 @@ export function refreshChat(
     item,
   }).providerProtocol;
   const conversationIsIdle = !history.some((m) => m.streaming);
+  const canEditPromptAt = (index: number) =>
+    canEditUserPromptTurn({
+      isUser: history[index]?.role === "user",
+      hasItem: Boolean(item),
+      conversationIsIdle,
+      assistantPair: history[index + 1],
+      providerProtocol: renderProviderProtocol,
+    });
+  if (useTargetedRerender) {
+    // Completion unlocks every paired prompt, including wrappers retained from
+    // the busy render. Their click handlers read this current eligibility.
+    for (const wrapper of renderedWrappers) {
+      if (wrapper.dataset.messageRole !== "user") continue;
+      wrapper
+        .querySelector(".llm-bubble.user")
+        ?.classList.toggle(
+          "llm-bubble-editable",
+          canEditPromptAt(Number(wrapper.dataset.messageIndex)),
+        );
+    }
+  }
   for (const [index, msg] of history.entries()) {
     if (useTargetedRerender && !targetedMessageWrappers.has(msg)) {
       continue;
@@ -10635,13 +10653,7 @@ export function refreshChat(
     const isUser = msg.role === "user";
     const assistantPairMsg = history[index + 1];
     const hasAssistantPair = isUser && assistantPairMsg?.role === "assistant";
-    const canEditUserPrompt = canEditUserPromptTurn({
-      isUser,
-      hasItem: Boolean(item),
-      conversationIsIdle,
-      assistantPair: assistantPairMsg,
-      providerProtocol: renderProviderProtocol,
-    });
+    const canEditUserPrompt = canEditPromptAt(index);
     const isInlineEditBubble = Boolean(
       canEditUserPrompt &&
       inlineEditTarget?.conversationKey === conversationKey &&
@@ -11382,9 +11394,18 @@ export function refreshChat(
         );
       } else {
         renderUserBubbleContent(bubble, sanitizeText(msg.text || ""), doc);
-        if (canEditUserPrompt) {
-          bubble.classList.add("llm-bubble-editable");
+        bubble.classList.toggle("llm-bubble-editable", canEditUserPrompt);
+        if (hasAssistantPair) {
           bubble.addEventListener("click", (e: Event) => {
+            if (
+              !bubble.classList.contains("llm-bubble-editable") ||
+              !item ||
+              !isPanelConversationCurrent(body, item) ||
+              chatHistory
+                .get(conversationKey)
+                ?.some((message) => message.streaming)
+            )
+              return;
             if ((e.target as Element | null)?.closest("a, button")) return;
             e.preventDefault();
             e.stopPropagation();

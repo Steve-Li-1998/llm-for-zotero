@@ -10,6 +10,11 @@ import {
   nextRequestId,
   tryBeginRequest,
   finishRequest,
+  inlineEditTarget,
+  inlineEditCleanup,
+  inlineEditInputSectionEl,
+  setInlineEditCleanup,
+  setInlineEditTarget,
 } from "./state";
 import { buildContextUsagePresentation } from "./textUtils";
 import { getConversationWriteGeneration } from "../../shared/conversationWriteFence";
@@ -266,6 +271,10 @@ export type CompletedChatTurnRefreshResult = {
   promptMenuAvailable: boolean;
   promptMenuHandledWhileStreaming: boolean;
   promptLockedWhileStreaming: boolean;
+  earlierPromptLockedWhileStreaming: boolean;
+  earlierPromptEditableAfterTurn: boolean;
+  earlierPromptClickOpensEditor: boolean;
+  earlierPromptEditorUsesOriginalText: boolean;
   promptMenuHandledAfterTurn: boolean;
   earlierAnswerWrapperPreserved: boolean;
   earlierPromptWrapperPreserved: boolean;
@@ -349,6 +358,12 @@ export async function exerciseCompletedChatTurnRefresh(panel: {
     // A prompt whose answer is still streaming offers neither edit nor delete.
     const promptLockedWhileStreaming =
       !isPromptEditable(prompt) && streamingProbe?.enabled === false;
+    wrapperOf(earlierPrompt)
+      ?.querySelector<HTMLElement>(".llm-bubble")
+      ?.click();
+    await settle();
+    const earlierPromptLockedWhileStreaming =
+      !isPromptEditable(earlierPrompt) && !inlineEditTarget;
     for (let n = 0; n < 3; n++) {
       answer.text += `Streaming paragraph ${n} with evidence.\n\n`;
       helpers.refreshAssistantMessageSafely(answer);
@@ -375,10 +390,12 @@ export async function exerciseCompletedChatTurnRefresh(panel: {
       contextWindow: 200000,
       estimated: false,
     }).text;
-    return {
+    const result = {
       promptMenuAvailable,
       promptMenuHandledWhileStreaming,
       promptLockedWhileStreaming,
+      earlierPromptLockedWhileStreaming,
+      earlierPromptEditableAfterTurn: isPromptEditable(earlierPrompt),
       earlierAnswerWrapperPreserved:
         Boolean(earlierAnswerWrapper) &&
         wrapperOf(earlierAnswer) === earlierAnswerWrapper &&
@@ -421,7 +438,26 @@ export async function exerciseCompletedChatTurnRefresh(panel: {
         tokenUsageEl?.style.display !== "none",
       ),
     };
+    wrapperOf(earlierPrompt)
+      ?.querySelector<HTMLElement>(".llm-bubble")
+      ?.click();
+    await settle();
+    return {
+      ...result,
+      earlierPromptClickOpensEditor:
+        inlineEditTarget?.userTimestamp === earlierPrompt.timestamp &&
+        Boolean(
+          wrapperOf(earlierPrompt)?.querySelector(".llm-inline-edit-wrapper"),
+        ),
+      earlierPromptEditorUsesOriginalText:
+        inlineEditInputSectionEl?.querySelector<HTMLTextAreaElement>(
+          "#llm-input",
+        )?.value === earlierPrompt.text,
+    };
   } finally {
+    inlineEditCleanup?.();
+    setInlineEditCleanup(null);
+    setInlineEditTarget(null);
     body
       .querySelector<HTMLElement>("#llm-prompt-menu")
       ?.style.setProperty("display", "none");

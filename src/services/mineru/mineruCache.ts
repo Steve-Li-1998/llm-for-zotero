@@ -1293,15 +1293,62 @@ export function validateMineruManifest(
   }
 }
 
+type MineruCacheWriteOptions = {
+  pageCount?: number;
+  signal?: AbortSignal;
+  beforeCommit?: () => Promise<void>;
+};
+
+type MineruCacheWriter = (
+  mdContent: string,
+  files: MineruCacheFile[],
+  options?: MineruCacheWriteOptions,
+) => Promise<void>;
+
+const activeCacheWrites = new Map<number, Promise<void>>();
+
+/**
+ * Own the whole replacement, including a restore's cache check/removal and
+ * metadata writes. The supplied writer shares that ownership without nesting
+ * the queue. A disk pending marker may outlive a failed write; it is not a lock.
+ */
+export async function withMineruCacheWrite<T>(
+  id: number,
+  operation: (write: MineruCacheWriter) => Promise<T>,
+  options: { skipIfBusy?: boolean } = {},
+): Promise<T | undefined> {
+  const previous = activeCacheWrites.get(id);
+  if (previous && options.skipIfBusy) return undefined;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  activeCacheWrites.set(id, pending);
+  try {
+    await previous;
+    return await operation((md, files, writeOptions) =>
+      writeMineruCacheFilesOwned(id, md, files, writeOptions),
+    );
+  } finally {
+    if (activeCacheWrites.get(id) === pending) activeCacheWrites.delete(id);
+    release();
+  }
+}
+
 export async function writeMineruCacheFiles(
   id: number,
   mdContent: string,
   files: MineruCacheFile[],
-  options: {
-    pageCount?: number;
-    signal?: AbortSignal;
-    beforeCommit?: () => Promise<void>;
-  } = {},
+  options: MineruCacheWriteOptions = {},
+): Promise<void> {
+  await withMineruCacheWrite(id, (write) => write(mdContent, files, options));
+}
+
+async function writeMineruCacheFilesOwned(
+  id: number,
+  mdContent: string,
+  files: MineruCacheFile[],
+  options: MineruCacheWriteOptions = {},
 ): Promise<void> {
   const checkAbort = () => {
     if (options.signal?.aborted) throw new MineruCancelledError();

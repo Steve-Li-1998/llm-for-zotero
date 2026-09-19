@@ -72,6 +72,7 @@ export type QaCase = {
   question: string;
   provided?: string;
   multi?: boolean;
+  library?: boolean;
   /** Exact source fragments selected independently of retrieval. */
   evidence: string[];
   rubric: string[];
@@ -396,5 +397,84 @@ export const realPaperCases: QaCase[] = [
       "Linear profile counterexample valid for angle-alone assertion",
       "Distinguishes geometric counterexample from a full moving thin-film solution",
     ],
+  },
+];
+
+/** Library-chat cases: no active paper; the scope is a collection holding
+ * Orion and Vega. Facts and fragments are fixed before any run. */
+export const libraryCases: QaCase[] = [
+  {
+    id: "l1",
+    category: "factual",
+    library: true,
+    question:
+      "Which papers in this collection report blood pressure measurements? Name each paper and quote the sentence you rely on.",
+    evidence: [
+      "did not collect or report blood pressure",
+      "No blood pressure or clinical outcomes were reported",
+    ],
+    rubric: [
+      "States that neither paper reports blood pressure",
+      "Does not turn 'not reported' into a measured value",
+    ],
+  },
+  {
+    id: "l2",
+    category: "factual",
+    library: true,
+    question:
+      "Across this collection, which paper used random assignment, and how many mice were in each group?",
+    evidence: [
+      "randomly assigned to treatment and sham groups",
+      "six mice in each group",
+    ],
+    rubric: ["Vega; six per group; Orion had no random assignment"],
+  },
+  {
+    id: "l3",
+    category: "synthesis",
+    library: true,
+    question:
+      "Compare the recording methods used by the papers in this collection.",
+    evidence: [
+      "two-photon calcium imaging",
+      "electrophysiology, not calcium imaging",
+    ],
+    rubric: [
+      "Orion calcium imaging; Vega electrophysiology; each attributed correctly",
+    ],
+  },
+  {
+    id: "l4",
+    category: "synthesis",
+    library: true,
+    question:
+      "What do the papers in this collection together say about whether representational drift causes stable behavior?",
+    evidence: [
+      "does not establish that drift causes behavioral stability",
+      "does not show that representational drift causes learning",
+    ],
+    rubric: [
+      "Neither establishes causation; Vega tests a candidate mechanism",
+      "No causal overclaim",
+    ],
+  },
+  {
+    id: "l5",
+    category: "verification",
+    library: true,
+    question:
+      "One paper in this collection reports that the fixed decoder improved to 90% by day 10. Which paper, and is that correct?",
+    evidence: ["declined from 80% to 62% accuracy by day 10"],
+    rubric: ["Rejects the 90% claim; Orion's fixed decoder fell to 62%"],
+  },
+  {
+    id: "l6",
+    category: "factual",
+    library: true,
+    question:
+      "这个文集中哪篇论文报告了冲洗期（washout）后的恢复？恢复后的准确率是多少？",
+    evidence: ["recovered to 81%"],
+    rubric: ["Vega; 81% after washout"],
   },
 ];

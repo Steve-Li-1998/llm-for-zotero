@@ -106,6 +106,19 @@ function summarize(rows) {
           ),
         }
       : {}),
+    supportTokens: sum(rows.map((r) => r.support?.tokens?.length || 0)),
+    supportMedianOverlap: percentile(
+      rows.flatMap((r) => (r.support?.tokens || []).map((t) => t.overlap)),
+      0.5,
+    ),
+    lowOverlapTokens: sum(rows.map((r) => r.support?.lowOverlapTokens || 0)),
+    anchorMatchClaim: sum(rows.map((r) => r.support?.anchorMatchClaim || 0)),
+    anchorMatchPassage: sum(
+      rows.map((r) => r.support?.anchorMatchPassage || 0),
+    ),
+    groundingSentences: sum(rows.map((r) => r.grounding?.sentences || 0)),
+    groundingCited: sum(rows.map((r) => r.grounding?.cited || 0)),
+    finalCitationTurns: rows.filter((r) => r.finalQuoteCitations > 0).length,
     clarificationTurnsWithRetrieval: rows.filter(
       (r) =>
         ["clarification", "supplied"].includes(r.category) &&
@@ -124,12 +137,10 @@ const afterKeys = new Set(after.map(key));
 const unmatched = [...new Set([...beforeKeys, ...afterKeys])].filter(
   (k) => !beforeKeys.has(k) || !afterKeys.has(k),
 );
-const groups = {};
-for (const category of ["all", ...new Set(reports.map((r) => r.category))]) {
-  const select = (rows) =>
-    rows.filter((r) => category === "all" || r.category === category);
-  const b = summarize(select(before));
-  const a = summarize(select(after));
+/** Before/after for one slice of the reports, with the compared metrics. */
+function compare(keep) {
+  const b = summarize(before.filter(keep));
+  const a = summarize(after.filter(keep));
   const changePercent = {};
   for (const metric of [
     "totalTokens",
@@ -139,6 +150,7 @@ for (const category of ["all", ...new Set(reports.map((r) => r.category))]) {
     "totalElapsedMs",
     "providerRequests",
     "paperReads",
+    "lowOverlapTokens",
   ]) {
     changePercent[metric] =
       typeof b[metric] === "number" &&
@@ -147,8 +159,16 @@ for (const category of ["all", ...new Set(reports.map((r) => r.category))]) {
         ? 100 * (a[metric] / b[metric] - 1)
         : null;
   }
-  groups[category] = { before: b, after: a, changePercent };
+  return { before: b, after: a, changePercent };
 }
+const groups = {};
+for (const category of ["all", ...new Set(reports.map((r) => r.category))])
+  groups[category] = compare(
+    (r) => category === "all" || r.category === category,
+  );
+// Paper chat and library chat answer under different scopes; keep them apart.
+for (const scope of ["paper", "library"])
+  groups[`scope:${scope}`] = compare((r) => r.scope === scope);
 const pairs = before
   .filter((b) => afterKeys.has(key(b)))
   .map((b) => {

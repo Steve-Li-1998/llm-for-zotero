@@ -5,8 +5,13 @@ import {
   papers,
   cases,
   realPaperCases,
+  libraryCases,
 } from "../test/fixtures/qaEvaluation/corpus";
 import { usageFromResponse } from "../test/helpers/qaUsage";
+import {
+  measureGrounding,
+  measureSupport,
+} from "../test/helpers/qaSupportMetrics";
 import {
   acquisitionPapers,
   acquisitionCases,
@@ -33,7 +38,7 @@ const evaluationCases = realPaper
     : realPaperCases
   : acquisitionOnly
     ? acquisitionCases
-    : cases;
+    : [...cases, ...libraryCases];
 const variant = env("LLM_FOR_ZOTERO_QA_VARIANT") || "unspecified";
 const repeat = Number(env("LLM_FOR_ZOTERO_QA_REPEAT") || 1);
 const selected = new Set(
@@ -41,11 +46,75 @@ const selected = new Set(
 );
 const clean = (value: string) =>
   value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ");
+type EvalCitation = { id: string; quoteText: string; anchorMatch?: string };
+
+/** Quote citations a tool result carries, wherever its payload nests them.
+ * Depth-limited and cycle-safe: the content is provider-shaped, not trusted. */
+const collectCitations = (content: unknown): EvalCitation[] => {
+  const out: EvalCitation[] = [];
+  const seen = new Set<unknown>();
+  const visit = (node: any, depth: number) => {
+    if (!node || typeof node !== "object" || depth > 8 || seen.has(node))
+      return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const entry of node) visit(entry, depth + 1);
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "quoteCitations" && Array.isArray(value)) {
+        for (const citation of value)
+          if (
+            citation &&
+            typeof citation === "object" &&
+            typeof citation.id === "string" &&
+            typeof citation.quoteText === "string"
+          )
+            out.push(citation as EvalCitation);
+        continue;
+      }
+      visit(value, depth + 1);
+    }
+  };
+  visit(content, 0);
+  return out;
+};
+
+/** Sections a read actually delivered: flat results, or the per-paper groups. */
+const deliveredSectionsOf = (content: any): string[] => {
+  const rows: any[] = Array.isArray(content?.results)
+    ? content.results
+    : [content?.papers, content?.groups]
+        .filter(Array.isArray)
+        .flatMap((groups: any[]) =>
+          groups.flatMap((group: any) =>
+            Array.isArray(group?.passages) ? group.passages : [],
+          ),
+        );
+  return [
+    ...new Set(
+      rows
+        .map((row) => row?.sectionPath || row?.sectionLabel)
+        .filter(
+          (section): section is string =>
+            typeof section === "string" && section.length > 0,
+        ),
+    ),
+  ];
+};
 
 describe("adaptive QA framework native evaluation", function () {
   this.timeout(360000);
   const refs: any[] = [];
   const created: number[] = [];
+  // Collection ids are a separate sequence from item ids, so they are tracked
+  // apart: looking one up with Zotero.Items.get could hit an unrelated item.
+  const createdCollections: number[] = [];
+  let libraryScope: {
+    collectionId: number;
+    name: string;
+    libraryID: number;
+  } | null = null;
   let credentials: Awaited<ReturnType<typeof resolveLiveAgentCredentials>>;
   const write = (name: string, data: unknown) =>
     Zotero.File.putContentsAsync(
@@ -154,6 +223,22 @@ describe("adaptive QA framework native evaluation", function () {
         year: source.year,
       });
     }
+    if (!realPaper && !acquisitionOnly) {
+      // Library-chat cases need a collection scope rather than an active paper.
+      const collection = new Zotero.Collection();
+      collection.libraryID = Zotero.Libraries.userLibraryID;
+      collection.name = `QA evaluation collection ${variant}-${repeat}`;
+      const collectionId = Number(await collection.saveTx());
+      createdCollections.push(collectionId);
+      await collection.addItems(
+        created.filter((id) => Zotero.Items.get(id)?.isRegularItem()),
+      );
+      libraryScope = {
+        collectionId,
+        name: collection.name,
+        libraryID: collection.libraryID,
+      };
+    }
     await write(`setup-${variant}-${repeat}${realPaper ? "-real" : ""}.json`, {
       variant,
       repeat,
@@ -174,11 +259,16 @@ describe("adaptive QA framework native evaluation", function () {
       const item = Zotero.Items.get(id);
       if (item) await item.eraseTx();
     }
+    for (const id of [...createdCollections].reverse()) {
+      const collection = Zotero.Collections.get(id);
+      if (collection) await collection.eraseTx();
+    }
   });
   for (const entry of evaluationCases.filter(
     (c) => !selected.size || selected.has(c.id),
   )) {
     it(`${entry.id} ${entry.category}: ${entry.question}`, async function () {
+      const libraryCase = "library" in entry && Boolean(entry.library);
       const toolkit = Zotero.LLMForZotero.data.ztoolkit;
       const original = toolkit.getGlobal;
       const fetch = original.call(toolkit, "fetch");
@@ -243,11 +333,22 @@ describe("adaptive QA framework native evaluation", function () {
             conversationKey:
               Math.floor(Date.now() / 10) + evaluationCases.indexOf(entry),
             mode: "agent",
-            conversationKind: "paper",
             libraryID: refs[0].libraryID,
-            activeItemId: refs[0].itemId,
-            activePaperContext: refs[0],
-            selectedPaperContexts: entry.multi ? refs : [],
+            // A library case has no active paper: the collection is the scope.
+            ...(libraryCase
+              ? {
+                  conversationKind: "global",
+                  selectedCollectionContexts: libraryScope
+                    ? [libraryScope]
+                    : [],
+                  selectedPaperContexts: [],
+                }
+              : {
+                  conversationKind: "paper",
+                  activeItemId: refs[0].itemId,
+                  activePaperContext: refs[0],
+                  selectedPaperContexts: entry.multi ? refs : [],
+                }),
             ...credentials,
             ...("history" in entry ? { history: entry.history } : {}),
             ...(entry.id === "p4"
@@ -275,6 +376,7 @@ describe("adaptive QA framework native evaluation", function () {
                 "tool_result",
                 "message_rollback",
                 "usage",
+                "final",
                 "done",
                 "error",
               ].includes(event.type)
@@ -299,6 +401,21 @@ describe("adaptive QA framework native evaluation", function () {
         .join("\n");
       const calls = events.filter((e) => e.type === "tool_call");
       const usage = requests.map((r) => r.usage).filter(Boolean);
+      const answer = String(result?.text || "");
+      // The answer's own citations when the turn carries them; otherwise the
+      // ones the tools delivered, so a baseline run is still scored.
+      const finalEvent = events.find((e) => e.type === "final");
+      const finalQuoteCitations: EvalCitation[] = Array.isArray(
+        finalEvent?.quoteCitations,
+      )
+        ? finalEvent.quoteCitations
+        : [];
+      const toolQuoteCitations = events
+        .filter((e) => e.type === "tool_result" && e.ok)
+        .flatMap((e) => collectCitations(e.content));
+      const citations = finalQuoteCitations.length
+        ? finalQuoteCitations
+        : toolQuoteCitations;
       const report = {
         variant,
         repeat,
@@ -309,10 +426,23 @@ describe("adaptive QA framework native evaluation", function () {
         provided: entry.provided,
         ...("history" in entry ? { history: entry.history } : {}),
         sourceEvidence: entry.evidence,
+        scope: libraryCase ? "library" : "paper",
         outcome: result?.kind,
         error,
-        answer: String(result?.text || ""),
+        answer,
         elapsedMs: Date.now() - start,
+        support: measureSupport(answer, citations),
+        grounding: measureGrounding(
+          answer,
+          new Set(citations.map((c) => c.id)),
+        ),
+        finalQuoteCitations: finalQuoteCitations.length,
+        deliveredSections: events
+          .filter((e) => e.type === "tool_result" && e.name === "paper_read")
+          .map((e) => ({
+            callId: e.callId,
+            sections: deliveredSectionsOf(e.content),
+          })),
         acquisition: acquisitionOnly
           ? measureAcquisition(
               entry as AcquisitionCase,
@@ -329,7 +459,7 @@ describe("adaptive QA framework native evaluation", function () {
             },
         synthesis: {
           assessment: "source-based review required",
-          candidate: String(result?.text || ""),
+          candidate: answer,
         },
         verification: {
           assessment:

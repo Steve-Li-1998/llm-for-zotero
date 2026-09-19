@@ -4971,6 +4971,11 @@
   color: var(--fill-tertiary);
 }
 
+.llm-message-grounding {
+  font-size: var(--llm-fs-10);
+  color: var(--fill-tertiary);
+}
+
 .llm-message-actions {
   display: inline-flex;
   align-items: center;

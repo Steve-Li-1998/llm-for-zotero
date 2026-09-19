@@ -36,7 +36,7 @@ function normalizeClaim(text: string): string {
  * sentence it supports is folded back into it: a token written after the
  * terminal punctuation ("…day 10. [[quote:q1]]") belongs to the sentence
  * before it, whether it stands alone or opens the next sentence. */
-function claimSpans(lineText: string): SentenceSpan[] {
+export function claimSpans(lineText: string): SentenceSpan[] {
   const spans = splitSentences(lineText);
   const folded: SentenceSpan[] = [];
   for (const span of spans) {

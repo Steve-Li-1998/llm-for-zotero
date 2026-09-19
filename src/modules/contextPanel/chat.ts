@@ -387,6 +387,10 @@ import {
   mergeCitationPaperContexts,
 } from "./citationContexts";
 import {
+  formatAnswerGrounding,
+  measureAnswerGrounding,
+} from "../../services/quotes/answerGrounding";
+import {
   buildSelectedTextQuoteCitations,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
@@ -11720,6 +11724,21 @@ export function refreshChat(
     time.className = "llm-message-time";
     time.textContent = formatTime(msg.timestamp);
     meta.appendChild(time);
+    if (!isUser && msg.runMode === "agent" && !msg.streaming) {
+      // Recomputed from the finished answer at every render; nothing about the
+      // grounding count is stored.
+      const grounding = measureAnswerGrounding({
+        text: msg.text,
+        quoteCitations: msg.quoteCitations || [],
+      });
+      if (grounding) {
+        const groundingEl = doc.createElement("span") as HTMLSpanElement;
+        groundingEl.className = "llm-message-grounding";
+        groundingEl.textContent = formatAnswerGrounding(grounding);
+        groundingEl.title = "Sentences that carry a quote from the source";
+        meta.appendChild(groundingEl);
+      }
+    }
     if (isUser && shouldShowUserFooterCopyAction(msg)) {
       const actions = doc.createElement("div") as HTMLDivElement;
       actions.className = "llm-message-actions";

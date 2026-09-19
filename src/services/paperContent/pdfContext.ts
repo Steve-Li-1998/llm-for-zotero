@@ -2299,7 +2299,8 @@ export type RetrievalSectionSummary = {
   index: number;
 };
 
-function sectionIdForIndex(sectionIndex: number): string {
+/** The outline id of a section: the one owner of the `s<n>` convention. */
+export function sectionIdForIndex(sectionIndex: number): string {
   return `s${sectionIndex}`;
 }
 

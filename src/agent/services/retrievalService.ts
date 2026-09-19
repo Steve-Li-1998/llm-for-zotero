@@ -77,13 +77,16 @@ export function buildEvidenceCacheKey(params: {
   const fingerprints = [
     ...new Set(
       params.source?.chunkMeta
-        .map((meta) => meta.sourceFingerprint)
+        ?.map((meta) => meta.sourceFingerprint)
         .filter(Boolean) || [],
     ),
   ];
+  const chunks = params.source?.chunks;
   // Preserve Unicode, mathematical operators, and the complete query identity.
   // Unknown provenance digests the source text rather than reusing stale
   // evidence: a whole paper in the key would grow the cache without bound.
+  // Each chunk's length goes into the digest, so re-chunking that only moves a
+  // boundary — same text, different passages — is a different source.
   return JSON.stringify([
     params.paper.libraryID,
     params.paper.contextItemId,
@@ -95,9 +98,9 @@ export function buildEvidenceCacheKey(params: {
     params.quotePolicy,
     fingerprints.length
       ? fingerprints
-      : params.source
-        ? `chunks:${params.source.chunks.length}:${fnv1a32(
-            params.source.chunks.join("\n"),
+      : chunks
+        ? `chunks:${chunks.length}:${fnv1a32(
+            chunks.map((chunk) => `${chunk.length}:${chunk}`).join(" "),
           )}`
         : undefined,
   ]);

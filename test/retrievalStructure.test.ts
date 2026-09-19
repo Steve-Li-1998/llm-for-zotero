@@ -327,6 +327,22 @@ describe("selectStructuredCandidates", function () {
 
     assert.deepEqual(indexesOf(selected).sort(), [2, 3]);
   });
+
+  it("selects nothing when no candidate is in the requested sections", function () {
+    const selected = selectStructuredCandidates({
+      ranked: [
+        fakeCandidate({ chunkIndex: 0, sectionIndex: 0 }),
+        fakeCandidate({ chunkIndex: 1, sectionIndex: 1 }),
+      ],
+      topK: 3,
+      queryTerms: ["nothing"],
+      sections: sectionList(2),
+      sectionIds: ["s404"],
+      hasSignal: true,
+    });
+
+    assert.isEmpty(selected, "an empty scope never widens to the document");
+  });
 });
 
 describe("bounded section prior", function () {

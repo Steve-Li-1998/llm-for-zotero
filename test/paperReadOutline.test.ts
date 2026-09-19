@@ -121,6 +121,57 @@ describe("paper_read outline mode and section ids", function () {
     ) as unknown as AgentToolDefinition<never, unknown>;
   }
 
+  /**
+   * A paper whose second section carries a heading but no text: the section is
+   * in the outline, so it can be requested, and it holds no passage.
+   */
+  const emptySectionContext = {
+    title: paper.title,
+    chunks: ["The front velocity follows from the kinematic condition."],
+    chunkMeta: [
+      {
+        chunkIndex: 0,
+        text: "The front velocity follows from the kinematic condition.",
+        normalizedText:
+          "the front velocity follows from the kinematic condition.",
+        chunkKind: "body",
+        sectionIndex: 0,
+        sectionLabel: "1 Introduction",
+        sectionPath: "1 Introduction",
+        sectionLevel: 1,
+      },
+      {
+        chunkIndex: 1,
+        text: "",
+        normalizedText: "",
+        chunkKind: "body",
+        sectionIndex: 1,
+        sectionLabel: "2 Numerical algorithm",
+        sectionPath: "2 Numerical algorithm",
+        sectionLevel: 1,
+      },
+    ],
+    chunkStats: [],
+    docFreq: {},
+    avgChunkLength: 56,
+    fullLength: 56,
+  } as unknown as PdfContext;
+
+  function emptySectionTool(
+    papers: (typeof paper)[],
+  ): AgentToolDefinition<never, unknown> {
+    return createPaperReadTool(
+      { ensurePaperContext: async () => emptySectionContext } as never,
+      { retrieveEvidence: async () => [] } as never,
+      {} as never,
+      {
+        listPaperContexts: () => papers,
+        resolvePaperContextTarget: (target: { itemId?: number }) =>
+          papers.find((entry) => entry.itemId === target.itemId) || null,
+      } as never,
+    ) as unknown as AgentToolDefinition<never, unknown>;
+  }
+
   async function run(
     args: Record<string, unknown>,
     tool = createTool(),
@@ -223,7 +274,58 @@ describe("paper_read outline mode and section ids", function () {
     assert.isNotEmpty(output.papers[0].passages);
   });
 
-  it("warns when the requested sections hold no passages", async function () {
+  it("warns when the requested section holds no text", async function () {
+    const output = (await run(
+      {
+        mode: "targeted",
+        query: "How is the velocity of the free boundary computed?",
+        sectionIds: ["s1"],
+      },
+      emptySectionTool([paper]),
+    )) as TargetedResult;
+    assert.include(
+      output.warnings || [],
+      "Requested sections contain no passages: s1",
+      `warnings were ${JSON.stringify(output.warnings)}`,
+    );
+    assert.equal(output.papers[0].status, "no_matches");
+  });
+
+  it("names the paper in the warning when several papers are read", async function () {
+    const other = {
+      ...paper,
+      itemId: 9500,
+      contextItemId: 9501,
+      title: "A second paper on front tracking",
+      firstCreator: "Orion",
+      year: "2025",
+    };
+    const tool = emptySectionTool([paper, other]);
+    const validated = tool.validate({
+      mode: "targeted",
+      query: "How is the velocity of the free boundary computed?",
+      sectionIds: ["s1"],
+      targets: [
+        { itemId: paper.itemId, contextItemId: paper.contextItemId },
+        { itemId: other.itemId, contextItemId: other.contextItemId },
+      ],
+    });
+    assert.isTrue(
+      validated.ok,
+      validated.ok ? "" : `validation failed: ${validated.error}`,
+    );
+    if (!validated.ok) return;
+    const output = (await tool.execute(
+      validated.value,
+      toolContext(),
+    )) as TargetedResult;
+    assert.deepEqual(output.warnings, [
+      "Requested sections contain no passages: s1 (Nguyen, 2026)",
+      "Requested sections contain no passages: s1 (Orion, 2025)",
+    ]);
+  });
+
+  it("does not warn when a section holds text but the read returns nothing", async function () {
     const sectionId = await kinematicSectionId();
     const tool = createPaperReadTool(
       { ensurePaperContext: async () => ctx } as never,
@@ -243,12 +345,13 @@ describe("paper_read outline mode and section ids", function () {
       },
       tool,
     )) as TargetedResult;
-    assert.include(
-      output.warnings || [],
-      `Requested sections contain no passages: ${sectionId}`,
+    assert.equal(output.papers[0].status, "no_matches");
+    assert.isEmpty(
+      (output.warnings || []).filter((warning) =>
+        warning.includes("contain no passages"),
+      ),
       `warnings were ${JSON.stringify(output.warnings)}`,
     );
-    assert.equal(output.papers[0].status, "no_matches");
   });
 
   it("converts section names to section ids", async function () {

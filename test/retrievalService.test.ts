@@ -304,4 +304,25 @@ describe("evidence cache key", function () {
       "a re-parsed paper never reuses stale evidence",
     );
   });
+
+  it("separates two sources whose chunk boundaries moved", function () {
+    // Re-chunking can move a boundary across a line break and leave the
+    // concatenated text unchanged; the evidence still comes from other chunks.
+    const before = ["The scheme moves\nevery vertex.", "The mesh is rebuilt."];
+    const after = ["The scheme moves", "every vertex.\nThe mesh is rebuilt."];
+    assert.equal(
+      before.join("\n"),
+      after.join("\n"),
+      "the fixture keeps the concatenated text identical",
+    );
+    assert.notEqual(
+      keyFor(buildLongSource(before)),
+      keyFor(buildLongSource(after)),
+      "a moved chunk boundary is a different source",
+    );
+  });
+
+  it("keys a source that carries no chunks instead of throwing", function () {
+    assert.doesNotThrow(() => keyFor({} as PdfContext));
+  });
 });

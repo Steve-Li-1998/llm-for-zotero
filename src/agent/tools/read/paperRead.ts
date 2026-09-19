@@ -26,8 +26,14 @@ import {
   stripMineruSourceImageEmbedsFromMarkdown,
 } from "../../../services/mineru/mineruCache";
 import type { MineruManifest } from "../../../services/mineru/mineruCache";
-import { buildDocumentOutline } from "../../../services/paperContent/pdfContext";
-import type { DocumentOutline } from "../../../services/paperContent/types";
+import {
+  buildDocumentOutline,
+  sectionIdForIndex,
+} from "../../../services/paperContent/pdfContext";
+import type {
+  DocumentOutline,
+  PdfContext,
+} from "../../../services/paperContent/types";
 import { tokenizeRetrievalText } from "../../../services/retrieval/retrievalTokenizer";
 import {
   buildQuoteCitation,
@@ -659,6 +665,26 @@ async function readManifestStructure(
     void _error;
     return undefined;
   }
+}
+
+/**
+ * Does any chunk of this paper sit in one of the requested sections and carry
+ * text? The outline that resolved those ids is built from the same chunk
+ * metadata, so this is the honest answer to "is the requested scope empty?".
+ * A retrieval result is not: a read of several papers keeps only its best
+ * passages, so a paper can be out-ranked with its sections full of text.
+ */
+function sectionsHoldText(
+  paperContent: PdfContext | undefined,
+  sectionIds: readonly string[],
+): boolean {
+  const wanted = new Set(sectionIds);
+  return (paperContent?.chunkMeta || []).some((meta) => {
+    if (!meta || meta.sectionIndex === undefined) return false;
+    if (!wanted.has(sectionIdForIndex(meta.sectionIndex))) return false;
+    const chunkText = paperContent?.chunks?.[meta.chunkIndex] ?? meta.text;
+    return Boolean(chunkText?.trim());
+  });
 }
 
 type ResolvedSectionFilter = {
@@ -1730,14 +1756,20 @@ export function createPaperReadTool(
         });
       }
 
+      const contentByPaper = new Map<string, PdfContext | undefined>();
       const outlineByPaper = new Map<string, DocumentOutline>();
       for (const paper of targets) {
+        const paperContent = await pdfService.ensurePaperContext(paper);
+        contentByPaper.set(paperContextKey(paper), paperContent);
         outlineByPaper.set(
           paperContextKey(paper),
-          buildDocumentOutline(await pdfService.ensurePaperContext(paper)),
+          buildDocumentOutline(paperContent),
         );
       }
       const sectionIdsByPaper = new Map<number, string[]>();
+      // Retrieval never widens a requested scope, so a scope with no text is
+      // reported here, before the read, from the paper's own chunks.
+      const emptyScopeWarnings: string[] = [];
       const filters = targets.map((paper) => {
         const filter = resolveSectionFilter({
           sectionIds: input.sectionIds,
@@ -1745,13 +1777,32 @@ export function createPaperReadTool(
           outlines: [outlineByPaper.get(paperContextKey(paper))!],
         });
         sectionIdsByPaper.set(paper.contextItemId, filter.sectionIds);
+        if (
+          filter.sectionIds.length &&
+          !sectionsHoldText(
+            contentByPaper.get(paperContextKey(paper)),
+            filter.sectionIds,
+          )
+        ) {
+          // One paper's empty scope must name that paper when several are read.
+          const paperSuffix =
+            targets.length > 1 ? ` (${formatPaperCitationLabel(paper)})` : "";
+          emptyScopeWarnings.push(
+            `Requested sections contain no passages: ${filter.sectionIds.join(", ")}${paperSuffix}`,
+          );
+        }
         return filter;
       });
       const sectionFilter = {
         unmatchedNames: [
           ...new Set(filters.flatMap((filter) => filter.unmatchedNames)),
         ],
-        warnings: [...new Set(filters.flatMap((filter) => filter.warnings))],
+        warnings: [
+          ...new Set([
+            ...filters.flatMap((filter) => filter.warnings),
+            ...emptyScopeWarnings,
+          ]),
+        ],
       };
       const question = [
         input.query || context.request.userText,
@@ -1776,20 +1827,6 @@ export function createPaperReadTool(
         perPaperTopK: input.topK,
         sectionIdsByPaper,
       });
-      // Retrieval never widens a requested scope, so an empty read of named
-      // sections is reported instead of being answered from the whole paper.
-      const papersWithPassages = new Set(
-        results.map((result) => result.paperContext?.contextItemId),
-      );
-      for (const paper of targets) {
-        const requestedSectionIds = sectionIdsByPaper.get(paper.contextItemId);
-        if (!requestedSectionIds?.length) continue;
-        if (papersWithPassages.has(paper.contextItemId)) continue;
-        const warning = `Requested sections contain no passages: ${requestedSectionIds.join(", ")}`;
-        if (!sectionFilter.warnings.includes(warning)) {
-          sectionFilter.warnings.push(warning);
-        }
-      }
       const quoteCitations: QuoteCitation[] = [];
       const embeddedOutlines = new Map<string, DocumentOutline>();
       for (const [key, outline] of outlineByPaper) {

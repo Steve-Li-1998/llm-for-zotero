@@ -847,6 +847,8 @@ type StatusKind = "ready" | "sending" | "error" | "warning";
 type PanelUpdateHelpers = {
   refreshChatSafely: () => void;
   refreshAssistantMessageSafely: (message: Message) => void;
+  /** Turn completion: rebuild the finished answer and its prompt only. */
+  refreshCompletedAssistantTurnSafely: (message: Message) => void;
   setStatusSafely: (text: string, kind: StatusKind) => void;
 };
 

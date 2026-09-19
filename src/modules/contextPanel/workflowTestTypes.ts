@@ -547,6 +547,11 @@ export type WorkflowTestApi = {
     chunks: number;
   }) => Promise<import("./streamingReplay").StreamingReplayResult>;
   exerciseBackgroundAgentPublication: (input: {
+  exerciseCompletedChatTurnRefresh: (
+    panelId: string,
+  ) => ReturnType<
+    typeof import("./chatRenderingReplay").exerciseCompletedChatTurnRefresh
+  >;
     panelId: string;
     paperBItemId: number;
     invalidateConversation?: boolean;

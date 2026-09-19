@@ -50,6 +50,68 @@ describe("resolveTargetedAssistantRerenders", function () {
     assert.strictEqual(resolution.targetedMessageWrappers.size, 0);
   });
 
+  it("targets a user prompt whose paired assistant answer is also requested", function () {
+    // Finishing a turn re-renders the answer and its prompt together: the
+    // prompt's edit/delete controls only become available once the pair is
+    // no longer streaming.
+    const wrappers = [wrapperFor(0, "user"), wrapperFor(1)];
+    const resolution = resolveTargetedAssistantRerenders(
+      [user, assistant],
+      new Set([assistant, user]),
+      wrappers,
+    );
+    assert.isTrue(resolution.useTargetedRerender);
+    assert.strictEqual(resolution.targetedMessageWrappers.size, 2);
+    assert.strictEqual(
+      resolution.targetedMessageWrappers.get(user),
+      wrappers[0],
+    );
+    assert.strictEqual(
+      resolution.targetedMessageWrappers.get(assistant),
+      wrappers[1],
+    );
+  });
+
+  it("falls back to full render for a user prompt with no following message", function () {
+    const trailingUser: FakeMessage = { role: "user", text: "pending" };
+    const resolution = resolveTargetedAssistantRerenders(
+      [user, assistant, trailingUser],
+      new Set([trailingUser]),
+      [wrapperFor(0, "user"), wrapperFor(1), wrapperFor(2, "user")],
+    );
+    assert.isFalse(resolution.useTargetedRerender);
+    assert.strictEqual(resolution.targetedMessageWrappers.size, 0);
+  });
+
+  it("falls back to full render when the paired assistant answer is not requested", function () {
+    const secondUser: FakeMessage = { role: "user", text: "second question" };
+    const secondAssistant: FakeMessage = { role: "assistant", text: "second" };
+    const history = [user, assistant, secondUser, secondAssistant];
+    const wrappers = [
+      wrapperFor(0, "user"),
+      wrapperFor(1),
+      wrapperFor(2, "user"),
+      wrapperFor(3),
+    ];
+    const resolution = resolveTargetedAssistantRerenders(
+      history,
+      new Set([user, secondAssistant]),
+      wrappers,
+    );
+    assert.isFalse(resolution.useTargetedRerender);
+    assert.strictEqual(resolution.targetedMessageWrappers.size, 0);
+  });
+
+  it("falls back when a paired user prompt has no rendered wrapper", function () {
+    const resolution = resolveTargetedAssistantRerenders(
+      [user, assistant],
+      new Set([assistant, user]),
+      [wrapperFor(1)],
+    );
+    assert.isFalse(resolution.useTargetedRerender);
+    assert.strictEqual(resolution.targetedMessageWrappers.size, 0);
+  });
+
   it("falls back to full render when the message left the history", function () {
     const detached: FakeMessage = { role: "assistant", text: "gone" };
     const resolution = resolveTargetedAssistantRerenders(

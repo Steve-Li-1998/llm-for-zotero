@@ -4039,6 +4039,7 @@ function createPanelUpdateHelpers(
 ): {
   refreshChatSafely: () => void;
   refreshAssistantMessageSafely: (message: Message) => void;
+  refreshCompletedAssistantTurnSafely: (message: Message) => void;
   setStatusSafely: (
     text: string,
     kind: Parameters<typeof setStatus>[2],
@@ -4052,6 +4053,26 @@ function createPanelUpdateHelpers(
       chatOptions: { rerenderAssistantMessages: new Set([message]) },
     });
   };
+  /**
+   * Turn completion. The finished answer and the prompt that asked it are the
+   * only messages whose presentation changed: the answer stops streaming, and
+   * the prompt regains its edit and delete-turn controls, which are decided at
+   * render time from the paired answer's streaming state. Rebuilding just that
+   * pair keeps the cost of ending a turn independent of conversation length;
+   * a full rebuild re-parses every earlier message. Panels that no longer have
+   * those wrappers rendered fall back to a full rebuild inside refreshChat.
+   */
+  const refreshCompletedAssistantTurnSafely = (message: Message) => {
+    const history = chatHistory.get(conversationKey) || [];
+    const messageIndex = history.indexOf(message);
+    const turnMessages = new Set<Message>([message]);
+    const pairedUserMessage =
+      messageIndex > 0 ? history[messageIndex - 1] : undefined;
+    if (pairedUserMessage?.role === "user") turnMessages.add(pairedUserMessage);
+    refreshConversationPanels(body, item, {
+      chatOptions: { rerenderAssistantMessages: turnMessages },
+    });
+  };
   const setStatusSafely = (
     text: string,
     kind: Parameters<typeof setStatus>[2],
@@ -4061,6 +4082,7 @@ function createPanelUpdateHelpers(
   return {
     refreshChatSafely,
     refreshAssistantMessageSafely,
+    refreshCompletedAssistantTurnSafely,
     setStatusSafely,
   };
 }
@@ -6401,8 +6423,12 @@ export async function retryLatestAssistantResponse(
     assistantMessage.modelProviderLabel === "Codex"
       ? Date.now()
       : undefined;
-  const { refreshChatSafely, refreshAssistantMessageSafely, setStatusSafely } =
-    createPanelUpdateHelpers(body, item, conversationKey, ui);
+  const {
+    refreshChatSafely,
+    refreshAssistantMessageSafely,
+    refreshCompletedAssistantTurnSafely,
+    setStatusSafely,
+  } = createPanelUpdateHelpers(body, item, conversationKey, ui);
   // [webchat] Retries never route through the browser-relay pipeline, so a
   // webchat model here — passed explicitly by the retry-model menu or picked
   // up from the selected profile when params were empty — would fire a
@@ -7032,7 +7058,7 @@ export async function retryLatestAssistantResponse(
     }
     assistantMessage.interrupted = undefined;
     assistantMessage.streaming = false;
-    refreshChatSafely();
+    refreshCompletedAssistantTurnSafely(assistantMessage);
 
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
     await updateStoredLatestAssistantMessageByConversation(
@@ -9409,8 +9435,12 @@ export async function sendQuestion(
   if (history.length > PERSISTED_HISTORY_LIMIT) {
     history.splice(0, history.length - PERSISTED_HISTORY_LIMIT);
   }
-  const { refreshChatSafely, refreshAssistantMessageSafely, setStatusSafely } =
-    createPanelUpdateHelpers(body, item, conversationKey, ui);
+  const {
+    refreshChatSafely,
+    refreshAssistantMessageSafely,
+    refreshCompletedAssistantTurnSafely,
+    setStatusSafely,
+  } = createPanelUpdateHelpers(body, item, conversationKey, ui);
   refreshChatSafely();
 
   let assistantPersisted = false;
@@ -10000,7 +10030,7 @@ export async function sendQuestion(
     }
     assistantMessage.interrupted = undefined;
     assistantMessage.streaming = false;
-    refreshChatSafely();
+    refreshCompletedAssistantTurnSafely(assistantMessage);
     await persistAssistantOnce();
     if (resolveConversationSystemForItem(item) === "claude_code") {
       const activeNoteSession = resolveActiveNoteSession(item);

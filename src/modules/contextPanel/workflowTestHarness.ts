@@ -12,7 +12,11 @@ import {
 import { exercisePlanHistoryReplay } from "./planHistoryReplay";
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import { exerciseStreamingReplay } from "./streamingReplay";
-import { exerciseChatRenderingLifecycle } from "./chatRenderingReplay";
+import {
+  createChatTurnPromptProbes,
+  exerciseChatRenderingLifecycle,
+  exerciseCompletedChatTurnRefresh,
+} from "./chatRenderingReplay";
 import {
   memoryProbeInspect,
   exerciseChatModeStreamingTurn,
@@ -5538,6 +5542,8 @@ export function installWorkflowTestHarness(targetAddon: {
             payload: {
               type: "tool_result" as const,
               ...entry,
+    exerciseCompletedChatTurnRefresh: (panelId) =>
+      exerciseCompletedChatTurnRefresh(getPanel(panelId)),
               actionReceipts: entry.actionReceipts || [],
             },
           })),

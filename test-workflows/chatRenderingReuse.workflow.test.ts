@@ -59,6 +59,30 @@ describe("workflow: ordinary Chat rendering reuse", function () {
     }
   });
 
+  it("finishes a chat turn without rebuilding earlier turns", async function () {
+    const api = (Zotero as any).LLMForZotero.api
+      .workflowTest as WorkflowTestApi;
+    const fixture = await api.createPaperWithPdfFixture({
+      title: "Chat turn end",
+      pdfTitle: "Chat turn end PDF",
+      pages: ["Fixture evidence."],
+    });
+    try {
+      const panel = await api.renderPanelForItem(fixture.parentItemId);
+      const result = await api.exerciseCompletedChatTurnRefresh(panel.panelId);
+      await Zotero.File.putContentsAsync(
+        `${Zotero.DataDirectory.dir}/completed-chat-turn-refresh.json`,
+        JSON.stringify(result, null, 2),
+      );
+      for (const [key, value] of Object.entries(result)) {
+        assert.isTrue(value as boolean, `${key}: ${JSON.stringify(result)}`);
+      }
+    } finally {
+      await api.reset();
+      await api.cleanupFixture(fixture);
+    }
+  });
+
   it("releases a detached panel without losing the saved conversation", async function () {
     const api = (Zotero as any).LLMForZotero.api
       .workflowTest as WorkflowTestApi;

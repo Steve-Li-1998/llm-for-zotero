@@ -113,16 +113,41 @@ function occurrenceToken(occurrenceId: string): string {
   return `[[quote-occurrence:${occurrenceId}]]`;
 }
 
-function normalizeOccurrenceBoundaries(markdown: string): string {
+function isDuplicateQuoteRepresentation(
+  left: QuoteRenderOccurrence,
+  right: QuoteRenderOccurrence,
+): boolean {
+  return Boolean(
+    left.quoteCitationId &&
+    left.quoteCitationId === right.quoteCitationId &&
+    normalizeMultilineText(left.displayText) ===
+      normalizeMultilineText(right.displayText) &&
+    ((left.source === "verified-markdown" &&
+      right.source === "structured-anchor") ||
+      (left.source === "structured-anchor" &&
+        right.source === "verified-markdown")),
+  );
+}
+
+function normalizeQuoteRenderOccurrences(
+  markdown: string,
+  occurrences: QuoteRenderOccurrence[],
+): Pick<QuoteRenderPlan, "displayMarkdown" | "occurrences"> {
   if (!markdown || !QUOTE_RENDER_OCCURRENCE_PATTERN.test(markdown)) {
     QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
-    return markdown;
+    return { displayMarkdown: markdown, occurrences };
   }
   QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
+  const byId = new Map(
+    occurrences.map((occurrence) => [occurrence.occurrenceId, occurrence]),
+  );
+  const displayedOccurrences: QuoteRenderOccurrence[] = [];
 
   let result = "";
   let cursor = 0;
   let appendedOccurrence = false;
+  let lastOccurrenceStart = 0;
+  let previousOccurrence: QuoteRenderOccurrence | undefined;
   const appendText = (text: string): void => {
     if (!text) return;
     if (!appendedOccurrence) {
@@ -144,18 +169,39 @@ function normalizeOccurrenceBoundaries(markdown: string): string {
   for (const match of markdown.matchAll(QUOTE_RENDER_OCCURRENCE_PATTERN)) {
     const start = match.index || 0;
     const token = match[0];
-    appendText(markdown.slice(cursor, start));
+    const between = markdown.slice(cursor, start);
+    const occurrence = byId.get(match[1]);
+    if (
+      occurrence &&
+      previousOccurrence &&
+      !between.trim() &&
+      isDuplicateQuoteRepresentation(previousOccurrence, occurrence)
+    ) {
+      // Both syntaxes have now been bound to the same complete quote. Keep
+      // its structured occurrence without waiting for background validation.
+      if (occurrence.source === "structured-anchor") {
+        result = result.slice(0, lastOccurrenceStart) + token;
+        displayedOccurrences[displayedOccurrences.length - 1] = occurrence;
+        previousOccurrence = occurrence;
+      }
+      cursor = start + token.length;
+      continue;
+    }
+    appendText(between);
     result = result.replace(/[ \t]+$/, "");
     if (result.trim() && !/\n[ \t]*\n[ \t]*$/.test(result)) {
       result += /\n[ \t]*$/.test(result) ? "\n" : "\n\n";
     }
+    lastOccurrenceStart = result.length;
     result += token;
+    if (occurrence) displayedOccurrences.push(occurrence);
+    previousOccurrence = occurrence;
     appendedOccurrence = true;
     cursor = start + token.length;
   }
   appendText(markdown.slice(cursor));
   QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
-  return result;
+  return { displayMarkdown: result, occurrences: displayedOccurrences };
 }
 
 function buildOccurrenceId(index: number): string {
@@ -558,10 +604,8 @@ export function buildQuoteRenderPlan(
     index -= 1;
   }
 
-  const displayMarkdown = normalizeOccurrenceBoundaries(out.join("\n"));
   return {
-    displayMarkdown,
-    occurrences,
+    ...normalizeQuoteRenderOccurrences(out.join("\n"), occurrences),
     diagnostics,
   };
 }

@@ -8,6 +8,103 @@ import {
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 
 describe("quoteRenderPlan", function () {
+  const duplicateQuote =
+    "Traditional dogmas assume that executing a stable behavior requires neural circuits to remain in a fixed, steady state.";
+  const duplicateCitation = buildQuoteCitation({
+    id: "Q_12atl2p",
+    quoteText: duplicateQuote,
+    citationLabel: "(Kim, 2026)",
+    sourceMatchText: duplicateQuote,
+    sourceMatchKind: "exact",
+    sourceMatchSource: "context-text",
+    contextItemId: 4084,
+    itemId: 4085,
+  })!;
+  const duplicateAnchor = `[[quote:${duplicateCitation.id}]]`;
+  const followingProse =
+    "The problem is that chronic population imaging contradicts this premise.";
+
+  it("renders the saved Kim manual quote and inline anchor once before background validation", function () {
+    for (const writtenQuote of [
+      `> ${duplicateQuote}\n\n(Kim, 2026)`,
+      `> ${duplicateQuote}\n>\n> (Kim, 2026)`,
+    ]) {
+      for (const separator of [" ", "\n\n"]) {
+        const markdown = `${writtenQuote}\n\n${duplicateAnchor}${separator}${followingProse}`;
+        const input = { markdown, quoteCitations: [duplicateCitation] };
+        // Rendering restored history starts from these same raw bytes.
+        for (const restored of [input, JSON.parse(JSON.stringify(input))]) {
+          const plan = buildQuoteRenderPlan(restored);
+          assert.lengthOf(plan.occurrences, 1, markdown);
+          assert.equal(plan.occurrences[0].displayText, duplicateQuote);
+          assert.equal(
+            plan.occurrences[0].quoteCitationId,
+            duplicateCitation.id,
+          );
+          assert.equal(plan.occurrences[0].contextItemId, 4084);
+          assert.equal(
+            buildQuoteExpandedMarkdown(restored),
+            `> ${duplicateQuote}\n>\n> (Kim, 2026)\n\n${followingProse}`,
+          );
+          assert.equal(restored.markdown, markdown, "raw history is unchanged");
+        }
+      }
+    }
+  });
+
+  it("preserves repetitions separated by prose, other sources, and longer anchored text", function () {
+    const writtenQuote = `> ${duplicateQuote}\n\n(Kim, 2026)`;
+    const differentSource = buildQuoteCitation({
+      ...duplicateCitation,
+      id: "Q_other_source",
+      contextItemId: 5000,
+      itemId: 5001,
+    })!;
+    const longerQuote = buildQuoteCitation({
+      ...duplicateCitation,
+      quoteText: `${duplicateQuote} A distinct additional source sentence.`,
+    })!;
+    const cases = [
+      {
+        markdown: `${writtenQuote}\n\n${followingProse}\n\n${duplicateAnchor}`,
+        quoteCitations: [duplicateCitation],
+      },
+      {
+        markdown: `${writtenQuote}\n\n[[quote:${differentSource.id}]]`,
+        quoteCitations: [duplicateCitation, differentSource],
+      },
+      {
+        markdown: `${writtenQuote}\n\n${duplicateAnchor}`,
+        quoteCitations: [longerQuote],
+      },
+      {
+        markdown: `> ${duplicateQuote}\n\n(Other, 2026)\n\n${duplicateAnchor}`,
+        quoteCitations: [duplicateCitation],
+      },
+    ];
+    for (const input of cases) {
+      assert.lengthOf(
+        buildQuoteRenderPlan(input).occurrences,
+        2,
+        input.markdown,
+      );
+    }
+  });
+
+  it("keeps a second structured occurrence after collapsing its written duplicate", function () {
+    const plan = buildQuoteRenderPlan({
+      markdown: `> ${duplicateQuote}\n\n(Kim, 2026)\n\n${duplicateAnchor}\n\n${duplicateAnchor}`,
+      quoteCitations: [duplicateCitation],
+    });
+    assert.lengthOf(plan.occurrences, 2);
+    assert.lengthOf(
+      Array.from(
+        plan.displayMarkdown.matchAll(QUOTE_RENDER_OCCURRENCE_PATTERN),
+      ),
+      2,
+    );
+  });
+
   it("renders a displayed source subspan followed by its standalone anchor only once", function () {
     const visible =
       "Hypothesis: stable readout can coexist with representational drift.";

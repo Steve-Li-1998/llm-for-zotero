@@ -453,14 +453,7 @@ export type ResponseActionTarget = {
   agentRunId?: string;
 };
 
-export type ResponseActionKind =
-  | "copy"
-  | "note"
-  | "fork"
-  | "delete"
-  | "expand"
-  /** Check the answer's cited sentences against the lines they quote. */
-  | "check";
+export type ResponseActionKind = "copy" | "note" | "fork" | "delete" | "expand";
 export type ResponseActionRunner = (
   action: ResponseActionKind,
   target: ResponseActionTarget | null,

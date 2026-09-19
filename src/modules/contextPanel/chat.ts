@@ -387,17 +387,6 @@ import {
   mergeCitationPaperContexts,
 } from "./citationContexts";
 import {
-  formatAnswerGrounding,
-  measureAnswerGrounding,
-} from "../../services/quotes/answerGrounding";
-import {
-  answerCheckKey,
-  getAnswerCheckResult,
-  renderAnswerCheckCard,
-  runAnswerCheck,
-  storeAnswerCheckResult,
-} from "./answerCheck";
-import {
   buildSelectedTextQuoteCitations,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
@@ -1175,102 +1164,6 @@ export function invokeResponseMenuActionButton(params: {
   setResponseMenuTarget(target);
   void runner(action, target);
   return true;
-}
-
-/**
- * Turns with a check in flight. A second press must not start a second call.
- * In memory only, like the verdicts themselves.
- */
-const answerChecksInFlight = new Set<string>();
-
-/**
- * Run the footer's answer check for one assistant turn.
- *
- * The reader pressed the button, so the model call happens here and nowhere
- * else. The answer is re-read from the live conversation rather than from the
- * action target, because the target carries the rendered markdown while the
- * check needs the citation tokens that bind each quote to its sentence. The
- * verdicts are kept in memory for the redraw and never written anywhere.
- */
-export async function runAnswerCheckForResponseTarget(
-  body: Element,
-  target: ResponseActionTarget | null,
-): Promise<void> {
-  const item = target?.item;
-  const conversationKey = Math.floor(Number(target?.conversationKey) || 0);
-  const assistantTimestamp = Math.floor(
-    Number(target?.assistantTimestamp) || 0,
-  );
-  if (!item || conversationKey <= 0 || assistantTimestamp <= 0) {
-    // Without a turn to name, the conversation-wide status helper has nothing
-    // to route by, so the panel's own status line is told directly.
-    const status = body.querySelector("#llm-status") as HTMLElement | null;
-    if (status) {
-      setStatus(
-        status,
-        "Answer check is unavailable for this message",
-        "error",
-      );
-    }
-    return;
-  }
-  const { refreshChatSafely, setStatusSafely } = createPanelUpdateHelpers(
-    body,
-    item,
-    conversationKey,
-    getPanelRequestUI(body),
-  );
-  const message = (chatHistory.get(conversationKey) || []).find(
-    (candidate) =>
-      candidate.role === "assistant" &&
-      Math.floor(candidate.timestamp) === assistantTimestamp,
-  );
-  if (!message) {
-    setStatusSafely("Answer check target changed", "error");
-    return;
-  }
-  const key = answerCheckKey(conversationKey, assistantTimestamp);
-  // A second press while the first is still running says nothing new, and must
-  // not overwrite the status the running check put there.
-  if (answerChecksInFlight.has(key)) return;
-  // Resolved before the turn is claimed: a throw here must not leave a key
-  // behind that would make the button dead for the rest of the session.
-  const requestConfig = resolveEffectiveRequestConfig({ item });
-  setStatusSafely("Checking answer…", "sending");
-  answerChecksInFlight.add(key);
-  try {
-    const outcome = await runAnswerCheck({
-      text: message.text || "",
-      quoteCitations: message.quoteCitations || [],
-      llmConfig: {
-        model: requestConfig.model,
-        apiBase: requestConfig.apiBase,
-        apiKey: requestConfig.apiKey,
-        authMode: requestConfig.authMode,
-        providerProtocol: requestConfig.providerProtocol,
-        profileOverride: requestConfig.advanced?.profileOverride,
-      },
-    });
-    if (!outcome.ok) {
-      if (outcome.reason === "not_configured") {
-        setStatusSafely("Answer check needs a configured model", "error");
-      } else if (outcome.reason === "no_claims") {
-        setStatusSafely("This answer quotes nothing to check", "warning");
-      } else {
-        setStatusSafely(`Answer check failed: ${outcome.reason}`, "error");
-      }
-      return;
-    }
-    storeAnswerCheckResult(key, outcome.result);
-    refreshChatSafely();
-    const checked = outcome.result.claims.length;
-    setStatusSafely(
-      `Checked ${checked} claim${checked === 1 ? "" : "s"} against the quoted lines`,
-      "ready",
-    );
-  } finally {
-    answerChecksInFlight.delete(key);
-  }
 }
 
 export function shouldDecorateInterleavedAgentTraceCitations(params: {
@@ -10464,19 +10357,6 @@ function updateMountedAssistantViews(
       view.trace.replaceWith(trace);
       view.trace = trace;
     }
-    // The trace rewrites the action host wholesale, so a check the reader
-    // already ran has to be put back beside the card it shares the host with.
-    if (view.actionSummaryHost.parentElement) {
-      view.actionSummaryHost.querySelector(".llm-answer-check")?.remove();
-      const mountedCheck = getAnswerCheckResult(
-        answerCheckKey(getConversationKey(item), Math.floor(message.timestamp)),
-      );
-      if (mountedCheck?.claims.length) {
-        view.actionSummaryHost.appendChild(
-          renderAnswerCheckCard(box.ownerDocument, mountedCheck),
-        );
-      }
-    }
     if (
       message.text !== view.text ||
       message.quoteCitations !== view.quoteCitations ||
@@ -11831,22 +11711,6 @@ export function refreshChat(
         });
       }
       if (agentTraceEl) bubble.appendChild(actionSummaryHost);
-      // The reader asked for this check on this turn; it is redrawn from
-      // memory at every render and is gone once the session ends. It joins the
-      // turn's action card host when there is one, so the answer is not
-      // followed by two card frames with a gap each.
-      const answerCheck = getAnswerCheckResult(
-        answerCheckKey(conversationKey, Math.floor(msg.timestamp)),
-      );
-      if (answerCheck?.claims.length) {
-        let checkHost = agentTraceEl ? actionSummaryHost : null;
-        if (!checkHost) {
-          checkHost = doc.createElement("div") as HTMLDivElement;
-          checkHost.className = "llm-assistant-actions";
-          bubble.appendChild(checkHost);
-        }
-        checkHost.appendChild(renderAnswerCheckCard(doc, answerCheck));
-      }
     }
 
     const meta = doc.createElement("div") as HTMLDivElement;
@@ -11856,21 +11720,6 @@ export function refreshChat(
     time.className = "llm-message-time";
     time.textContent = formatTime(msg.timestamp);
     meta.appendChild(time);
-    if (!isUser && msg.runMode === "agent" && !msg.streaming) {
-      // Recomputed from the finished answer at every render; nothing about the
-      // grounding count is stored.
-      const grounding = measureAnswerGrounding({
-        text: msg.text,
-        quoteCitations: msg.quoteCitations || [],
-      });
-      if (grounding) {
-        const groundingEl = doc.createElement("span") as HTMLSpanElement;
-        groundingEl.className = "llm-message-grounding";
-        groundingEl.textContent = formatAnswerGrounding(grounding);
-        groundingEl.title = "Sentences that carry a quote from the source";
-        meta.appendChild(groundingEl);
-      }
-    }
     if (isUser && shouldShowUserFooterCopyAction(msg)) {
       const actions = doc.createElement("div") as HTMLDivElement;
       actions.className = "llm-message-actions";
@@ -11948,28 +11797,6 @@ export function refreshChat(
           className: "llm-message-action-note",
           title: "Save as note",
           responseAction: "note",
-          responseTarget: actionResponseTarget,
-          conversationKey: actionConversationKey,
-          userTimestamp: actionUserTimestamp,
-          assistantTimestamp: actionAssistantTimestamp,
-        });
-      }
-
-      // Only a finished agent answer that cites something can be checked, and
-      // the check runs only when the reader presses this button.
-      if (
-        actionResponseTarget &&
-        msg.runMode === "agent" &&
-        !msg.streaming &&
-        (msg.quoteCitations?.length || 0) > 0
-      ) {
-        appendMessageMetaActionButton({
-          body,
-          doc,
-          actions,
-          className: "llm-message-action-check",
-          title: "Check this answer against its sources",
-          responseAction: "check",
           responseTarget: actionResponseTarget,
           conversationKey: actionConversationKey,
           userTimestamp: actionUserTimestamp,

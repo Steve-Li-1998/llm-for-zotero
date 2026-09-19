@@ -3,6 +3,7 @@ import { assert } from "chai";
 import type { AgentRuntime } from "../src/agent/runtime";
 import type { AgentEngineDeps } from "../src/modules/contextPanel/agentMode/agentEngine";
 import {
+  applyFinalQuoteCitations,
   retryAgentTurn,
   sendAgentTurn,
 } from "../src/modules/contextPanel/agentMode/agentEngine";
@@ -1727,5 +1728,115 @@ describe("agent engine final UI release", function () {
       ),
       [firstAnchor!.id, secondAnchor!.id],
     );
+  });
+
+  it("replaces a tool anchor by id with the run's claim-anchored one", function () {
+    const selectedText = buildQuoteCitation({
+      quoteText: "The reader highlighted this passage in the PDF.",
+      citationLabel: "(Orion et al., 2025)",
+      contextItemId: 22,
+      itemId: 11,
+      sourceMatchKind: "selected-text",
+      sourceMatchSource: "pdf-page-text",
+    });
+    const toolAnchor = buildQuoteCitation({
+      id: "Q_decoder",
+      quoteText: "Median animal accuracy was 84% on day 1 and 85% on day 10.",
+      citationLabel: "(Orion et al., 2025)",
+      contextItemId: 22,
+      itemId: 11,
+    });
+    const claimAnchor = buildQuoteCitation({
+      id: "Q_decoder",
+      quoteText:
+        "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.",
+      citationLabel: "(Orion et al., 2025)",
+      contextItemId: 22,
+      itemId: 11,
+      anchorMatch: "claim",
+    });
+    assert.isDefined(selectedText);
+    assert.isDefined(toolAnchor);
+    assert.isDefined(claimAnchor);
+    const message = { quoteCitations: [selectedText!, toolAnchor!] };
+
+    applyFinalQuoteCitations(message, [claimAnchor!]);
+
+    assert.deepEqual(message.quoteCitations, [selectedText!, claimAnchor!]);
+  });
+
+  it("persists the claim-anchored quote the final event published", async function () {
+    const conversationKey = 604;
+    const toolAnchor = buildQuoteCitation({
+      id: "Q_decoder",
+      quoteText: "Median animal accuracy was 84% on day 1 and 85% on day 10.",
+      citationLabel: "(Orion et al., 2025)",
+      contextItemId: 22,
+      itemId: 11,
+    });
+    const claimAnchor = buildQuoteCitation({
+      id: "Q_decoder",
+      quoteText:
+        "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.",
+      citationLabel: "(Orion et al., 2025)",
+      contextItemId: 22,
+      itemId: 11,
+      anchorMatch: "claim",
+    });
+    assert.isDefined(toolAnchor);
+    assert.isDefined(claimAnchor);
+    const finalText = `The decoder lost accuracy by day 10 [[quote:${claimAnchor!.id}]].`;
+    const stored: any[] = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: any) => {
+        await params.onStart?.("run-claim-anchor");
+        await params.onEvent?.({
+          type: "tool_result",
+          ok: true,
+          toolCallId: "call-1",
+          name: "paper_read",
+          content: { mode: "targeted", quoteCitations: [toolAnchor] },
+        });
+        await params.onEvent?.({
+          type: "final",
+          text: finalText,
+          quoteCitations: [claimAnchor],
+        });
+        return {
+          kind: "completed",
+          runId: "run-claim-anchor",
+          text: finalText,
+          quoteCitations: [claimAnchor],
+          usedFallback: false,
+        };
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, []);
+    deps.persistConversationMessage = async (_key, message) => {
+      stored.push({ ...message });
+    };
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "How much accuracy did the fixed decoder lose?",
+      },
+      deps,
+    );
+
+    const assistant = stored.find((message) => message.role === "assistant");
+    assert.deepEqual(assistant?.quoteCitations, [claimAnchor!]);
   });
 });

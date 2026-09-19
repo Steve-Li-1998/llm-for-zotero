@@ -3755,6 +3755,136 @@ describe("AgentRuntime", function () {
     }
   });
 
+  it("publishes citations re-anchored to the sentences the answer makes", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const retrievedSentence =
+        "Median animal accuracy was 84% on day 1 and 85% on day 10.";
+      const claimSentence =
+        "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.";
+      const passage = `${retrievedSentence} ${claimSentence}`;
+      const answer =
+        "The fixed decoder declined from 80% to 62% accuracy by day 10 [[quote:q1]].";
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      registry.register({
+        spec: {
+          name: "paper_read",
+          description: "read paper",
+          inputSchema: { type: "object" },
+          executionClass: "read",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args }),
+        execute: async () => ({
+          mode: "targeted",
+          results: [
+            {
+              paperContext: { itemId: 20, contextItemId: 21 },
+              sourceKind: "paper_text",
+              sourceFingerprint: "drift-source",
+              chunkIndex: 4,
+              text: passage,
+              quoteCitationIds: ["q1"],
+            },
+          ],
+          quoteCitations: [
+            {
+              id: "q1",
+              quoteText: retrievedSentence,
+              citationLabel: "(Orion et al., 2025)",
+              sourceMatchText: retrievedSentence,
+              sourceMatchKind: "exact",
+              sourceMatchSource: "context-text",
+              itemId: 20,
+              contextItemId: 21,
+              sourceFingerprint: "drift-source",
+            },
+          ],
+        }),
+      });
+
+      let step = 0;
+      const events: AgentEvent[] = [];
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+            fileInputs: false,
+            reasoning: true,
+          }),
+          supportsTools: () => true,
+          async runStep(): Promise<AgentModelStep> {
+            step += 1;
+            if (step === 1) {
+              const call = {
+                id: "decoder-call",
+                name: "paper_read",
+                arguments: { mode: "targeted", query: "decoder accuracy" },
+              };
+              return {
+                kind: "tool_calls",
+                calls: [call],
+                assistantMessage: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [call],
+                },
+              };
+            }
+            return {
+              kind: "final",
+              text: answer,
+              assistantMessage: { role: "assistant", content: answer },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 2451,
+          mode: "agent",
+          userText: "How much accuracy did the fixed decoder lose?",
+          model: "test-model",
+          apiBase: "",
+          apiKey: "test",
+          libraryID: 1,
+          classifiedIntent: {
+            ...classifiedFixture(),
+            semantic: semanticFixture(),
+            retrievalIntent: "targeted",
+            wantedSections: [],
+            writeDisposition: "none",
+            actionIntents: [],
+          },
+        },
+        onEvent: (event) => events.push(event),
+      });
+
+      assert.equal(outcome.kind, "completed");
+      const final = events.find((event) => event.type === "final");
+      assert.isDefined(final, "the run publishes a final event");
+      if (final?.type !== "final") return;
+      assert.deepEqual(
+        (final.quoteCitations || []).map((citation) => citation.id),
+        ["q1"],
+      );
+      assert.equal(
+        final.quoteCitations?.[0].quoteText,
+        claimSentence,
+        "the anchor moves to the passage sentence the answer's claim matches",
+      );
+      assert.equal(final.quoteCitations?.[0].anchorMatch, "claim");
+      if (outcome.kind !== "completed") return;
+      assert.deepEqual(outcome.quoteCitations, final.quoteCitations);
+    } finally {
+      restoreDb();
+    }
+  });
+
   it("does not force file writes after a standalone Zotero note request is satisfied", async function () {
     const restoreDb = installMockDb();
     try {

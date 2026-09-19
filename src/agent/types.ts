@@ -14,6 +14,7 @@ import type {
   NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
+  QuoteCitation,
   ResolvedSelectedTextAnchor,
   SelectedTextContext,
   SelectedTextSource,
@@ -674,6 +675,11 @@ export type AgentEvent =
       planDocumentId?: string;
       answerStartedAt?: number;
       webSourceAnchors?: WebSourceAnchor[];
+      /**
+       * Every citation this run's tools delivered, re-anchored to the answer
+       * sentence that cites it. Absent when no tool delivered a citation.
+       */
+      quoteCitations?: QuoteCitation[];
     };
 
 export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled";
@@ -1071,6 +1077,8 @@ export type AgentRuntimeOutcome =
       documentId?: string;
       /** @deprecated Legacy Plan-only field. */
       planDocumentId?: string;
+      /** The same claim-anchored citations the `final` event published. */
+      quoteCitations?: QuoteCitation[];
       usedFallback: false;
     }
   | {

@@ -561,6 +561,7 @@ export function createAgentTurnEventHandler(
         return;
       }
       case "final":
+        applyFinalQuoteCitations(assistantMessage, event.quoteCitations);
         assistantMessage.documentId = event.documentId || event.planDocumentId;
         assistantMessage.planDocumentId = event.planDocumentId;
         assistantMessage.text =
@@ -805,6 +806,27 @@ export function mergeAgentToolResultQuoteCitations(
     message.quoteCitations,
     toolQuoteCitations,
   );
+}
+
+/**
+ * The runtime's final citations are the same ids re-anchored to their
+ * claims; replace by id and keep everything else (selected-text anchors).
+ */
+export function applyFinalQuoteCitations(
+  message: { quoteCitations?: QuoteCitation[] },
+  finalCitations: readonly QuoteCitation[] | undefined,
+): void {
+  if (!finalCitations?.length) return;
+  const byId = new Map(
+    finalCitations.map((citation) => [citation.id, citation]),
+  );
+  const current = message.quoteCitations || [];
+  const replaced = current.map((citation) => byId.get(citation.id) || citation);
+  const known = new Set(replaced.map((citation) => citation.id));
+  message.quoteCitations = [
+    ...replaced,
+    ...finalCitations.filter((citation) => !known.has(citation.id)),
+  ];
 }
 
 // ---------------------------------------------------------------------------

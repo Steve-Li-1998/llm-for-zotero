@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { mergeAgentToolResultQuoteCitations } from "../src/modules/contextPanel/agentMode/agentEngine";
 import {
   buildQuoteCitation,
+  mergeQuoteCitations,
   selectUsedQuoteCitations,
 } from "../src/services/quotes/quoteCitations";
 import type { QuoteCitation } from "../src/shared/types";
@@ -53,6 +54,69 @@ describe("agent mode quote citations", function () {
     });
 
     assert.isUndefined(message.quoteCitations);
+  });
+});
+
+describe("claim-anchored citations in merges", function () {
+  const STALE_QUOTE =
+    "Median animal accuracy was 84% on day 1 and 85% on day 10.";
+  const CLAIM_QUOTE =
+    "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.";
+  const buildAnchor = (
+    quoteText: string,
+    extra: Record<string, unknown> = {},
+  ): QuoteCitation => {
+    const citation = buildQuoteCitation({
+      id: "Q_drift",
+      quoteText,
+      sourceMatchText: quoteText,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "pdf-page-text",
+      citationLabel: "(Orion et al., 2025)",
+      contextItemId: 11,
+      itemId: 10,
+      pageHintIndex: 3,
+      ...extra,
+    });
+    assert.isDefined(citation);
+    return citation!;
+  };
+  const stale = () =>
+    buildAnchor(STALE_QUOTE, { sourceMatchPageOccurrence: 2 });
+  const reanchored = () => buildAnchor(CLAIM_QUOTE, { anchorMatch: "claim" });
+
+  it("replaces a stale duplicate that arrives before the re-anchored quote", function () {
+    const other = buildQuoteCitation({
+      quoteText: "The network was trained for two hundred epochs on each task.",
+      citationLabel: "(Orion et al., 2025)",
+      contextItemId: 11,
+      itemId: 10,
+    });
+    assert.isDefined(other);
+
+    const merged = mergeQuoteCitations([other!, stale()], [reanchored()]);
+
+    assert.deepEqual(
+      merged.map((citation) => citation.id),
+      [other!.id, "Q_drift"],
+      "the re-anchored quote keeps the stale duplicate's position",
+    );
+    assert.equal(merged[1].quoteText, CLAIM_QUOTE);
+    assert.equal(merged[1].anchorMatch, "claim");
+    assert.isUndefined(merged[1].sourceMatchPageOccurrence);
+    assert.equal(merged[1].pageHintIndex, 3);
+  });
+
+  it("keeps the re-anchored quote when the stale duplicate arrives second", function () {
+    const merged = mergeQuoteCitations([reanchored()], [stale()]);
+
+    assert.lengthOf(merged, 1);
+    assert.equal(merged[0].quoteText, CLAIM_QUOTE);
+    assert.equal(merged[0].anchorMatch, "claim");
+    assert.isUndefined(
+      merged[0].sourceMatchPageOccurrence,
+      "the stale duplicate counts occurrences of a different sentence",
+    );
   });
 });
 

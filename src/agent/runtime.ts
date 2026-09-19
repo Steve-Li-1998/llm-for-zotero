@@ -21,6 +21,8 @@ import {
 } from "./context/coverageLedger";
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
 import { PaperEvidenceFrontier } from "./context/paperEvidenceFrontier";
+import { PassageCitationCollector } from "./context/passageCitationCollector";
+import { reanchorQuoteCitationsToClaims } from "../services/quotes/claimAnchoring";
 import {
   AgentPromptBudgetError,
   enforceAgentPromptBudget,
@@ -441,8 +443,17 @@ export class AgentRuntime {
       // run ID into the cleared generation's UI/cache.
       if (writeAllowed()) await params.onStart?.(runId);
 
+      // Every citation this run's tools delivered, with the passage it was cut
+      // from, so the terminal answer can be re-anchored to the claims it makes.
+      const passageCitations = new PassageCitationCollector();
       const emit = async (event: AgentEvent) => {
         if (!writeAllowed()) return;
+        // Collected before redaction: the collector keeps only quote and
+        // passage text, and the citations it publishes are redacted with the
+        // final event that carries them.
+        if (event.type === "tool_result" && event.ok) {
+          passageCitations.collect(event.content, event.artifacts);
+        }
         for (const redactedEvent of eventStreamRedactor.process(event)) {
           eventSeq += 1;
           await persistIfLive(() =>
@@ -1311,6 +1322,19 @@ export class AgentRuntime {
           finishAgentRun(runId, status, redactedFinalText),
         );
         runTerminalized = true;
+        // The tools' citations name the sentence the retrieval picked, not the
+        // sentence the answer went on to make. Re-anchor them to the claim that
+        // cites them, so a chip opens the line the reader is looking at.
+        const finalQuoteCitations = passageCitations.quoteCitations.length
+          ? turnPathRedactor.redactTerminalValue(
+              reanchorQuoteCitationsToClaims({
+                text: redactedFinalText,
+                quoteCitations: passageCitations.quoteCitations,
+                passageTextByCitationId:
+                  passageCitations.passageTextByCitationId,
+              }).quoteCitations,
+            )
+          : undefined;
         // A final event publishes a durable outcome. A UI observer may fail;
         // it must not leave an already completed answer only on screen.
         if (options.emitFinalEvent !== false) {
@@ -1325,6 +1349,9 @@ export class AgentRuntime {
                   webSourceAnchors: options.webAttribution.anchors,
                 }
               : {}),
+            ...(finalQuoteCitations
+              ? { quoteCitations: finalQuoteCitations }
+              : {}),
           });
         }
         return {
@@ -1332,6 +1359,9 @@ export class AgentRuntime {
           runId,
           text: redactedFinalText,
           ...(options.documentId ? { documentId: options.documentId } : {}),
+          ...(finalQuoteCitations
+            ? { quoteCitations: finalQuoteCitations }
+            : {}),
           usedFallback: false,
         } as const;
       };

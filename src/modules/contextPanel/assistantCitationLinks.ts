@@ -4137,7 +4137,12 @@ function createCitationButton(params: {
       quotePreview.length > 120
         ? quotePreview.slice(0, 117) + "…"
         : quotePreview;
-    citationButton.title = truncated;
+    // A passage anchor is the retrieved passage, not the line the citing
+    // sentence makes; say so rather than letting the chip imply a match.
+    citationButton.title =
+      params.quoteCitation?.anchorMatch === "passage"
+        ? `${truncated} (passage cited; line not matched to this sentence)`
+        : truncated;
   } else {
     const paperTitle = params.candidates[0]?.displayPaperContext.title || "";
     citationButton.title = paperTitle

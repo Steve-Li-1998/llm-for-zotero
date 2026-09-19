@@ -1380,6 +1380,15 @@ export function mergeQuoteCitations(
       if (!citation) continue;
       const existing = byId.get(citation.id);
       if (existing) {
+        // A claim-anchored citation is authoritative for its id: it names the
+        // sentence the answer cites, not the one retrieval happened to cut.
+        // It replaces an unanchored duplicate whole, in place.
+        if (citation.anchorMatch && !existing.anchorMatch) {
+          const index = out.indexOf(existing);
+          if (index >= 0) out[index] = citation;
+          byId.set(citation.id, citation);
+          continue;
+        }
         if (
           existing.pageHintIndex === undefined &&
           citation.pageHintIndex !== undefined
@@ -1398,7 +1407,10 @@ export function mergeQuoteCitations(
         if (!existing.sourceFingerprint && citation.sourceFingerprint) {
           existing.sourceFingerprint = citation.sourceFingerprint;
         }
+        // A re-anchored quote cleared its occurrence index on purpose: the
+        // stale duplicate counts occurrences of a different sentence.
         if (
+          !existing.anchorMatch &&
           existing.sourceMatchPageOccurrence === undefined &&
           citation.sourceMatchPageOccurrence !== undefined
         ) {

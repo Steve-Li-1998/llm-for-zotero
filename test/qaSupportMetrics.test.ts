@@ -188,6 +188,27 @@ describe("qaSupportMetrics", function () {
       assert.equal(token.overlap, 1);
     });
 
+    it("treats a citation label under a block as claiming the block", function () {
+      const bare = claimOf(`> ${quote}\n\n(Orion, 2025) [[quote:q1]]`);
+      assert.equal(bare.claimSentence, quote);
+      assert.equal(bare.overlap, 1);
+      const labelled = claimOf(
+        `> ${quote}\n\nSource: (Orion, 2025) [[quote:q1]]`,
+      );
+      assert.equal(labelled.claimSentence, quote);
+      assert.equal(labelled.overlap, 1);
+    });
+
+    it("keeps a real sentence under a block as its own claim", function () {
+      const token = claimOf(
+        `> ${quote}\n\nThe animals nevertheless kept their accuracy across sessions [[quote:q1]].`,
+      );
+      assert.equal(
+        token.claimSentence,
+        "The animals nevertheless kept their accuracy across sessions.",
+      );
+    });
+
     it("keeps the lead-in sentence when no block follows", function () {
       const token = claimOf(
         "The paper states: [[quote:q1]]\n\nA normal sentence follows here.",

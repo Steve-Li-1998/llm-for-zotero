@@ -163,6 +163,10 @@ function boundSentences(text: string): EvalSentence[] {
 
 type Claim = { text: string; ids: string[] };
 
+/** At most this many content tokens is a citation label, not a claim:
+ * "(Orion, 2025)" or "Source: (Orion, 2025)" under a quoted block. */
+const LABEL_MAX_TOKENS = 3;
+
 /** Sentences of one prose line as claims, tokens attached. */
 function lineClaims(text: string): Claim[] {
   return boundSentences(text).map((sentence) => ({
@@ -221,6 +225,10 @@ function supportClaims(markdown: string): Claim[] {
     }
     const sentences = lineClaims(block.text);
     const introduces = blocks[index + 1]?.kind === "quote";
+    // The block this line sits under, if any: `previous` is still that block's
+    // claim until the first sentence of this line replaces it.
+    const quotedAbove =
+      blocks[index - 1]?.kind === "quote" ? previous : undefined;
     sentences.forEach((claim, position) => {
       if (
         introduces &&
@@ -228,6 +236,13 @@ function supportClaims(markdown: string): Claim[] {
         /[:：]$/.test(claim.text)
       ) {
         pending.push(...claim.ids);
+        claim.ids = [];
+      } else if (
+        quotedAbove &&
+        tokensForEval(claim.text).size <= LABEL_MAX_TOKENS
+      ) {
+        // Too thin to be a claim of its own: it attributes the block above it.
+        quotedAbove.ids.push(...claim.ids);
         claim.ids = [];
       }
       claims.push(claim);

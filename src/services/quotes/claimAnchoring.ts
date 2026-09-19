@@ -12,6 +12,9 @@ export const QUOTE_ANCHOR_MAX_CHARS = 360;
 export const QUOTE_TOKEN_PATTERN = /\[\[quote:([A-Za-z0-9._:-]+)\]\]/g;
 const LEADING_QUOTE_TOKEN_RUN = /^(?:\s*\[\[quote:[A-Za-z0-9._:-]+\]\])+/;
 const MIN_CLAIM_TOKENS = 3;
+/** A token that is only digits, separators or punctuation — a year or a page
+ * number, never the substance of a claim. */
+const NUMERIC_TOKEN = /^[\d.,]+$/;
 const MIN_SHARED_TOKENS = 2;
 const MIN_OVERLAP = 0.34;
 const CHUNK_MARKER = /^\s*\[chunk\s+\d+\]\s*$/gim;
@@ -139,12 +142,25 @@ function blockquoteBefore(scan: BlockquoteScan, index: number) {
   return undefined;
 }
 
+/** Content tokens of a claim, years and page numbers excluded. An attribution
+ * line states nothing of its own: "(Orion, 2025)" counts 1 and
+ * "Source: (Orion, 2025)" counts 2, while "Accuracy stayed stable" counts 3
+ * and is a claim the scorer can use. */
+function countContentTokens(claim: string): number {
+  let count = 0;
+  for (const token of tokenSet(claim)) {
+    if (!NUMERIC_TOKEN.test(token)) count++;
+  }
+  return count;
+}
+
 /** First claim sentence per citation id: the sentence of a prose line that
  * contains the token, with all tokens removed. Blockquoted evidence is the
  * claim whenever the token sits inside the quote, on a lead-in sentence that
- * ends with a colon in front of it, or on a token-only line right after it.
- * A token-only line with no blockquote above it binds to the last sentence of
- * the previous prose line. */
+ * ends with a colon in front of it, on a line that follows the quote and says
+ * too little to be a claim (a bare attribution line), or on a token-only line
+ * right after it. A token-only line with no blockquote above it binds to the
+ * last sentence of the previous prose line. */
 export function extractClaimSentences(text: string): Map<string, string> {
   const out = new Map<string, string>();
   const scan = scanBlockquotes(text);
@@ -177,6 +193,7 @@ export function extractClaimSentences(text: string): Map<string, string> {
     }
     const sentences = claimSpans(line.text);
     const quotedBelow = blockquoteAfter(scan, index);
+    const quotedAbove = blockquoteBefore(scan, index);
     for (const match of line.text.matchAll(QUOTE_TOKEN_PATTERN)) {
       const id = match[1];
       if (out.has(id)) continue;
@@ -189,6 +206,10 @@ export function extractClaimSentences(text: string): Map<string, string> {
       const normalized = normalizeClaim(claim ? claim.text : line.text);
       if (quotedBelow && /[:：]$/.test(normalized)) {
         out.set(id, quotedBelow);
+        continue;
+      }
+      if (quotedAbove && countContentTokens(normalized) < MIN_CLAIM_TOKENS) {
+        out.set(id, quotedAbove);
         continue;
       }
       if (normalized) out.set(id, normalized);

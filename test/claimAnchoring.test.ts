@@ -188,6 +188,40 @@ describe("claimAnchoring", function () {
     );
   });
 
+  it("binds a citation label written under a quoted block to that block", function () {
+    const quoted =
+      "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.";
+    assert.equal(
+      extractClaimSentences(`> ${quoted}\n\n(Orion, 2025) [[quote:q1]]`).get(
+        "q1",
+      ),
+      quoted,
+    );
+    assert.equal(
+      extractClaimSentences(
+        `> ${quoted}\n\nSource: (Orion, 2025) [[quote:q1]]`,
+      ).get("q1"),
+      quoted,
+    );
+  });
+
+  it("keeps a real sentence under a quoted block as the claim", function () {
+    const quoted =
+      "> The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.";
+    assert.equal(
+      extractClaimSentences(
+        `${quoted}\n\nThe animals nevertheless kept their accuracy across sessions [[quote:q1]].`,
+      ).get("q1"),
+      "The animals nevertheless kept their accuracy across sessions.",
+    );
+    assert.equal(
+      extractClaimSentences(
+        `${quoted}\n\nAccuracy stayed stable [[quote:q1]].`,
+      ).get("q1"),
+      "Accuracy stayed stable.",
+    );
+  });
+
   it("keeps the lead-in sentence when no blockquote follows it", function () {
     const map = extractClaimSentences(
       "The paper states: [[quote:q1]]\n\nA normal sentence follows here.",

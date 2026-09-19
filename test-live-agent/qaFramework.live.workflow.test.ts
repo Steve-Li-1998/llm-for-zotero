@@ -230,9 +230,13 @@ describe("adaptive QA framework native evaluation", function () {
       collection.name = `QA evaluation collection ${variant}-${repeat}`;
       const collectionId = Number(await collection.saveTx());
       createdCollections.push(collectionId);
-      await collection.addItems(
-        created.filter((id) => Zotero.Items.get(id)?.isRegularItem()),
+      const regularItemIds = created.filter((id) =>
+        Zotero.Items.get(id)?.isRegularItem(),
       );
+      // addItems does not open its own transaction: it requires one.
+      await Zotero.DB.executeTransaction(async () => {
+        await collection.addItems(regularItemIds);
+      });
       libraryScope = {
         collectionId,
         name: collection.name,

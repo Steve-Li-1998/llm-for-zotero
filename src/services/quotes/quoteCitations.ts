@@ -1386,6 +1386,7 @@ export function mergeQuoteCitations(
         if (citation.anchorMatch && !existing.anchorMatch) {
           const index = out.indexOf(existing);
           if (index >= 0) out[index] = citation;
+          else out.push(citation);
           byId.set(citation.id, citation);
           continue;
         }

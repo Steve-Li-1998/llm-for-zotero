@@ -4139,6 +4139,9 @@ function createCitationButton(params: {
         : quotePreview;
     // A passage anchor is the retrieved passage, not the line the citing
     // sentence makes; say so rather than letting the chip imply a match.
+    // The two callers that pass a quote preview without a `quoteCitation`
+    // are untrusted-quote fallbacks by construction, so they never claim an
+    // anchor and correctly keep the bare preview.
     citationButton.title =
       params.quoteCitation?.anchorMatch === "passage"
         ? `${truncated} (passage cited; line not matched to this sentence)`

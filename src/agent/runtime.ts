@@ -2,6 +2,8 @@ import { resolveNoteEditModelRequest } from "./model/noteEditingPolicy";
 import { buildPaperDisplayLabels } from "../shared/paperDisplayLabels";
 import { listScopeSnapshotItems } from "./research/store";
 import { ensureModelCapabilities } from "../modelCapabilities";
+import { reanchorQuoteCitationsToClaims } from "../services/quotes/claimAnchoring";
+import type { QuoteCitation } from "../shared/types";
 import {
   areConversationWritesFrozen,
   getConversationWriteGeneration,
@@ -22,7 +24,6 @@ import {
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
 import { PaperEvidenceFrontier } from "./context/paperEvidenceFrontier";
 import { PassageCitationCollector } from "./context/passageCitationCollector";
-import { reanchorQuoteCitationsToClaims } from "../services/quotes/claimAnchoring";
 import {
   AgentPromptBudgetError,
   enforceAgentPromptBudget,
@@ -165,7 +166,21 @@ type AgentRuntimeDeps = {
   paperContextResolver?: AgentRequestPaperContextResolver;
   now?: () => number;
   skillSelector?: typeof selectAutomaticSkills;
+  /** Overridable so a failing re-anchoring can be exercised in tests. */
+  reanchorCitations?: typeof reanchorQuoteCitationsToClaims;
 };
+
+/**
+ * Best-effort log. The runtime runs inside Zotero, where `ztoolkit` exists,
+ * and inside unit tests, where it does not.
+ */
+function logRuntimeWarning(message: string, error: unknown): void {
+  (
+    globalThis as typeof globalThis & {
+      ztoolkit?: { log?: (...args: unknown[]) => void };
+    }
+  ).ztoolkit?.log?.(message, error);
+}
 
 type PendingConfirmation = {
   resolve: (resolution: AgentConfirmationResolution) => void;
@@ -200,6 +215,7 @@ export class AgentRuntime {
   private readonly paperContextResolver?: AgentRequestPaperContextResolver;
   private readonly now: () => number;
   private readonly skillSelector: typeof selectAutomaticSkills;
+  private readonly reanchorCitations: typeof reanchorQuoteCitationsToClaims;
   private readonly pendingConfirmations = new Map<
     string,
     PendingConfirmation
@@ -211,6 +227,8 @@ export class AgentRuntime {
     this.paperContextResolver = deps.paperContextResolver;
     this.now = deps.now || (() => Date.now());
     this.skillSelector = deps.skillSelector || selectAutomaticSkills;
+    this.reanchorCitations =
+      deps.reanchorCitations || reanchorQuoteCitationsToClaims;
   }
 
   listTools() {
@@ -446,13 +464,26 @@ export class AgentRuntime {
       // Every citation this run's tools delivered, with the passage it was cut
       // from, so the terminal answer can be re-anchored to the claims it makes.
       const passageCitations = new PassageCitationCollector();
+      let passageCollectionFailed = false;
       const emit = async (event: AgentEvent) => {
         if (!writeAllowed()) return;
         // Collected before redaction: the collector keeps only quote and
         // passage text, and the citations it publishes are redacted with the
-        // final event that carries them.
+        // final event that carries them.  Citation bookkeeping never decides
+        // whether the run survives, so a failure while walking a tool result
+        // is logged once and the turn keeps going.
         if (event.type === "tool_result" && event.ok) {
-          passageCitations.collect(event.content, event.artifacts);
+          try {
+            passageCitations.collect(event.content, event.artifacts);
+          } catch (error) {
+            if (!passageCollectionFailed) {
+              passageCollectionFailed = true;
+              logRuntimeWarning(
+                "LLM Agent: passage citation collection failed",
+                error,
+              );
+            }
+          }
         }
         for (const redactedEvent of eventStreamRedactor.process(event)) {
           eventSeq += 1;
@@ -1325,16 +1356,27 @@ export class AgentRuntime {
         // The tools' citations name the sentence the retrieval picked, not the
         // sentence the answer went on to make. Re-anchor them to the claim that
         // cites them, so a chip opens the line the reader is looking at.
-        const finalQuoteCitations = passageCitations.quoteCitations.length
-          ? turnPathRedactor.redactTerminalValue(
-              reanchorQuoteCitationsToClaims({
-                text: redactedFinalText,
-                quoteCitations: passageCitations.quoteCitations,
-                passageTextByCitationId:
-                  passageCitations.passageTextByCitationId,
-              }).quoteCitations,
-            )
-          : undefined;
+        //
+        // The answer is already durable at this point. Citations are an
+        // improvement on it, never a condition of publishing it: if
+        // re-anchoring or its redaction throws, the final event and the
+        // outcome still carry the answer, without citations.
+        let finalQuoteCitations: QuoteCitation[] | undefined;
+        try {
+          finalQuoteCitations = passageCitations.quoteCitations.length
+            ? turnPathRedactor.redactTerminalValue(
+                this.reanchorCitations({
+                  text: redactedFinalText,
+                  quoteCitations: passageCitations.quoteCitations,
+                  passageTextByCitationId:
+                    passageCitations.passageTextByCitationId,
+                }).quoteCitations,
+              )
+            : undefined;
+        } catch (error) {
+          finalQuoteCitations = undefined;
+          logRuntimeWarning("LLM Agent: claim re-anchoring failed", error);
+        }
         // A final event publishes a durable outcome. A UI observer may fail;
         // it must not leave an already completed answer only on screen.
         if (options.emitFinalEvent !== false) {

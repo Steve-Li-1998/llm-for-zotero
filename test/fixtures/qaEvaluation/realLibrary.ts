@@ -20,11 +20,12 @@ export type RealCase = {
   evidence: string[];
   rubric: string[];
   /** How the turn is addressed: one named collection, the whole library, or
-   * one paper looked up by its exact title. */
+   * one paper. A real library repeats titles, so `paperItemId` names the item
+   * outright when the title alone is ambiguous. */
   scope:
     | { collectionName: string }
     | { library: true }
-    | { paperTitle: string };
+    | { paperTitle: string; paperItemId?: number };
   history?: Array<{ role: "user" | "assistant"; content: string }>;
 };
 

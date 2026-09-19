@@ -26,9 +26,11 @@ import {
   type RealCase,
 } from "../test/fixtures/qaEvaluation/realLibrary";
 import {
+  getMineruItemDir,
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
 } from "../src/services/mineru/mineruCache";
+import { joinLocalPath } from "../src/utils/localPath";
 import {
   checkEmbeddingAvailability,
   getEmbeddingUnavailableReason,
@@ -66,6 +68,13 @@ const repeat = Number(env("LLM_FOR_ZOTERO_QA_REPEAT") || 1);
 const selected = new Set(
   env("LLM_FOR_ZOTERO_QA_CASES").split(",").filter(Boolean),
 );
+// npm run test:agent:live aborts the suite on the first failure, which throws
+// away the rest of a long flight. In soft mode a case records what went wrong
+// in its own report and passes, so one unreachable target cannot end the run.
+const soft = env("LLM_FOR_ZOTERO_QA_SOFT") === "1";
+type CaseFailure = { stage: "scope" | "turn" | "assert"; message: string };
+const failureMessage = (error: unknown) =>
+  String((error as { message?: string } | undefined)?.message || error);
 /** The boundary every turn carries. A real-library case asks about the user's
  * own library, where "selected evaluation papers" would name a corpus this
  * suite never creates. */
@@ -149,6 +158,67 @@ async function applyRetrievalPrefs(): Promise<string[]> {
   return copied;
 }
 
+/** True when this attachment already has a parsed MinerU document on disk. */
+async function hasMineruCache(attachment: any): Promise<boolean> {
+  if (!attachment) return false;
+  return Boolean(
+    await IOUtils.exists(
+      joinLocalPath(getMineruItemDir(Number(attachment.id)), "full.md"),
+    ),
+  );
+}
+
+/** The one item a paper case is about.
+ *
+ * A real library repeats titles, so a case can name its item outright with
+ * paperItemId. Without it the title decides, and when several items share the
+ * title the parsed copy wins: a duplicate with no MinerU document is not the
+ * one the case was written against. */
+async function resolvePaperItem(
+  scope: { paperTitle: string; paperItemId?: number },
+  libraryID: number,
+): Promise<any> {
+  if (scope.paperItemId !== undefined) {
+    const named = Zotero.Items.get(scope.paperItemId);
+    assert.isOk(named, `item ${scope.paperItemId} is not in this library`);
+    assert.isTrue(
+      Boolean(named.isRegularItem?.()) && !named.deleted,
+      `item ${scope.paperItemId} must be a regular item that is not in the trash`,
+    );
+    assert.equal(
+      String(named.getField("title") || ""),
+      scope.paperTitle,
+      `item ${scope.paperItemId} does not carry the title the case names`,
+    );
+    return named;
+  }
+  // Same construction the plugin's own item search uses: an unscoped
+  // Zotero.Search would reach into other libraries.
+  const search = new Zotero.Search({ libraryID });
+  search.addCondition("title", "is", scope.paperTitle);
+  const ids: number[] = await search.search();
+  // A title search also returns attachments and notes, and a trashed item must
+  // not answer: only a live regular item can be the active paper.
+  const items = ids
+    .map((id) => Zotero.Items.get(id))
+    .filter((item: any) => item && item.isRegularItem?.() && !item.deleted);
+  assert.isNotEmpty(
+    items,
+    `the library holds no item titled "${scope.paperTitle}"`,
+  );
+  if (items.length === 1) return items[0];
+  const parsed: any[] = [];
+  for (const candidate of items)
+    if (await hasMineruCache(await candidate.getBestAttachment()))
+      parsed.push(candidate);
+  assert.equal(
+    parsed.length,
+    1,
+    `"${scope.paperTitle}" matches ${items.length} items, ${parsed.length} of them with a parsed MinerU document; name the one you mean with paperItemId`,
+  );
+  return parsed[0];
+}
+
 type RealScope = {
   kind: "library" | "paper";
   libraryID: number;
@@ -196,22 +266,7 @@ async function resolveRealScope(entry: RealCase): Promise<RealScope> {
       },
       resolved: { libraryID },
     };
-  // Same construction the plugin's own item search uses: an unscoped
-  // Zotero.Search would reach into other libraries.
-  const search = new Zotero.Search({ libraryID });
-  search.addCondition("title", "is", scope.paperTitle);
-  const ids: number[] = await search.search();
-  // A title search also returns attachments and notes, and a trashed item must
-  // not answer: only a live regular item can be the active paper.
-  const items = ids
-    .map((id) => Zotero.Items.get(id))
-    .filter((item: any) => item && item.isRegularItem?.() && !item.deleted);
-  assert.equal(
-    items.length,
-    1,
-    `the library must hold exactly one item titled "${scope.paperTitle}" (found ${items.length})`,
-  );
-  const item = items[0];
+  const item = await resolvePaperItem(scope, libraryID);
   const attachment = await item.getBestAttachment();
   assert.isOk(
     attachment,
@@ -427,14 +482,23 @@ describe("adaptive QA framework native evaluation", function () {
     (c) => !selected.size || selected.has(c.id),
   )) {
     it(`${entry.id} ${entry.category}: ${entry.question}`, async function () {
+      let failure: CaseFailure | undefined;
       // Resolved before the clock starts, so a missing collection or paper
       // reads as a lookup failure rather than a slow turn.
-      const realScope = realLibrary
-        ? await resolveRealScope(entry as RealCase)
-        : null;
+      let realScope: RealScope | null = null;
+      if (realLibrary)
+        try {
+          realScope = await resolveRealScope(entry as RealCase);
+        } catch (e) {
+          if (!soft) throw e;
+          failure = { stage: "scope", message: failureMessage(e) };
+        }
       const libraryCase = realScope
         ? realScope.kind === "library"
-        : "library" in entry && Boolean(entry.library);
+        : realLibrary
+          ? // The case still reports the scope it asked for, resolved or not.
+            !("paperTitle" in (entry as RealCase).scope)
+          : "library" in entry && Boolean(entry.library);
       const toolkit = Zotero.LLMForZotero.data.ztoolkit;
       const original = toolkit.getGlobal;
       const fetch = original.call(toolkit, "fetch");
@@ -494,72 +558,75 @@ describe("adaptive QA framework native evaluation", function () {
       let result: any;
       let error: string | undefined;
       try {
-        result = await Zotero.LLMForZotero.api.agent.runTurn(
-          {
-            conversationKey:
-              Math.floor(Date.now() / 10) + evaluationCases.indexOf(entry),
-            mode: "agent",
-            libraryID: realScope ? realScope.libraryID : refs[0].libraryID,
-            // A library case has no active paper: the collection is the scope.
-            ...(realScope
-              ? realScope.request
-              : libraryCase
+        // A case whose scope never resolved has nothing to ask.
+        if (!failure)
+          result = await Zotero.LLMForZotero.api.agent.runTurn(
+            {
+              conversationKey:
+                Math.floor(Date.now() / 10) + evaluationCases.indexOf(entry),
+              mode: "agent",
+              libraryID: realScope ? realScope.libraryID : refs[0].libraryID,
+              // A library case has no active paper: the collection is the scope.
+              ...(realScope
+                ? realScope.request
+                : libraryCase
+                  ? {
+                      conversationKind: "global",
+                      selectedCollectionContexts: libraryScope
+                        ? [libraryScope]
+                        : [],
+                      selectedPaperContexts: [],
+                    }
+                  : {
+                      conversationKind: "paper",
+                      activeItemId: refs[0].itemId,
+                      activePaperContext: refs[0],
+                      selectedPaperContexts:
+                        "multi" in entry && entry.multi ? refs : [],
+                    }),
+              ...credentials,
+              ...("history" in entry ? { history: entry.history } : {}),
+              ...(entry.id === "p4"
                 ? {
-                    conversationKind: "global",
-                    selectedCollectionContexts: libraryScope
-                      ? [libraryScope]
-                      : [],
-                    selectedPaperContexts: [],
+                    history: [
+                      {
+                        role: "user",
+                        content:
+                          "Does a finite contact angle explain the pressure-gradient singularity?",
+                      },
+                      {
+                        role: "assistant",
+                        content:
+                          "Yes. A finite nonzero contact angle necessarily forces the third derivative of the height profile, and therefore the pressure gradient, to diverge.",
+                      },
+                    ],
                   }
-                : {
-                    conversationKind: "paper",
-                    activeItemId: refs[0].itemId,
-                    activePaperContext: refs[0],
-                    selectedPaperContexts:
-                      "multi" in entry && entry.multi ? refs : [],
-                  }),
-            ...credentials,
-            ...("history" in entry ? { history: entry.history } : {}),
-            ...(entry.id === "p4"
-              ? {
-                  history: [
-                    {
-                      role: "user",
-                      content:
-                        "Does a finite contact angle explain the pressure-gradient singularity?",
-                    },
-                    {
-                      role: "assistant",
-                      content:
-                        "Yes. A finite nonzero contact angle necessarily forces the third derivative of the height profile, and therefore the pressure gradient, to diverge.",
-                    },
-                  ],
-                }
-              : {}),
-            userText: `${entry.question}\n\n${turnSuffix}${entry.provided ? `\n\n[Provided context]\n${entry.provided}` : ""}`,
-          },
-          (event: any) => {
-            if (
-              [
-                "tool_call",
-                "tool_result",
-                "message_rollback",
-                "usage",
-                "final",
-                "done",
-                "error",
-              ].includes(event.type)
-            )
-              events.push({ ...event, atMs: Date.now() - start });
-            if (event.type === "confirmation_required")
-              void Zotero.LLMForZotero.api.agent.resolveConfirmation(
-                event.requestId,
-                false,
-              );
-          },
-        );
+                : {}),
+              userText: `${entry.question}\n\n${turnSuffix}${entry.provided ? `\n\n[Provided context]\n${entry.provided}` : ""}`,
+            },
+            (event: any) => {
+              if (
+                [
+                  "tool_call",
+                  "tool_result",
+                  "message_rollback",
+                  "usage",
+                  "final",
+                  "done",
+                  "error",
+                ].includes(event.type)
+              )
+                events.push({ ...event, atMs: Date.now() - start });
+              if (event.type === "confirmation_required")
+                void Zotero.LLMForZotero.api.agent.resolveConfirmation(
+                  event.requestId,
+                  false,
+                );
+            },
+          );
       } catch (e) {
         error = String(e);
+        if (soft) failure ??= { stage: "turn", message: failureMessage(e) };
       } finally {
         toolkit.getGlobal = original;
         await Promise.all(pending);
@@ -638,18 +705,32 @@ describe("adaptive QA framework native evaluation", function () {
         requests,
         events,
       };
-      await write(`${variant}-${repeat}-${entry.id}.json`, report);
-      assert.equal(
-        result?.kind,
-        "completed",
-        error || result?.reason || "must complete",
-      );
-      assert.isNotEmpty(report.answer, "must retain a final answer");
-      assert.isAbove(
-        requests.length,
-        0,
-        "provider capture must observe requests",
-      );
+      const verify = () => {
+        assert.equal(
+          result?.kind,
+          "completed",
+          error || result?.reason || "must complete",
+        );
+        assert.isNotEmpty(answer, "must retain a final answer");
+        assert.isAbove(
+          requests.length,
+          0,
+          "provider capture must observe requests",
+        );
+      };
+      if (soft && !failure)
+        try {
+          verify();
+        } catch (e) {
+          failure = { stage: "assert", message: failureMessage(e) };
+        }
+      // Every case writes a report, including one that never got a scope, so
+      // the summary shows the gap instead of losing the turn.
+      await write(`${variant}-${repeat}-${entry.id}.json`, {
+        ...report,
+        ...(failure ? { failure } : {}),
+      });
+      if (!soft) verify();
     });
   }
 });

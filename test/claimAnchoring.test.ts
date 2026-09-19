@@ -225,6 +225,30 @@ describe("claimAnchoring", function () {
     );
   });
 
+  it("ends a claim at a quote token written with no space before it", function () {
+    assert.deepEqual(
+      splitSentences(
+        'The count dropped to day 10."[[quote:q1]] Next sentence about mice.',
+      ).map((s) => s.text),
+      [
+        'The count dropped to day 10."',
+        "[[quote:q1]] Next sentence about mice.",
+      ],
+    );
+    assert.equal(
+      extractClaimSentences(
+        'The count dropped to day 10."[[quote:q1]] Next sentence about mice.',
+      ).get("q1"),
+      'The count dropped to day 10."',
+    );
+    assert.equal(
+      extractClaimSentences("Accuracy stayed at 85%.[[quote:q2]] Next.").get(
+        "q2",
+      ),
+      "Accuracy stayed at 85%.",
+    );
+  });
+
   it("strips nested blockquote markers from the quoted claim", function () {
     assert.equal(
       extractClaimSentences("> > deep quote here [[quote:q1]]").get("q1"),

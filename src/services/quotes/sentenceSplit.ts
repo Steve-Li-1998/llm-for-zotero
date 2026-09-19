@@ -8,10 +8,14 @@ const TERMINATORS = new Set([".", "!", "?", "。", "！", "？"]);
  * to it: a quoted or parenthesised sentence ends at the closing mark, not at
  * the full stop inside it. */
 const CLOSERS = new Set(['"', "'", "”", "’", ")", "]", "」", "』", "》"]);
+/** A citation token written with no space in front of it still follows a
+ * finished sentence, so it ends one the way whitespace does. */
+const TOKEN_OPENER = "[[quote:";
 
 /** Sentence spans with offsets into the input. Decimal points and common
  * abbreviations do not end a sentence; CJK terminators always do. A run of
- * closing quotes or brackets after the terminator is part of the sentence. */
+ * closing quotes or brackets after the terminator is part of the sentence,
+ * and a citation token right after it starts the next one. */
 export function splitSentences(text: string): SentenceSpan[] {
   const out: SentenceSpan[] = [];
   let start = 0;
@@ -24,7 +28,11 @@ export function splitSentences(text: string): SentenceSpan[] {
     while (end < text.length && CLOSERS.has(text[end])) end++;
     const next = text[end];
     const cjk = ch === "。" || ch === "！" || ch === "？";
-    if (!cjk && next !== undefined && !/\s/.test(next)) continue;
+    const breaks =
+      next === undefined ||
+      /\s/.test(next) ||
+      text.startsWith(TOKEN_OPENER, end);
+    if (!cjk && !breaks) continue;
     const candidate = text.slice(start, i + 1);
     if (ch === "." && ABBREVIATION_TAIL.test(candidate.trim())) continue;
     push(out, text, start, end);

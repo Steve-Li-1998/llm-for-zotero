@@ -41,126 +41,160 @@ describe("workflow: streaming in actual native chat hosts", function () {
     );
   });
 
+  const mean = (values: number[]) =>
+    values.reduce((total, value) => total + value, 0) /
+    Math.max(1, values.length);
+
   for (const tabCount of [1, 4]) {
     for (const surface of ["independent", "stacked", "standalone"] as const) {
-      it(`keeps streaming interactive in ${surface} with ${tabCount} retained reader tabs`, async function () {
-        await api.closeStandalone();
-        Zotero.Prefs.set(
-          layoutPref,
-          surface === "stacked" ? "stacked" : "independent",
-          true,
-        );
-        while (readers.length < tabCount) {
-          const fixture = await api.createPaperWithPdfFixture({
-            title: `Native stream ${readers.length + 1}`,
-            pdfTitle: `Native stream PDF ${readers.length + 1}`,
+      for (const runMode of ["agent", "chat"] as const) {
+        // Ordinary Chat shares the host lifecycle; one retained tab is enough.
+        if (runMode === "chat" && (tabCount !== 1 || surface === "stacked"))
+          continue;
+        const title =
+          runMode === "agent"
+            ? `keeps streaming interactive in ${surface} with ${tabCount} retained reader tabs`
+            : `streams ordinary Chat in place in ${surface} with ${tabCount} retained reader tabs`;
+        it(title, async function () {
+          await api.closeStandalone();
+          Zotero.Prefs.set(
+            layoutPref,
+            surface === "stacked" ? "stacked" : "independent",
+            true,
+          );
+          while (readers.length < tabCount) {
+            const fixture = await api.createPaperWithPdfFixture({
+              title: `Native stream ${readers.length + 1}`,
+              pdfTitle: `Native stream PDF ${readers.length + 1}`,
+            });
+            fixtures.push(fixture);
+            const reader = await Zotero.Reader.open(fixture.pdfAttachmentId);
+            await reader._initPromise;
+            await reader._waitForReader();
+            readers.push(reader);
+          }
+          let root: HTMLElement;
+          if (surface === "standalone") {
+            await api.openStandaloneForItem(fixtures[0].parentItemId);
+            root = (
+              Zotero as any
+            ).LLMForZotero.data.standaloneWindow.document.querySelector(
+              "#llm-main",
+            );
+          } else {
+            win.Zotero_Tabs.select(readers[0].tabID);
+            await until(
+              () =>
+                Boolean(
+                  getReaderContextPanelForTab(win.document, readers[0].tabID),
+                ),
+              "reader sidebar host exists",
+            );
+            const details: any = getReaderContextPanelForTab(
+              win.document,
+              readers[0].tabID,
+            );
+            await until(
+              () => Boolean(details.querySelector(".llm-dedicated-chat-pane")),
+              "chat section exists",
+            );
+            const section = details.querySelector(".llm-dedicated-chat-pane");
+            if (
+              details.sidenav._collapsed ||
+              !["chat", "stacked"].includes(
+                win.document.documentElement.getAttribute("data-llm-pane-view"),
+              )
+            ) {
+              const button = Array.from(
+                details.sidenav.querySelectorAll("[data-pane]"),
+              ).find(
+                (node: any) =>
+                  node.getAttribute("data-pane") === section.dataset.pane,
+              ) as Element;
+              button.dispatchEvent(
+                new win.MouseEvent("click", { bubbles: true, button: 0 }),
+              );
+            }
+            await until(
+              () => !details._disableScrollHandler,
+              "native pane navigation settles",
+            );
+            await section._forceRenderAll();
+            await until(
+              () =>
+                Boolean(
+                  section.querySelector("#llm-main")?.dataset
+                    .handlersInitialized,
+                ) &&
+                section.querySelector("#llm-main")?.getBoundingClientRect()
+                  .height > 0,
+              "native chat is initialized and visible",
+            );
+            root = section.querySelector("#llm-main");
+          }
+          const body = root.parentElement!;
+          const styleBefore = body.getAttribute("style");
+          const result = await api.exerciseNativeStreamingReplay({
+            surface: surface === "standalone" ? "standalone" : "embedded",
+            historyTurns: 60,
+            chunks: 30,
+            runMode,
           });
-          fixtures.push(fixture);
-          const reader = await Zotero.Reader.open(fixture.pdfAttachmentId);
-          await reader._initPromise;
-          await reader._waitForReader();
-          readers.push(reader);
-        }
-        let root: HTMLElement;
-        if (surface === "standalone") {
-          await api.openStandaloneForItem(fixtures[0].parentItemId);
-          root = (
-            Zotero as any
-          ).LLMForZotero.data.standaloneWindow.document.querySelector(
-            "#llm-main",
+          measurements.push({ ...result, surface, tabCount, runMode });
+          assert.strictEqual(
+            body.querySelector("#llm-main"),
+            root,
+            "native lifecycle finished before replay",
           );
-        } else {
-          win.Zotero_Tabs.select(readers[0].tabID);
-          await until(
-            () =>
-              Boolean(
-                getReaderContextPanelForTab(win.document, readers[0].tabID),
-              ),
-            "reader sidebar host exists",
+          assert.equal(
+            body.getAttribute("style"),
+            styleBefore,
+            "replay preserves the actual host layout",
           );
-          const details: any = getReaderContextPanelForTab(
-            win.document,
-            readers[0].tabID,
+          assert.equal(
+            result.wrapperReplacements,
+            0,
+            `${runMode} streaming updates the mounted answer in place (flushes: ${result.renderMs.length})`,
           );
-          await until(
-            () => Boolean(details.querySelector(".llm-dedicated-chat-pane")),
-            "chat section exists",
-          );
-          const section = details.querySelector(".llm-dedicated-chat-pane");
-          if (
-            details.sidenav._collapsed ||
-            !["chat", "stacked"].includes(
-              win.document.documentElement.getAttribute("data-llm-pane-view"),
-            )
-          ) {
-            const button = Array.from(
-              details.sidenav.querySelectorAll("[data-pane]"),
-            ).find(
-              (node: any) =>
-                node.getAttribute("data-pane") === section.dataset.pane,
-            ) as Element;
-            button.dispatchEvent(
-              new win.MouseEvent("click", { bubbles: true, button: 0 }),
+          assert.closeTo(result.manualScrollDelta, 0, 2);
+          assert.isTrue(result.composerPreserved);
+          assert.isTrue(result.answerVisibleBeforeFinal);
+          assert.isTrue(result.finalAnswerVisible);
+          assert.isTrue(result.statusVisible);
+          if (runMode === "agent") {
+            assert.equal(result.progressReplacements, 0);
+            assert.equal(result.progressMutations, 0);
+            assert.equal(result.ledgerReadsDuringText, 0);
+            assert.isTrue(result.focusPreserved);
+            assert.isTrue(result.exactReasoning);
+          } else {
+            // A rebuilt wrapper re-parses the whole answer, so per-flush cost
+            // would climb with its length. In place, it stays flat.
+            assert.isNotEmpty(result.flushMsFirst);
+            assert.isBelow(
+              mean(result.flushMsLast),
+              3 * mean(result.flushMsFirst),
+              `per-flush render cost stays flat (first5=${JSON.stringify(
+                result.flushMsFirst.map((v) => Math.round(v * 10) / 10),
+              )} last5=${JSON.stringify(
+                result.flushMsLast.map((v) => Math.round(v * 10) / 10),
+              )})`,
             );
           }
-          await until(
-            () => !details._disableScrollHandler,
-            "native pane navigation settles",
+          const inputDelays = [...result.inputFrameMs, ...result.typingFrameMs];
+          assert.isNotEmpty(inputDelays);
+          // A coarse freeze alarm, not a frame-rate claim on shared CI hardware.
+          assert.isBelow(
+            Math.max(...inputDelays),
+            1000,
+            "input reaches a frame without a one-second stall",
           );
-          await section._forceRenderAll();
-          await until(
-            () =>
-              Boolean(
-                section.querySelector("#llm-main")?.dataset.handlersInitialized,
-              ) &&
-              section.querySelector("#llm-main")?.getBoundingClientRect()
-                .height > 0,
-            "native chat is initialized and visible",
+          Zotero.debug(
+            `NATIVE_STREAMING ${JSON.stringify({ surface, tabCount, runMode, inputDelays, renderMs: result.renderMs })}`,
+            1,
           );
-          root = section.querySelector("#llm-main");
-        }
-        const body = root.parentElement!;
-        const styleBefore = body.getAttribute("style");
-        const result = await api.exerciseNativeStreamingReplay({
-          surface: surface === "standalone" ? "standalone" : "embedded",
-          historyTurns: 60,
-          chunks: 30,
         });
-        measurements.push({ ...result, surface, tabCount });
-        assert.strictEqual(
-          body.querySelector("#llm-main"),
-          root,
-          "native lifecycle finished before replay",
-        );
-        assert.equal(
-          body.getAttribute("style"),
-          styleBefore,
-          "replay preserves the actual host layout",
-        );
-        assert.equal(result.wrapperReplacements, 0);
-        assert.equal(result.progressReplacements, 0);
-        assert.equal(result.progressMutations, 0);
-        assert.equal(result.ledgerReadsDuringText, 0);
-        assert.isTrue(result.focusPreserved);
-        assert.closeTo(result.manualScrollDelta, 0, 2);
-        assert.isTrue(result.composerPreserved);
-        assert.isTrue(result.exactReasoning);
-        assert.isTrue(result.answerVisibleBeforeFinal);
-        assert.isTrue(result.finalAnswerVisible);
-        assert.isTrue(result.statusVisible);
-        const inputDelays = [...result.inputFrameMs, ...result.typingFrameMs];
-        assert.isNotEmpty(inputDelays);
-        // A coarse freeze alarm, not a frame-rate claim on shared CI hardware.
-        assert.isBelow(
-          Math.max(...inputDelays),
-          1000,
-          "input reaches a frame without a one-second stall",
-        );
-        Zotero.debug(
-          `NATIVE_STREAMING ${JSON.stringify({ surface, tabCount, inputDelays, renderMs: result.renderMs })}`,
-          1,
-        );
-      });
+      }
     }
   }
 });

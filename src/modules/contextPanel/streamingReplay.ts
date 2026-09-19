@@ -24,6 +24,7 @@ import type { Message } from "./types";
 export type StreamingReplayResult = {
   historyTurns: number;
   chunks: number;
+  runMode: "agent" | "chat";
   wrapperReplacements: number;
   progressReplacements: number;
   progressMutations: number;
@@ -44,6 +45,9 @@ export type StreamingReplayResult = {
   ledgerReadsDuringText: number;
   geometryReadsDuringText: number;
   renderMs: number[];
+  /** First and last per-flush render costs, for answer-length flatness. */
+  flushMsFirst: number[];
+  flushMsLast: number[];
   inputFrameMs: number[];
   typingFrameMs: number[];
   composerPreserved: boolean;
@@ -58,8 +62,14 @@ export type StreamingReplayResult = {
 
 export async function exerciseStreamingReplay(
   panel: { body: HTMLElement; item: Zotero.Item },
-  input: { historyTurns: number; chunks: number },
+  input: {
+    historyTurns: number;
+    chunks: number;
+    runMode?: "agent" | "chat";
+  },
 ): Promise<StreamingReplayResult> {
+  if (input.runMode === "chat")
+    return exerciseChatStreamingReplay(panel, input);
   const { body, item } = panel;
   const doc = body.ownerDocument;
   const win = doc.defaultView!;
@@ -239,6 +249,7 @@ export async function exerciseStreamingReplay(
   let lastProgress = progress;
   const result: StreamingReplayResult = {
     ...input,
+    runMode: "agent",
     wrapperReplacements: 0,
     progressReplacements: 0,
     progressMutations: 0,
@@ -261,6 +272,8 @@ export async function exerciseStreamingReplay(
     ledgerReadsDuringText: 0,
     geometryReadsDuringText: 0,
     renderMs: [],
+    flushMsFirst: [],
+    flushMsLast: [],
     inputFrameMs: [],
     typingFrameMs: [],
     composerPreserved: false,
@@ -272,13 +285,35 @@ export async function exerciseStreamingReplay(
     inactiveProgressReads: 0,
     resumeVisibilityCorrect: !box.querySelector(".llm-plan-recovery-card"),
   };
+  // Pointer hover state is not render churn: planProgressView toggles
+  // `llm-plan-progress-hover` from real mouseenter/mouseleave listeners, so a
+  // class change that differs only by that token merely reflects where the
+  // physical cursor happens to sit over the window and must not be counted.
+  const classTokens = (value: string | null): Set<string> =>
+    new Set((value ?? "").split(/\s+/).filter(Boolean));
+  const isHoverOnlyClassChange = (mutation: MutationRecord): boolean => {
+    if (mutation.type !== "attributes" || mutation.attributeName !== "class")
+      return false;
+    const before = classTokens(mutation.oldValue);
+    const after = classTokens(
+      (mutation.target as Element).getAttribute("class"),
+    );
+    const changed = [
+      ...Array.from(before).filter((token) => !after.has(token)),
+      ...Array.from(after).filter((token) => !before.has(token)),
+    ];
+    return changed.length === 1 && changed[0] === "llm-plan-progress-hover";
+  };
   const observer = new win.MutationObserver((mutations) => {
-    result.progressMutations += mutations.length;
+    result.progressMutations += mutations.filter(
+      (mutation) => !isHoverOnlyClassChange(mutation),
+    ).length;
   });
   observer.observe(progress, {
     childList: true,
     subtree: true,
     attributes: true,
+    attributeOldValue: true,
     characterData: true,
   });
   const query = Zotero.DB.queryAsync;
@@ -376,6 +411,8 @@ export async function exerciseStreamingReplay(
       .map((node) => node?.textContent || "")
       .join("");
     result.exactReasoning = displayed.trim() === expected.trim();
+    result.flushMsFirst = result.renderMs.slice(0, 5);
+    result.flushMsLast = result.renderMs.slice(-5);
     measuring = false;
     observer.disconnect();
     Zotero.DB.queryAsync = query;
@@ -603,6 +640,246 @@ export async function exerciseStreamingReplay(
     finishRequest(key, requestId);
     message.streaming = false;
     agentRunTraceCache.delete(runId);
+    if (syntheticHost) {
+      if (previousStyle === null) body.removeAttribute("style");
+      else body.setAttribute("style", previousStyle);
+    }
+  }
+}
+
+/** Ordinary Chat answer chunk: markdown the incremental parser must keep up with. */
+function buildChatReplayChunk(n: number): string {
+  return (
+    `Paragraph ${n}: the reviewed evidence compares **three** conditions ` +
+    `with \`p < 0.0${n % 9}\`, and the discussion keeps going for several ` +
+    `lines so each flush re-reads a longer answer than the one before it.\n\n` +
+    (n % 3 === 0
+      ? `- Point ${n}a about the method\n- Point ${n}b about *controls*\n\n`
+      : "") +
+    (n % 5 === 0
+      ? `| Metric | Value |\n|---|---|\n| Accuracy | 0.9${n % 10} |\n\n`
+      : "")
+  );
+}
+
+/**
+ * Ordinary Chat streaming, driven exactly the way streamingResponse.ts drives
+ * it: append the delta to the message, then refresh that one assistant
+ * message. Agent-only instrumentation (plan progress, trace focus, ledger
+ * reads) has no counterpart here and is reported as clean.
+ */
+async function exerciseChatStreamingReplay(
+  panel: { body: HTMLElement; item: Zotero.Item },
+  input: { historyTurns: number; chunks: number },
+): Promise<StreamingReplayResult> {
+  const { body, item } = panel;
+  const doc = body.ownerDocument;
+  const win = doc.defaultView!;
+  const box = body.querySelector<HTMLDivElement>("#llm-chat-box")!;
+  const previousStyle = body.getAttribute("style");
+  const syntheticHost = body.hasAttribute("data-llm-workflow-test");
+  if (syntheticHost) {
+    body.style.left = "0";
+    body.style.zIndex = "99999";
+  }
+  const key = getConversationKey(item);
+  const history: Message[] = [];
+  for (let n = 0; n < input.historyTurns; n++) {
+    history.push({
+      role: "user",
+      text: `Earlier question ${n}`,
+      timestamp: n * 2 + 1,
+    });
+    history.push({
+      role: "assistant",
+      text: "A completed answer.\n\n".repeat(12),
+      timestamp: n * 2 + 2,
+    });
+  }
+  const user: Message = {
+    role: "user",
+    text: "Review the corpus",
+    timestamp: Date.now(),
+  };
+  // No runMode, no agent run id, no trace: an ordinary Chat answer.
+  const message: Message = {
+    role: "assistant",
+    text: "",
+    timestamp: user.timestamp + 1,
+    streaming: true,
+  };
+  history.push(user, message);
+  chatHistory.set(key, history);
+  const requestId = nextRequestId();
+  if (!tryBeginRequest(key, requestId, null))
+    throw new Error("Fixture request is already busy");
+  const result: StreamingReplayResult = {
+    historyTurns: input.historyTurns,
+    chunks: input.chunks,
+    runMode: "chat",
+    wrapperReplacements: 0,
+    progressReplacements: 0,
+    progressMutations: 0,
+    focusPreserved: true,
+    manualScrollDelta: 0,
+    followBottomGap: 0,
+    exactReasoning: true,
+    statusVisible: false,
+    progressUpdatePreserved: true,
+    finalAnswerVisible: false,
+    answerVisibleBeforeFinal: false,
+    actionCardHiddenWhileStreaming: true,
+    actionCardAfterFinalAnswer: true,
+    streamingQuoteVisible: false,
+    streamingQuoteMarkersAbsent: false,
+    refreshedQuoteVisible: false,
+    refreshedQuoteMarkersAbsent: false,
+    ledgerReadsDuringText: 0,
+    geometryReadsDuringText: 0,
+    renderMs: [],
+    flushMsFirst: [],
+    flushMsLast: [],
+    inputFrameMs: [],
+    typingFrameMs: [],
+    composerPreserved: false,
+    resumeVisibilityCorrect: true,
+    singleExecutionProgress: true,
+    completedProgressNodes: 0,
+    reopenedProgressNodes: 0,
+    pausedProgressNodes: [],
+    resumeStartsProgress: true,
+    inactiveProgressReads: 0,
+  };
+  const deps = buildAgentEngineDepsForTests(
+    item,
+    "upstream",
+    getConversationWriteGeneration(key),
+  );
+  const ui = deps.getPanelRequestUI(body);
+  const helpers = deps.createPanelUpdateHelpers(body, item, key, ui);
+  const findWrapper = () =>
+    box.querySelector<HTMLElement>(
+      `.llm-message-wrapper[data-message-timestamp="${message.timestamp}"]`,
+    );
+  const findAnswer = () =>
+    findWrapper()?.querySelector<HTMLElement>(".llm-assistant-answer") || null;
+  const refresh = () => {
+    const start = win.performance.now();
+    helpers.refreshAssistantMessageSafely(message);
+    return win.performance.now() - start;
+  };
+  try {
+    refreshConversationPanels(body, item);
+    await Zotero.Promise.delay(100);
+    let wrapper = findWrapper();
+    if (!wrapper)
+      throw new Error("Chat replay never mounted the streaming answer wrapper");
+    // Streaming must update the mounted answer in place, never swap its wrapper.
+    const noteWrapper = () => {
+      const next = findWrapper();
+      if (next !== wrapper) result.wrapperReplacements++;
+      wrapper = next;
+    };
+    // Read an earlier turn: streaming must not move the reader's viewport.
+    box.dispatchEvent(
+      new win.WheelEvent("wheel", { deltaY: -100, bubbles: true }),
+    );
+    box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight - 400);
+    persistChatScrollSnapshotForConversationKey(key, box);
+    const scrollTop = box.scrollTop;
+    for (let n = 0; n < input.chunks; n++) {
+      const start = win.performance.now();
+      message.text += buildChatReplayChunk(n);
+      result.renderMs.push(refresh());
+      noteWrapper();
+      await new Promise<void>((resolve) =>
+        win.requestAnimationFrame(() => {
+          result.inputFrameMs.push(win.performance.now() - start);
+          resolve();
+        }),
+      );
+    }
+    result.flushMsFirst = result.renderMs.slice(0, 5);
+    result.flushMsLast = result.renderMs.slice(-5);
+    result.manualScrollDelta = box.scrollTop - scrollTop;
+    const composer = ui.inputBox!;
+    composer.focus({ preventScroll: true });
+    composer.value = "Draft ";
+    composer.dispatchEvent(
+      new win.CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    for (let n = 0; n < 10; n++) {
+      const start = win.performance.now();
+      composer.value += "文";
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+      composer.dispatchEvent(
+        new win.InputEvent("input", {
+          bubbles: true,
+          data: "文",
+          inputType: "insertCompositionText",
+          isComposing: true,
+        }),
+      );
+      message.text += `Interactive chunk ${n}. `;
+      refresh();
+      noteWrapper();
+      await new Promise<void>((resolve) =>
+        win.requestAnimationFrame(() => {
+          result.typingFrameMs.push(win.performance.now() - start);
+          resolve();
+        }),
+      );
+    }
+    composer.dispatchEvent(
+      new win.CompositionEvent("compositionend", {
+        bubbles: true,
+        data: "文".repeat(10),
+      }),
+    );
+    result.composerPreserved =
+      composer.value === `Draft ${"文".repeat(10)}` &&
+      doc.activeElement === composer &&
+      composer.selectionStart === composer.value.length;
+    helpers.setStatusSafely("Streaming replay status", "sending");
+    result.statusVisible = Boolean(
+      ui.status?.textContent?.includes("Streaming replay status"),
+    );
+    const quote =
+      "The source quotation remains readable while the answer is still arriving.";
+    message.text += `\n\n> ${quote}\n>\n> (Workflow, 2026)\n\nFinal replay answer with **evidence**.\n`;
+    refresh();
+    await Zotero.Promise.delay(200);
+    const answerHost = findAnswer();
+    result.answerVisibleBeforeFinal = Boolean(
+      message.streaming &&
+      answerHost &&
+      !answerHost.hidden &&
+      answerHost.textContent?.includes("Final replay answer with evidence."),
+    );
+    result.streamingQuoteVisible = Boolean(
+      answerHost?.textContent?.includes(quote),
+    );
+    result.streamingQuoteMarkersAbsent = !answerHost?.textContent?.includes(
+      "[[quote-occurrence:",
+    );
+    noteWrapper();
+    // Turn end keeps the established full render.
+    message.streaming = false;
+    helpers.refreshChatSafely();
+    await Zotero.Promise.delay(200);
+    result.finalAnswerVisible = Boolean(
+      box.textContent?.includes("Final replay answer with evidence."),
+    );
+    result.refreshedQuoteVisible = Boolean(
+      findWrapper()?.textContent?.includes(quote),
+    );
+    result.refreshedQuoteMarkersAbsent = !findWrapper()?.textContent?.includes(
+      "[[quote-occurrence:",
+    );
+    return result;
+  } finally {
+    finishRequest(key, requestId);
+    message.streaming = false;
     if (syntheticHost) {
       if (previousStyle === null) body.removeAttribute("style");
       else body.setAttribute("style", previousStyle);

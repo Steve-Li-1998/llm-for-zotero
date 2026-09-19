@@ -118,6 +118,20 @@ export type WorkflowTestLiveWebChatTurn = {
   diagnostic: Record<string, unknown> | null;
 };
 
+/** One ordinary chat turn sent through the panel against a live provider. */
+export type WorkflowTestLiveChatTurn = {
+  answerText: string;
+  /**
+   * Every wrapper that was on screen while the turn streamed, other than the
+   * turn's own prompt and answer, is still the same live node afterwards.
+   */
+  earlierWrappersPreserved: boolean;
+  assistantFinalized: boolean;
+  copyActionPresent: boolean;
+  promptDeletable: boolean;
+  promptEditable: boolean;
+};
+
 export type WorkflowTestWebChatPdfToggleDiagnostics = {
   webChatMode: boolean;
   initialChip: WorkflowTestWebChatPdfChipState;
@@ -526,11 +540,17 @@ export type WorkflowTestApi = {
     panelId: string;
     historyTurns: number;
     chunks: number;
+    runMode?: "agent" | "chat";
   }) => Promise<import("./streamingReplay").StreamingReplayResult>;
   exerciseChatRenderingLifecycle: (
     panelId: string,
   ) => ReturnType<
     typeof import("./chatRenderingReplay").exerciseChatRenderingLifecycle
+  >;
+  exerciseCompletedChatTurnRefresh: (
+    panelId: string,
+  ) => ReturnType<
+    typeof import("./chatRenderingReplay").exerciseCompletedChatTurnRefresh
   >;
   memoryProbeInspect: (input: {
     label: string;
@@ -545,13 +565,9 @@ export type WorkflowTestApi = {
     surface: "embedded" | "standalone";
     historyTurns: number;
     chunks: number;
+    runMode?: "agent" | "chat";
   }) => Promise<import("./streamingReplay").StreamingReplayResult>;
   exerciseBackgroundAgentPublication: (input: {
-  exerciseCompletedChatTurnRefresh: (
-    panelId: string,
-  ) => ReturnType<
-    typeof import("./chatRenderingReplay").exerciseCompletedChatTurnRefresh
-  >;
     panelId: string;
     paperBItemId: number;
     invalidateConversation?: boolean;
@@ -616,6 +632,11 @@ export type WorkflowTestApi = {
     question: string,
     timeoutMs?: number,
   ) => Promise<WorkflowTestLiveWebChatTurn>;
+  sendLiveChatTurn: (
+    panelId: string,
+    text: string,
+    timeoutMs?: number,
+  ) => Promise<WorkflowTestLiveChatTurn>;
   seedPanelStoredUserMessage: (
     panelId: string,
     text: string,

@@ -78,6 +78,7 @@ import type {
   WorkflowTestStandaloneDiagnostics,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestTargetedQuoteRefreshResult,
+  WorkflowTestLiveChatTurn,
   WorkflowTestLiveWebChatTurn,
   WorkflowTestWebChatPdfChipState,
   WorkflowTestWebChatPdfToggleDiagnostics,
@@ -2697,6 +2698,148 @@ async function sendLiveWebChatTurn(
     setWorkflowTestSendInterceptor((opts) => {
       lastSend = opts;
     });
+  }
+}
+
+/**
+ * Sends one ordinary chat turn through the panel's own input and send button
+ * against whatever provider the panel is configured with, then reports what the
+ * user sees once the turn ends. Unlike `ask`, this lets the panel's send run
+ * into the real `sendQuestion`, so the turn-end refresh is the shipped one.
+ *
+ * Earlier turns are sampled repeatedly while the new turn streams, and the last
+ * streaming sample is the baseline: starting a turn rebuilds the whole chat box
+ * to show the new prompt, so only the window between that rebuild and the turn's
+ * end can tell a targeted turn-end refresh from another full one.
+ */
+async function sendLiveChatTurn(
+  panelId: string,
+  text: string,
+  timeoutMs = 180_000,
+): Promise<WorkflowTestLiveChatTurn> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const readChatBox = () =>
+    panel.body.querySelector<HTMLElement>("#llm-chat-box");
+  if (!readChatBox()) throw new Error(`Panel ${panelId} has no chat box`);
+  const readStatusText = () =>
+    (
+      panel.body.querySelector("#llm-status") as HTMLElement | null
+    )?.textContent?.trim() || "";
+  const readHistory = (): Message[] => {
+    const mountedItem = activeContextPanels.get(panel.body)?.() || panel.item;
+    return chatHistory.get(getConversationKey(mountedItem)) || [];
+  };
+  const newestAssistant = (history: Message[]): Message | undefined =>
+    [...history].reverse().find((message) => message.role === "assistant");
+  const pairedPromptOf = (
+    history: Message[],
+    answer: Message,
+  ): Message | undefined => {
+    const answerIndex = history.lastIndexOf(answer);
+    if (answerIndex <= 0) return undefined;
+    return [...history.slice(0, answerIndex)]
+      .reverse()
+      .find((message) => message.role === "user");
+  };
+  const countAssistants = (history: Message[]) =>
+    history.filter((message) => message.role === "assistant").length;
+  const assistantsBefore = countAssistants(readHistory());
+  const probes = createChatTurnPromptProbes(panel.body);
+  const previousInterceptor = getWorkflowTestSendInterceptor();
+  lastSend = null;
+  try {
+    // Returning true lets the panel's send continue into sendQuestion instead
+    // of stopping at the capture the other workflow tests rely on.
+    setWorkflowTestSendInterceptor((opts) => {
+      lastSend = opts;
+      return true;
+    });
+    const input = panel.body.querySelector(
+      "#llm-input",
+    ) as HTMLTextAreaElement | null;
+    if (!input) throw new Error("Workflow test input box was not rendered");
+    input.value = text;
+    const eventCtor = panel.body.ownerDocument.defaultView?.Event ?? Event;
+    input.dispatchEvent(new eventCtor("input", { bubbles: true }));
+    const sendBtn = panel.body.querySelector(
+      "#llm-send",
+    ) as HTMLButtonElement | null;
+    if (!sendBtn) throw new Error("Workflow test send button was not rendered");
+    sendBtn.click();
+    await waitForLastSend();
+
+    const startedAt = Date.now();
+    let answer: Message | null = null;
+    // Wrappers other than the streaming turn's own prompt and answer, as they
+    // stood the last time the turn was observed streaming.
+    let earlierWrappersWhileStreaming: HTMLElement[] | null = null;
+    while (!answer) {
+      const history = readHistory();
+      const newest = newestAssistant(history);
+      if (newest && countAssistants(history) > assistantsBefore) {
+        if (!newest.streaming) {
+          answer = newest;
+          break;
+        }
+        const answerWrapper = probes.wrapperOf(newest);
+        if (answerWrapper) {
+          const prompt = pairedPromptOf(history, newest);
+          const turnWrappers = [
+            answerWrapper,
+            prompt ? probes.wrapperOf(prompt) : null,
+          ].filter(Boolean) as HTMLElement[];
+          earlierWrappersWhileStreaming = (
+            Array.from(
+              readChatBox()?.querySelectorAll(".llm-message-wrapper") || [],
+            ) as HTMLElement[]
+          ).filter((wrapper) => !turnWrappers.includes(wrapper));
+        }
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(
+          `Timed out after ${timeoutMs}ms waiting for the live chat turn on panel ${panelId} to finish; last status text was "${readStatusText()}"`,
+        );
+      }
+      await Zotero.Promise.delay(50);
+    }
+    if (!earlierWrappersWhileStreaming) {
+      throw new Error(
+        `Live chat turn on panel ${panelId} was never observed streaming, so the turn-end refresh cannot be judged`,
+      );
+    }
+    // The turn-end refresh is queued behind the streaming renders, so let the
+    // DOM catch up with the finished message before reading it.
+    await Zotero.Promise.delay(250);
+
+    const history = readHistory();
+    const prompt = pairedPromptOf(history, answer);
+    const answerWrapper = probes.wrapperOf(answer);
+    if (!answerWrapper) {
+      throw new Error(
+        `Live chat turn on panel ${panelId} finished without a rendered answer wrapper`,
+      );
+    }
+    const chatBox = readChatBox();
+    const promptProbe = prompt ? probes.probePromptMenu(prompt) : null;
+    return {
+      answerText: answer.text || "",
+      earlierWrappersPreserved: earlierWrappersWhileStreaming.every(
+        (wrapper) => wrapper.isConnected && wrapper.parentElement === chatBox,
+      ),
+      assistantFinalized:
+        !answerWrapper.querySelector(".llm-bubble.streaming") &&
+        !answerWrapper.querySelector(".llm-typing") &&
+        !answer.streaming,
+      copyActionPresent: Boolean(
+        answerWrapper.querySelector(".llm-message-action-copy"),
+      ),
+      promptDeletable: promptProbe?.enabled === true,
+      promptEditable: Boolean(prompt && probes.isPromptEditable(prompt)),
+    };
+  } finally {
+    probes.hidePromptMenu();
+    setWorkflowTestSendInterceptor(previousInterceptor);
   }
 }
 
@@ -5399,6 +5542,8 @@ export function installWorkflowTestHarness(targetAddon: {
       exerciseStreamingReplay(getPanel(input.panelId), input),
     exerciseChatRenderingLifecycle: (panelId) =>
       exerciseChatRenderingLifecycle(getPanel(panelId)),
+    exerciseCompletedChatTurnRefresh: (panelId) =>
+      exerciseCompletedChatTurnRefresh(getPanel(panelId)),
     memoryProbeInspect: (input) => {
       assertWorkflowTestEnabled();
       return memoryProbeInspect(input);
@@ -5472,6 +5617,7 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseWebChatPdfToggleWorkflow,
     toggleWebChatPdfChip: toggleWebChatPdfChipForWorkflow,
     sendLiveWebChatTurn,
+    sendLiveChatTurn,
     seedPanelStoredUserMessage,
     clickPanelSystemToggle,
     clickPanelSystemTogglesRapidly,
@@ -5542,8 +5688,6 @@ export function installWorkflowTestHarness(targetAddon: {
             payload: {
               type: "tool_result" as const,
               ...entry,
-    exerciseCompletedChatTurnRefresh: (panelId) =>
-      exerciseCompletedChatTurnRefresh(getPanel(panelId)),
               actionReceipts: entry.actionReceipts || [],
             },
           })),

@@ -7,6 +7,28 @@ import type { QuoteCitation } from "../../shared/types";
 const MAX_PASSAGE_CHARS = 8000;
 const MAX_WALK_DEPTH = 8;
 
+function readableText(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value : "";
+}
+
+/**
+ * The passage a citation was cut from, read the way the model read it.
+ *
+ * `text` (paper_read) and `snippet` (library_retrieve) are what the model was
+ * given: the snippet is the window around the exact match. `surroundingText`
+ * is a different region of the same chunk — its head — so it can easily lack
+ * the matched sentence entirely. Leading with it used to re-anchor an answer
+ * to a sentence the model never received, so it now only follows the read
+ * text as extra context, and is dropped first when the bound bites.
+ */
+function passageTextOf(record: Record<string, unknown>): string | undefined {
+  const read = readableText(record.text) || readableText(record.snippet);
+  const surrounding = readableText(record.surroundingText);
+  if (!read) return surrounding || undefined;
+  if (!surrounding || surrounding.trim() === read.trim()) return read;
+  return `${read}\n\n${surrounding}`;
+}
+
 /**
  * Gathers, per run, every citation a tool delivered and the passage text it
  * was cut from, so the final answer can be re-anchored to its claims.
@@ -42,15 +64,7 @@ export class PassageCitationCollector {
       return;
     }
     const record = value as Record<string, unknown>;
-    const text =
-      typeof record.surroundingText === "string" &&
-      record.surroundingText.trim()
-        ? record.surroundingText
-        : typeof record.text === "string"
-          ? record.text
-          : typeof record.snippet === "string"
-            ? record.snippet
-            : undefined;
+    const text = passageTextOf(record);
     const ids = [
       ...(Array.isArray(record.quoteCitationIds)
         ? record.quoteCitationIds

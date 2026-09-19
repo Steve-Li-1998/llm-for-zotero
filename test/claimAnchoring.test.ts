@@ -356,4 +356,60 @@ describe("claimAnchoring", function () {
     assert.equal(quoteCitations[1].quoteText, second.quoteText);
     assert.equal(quoteCitations[1].anchorMatch, "passage");
   });
+
+  it("never re-anchors a claim onto a metadata line", function () {
+    const original = citation(
+      "q1",
+      "An independently retrained daily decoder remained at 81%.",
+    );
+    const { quoteCitations } = reanchorQuoteCitationsToClaims({
+      text: "The paper measures decoder drift in mouse visual cortex across ten recording days [[quote:q1]]",
+      quoteCitations: [original],
+      passageTextByCitationId: new Map([
+        [
+          "q1",
+          [
+            "Title: Measuring decoder drift in mouse visual cortex across ten recording days",
+            "",
+            "We recorded 200 tracked neurons in visual cortex from 10 adult mice over 10 daily sessions.",
+          ].join("\n"),
+        ],
+      ]),
+    });
+    assert.notMatch(
+      quoteCitations[0].quoteText,
+      /^Title:/i,
+      "a metadata line states nothing the answer can be quoting",
+    );
+  });
+
+  it("marks a token that no claim sentence can hold as passage-anchored", function () {
+    const inHeading = citation(
+      "q1",
+      "An independently retrained daily decoder remained at 81%.",
+    );
+    const uncited = citation(
+      "q9",
+      "Median animal accuracy was 84% on day 1 and 85% on day 10.",
+    );
+    const { quoteCitations, decisions } = reanchorQuoteCitationsToClaims({
+      text: "## Findings [[quote:q1]]\n\nBody.",
+      quoteCitations: [inHeading, uncited],
+      passageTextByCitationId: new Map([
+        ["q1", passage],
+        ["q9", passage],
+      ]),
+    });
+    assert.equal(quoteCitations[0].quoteText, inHeading.quoteText);
+    assert.equal(quoteCitations[0].anchorMatch, "passage");
+    assert.deepEqual(
+      decisions.map((d) => [d.id, d.match]),
+      [["q1", "passage"]],
+    );
+    assert.equal(quoteCitations[1].quoteText, uncited.quoteText);
+    assert.isUndefined(
+      quoteCitations[1].anchorMatch,
+      "a citation the answer never cites makes no anchoring claim",
+    );
+  });
 });

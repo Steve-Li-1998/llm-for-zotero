@@ -18,6 +18,9 @@ const NUMERIC_TOKEN = /^[\d.,]+$/;
 const MIN_SHARED_TOKENS = 2;
 const MIN_OVERLAP = 0.34;
 const CHUNK_MARKER = /^\s*\[chunk\s+\d+\]\s*$/gim;
+/** Front-matter lines a quote must never land on, as paperRead's own
+ * overview-candidate split already excludes them. */
+const METADATA_LINE = /^(?:title|authors?|date|publication|doi|abstract):/i;
 
 export type ClaimAnchorMatch = "claim" | "passage";
 export type ClaimAnchorDecision = {
@@ -257,7 +260,8 @@ function passageCandidates(passageText: string): Candidate[] {
       }
       if (
         text.length >= QUOTE_ANCHOR_MIN_CHARS &&
-        text.length <= QUOTE_ANCHOR_MAX_CHARS
+        text.length <= QUOTE_ANCHOR_MAX_CHARS &&
+        !METADATA_LINE.test(text)
       ) {
         candidates.push({ text, position: position + i });
       }
@@ -271,6 +275,14 @@ function sameText(a: string, b: string): boolean {
   return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
 }
 
+/** Ids the answer cites, including tokens written where no claim sentence can
+ * be read: a heading, a table row, a line of HTML. */
+function citedTokenIds(text: string): Set<string> {
+  const ids = new Set<string>();
+  for (const match of text.matchAll(QUOTE_TOKEN_PATTERN)) ids.add(match[1]);
+  return ids;
+}
+
 /** Re-anchor every cited citation to the passage sentence that best matches
  * the sentence citing it. Citations without a token or without passage text
  * are returned unchanged. Ids, labels and page hints are preserved. */
@@ -280,12 +292,26 @@ export function reanchorQuoteCitationsToClaims(params: {
   passageTextByCitationId: ReadonlyMap<string, string>;
 }): { quoteCitations: QuoteCitation[]; decisions: ClaimAnchorDecision[] } {
   const claims = extractClaimSentences(params.text);
+  const cited = citedTokenIds(params.text);
   const decisions: ClaimAnchorDecision[] = [];
   const quoteCitations = params.quoteCitations.map(
     (citation): QuoteCitation => {
       const claim = claims.get(citation.id);
       const passage = params.passageTextByCitationId.get(citation.id);
-      if (!claim || !passage) return citation;
+      if (!claim) {
+        // The answer cites this id from a heading, a table row or a line of
+        // HTML, so there is no claim sentence to anchor against. The citation
+        // still stands on the retrieved passage, and says so.
+        if (!cited.has(citation.id)) return citation;
+        decisions.push({
+          id: citation.id,
+          match: "passage",
+          score: 0,
+          claimSentence: "",
+        });
+        return { ...citation, anchorMatch: "passage" };
+      }
+      if (!passage) return citation;
       const claimTokens = tokenSet(claim);
       let best:
         | { candidate: Candidate; shared: number; score: number }

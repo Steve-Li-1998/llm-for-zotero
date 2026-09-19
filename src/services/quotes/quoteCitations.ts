@@ -1741,9 +1741,8 @@ export function buildQuoteSourceIndex(params: {
     });
   }
   for (const source of sourceTexts) {
-    const normalizedSourceText = normalizeMultilineText(
-      source.sourceText || source.text,
-    );
+    const rawSourceText = source.sourceText || source.text;
+    const normalizedSourceText = normalizeMultilineText(rawSourceText);
     const reusableTextIndex =
       source.textIndex &&
       (source.textIndex.sourceText === normalizedSourceText ||
@@ -1751,7 +1750,14 @@ export function buildQuoteSourceIndex(params: {
           normalizedSourceText)
         ? source.textIndex
         : undefined;
-    const sourceText = reusableTextIndex?.sourceText || normalizedSourceText;
+    // PDF item boundaries carry evidence that an intervening number is a
+    // reference marker. Keep that evidence until alignment; display strings
+    // are sanitized separately when the verified citation is constructed.
+    const sourceText =
+      reusableTextIndex?.sourceText ||
+      (typeof rawSourceText === "string" && rawSourceText.includes("\u0003")
+        ? rawSourceText
+        : normalizedSourceText);
     const citationLabel = normalizeCitationLabel(
       source.sourceLabel || source.citationLabel,
     );
@@ -1857,7 +1863,7 @@ export function resolveExactDisplayedQuoteCitation(params: {
       )
         continue;
       const alignment = assessAcademicQuoteAlignment(
-        sourceQuoteText,
+        span.text,
         displayed.quoteText,
       );
       const fullSourceAlignment = assessAcademicQuoteAlignment(
@@ -2692,9 +2698,9 @@ function resolveUniqueDisplayedQuoteAnchorCitation(params: {
     resolved.match.confidence === "high" &&
     resolved.match.matchedTokenCount >= MIN_NEAR_COMPLETE_QUOTE_ANCHOR_TOKENS
       ? assessAnchoredQuotePassage({
-          sourceText: resolved.source.sourceText,
+          sourceText: normalizeMultilineText(resolved.source.sourceText),
           quoteText: displayedQuoteText,
-          anchorText: resolved.match.query,
+          anchorText: sourceMatchText,
         })
       : "incomplete";
   if (passageEvidence === "conflict" || passageEvidence === "unmatched")

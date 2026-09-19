@@ -6,7 +6,32 @@ export const COHEN_WORKER_TEXT =
 export const COHEN_READER_TEXT =
   "However, there was a signi\u0003ﬁ\u0003cant reward level by age\n\u0003interaction (\u0003χ\u00032\n\u0003(1,\u0003 \u0003N\u0003 \u0003= 89)\u0003 \u0003= 9.41;\u0003 \u0003p\u0003 \u0003= 0.002), such that high-reward paired associates showed relatively greater encoding-retrieval similarity.";
 
+// Reported false negative, Summerfield and Stachenfeld (2026), PDF page 8.
+// The reference marker is present in the source, not part of the quoted prose.
+export const SUMMERFIELD_QUOTE =
+  "the gradual rotation means that self-attention will implicitly encode the relative distance between two tokens, so position codes share with grid cells both the logic of representing position in terms of phases and enabling vector computation and the periodic (oscillatory) nature of the positional code.";
+export const SUMMERFIELD_SOURCE_PREFIX =
+  "Position is encoded via gradual rotations of key and query matrices (Figures 3B and 3C).136 At first, position codes might sound like a mere engineering trick. However, ";
+export const CITATION_MARKER_QUOTE_CASES = [
+  ["attached reference", "137"],
+  ["HTML superscript reference", "<sup>137</sup>"],
+  ["Unicode superscript reference", "¹³⁷"],
+  ["bracketed reference", "[137]"],
+  ["spaced bracketed reference", " [137]"],
+  ["reference list", "<sup>137,138</sup>"],
+  ["reference range", "[137–139]"],
+  ["PDF text-item reference", "\u0003137\u0003"],
+  ["PDF text-item reference range", "\u0003137,138\u0003–\u0003139\u0003"],
+].map(([name, marker]) => ({
+  name: `mid-sentence ${name}`,
+  quote: SUMMERFIELD_QUOTE,
+  source:
+    SUMMERFIELD_SOURCE_PREFIX +
+    SUMMERFIELD_QUOTE.replace("computation and", `computation${marker} and`),
+}));
+
 export const GENUINE_QUOTE_ACCEPTANCE_CASES = [
+  ...CITATION_MARKER_QUOTE_CASES,
   {
     name: "flattened statistical scripts",
     quote: COHEN_QUOTE,

@@ -1694,12 +1694,15 @@ async function attemptCitationParagraphJump(params: {
   // Source navigation is user-initiated. Raise an existing PDF above standalone
   // chat/document windows too, even if its paragraph cannot be highlighted.
   Zotero.getMainWindow()?.focus();
+  // A cached source locator can be only a unique fragment. Try all complete
+  // displayed wording before that fallback, or its early success truncates
+  // the highlight even when the full passage is searchable.
   const quoteTexts = Array.from(
     new Set(
       [
         params.preferredFullQuoteText,
-        params.verifiedSourceMatchText,
         params.quoteText,
+        params.verifiedSourceMatchText,
       ]
         .map((value) => sanitizeText(value || "").trim())
         .filter(Boolean),
@@ -1729,6 +1732,9 @@ async function attemptCitationParagraphJump(params: {
   }
   return paragraphJump;
 }
+
+export const attemptCitationParagraphJumpForTests =
+  attemptCitationParagraphJump;
 
 /**
  * Resolve the effective page label after a paragraph jump.  If

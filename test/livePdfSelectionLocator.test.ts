@@ -1,4 +1,9 @@
 import { assert } from "chai";
+import { attemptCitationParagraphJumpForTests } from "../src/modules/contextPanel/assistantCitationLinks";
+import {
+  SUMMERFIELD_QUOTE,
+  SUMMERFIELD_SOURCE_PREFIX,
+} from "./fixtures/quoteAcceptance";
 import {
   clearPageTextCache,
   lookupCachedQuoteLocationForAttachment,
@@ -2199,6 +2204,44 @@ describe("page-native scrollToExactQuoteInReader", function () {
     assert.equal(fixture.dispatched[0].query, result.queryUsed);
     assert.include(result.queryUsed || "", " 139 ");
     assert.notEqual(result.queryUsed, quote);
+  });
+
+  it("highlights the complete citation passage when the cached locator is only its prefix", async function () {
+    const [beforeReference, afterReference] =
+      SUMMERFIELD_QUOTE.split("computation");
+    const fixture = createExactFindControllerReader({
+      pageItems: [
+        [
+          { str: SUMMERFIELD_SOURCE_PREFIX + beforeReference + "computation" },
+          { str: "137" },
+          { str: afterReference },
+        ],
+      ],
+      targetPageIndex: 0,
+    });
+    const originalZotero = (globalThis as any).Zotero;
+    (globalThis as any).Zotero = {
+      ...originalZotero,
+      getMainWindow: () => null,
+    };
+    try {
+      const result = await attemptCitationParagraphJumpForTests({
+        reader: fixture.reader,
+        contextItemId: 1,
+        displayCitationLabel: "Summerfield and Stachenfeld, 2026",
+        quoteText: SUMMERFIELD_QUOTE,
+        verifiedSourceMatchText: beforeReference.trim(),
+        pageIndex: 0,
+        pageLabel: "8",
+      });
+
+      assert.isTrue(result.matched);
+      assert.lengthOf(fixture.dispatched, 1);
+      assert.include(fixture.dispatched[0].query, "computation137");
+      assert.include(fixture.dispatched[0].query, "positional code.");
+    } finally {
+      (globalThis as any).Zotero = originalZotero;
+    }
   });
 
   it("tries the complete displayed quote first, then the persisted largest unique locator", async function () {

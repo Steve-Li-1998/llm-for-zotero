@@ -10,6 +10,7 @@ import { resolveQuoteCitationLookupText } from "../src/modules/contextPanel/quot
 import { resolvePageNativeFindControllerQuery } from "../src/modules/contextPanel/livePdfSelectionLocator";
 import {
   ALTERED_QUOTE_ACCEPTANCE_CASES,
+  CITATION_MARKER_QUOTE_CASES,
   COHEN_QUOTE,
   COHEN_READER_TEXT,
   COHEN_WORKER_TEXT,
@@ -33,6 +34,51 @@ function sourceIndex(text: string, secondSource?: string) {
 }
 
 describe("quote acceptance from strong passage evidence", function () {
+  for (const fixture of CITATION_MARKER_QUOTE_CASES) {
+    it(`renders and locates the complete ${fixture.name}`, function () {
+      const markdown = `> ${fixture.quote}\n> (Source 1, 2026)`;
+      const finalized = finalizeAssistantQuoteCitations({
+        markdown,
+        sourceIndex: sourceIndex(fixture.source),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+      const plan = buildQuoteRenderPlan(finalized);
+      assert.lengthOf(plan.occurrences, 1);
+      assert.equal(plan.occurrences[0].trust, "trusted-anchor");
+      assert.equal(plan.occurrences[0].displayText, fixture.quote);
+      const query = resolvePageNativeFindControllerQuery(
+        fixture.source,
+        resolveQuoteCitationLookupText(finalized.quoteCitations[0]),
+      );
+      assert.isNotNull(query);
+      assert.equal(query!.totalOccurrences, 1);
+      for (const altered of [
+        fixture.quote.replace("will implicitly", "will not implicitly"),
+        fixture.quote.replace("two tokens", "three tokens"),
+        fixture.quote.replace("relative distance", "relative"),
+        fixture.quote.replace("vector computation", "vector computation 138"),
+      ]) {
+        assert.notEqual(
+          classifyDisplayedQuoteSource({
+            quoteText: altered,
+            sourceIndex: sourceIndex(fixture.source),
+            sourceEvidenceComplete: true,
+          }).kind,
+          "matched",
+          altered,
+        );
+      }
+      assert.equal(
+        classifyDisplayedQuoteSource({
+          quoteText: fixture.quote,
+          sourceIndex: sourceIndex(fixture.source, fixture.source),
+          sourceEvidenceComplete: true,
+        }).kind,
+        "defer",
+      );
+    });
+  }
+
   for (const fixture of GENUINE_QUOTE_ACCEPTANCE_CASES) {
     it(`accepts ${fixture.name} without a second extraction`, function () {
       const result = classifyDisplayedQuoteSource({

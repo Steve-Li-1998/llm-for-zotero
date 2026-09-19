@@ -47,7 +47,6 @@ const QUOTE_WORD_PATTERN =
   /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]|\p{N}+|\p{L}[\p{L}\p{M}\p{N}]*/gu;
 const LETTER_TOKEN_PATTERN = /^\p{L}+$/u;
 const ATTACHED_CITATION_TOKEN_PATTERN = /^(\p{L}{2,})(\p{N}{1,3})$/u;
-const ATTACHED_CITATION_TAIL_GAP_PATTERN = /^[\s\u0003]*[,;–—−-][\s\u0003]*$/u;
 const ATTACHED_CITATION_BOUNDARY_PATTERN =
   /^[\s\u0003]*[.,;:!?()[\]{}。！？、，；：]/u;
 const MIN_UNCORROBORATED_ATTACHED_CITATION_STEM_LENGTH = 6;
@@ -72,6 +71,10 @@ const SEMANTIC_NUMERIC_SUFFIX_WORDS = new Set([
   "mouse",
   "neuron",
   "phase",
+  "protein",
+  "receptor",
+  "interleukin",
+  "range",
   "ref",
   "refs",
   "sample",
@@ -395,16 +398,20 @@ function resolveAlignedSourceEnd(params: {
   lastTokenEnd: number;
   queryIndex: QuoteTextIndex;
 }): number | null {
-  const adjacentEnd = expandSourceSpanEnd(
-    params.sourceText,
-    params.lastTokenEnd,
-  );
+  // HTML presentation can close after the last matched word/reference.
+  // Include it in the original source span before checking sentence punctuation.
+  const closingTags =
+    params.sourceText
+      .slice(params.lastTokenEnd)
+      .match(/^(?:<\/(?:sup|sub|span|b|em|i|strong)>)+/iu)?.[0] || "";
+  const lastTokenEnd = params.lastTokenEnd + closingTags.length;
+  const adjacentEnd = expandSourceSpanEnd(params.sourceText, lastTokenEnd);
   if (!queryRequiresTerminalSentenceBoundary(params.queryIndex)) {
     return adjacentEnd;
   }
   if (
     TERMINAL_SENTENCE_PUNCTUATION_PATTERN.test(
-      params.sourceText.slice(params.lastTokenEnd, adjacentEnd),
+      params.sourceText.slice(lastTokenEnd, adjacentEnd),
     )
   ) {
     return adjacentEnd;
@@ -415,10 +422,10 @@ function resolveAlignedSourceEnd(params: {
   // Accept only the bounded item-boundary form; ordinary fused prose such as
   // "afterward.during" remains an incomplete source match.
   const itemSeparatedTerminal = params.sourceText
-    .slice(params.lastTokenEnd)
+    .slice(adjacentEnd)
     .match(PDF_ITEM_SEPARATED_TERMINAL_PUNCTUATION_PATTERN);
   if (itemSeparatedTerminal) {
-    return params.lastTokenEnd + (itemSeparatedTerminal[0]?.length || 0);
+    return adjacentEnd + (itemSeparatedTerminal[0]?.length || 0);
   }
 
   // PDF.js commonly emits a superscript reference range as separate text
@@ -427,7 +434,7 @@ function resolveAlignedSourceEnd(params: {
   // quotation normally omits that reference. Preserve the complete literal
   // PDF.js source sentence so FindController can search its native item
   // stream instead of rejecting otherwise exact prose.
-  const sourceTail = params.sourceText.slice(params.lastTokenEnd);
+  const sourceTail = params.sourceText.slice(lastTokenEnd);
   const citationSuffixMatch = sourceTail.match(
     OMITTED_TRAILING_CITATION_SUFFIX_PATTERN,
   );
@@ -436,7 +443,7 @@ function resolveAlignedSourceEnd(params: {
     const hasStrongCitationMarker =
       /^[\s]*[[(]/u.test(citationText) || /[,;‐‑‒–—−-]/u.test(citationText);
     if (hasStrongCitationMarker) {
-      return params.lastTokenEnd + (citationSuffixMatch[0]?.length || 0);
+      return lastTokenEnd + (citationSuffixMatch[0]?.length || 0);
     }
   }
 
@@ -445,11 +452,9 @@ function resolveAlignedSourceEnd(params: {
   // complete literal source sentence only for a recognized locator. Any other
   // missing terminal boundary is incomplete grounding and must fail closed.
   const locatorMatch = params.sourceText
-    .slice(params.lastTokenEnd)
+    .slice(lastTokenEnd)
     .match(OMITTED_TRAILING_SOURCE_LOCATOR_PATTERN);
-  return locatorMatch
-    ? params.lastTokenEnd + (locatorMatch[0]?.length || 0)
-    : null;
+  return locatorMatch ? lastTokenEnd + (locatorMatch[0]?.length || 0) : null;
 }
 
 export function findCanonicalQuoteSourceSpan(
@@ -622,114 +627,173 @@ export type QuoteTextAlignmentRun = {
 
 const MAX_QUOTE_ALIGNMENT_STATES = 200_000;
 
-type AttachedCitationToken = {
+type CitationSuffix = {
   sourceWord: string;
   lastCitationTokenIndex: number;
+  explicit: boolean;
+  terminal: boolean;
 };
 
-function parseAttachedCitationToken(
+const citationSuffixCache = new WeakMap<
+  QuoteTextIndex,
+  Map<number, CitationSuffix | null>
+>();
+const citationStyleCache = new WeakMap<QuoteTextIndex, boolean>();
+const citationMathRangesCache = new WeakMap<
+  QuoteTextIndex,
+  InlineMathRange[]
+>();
+const CITATION_NUMBER_GROUP = String.raw`[0-9]{1,3}(?:[\s\u0003]*[,;–—−-][\s\u0003]*[0-9]{1,3})*`;
+const CITATION_SUFFIX_PATTERN = new RegExp(
+  String.raw`^(?:[ \t\u0003]*<sup\b[^>]*>[ \t]*${CITATION_NUMBER_GROUP}[ \t]*</sup>|[ \t\u0003]*\[${CITATION_NUMBER_GROUP}\]|[¹²³⁴⁵⁶⁷⁸⁹⁰]+|\u0003[ \t]*${CITATION_NUMBER_GROUP}|${CITATION_NUMBER_GROUP})`,
+  "iu",
+);
+
+function isSemanticNumericStem(word: string): boolean {
+  return (
+    SEMANTIC_NUMERIC_SUFFIX_WORDS.has(word) ||
+    (word.endsWith("s") && SEMANTIC_NUMERIC_SUFFIX_WORDS.has(word.slice(0, -1)))
+  );
+}
+
+/** Identify citation syntax without deleting any source text or numeric tokens. */
+function parseCitationSuffix(
   index: QuoteTextIndex,
   tokenIndex: number,
-): AttachedCitationToken | null {
+): CitationSuffix | null {
+  let cache = citationSuffixCache.get(index);
+  if (!cache) {
+    cache = new Map();
+    citationSuffixCache.set(index, cache);
+  }
+  if (cache.has(tokenIndex)) return cache.get(tokenIndex)!;
+  const remember = (value: CitationSuffix | null) => {
+    cache!.set(tokenIndex, value);
+    return value;
+  };
   const token = index.tokens[tokenIndex];
-  const attached = token?.text.match(ATTACHED_CITATION_TOKEN_PATTERN);
-  const sourceWord = attached?.[1] || "";
-  if (!token || !sourceWord || SEMANTIC_NUMERIC_SUFFIX_WORDS.has(sourceWord)) {
-    return null;
+  if (!token) return remember(null);
+  const attached = token.text.match(ATTACHED_CITATION_TOKEN_PATTERN);
+  const sourceWord = attached?.[1] || token.text;
+  if (!/^\p{L}{2,}$/u.test(sourceWord)) return remember(null);
+  const rawToken = index.sourceText.slice(token.sourceStart, token.sourceEnd);
+  const rawDigits = attached ? rawToken.match(/\p{N}+$/u)?.[0] : "";
+  if (attached && !rawDigits) return remember(null);
+  const markerStart = token.sourceEnd - (rawDigits?.length || 0);
+  const marker = index.sourceText
+    .slice(markerStart, markerStart + 200)
+    .match(CITATION_SUFFIX_PATTERN)?.[0];
+  if (!marker) return remember(null);
+  // Short unit/symbol powers (cm², ms³, or HTML equivalents) carry meaning.
+  // Superscript styling alone does not turn them into references.
+  if (
+    sourceWord.length <= 3 &&
+    /^(?:<sup\b[^>]*>[0-9]<\/sup>|[¹²³⁴⁵⁶⁷⁸⁹⁰])$/iu.test(marker.trim())
+  )
+    return remember(null);
+  // Explicit HTML superscripts after prose also mark references on words
+  // such as "cells". The identifier guard applies to flattened numeric
+  // suffixes and brackets, where "cell12"/"condition[12]" can name a value.
+  if (isSemanticNumericStem(sourceWord) && !/<sup\b/iu.test(marker))
+    return remember(null);
+  // Check paired math only for a candidate marker and cache it per text index.
+  let mathRanges = citationMathRangesCache.get(index);
+  if (!mathRanges) {
+    mathRanges = collectPairedInlineMathRanges(index.sourceText);
+    citationMathRangesCache.set(index, mathRanges);
   }
-
+  if (isInsideInlineMathRange(token.sourceStart, mathRanges))
+    return remember(null);
+  const explicit = /<sup|\[|[¹²³⁴⁵⁶⁷⁸⁹⁰]|\u0003/iu.test(marker);
+  const markerEnd = markerStart + marker.length;
   let lastCitationTokenIndex = tokenIndex;
-  let nextTokenIndex = tokenIndex + 1;
-  while (nextTokenIndex < index.tokens.length) {
-    const nextToken = index.tokens[nextTokenIndex];
-    if (!nextToken || !/^\p{N}{1,3}$/u.test(nextToken.text)) break;
-    const previousToken = index.tokens[nextTokenIndex - 1];
-    const gap = index.sourceText.slice(
-      previousToken.sourceEnd,
-      nextToken.sourceStart,
-    );
-    if (!ATTACHED_CITATION_TAIL_GAP_PATTERN.test(gap)) break;
-    lastCitationTokenIndex = nextTokenIndex;
-    nextTokenIndex += 1;
+  while (
+    lastCitationTokenIndex + 1 < index.tokens.length &&
+    index.tokens[lastCitationTokenIndex + 1].sourceEnd <= markerEnd
+  ) {
+    lastCitationTokenIndex += 1;
   }
-
-  const lastCitationToken = index.tokens[lastCitationTokenIndex];
-  const followingToken = index.tokens[lastCitationTokenIndex + 1];
-  const followingGap = index.sourceText.slice(
-    lastCitationToken.sourceEnd,
-    followingToken?.sourceStart ?? index.sourceText.length,
+  const next = index.tokens[lastCitationTokenIndex + 1];
+  const after = index.sourceText.slice(
+    markerEnd,
+    next?.sourceStart ?? index.sourceText.length,
   );
-  if (!ATTACHED_CITATION_BOUNDARY_PATTERN.test(followingGap)) return null;
-
-  return { sourceWord, lastCitationTokenIndex };
+  // Never consume part of a decimal, identifier, exponent, or measurement.
+  if (
+    !/^[\s\u0003.,;:!?"'”’()[\]]*$/u.test(after) ||
+    (next && /^\p{N}/u.test(next.text) && !/[.!?]/u.test(after)) ||
+    (next && !after && !explicit)
+  )
+    return remember(null);
+  return remember({
+    sourceWord,
+    lastCitationTokenIndex,
+    explicit,
+    terminal: ATTACHED_CITATION_BOUNDARY_PATTERN.test(after),
+  });
 }
 
-function queryTokenHasAlignedCitationBoundary(
-  queryIndex: QuoteTextIndex,
-  queryTokenIndex: number,
-): boolean {
-  const queryToken = queryIndex.tokens[queryTokenIndex];
-  if (!queryToken) return false;
-  const followingToken = queryIndex.tokens[queryTokenIndex + 1];
-  const followingGap = queryIndex.sourceText.slice(
-    queryToken.sourceEnd,
-    followingToken?.sourceStart ?? queryIndex.sourceText.length,
-  );
-  return ATTACHED_CITATION_BOUNDARY_PATTERN.test(followingGap);
-}
-
-function hasCorroboratingAttachedCitationStyle(
+function hasCorroboratingCitationStyle(
   index: QuoteTextIndex,
   excludedTokenIndex: number,
 ): boolean {
+  // Citation numbers following punctuation also occur in the PDF worker text.
+  let punctuationStyle = citationStyleCache.get(index);
+  if (punctuationStyle === undefined) {
+    punctuationStyle =
+      /[.)][\u0003]*[0-9]{1,3}(?:[,–-][0-9]{1,3})*(?:[\s\u0003]+\p{Lu}|$)/u.test(
+        index.sourceText,
+      );
+    citationStyleCache.set(index, punctuationStyle);
+  }
+  if (punctuationStyle) return true;
   return index.tokens.some((_token, tokenIndex) => {
     if (tokenIndex === excludedTokenIndex) return false;
-    const candidate = parseAttachedCitationToken(index, tokenIndex);
+    const candidate = parseCitationSuffix(index, tokenIndex);
     return Boolean(
       candidate &&
+      (candidate.explicit || candidate.terminal) &&
       Array.from(candidate.sourceWord).length >=
         MIN_UNCORROBORATED_ATTACHED_CITATION_STEM_LENGTH,
     );
   });
 }
 
-function matchAttachedCitationSuffix(params: {
+function matchCitationSuffix(params: {
   sourceIndex: QuoteTextIndex;
   sourceTokenIndex: number;
   queryIndex: QuoteTextIndex;
   queryTokenIndex: number;
   queryToken: QuoteTextToken;
 }): TokenAlignmentStep | null {
-  const attached = parseAttachedCitationToken(
+  const suffix = parseCitationSuffix(
     params.sourceIndex,
     params.sourceTokenIndex,
   );
+  if (!suffix || suffix.sourceWord !== params.queryToken.text) return null;
+  const nextQuery = params.queryIndex.tokens[params.queryTokenIndex + 1];
+  const queryGap = params.queryIndex.sourceText.slice(
+    params.queryToken.sourceEnd,
+    nextQuery?.sourceStart ?? params.queryIndex.sourceText.length,
+  );
+  // A displayed number must still match; reference tolerance cannot excuse it.
   if (
-    !attached ||
-    attached.sourceWord !== params.queryToken.text ||
-    !queryTokenHasAlignedCitationBoundary(
-      params.queryIndex,
-      params.queryTokenIndex,
-    )
-  ) {
+    (nextQuery && /^\p{N}/u.test(nextQuery.text)) ||
+    /[=+*/^_$<>≤≥]/u.test(queryGap)
+  )
     return null;
-  }
-
   if (
-    Array.from(attached.sourceWord).length <
-      MIN_UNCORROBORATED_ATTACHED_CITATION_STEM_LENGTH &&
-    !hasCorroboratingAttachedCitationStyle(
-      params.sourceIndex,
-      params.sourceTokenIndex,
-    )
-  ) {
+    !suffix.explicit &&
+    (!suffix.terminal ||
+      Array.from(suffix.sourceWord).length <
+        MIN_UNCORROBORATED_ATTACHED_CITATION_STEM_LENGTH) &&
+    !hasCorroboratingCitationStyle(params.sourceIndex, params.sourceTokenIndex)
+  )
     return null;
-  }
-
   return {
-    nextSourceIndex: attached.lastCitationTokenIndex + 1,
-    nextQueryIndex: 0,
-    lastMatchedSourceIndex: attached.lastCitationTokenIndex,
+    nextSourceIndex: suffix.lastCitationTokenIndex + 1,
+    nextQueryIndex: params.queryTokenIndex + 1,
+    lastMatchedSourceIndex: suffix.lastCitationTokenIndex,
   };
 }
 
@@ -744,6 +808,11 @@ function matchTokenAlignmentStep(params: {
   const sourceToken = sourceTokens[params.sourceTokenIndex];
   const queryToken = queryTokens[params.queryTokenIndex];
   if (!sourceToken || !queryToken) return null;
+
+  // Optional source references are consumed at their preceding prose word.
+  // Both full-span verification and partial-evidence collection use this step.
+  const citationSuffix = matchCitationSuffix({ ...params, queryToken });
+  if (citationSuffix) return citationSuffix;
 
   if (sourceToken.text === queryToken.text) {
     return {
@@ -790,20 +859,6 @@ function matchTokenAlignmentStep(params: {
       };
     }
     if (queryText.length >= sourceToken.text.length) break;
-  }
-
-  const attachedCitation = matchAttachedCitationSuffix({
-    sourceIndex: params.sourceIndex,
-    sourceTokenIndex: params.sourceTokenIndex,
-    queryIndex: params.queryIndex,
-    queryTokenIndex: params.queryTokenIndex,
-    queryToken,
-  });
-  if (attachedCitation) {
-    return {
-      ...attachedCitation,
-      nextQueryIndex: params.queryTokenIndex + 1,
-    };
   }
 
   return null;

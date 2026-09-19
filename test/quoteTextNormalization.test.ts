@@ -9,8 +9,130 @@ import {
   normalizeQuoteTextCanonical,
   stripLikelyLayoutNumberArtifacts,
 } from "../src/services/quotes/quoteTextNormalization";
+import { CITATION_MARKER_QUOTE_CASES } from "./fixtures/quoteAcceptance";
 
 describe("quoteTextNormalization", function () {
+  for (const fixture of CITATION_MARKER_QUOTE_CASES) {
+    it(`aligns complete wording through ${fixture.name}`, function () {
+      const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+        buildQuoteTextIndex(fixture.source),
+        fixture.quote,
+      );
+      assert.lengthOf(spans, 1);
+      assert.equal(
+        fixture.source.slice(spans[0].sourceStart, spans[0].sourceEnd),
+        spans[0].text,
+        "navigation retains original source offsets and reference markers",
+      );
+      assert.isTrue(
+        assessAcademicQuoteAlignment(fixture.source, fixture.quote)
+          .allMeaningfulTokensSupported,
+      );
+    });
+  }
+
+  for (const marker of ["<sup>137</sup>", "[137]", "¹³⁷", "\u0003137\u0003"]) {
+    it(`retains sentence-end source offsets through ${marker}`, function () {
+      const source = `The neuronal population maintained a stable representation${marker}.`;
+      const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+        buildQuoteTextIndex(source),
+        "The neuronal population maintained a stable representation.",
+      );
+      assert.lengthOf(spans, 1);
+      assert.equal(spans[0].text, source);
+    });
+  }
+
+  it("aligns multiple references together with line wraps and ligatures", function () {
+    const source =
+      "The ﬁnal analysis<sup>12</sup> conﬁrmed that repre-\nsentations[13–15] remained stable<sup>16</sup>throughout the experimental session.";
+    const quote =
+      "The final analysis confirmed that representations remained stable throughout the experimental session.";
+    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+      buildQuoteTextIndex(source),
+      quote,
+    );
+    assert.lengthOf(spans, 1);
+    assert.equal(spans[0].text, source);
+  });
+
+  for (const [source, quote] of [
+    [
+      "These codes[12] support navigation across unfamiliar environments.",
+      "These codes support navigation across unfamiliar environments.",
+    ],
+    [
+      "Grid cells<sup>128</sup> encode recurring positions in the environment.",
+      "Grid cells encode recurring positions in the environment.",
+    ],
+  ]) {
+    it(`recognizes explicit reference syntax after short prose words: ${source}`, function () {
+      assert.lengthOf(
+        findQuoteSourceSpansAllowingLayoutArtifacts(
+          buildQuoteTextIndex(source),
+          quote,
+        ),
+        1,
+      );
+    });
+  }
+
+  it("does not treat an uncorroborated numeric identifier as a mid-sentence reference", function () {
+    const source =
+      "The computation137 method was compared with every other approach.";
+    assert.isEmpty(
+      findQuoteSourceSpansAllowingLayoutArtifacts(
+        buildQuoteTextIndex(source),
+        source.replace("computation137", "computation"),
+      ),
+    );
+  });
+
+  it("preserves a superscript inside explicit math even when prose references occur nearby", function () {
+    const source =
+      "Earlier results136. The squared quantity $distance<sup>2</sup>$ increased reliably.";
+    assert.isEmpty(
+      findQuoteSourceSpansAllowingLayoutArtifacts(
+        buildQuoteTextIndex(source),
+        source.replace("<sup>2</sup>", ""),
+      ),
+    );
+  });
+
+  for (const term of [
+    "channel10",
+    "gene10",
+    "protein42",
+    "receptor2",
+    "x<sup>2</sup>",
+    "cm²",
+    "cm<sup>2</sup>",
+    "R²",
+    "10<sup>3</sup>",
+    "condition[12]",
+    "blocks\u000310\u0003",
+    "concentration 137",
+    "voltage 137",
+    "range [12–14]",
+  ]) {
+    it(`preserves semantic numeric content in ${term}`, function () {
+      const source = `Related findings were reported elsewhere136. The measurement of ${term} remained stable during every experimental session.`;
+      const quote = source.replace(
+        term,
+        term
+          .replace(/<\/?sup>/g, "")
+          .replace(/[\d²[\]–\u0003]/g, "")
+          .trim(),
+      );
+      assert.isEmpty(
+        findQuoteSourceSpansAllowingLayoutArtifacts(
+          buildQuoteTextIndex(source),
+          quote,
+        ),
+      );
+    });
+  }
+
   it("keeps repetitive fragment alignment bounded below the state ceiling", function () {
     this.timeout(1500);
     const sourceIndex = buildQuoteTextIndex(

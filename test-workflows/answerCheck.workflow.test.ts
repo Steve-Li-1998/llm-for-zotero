@@ -103,4 +103,145 @@ describe("workflow: answer check action on an agent answer", function () {
       await api.cleanupFixture(fixture);
     }
   });
+
+  it("turns a press into verdict rows, and says when no model is configured", async function () {
+    const api = (Zotero as any).LLMForZotero.api
+      .workflowTest as WorkflowTestApi;
+    await api.reset();
+    const firstLine =
+      "Median animal accuracy was 84% on day 1 and 85% on day 10.";
+    const secondLine =
+      "The population correlation fell from 0.92 to 0.61 over the same sessions.";
+    const fixture = await api.createPaperWithPdfFixture({
+      title: "Answer check click fixture",
+      pdfTitle: "Accuracy source",
+      pages: [`${firstLine}\n${secondLine}`],
+    });
+    try {
+      await api.openStandaloneForItem(fixture.parentItemId);
+      const win = (Zotero as any).LLMForZotero.data.standaloneWindow as Window;
+      const cite = (id: string, quoteText: string) => {
+        const citation = buildQuoteCitation({
+          id,
+          quoteText,
+          citationLabel: "(Fixture, 2024)",
+          contextItemId: fixture.pdfAttachmentId,
+          itemId: fixture.parentItemId,
+          sourceMatchKind: "exact",
+          sourceMatchSource: "context-text",
+        });
+        assert.isOk(citation, `the fixture quote ${id} builds a citation`);
+        return citation!;
+      };
+      const waitFor = async <T>(
+        read: () => T | null,
+        what: string,
+      ): Promise<T> => {
+        const deadline = Date.now() + 20000;
+        for (;;) {
+          const value = read();
+          if (value) return value;
+          assert.isBelow(Date.now(), deadline, `timed out waiting for ${what}`);
+          await Zotero.Promise.delay(50);
+        }
+      };
+      const statusText = () =>
+        (win.document.querySelector("#llm-status")?.textContent || "").trim();
+
+      const first = cite("q1", firstLine);
+      const second = cite("q2", secondLine);
+      await api.seedStandaloneConversation([
+        { role: "user", text: "How stable was accuracy across sessions?" },
+        {
+          role: "assistant",
+          text: `Accuracy barely moved between the two days [[quote:${first.id}]]. The correlation dropped sharply over the same sessions [[quote:${second.id}]].`,
+          runMode: "agent",
+          quoteCitations: [first, second],
+        },
+      ]);
+      let seenPrompt = "";
+      api.setAnswerCheckLlmCallForTests(async (request) => {
+        seenPrompt = request.prompt;
+        return {
+          ok: true,
+          text: '{"claims":[{"index":1,"verdict":"supported","note":"matches"},{"index":2,"verdict":"not_supported","note":"differs"}]}',
+        };
+      });
+      const button = await waitFor(
+        () =>
+          win.document.querySelector(
+            ".llm-message-action-check",
+          ) as HTMLElement | null,
+        "the answer check button",
+      );
+      button.click();
+      await waitFor(
+        () =>
+          win.document.querySelectorAll(".llm-answer-check-row").length === 2
+            ? true
+            : null,
+        "two verdict rows",
+      );
+      const rows = Array.from(
+        win.document.querySelectorAll(".llm-answer-check-row"),
+      ) as HTMLElement[];
+      assert.deepEqual(
+        rows.map((row) => row.dataset.verdict),
+        ["supported", "not_supported"],
+      );
+      assert.include(rows[0].textContent || "", "matches");
+      assert.include(
+        rows[0].textContent || "",
+        "Accuracy barely moved between the two days",
+      );
+      assert.include(rows[1].textContent || "", "differs");
+      assert.include(seenPrompt, "Claim 2: The correlation dropped sharply");
+      assert.include(seenPrompt, `Quoted: "${secondLine}"`);
+      await waitFor(
+        () => (statusText().includes("Checked 2 claims") ? true : null),
+        `the status to report the check, last seen "${statusText()}"`,
+      );
+
+      // A provider the panel cannot reach must say so and draw nothing.
+      api.setAnswerCheckLlmCallForTests(async () => ({
+        ok: false,
+        reason: "not_configured",
+      }));
+      await api.startNewStandaloneConversation();
+      const third = cite("q3", firstLine);
+      await api.seedStandaloneConversation([
+        { role: "user", text: "Ask the same thing again, unconfigured." },
+        {
+          role: "assistant",
+          text: `Accuracy barely moved between the two days [[quote:${third.id}]].`,
+          runMode: "agent",
+          quoteCitations: [third],
+        },
+      ]);
+      const secondButton = await waitFor(
+        () =>
+          win.document.querySelector(
+            ".llm-message-action-check",
+          ) as HTMLElement | null,
+        "the answer check button of the new conversation",
+      );
+      secondButton.click();
+      await waitFor(
+        () =>
+          statusText() === "Answer check needs a configured model"
+            ? true
+            : null,
+        `the unconfigured status, last seen "${statusText()}"`,
+      );
+      assert.lengthOf(
+        win.document.querySelectorAll(".llm-answer-check-row"),
+        0,
+        "a refused check draws no rows",
+      );
+    } finally {
+      api.setAnswerCheckLlmCallForTests(null);
+      await api.reset();
+      await api.cleanupFixture(fixture);
+    }
+  });
 });

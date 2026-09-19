@@ -110,6 +110,11 @@ import {
   updateContextUsageSnapshotFromProvider,
 } from "./chat";
 import {
+  clearAnswerCheckResults,
+  setAnswerCheckLlmCallForTests,
+  type AnswerCheckUtilityCall,
+} from "./answerCheck";
+import {
   applySelectedTextPreview,
   getSelectedTextContextEntries,
   resolveContextSourceItemAsync,
@@ -4710,6 +4715,8 @@ async function reset(): Promise<void> {
   resolveDelayedCodexPermissionCatalog = null;
   setFooterPermissionCatalogLoadersForTests();
   setAgentRunTraceLoaderForTests();
+  setAnswerCheckLlmCallForTests(null);
+  clearAnswerCheckResults();
   await closeStandalone();
   lastSend = null;
   lastFinalRequest = null;
@@ -5350,6 +5357,10 @@ export function installWorkflowTestHarness(targetAddon: {
       };
     },
     reset,
+    setAnswerCheckLlmCallForTests: (call: AnswerCheckUtilityCall | null) => {
+      assertWorkflowTestEnabled();
+      setAnswerCheckLlmCallForTests(call);
+    },
     enableLiveAgentSending: () => {
       assertWorkflowTestEnabled();
       setWorkflowTestSendInterceptor((opts) => {

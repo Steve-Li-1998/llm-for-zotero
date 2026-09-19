@@ -449,6 +449,14 @@ export type WorkflowTestApi = {
     dispose(): void;
   };
   reset: () => Promise<void>;
+  /**
+   * Answer the footer's answer check from the test instead of a provider, so
+   * the click path can be exercised without a configured model. `null` puts
+   * the real utility call back; `reset()` clears it.
+   */
+  setAnswerCheckLlmCallForTests: (
+    call: import("./answerCheck").AnswerCheckUtilityCall | null,
+  ) => void;
   enableLiveAgentSending: () => void;
   createPaperWithPdfFixture: (input: {
     title: string;

@@ -18,6 +18,7 @@ import {
   callUtilityLLM,
   logUtilityLLMFailure,
   type UtilityLLMParams,
+  type UtilityLLMResult,
 } from "../../utils/utilityLLM";
 
 export type AnswerCheckVerdict = "supported" | "not_supported" | "unclear";
@@ -111,6 +112,18 @@ export function collectCheckableClaims(
   return [...bySentence].map(([sentence, quotes]) => ({ sentence, quotes }));
 }
 
+/**
+ * One line, with no double quote of its own.
+ *
+ * The prompt is read line by line, so a claim or a quoted line that carried a
+ * newline could otherwise write a `Claim 9:` block nobody asked about, and a
+ * double quote inside a quoted line could close it early. Neither is a threat
+ * the model should have to judge, so both are flattened before they go in.
+ */
+function flattenForPrompt(value: string): string {
+  return value.replace(/\s+/g, " ").replace(/"/g, "'").trim();
+}
+
 /** The single request the check makes: its instruction, claims and quotes. */
 export function buildAnswerCheckPrompt(claims: readonly CheckableClaim[]): {
   prompt: string;
@@ -119,8 +132,8 @@ export function buildAnswerCheckPrompt(claims: readonly CheckableClaim[]): {
 } {
   const blocks = claims.map((claim, index) =>
     [
-      `Claim ${index + 1}: ${claim.sentence}`,
-      ...claim.quotes.map((quote) => `Quoted: "${quote}"`),
+      `Claim ${index + 1}: ${flattenForPrompt(claim.sentence)}`,
+      ...claim.quotes.map((quote) => `Quoted: "${flattenForPrompt(quote)}"`),
     ].join("\n"),
   );
   return {
@@ -227,6 +240,33 @@ export type AnswerCheckOutcome =
   | { ok: false; reason: string };
 
 /**
+ * The whole utility call, as the workflow harness may replace it.
+ *
+ * It stands in for `callUtilityLLM` rather than for the model call inside it,
+ * because the workflow profile configures no provider: a seam any further in
+ * would be refused as `not_configured` before the fake was ever reached, and
+ * the button's own path would stay untested.
+ */
+export type AnswerCheckUtilityCall = (request: {
+  prompt: string;
+  systemMessages: string[];
+  jsonBudget: number;
+  model: string;
+}) => Promise<UtilityLLMResult>;
+
+let answerCheckUtilityCall: AnswerCheckUtilityCall | null = null;
+
+/**
+ * Workflow test seam. Set only by the workflow test API, cleared by its
+ * `reset()`; in a shipped session this stays null and the real call is made.
+ */
+export function setAnswerCheckLlmCallForTests(
+  call: AnswerCheckUtilityCall | null,
+): void {
+  answerCheckUtilityCall = call;
+}
+
+/**
  * Ask the utility model whether each cited sentence is supported by its
  * quoted line(s). Called only from the footer action — never on its own.
  */
@@ -238,20 +278,23 @@ export async function runAnswerCheck(params: {
   const claims = collectCheckableClaims(params.text, params.quoteCitations);
   if (!claims.length) return { ok: false, reason: "no_claims" };
   const request = buildAnswerCheckPrompt(claims);
-  const outcome = await callUtilityLLM({
-    prompt: request.prompt,
-    model: params.llmConfig.model,
-    apiBase: params.llmConfig.apiBase,
-    apiKey: params.llmConfig.apiKey,
-    authMode: params.llmConfig.authMode,
-    providerProtocol: params.llmConfig.providerProtocol,
-    profileOverride: params.llmConfig.profileOverride,
-    temperature: 0,
-    jsonBudget: request.jsonBudget,
-    timeoutMs: ANSWER_CHECK_TIMEOUT_MS,
-    systemMessages: request.systemMessages,
-    llmCall: params.llmConfig.llmCall,
-  });
+  const model = (params.llmConfig.model || "").trim();
+  const outcome = answerCheckUtilityCall
+    ? await answerCheckUtilityCall({ ...request, model })
+    : await callUtilityLLM({
+        prompt: request.prompt,
+        model: params.llmConfig.model,
+        apiBase: params.llmConfig.apiBase,
+        apiKey: params.llmConfig.apiKey,
+        authMode: params.llmConfig.authMode,
+        providerProtocol: params.llmConfig.providerProtocol,
+        profileOverride: params.llmConfig.profileOverride,
+        temperature: 0,
+        jsonBudget: request.jsonBudget,
+        timeoutMs: ANSWER_CHECK_TIMEOUT_MS,
+        systemMessages: request.systemMessages,
+        llmCall: params.llmConfig.llmCall,
+      });
   if (!outcome.ok) {
     // The provider's own words stay in the log; the panel shows the category.
     logUtilityLLMFailure("answer check", outcome);
@@ -261,7 +304,7 @@ export async function runAnswerCheck(params: {
     ok: true,
     result: {
       claims: parseAnswerCheckResponse(outcome.text, claims),
-      model: (params.llmConfig.model || "").trim(),
+      model,
       checkedAt: Date.now(),
     },
   };

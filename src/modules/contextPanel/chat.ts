@@ -1201,7 +1201,19 @@ export async function runAnswerCheckForResponseTarget(
   const assistantTimestamp = Math.floor(
     Number(target?.assistantTimestamp) || 0,
   );
-  if (!item || conversationKey <= 0 || assistantTimestamp <= 0) return;
+  if (!item || conversationKey <= 0 || assistantTimestamp <= 0) {
+    // Without a turn to name, the conversation-wide status helper has nothing
+    // to route by, so the panel's own status line is told directly.
+    const status = body.querySelector("#llm-status") as HTMLElement | null;
+    if (status) {
+      setStatus(
+        status,
+        "Answer check is unavailable for this message",
+        "error",
+      );
+    }
+    return;
+  }
   const { refreshChatSafely, setStatusSafely } = createPanelUpdateHelpers(
     body,
     item,
@@ -1218,10 +1230,14 @@ export async function runAnswerCheckForResponseTarget(
     return;
   }
   const key = answerCheckKey(conversationKey, assistantTimestamp);
-  setStatusSafely("Checking answer…", "sending");
+  // A second press while the first is still running says nothing new, and must
+  // not overwrite the status the running check put there.
   if (answerChecksInFlight.has(key)) return;
-  answerChecksInFlight.add(key);
+  // Resolved before the turn is claimed: a throw here must not leave a key
+  // behind that would make the button dead for the rest of the session.
   const requestConfig = resolveEffectiveRequestConfig({ item });
+  setStatusSafely("Checking answer…", "sending");
+  answerChecksInFlight.add(key);
   try {
     const outcome = await runAnswerCheck({
       text: message.text || "",
@@ -10448,6 +10464,19 @@ function updateMountedAssistantViews(
       view.trace.replaceWith(trace);
       view.trace = trace;
     }
+    // The trace rewrites the action host wholesale, so a check the reader
+    // already ran has to be put back beside the card it shares the host with.
+    if (view.actionSummaryHost.parentElement) {
+      view.actionSummaryHost.querySelector(".llm-answer-check")?.remove();
+      const mountedCheck = getAnswerCheckResult(
+        answerCheckKey(getConversationKey(item), Math.floor(message.timestamp)),
+      );
+      if (mountedCheck?.claims.length) {
+        view.actionSummaryHost.appendChild(
+          renderAnswerCheckCard(box.ownerDocument, mountedCheck),
+        );
+      }
+    }
     if (
       message.text !== view.text ||
       message.quoteCitations !== view.quoteCitations ||
@@ -11803,15 +11832,20 @@ export function refreshChat(
       }
       if (agentTraceEl) bubble.appendChild(actionSummaryHost);
       // The reader asked for this check on this turn; it is redrawn from
-      // memory at every render and is gone once the session ends.
+      // memory at every render and is gone once the session ends. It joins the
+      // turn's action card host when there is one, so the answer is not
+      // followed by two card frames with a gap each.
       const answerCheck = getAnswerCheckResult(
         answerCheckKey(conversationKey, Math.floor(msg.timestamp)),
       );
       if (answerCheck?.claims.length) {
-        const checkHost = doc.createElement("div") as HTMLDivElement;
-        checkHost.className = "llm-assistant-actions";
+        let checkHost = agentTraceEl ? actionSummaryHost : null;
+        if (!checkHost) {
+          checkHost = doc.createElement("div") as HTMLDivElement;
+          checkHost.className = "llm-assistant-actions";
+          bubble.appendChild(checkHost);
+        }
         checkHost.appendChild(renderAnswerCheckCard(doc, answerCheck));
-        bubble.appendChild(checkHost);
       }
     }
 

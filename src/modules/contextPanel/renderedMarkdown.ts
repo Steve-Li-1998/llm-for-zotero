@@ -370,9 +370,13 @@ const mermaidPromises = new WeakMap<Window, Promise<Mermaid>>();
 let mermaidRenderQueue: Promise<void> = Promise.resolve();
 let mermaidRenderCounter = 0;
 
+type MermaidThemeObservation = {
+  target: Element;
+  observer: MutationObserver;
+};
+
 type MermaidThemeWatcher = {
-  observedElements: WeakSet<Element>;
-  observers: MutationObserver[];
+  observations: MermaidThemeObservation[];
   scheduled: boolean;
   mediaQuery?: MediaQueryList;
 };
@@ -386,8 +390,7 @@ function ensureMermaidThemeWatcher(doc: Document, root?: ParentNode): void {
   let watcher = mermaidThemeWatchers.get(doc);
   if (!watcher) {
     watcher = {
-      observedElements: new WeakSet<Element>(),
-      observers: [],
+      observations: [],
       scheduled: false,
     };
     mermaidThemeWatchers.set(doc, watcher);
@@ -408,8 +411,23 @@ function ensureMermaidThemeWatcher(doc: Document, root?: ParentNode): void {
     }
   };
 
+  // A panel root is recreated when its host is rebuilt (the item pane, or a
+  // standalone window), so stale observations are released before a new one is
+  // added: without this the list would keep one live observer - and the
+  // detached subtree it pins - per rebuilt panel.
+  const releaseDetachedObservations = () => {
+    if (!watcher) return;
+    watcher.observations = watcher.observations.filter((observation) => {
+      if (observation.target.isConnected !== false) return true;
+      observation.observer.disconnect();
+      return false;
+    });
+  };
+
   const observeElement = (element: Element | null | undefined) => {
-    if (!element || !watcher || watcher.observedElements.has(element)) return;
+    if (!element || !watcher) return;
+    releaseDetachedObservations();
+    if (watcher.observations.some((entry) => entry.target === element)) return;
     const MutationObserverCtor = win.MutationObserver;
     if (!MutationObserverCtor) return;
     const observer = new MutationObserverCtor(scheduleRerender);
@@ -417,16 +435,17 @@ function ensureMermaidThemeWatcher(doc: Document, root?: ParentNode): void {
       attributes: true,
       attributeFilter: ["class", "style", "lwtheme-brighttext"],
     });
-    watcher.observers.push(observer);
-    watcher.observedElements.add(element);
+    watcher.observations.push({ target: element, observer });
   };
 
+  // Only elements that outlive a single render are observed. The rendered
+  // markdown root is replaced on every render, and the theme re-render walks
+  // the whole document anyway, so observing it would grow the list without
+  // catching any theme change these three do not already catch.
   observeElement(doc.documentElement);
   observeElement(doc.body);
   if (root && root.nodeType === 1) {
-    const element = root as Element;
-    observeElement(element.closest(".llm-panel"));
-    observeElement(element.closest(".llm-rendered-markdown"));
+    observeElement((root as Element).closest(".llm-panel"));
   }
 
   if (!watcher.mediaQuery) {

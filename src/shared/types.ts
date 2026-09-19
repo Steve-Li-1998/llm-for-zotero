@@ -122,6 +122,8 @@ export type QuoteCitation = {
   pageHintIndex?: number;
   /** Best-effort printed page label from Zotero/PDF metadata. */
   pageHintLabel?: string;
+  /** Whether the anchor follows the citing claim or the retrieved passage. */
+  anchorMatch?: "claim" | "passage";
 };
 
 /** A Zotero note (item note or standalone) selected as a reference context. */

@@ -955,6 +955,7 @@ export function buildQuoteCitation(input: {
   sourceMatchPageOccurrence?: unknown;
   pageHintIndex?: unknown;
   pageHintLabel?: unknown;
+  anchorMatch?: unknown;
   id?: unknown;
   allowShortQuoteText?: unknown;
 }): QuoteCitation | undefined {
@@ -1026,6 +1027,10 @@ export function buildQuoteCitation(input: {
   );
   const pageHintIndex = normalizePageHintIndex(input.pageHintIndex);
   const pageHintLabel = normalizePageHintLabel(input.pageHintLabel);
+  const anchorMatch =
+    input.anchorMatch === "claim" || input.anchorMatch === "passage"
+      ? input.anchorMatch
+      : undefined;
   const normalizedSourceMatchKind = [
     "trusted",
     "exact",
@@ -1064,6 +1069,7 @@ export function buildQuoteCitation(input: {
     sourceMatchPageOccurrence,
     pageHintIndex,
     pageHintLabel,
+    anchorMatch,
   };
 }
 

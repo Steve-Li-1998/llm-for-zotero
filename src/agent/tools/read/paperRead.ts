@@ -33,6 +33,10 @@ import {
   buildQuoteCitation,
   mergeQuoteCitations,
 } from "../../../services/quotes/quoteCitations";
+import {
+  QUOTE_ANCHOR_MAX_CHARS,
+  QUOTE_ANCHOR_MIN_CHARS,
+} from "../../../services/quotes/claimAnchoring";
 import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 import {
   PAPER_TARGET_SELECTOR_SCHEMA,
@@ -125,8 +129,9 @@ const MAX_OVERVIEW_QUOTES_PER_RESULT = 3;
  * 0–2, which buried the ones it did use.
  */
 const MAX_TARGETED_QUOTES_PER_PASSAGE = 1;
-const MIN_OVERVIEW_QUOTE_CHARS = 40;
-const MAX_OVERVIEW_QUOTE_CHARS = 360;
+/** Overview anchors obey the shared quote-anchor length bounds. */
+const MIN_OVERVIEW_QUOTE_CHARS = QUOTE_ANCHOR_MIN_CHARS;
+const MAX_OVERVIEW_QUOTE_CHARS = QUOTE_ANCHOR_MAX_CHARS;
 /** Compact outline carried by a targeted read: depth and size bounds. */
 const MAX_EMBEDDED_OUTLINE_LEVEL = 2;
 const MAX_EMBEDDED_OUTLINE_SECTIONS = 40;

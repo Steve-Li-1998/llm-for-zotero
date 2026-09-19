@@ -59,6 +59,19 @@ describe("sentenceSplit", function () {
     );
   });
 
+  it("ends a sentence at a standalone No., but not at a numbered one", function () {
+    assert.deepEqual(
+      splitSentences("Is that correct? No. The paper reports 62%.").map(
+        (s) => s.text,
+      ),
+      ["Is that correct?", "No.", "The paper reports 62%."],
+    );
+    assert.deepEqual(
+      splitSentences("See No. 5 for details.").map((s) => s.text),
+      ["See No. 5 for details."],
+    );
+  });
+
   it("keeps prose lines only and strips list markers", function () {
     const lines = collectProseLines(
       "# Title\n- first item here\n> quoted\n```\ncode\n```\n| a | b |\nplain line",

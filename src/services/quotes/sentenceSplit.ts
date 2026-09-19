@@ -2,7 +2,10 @@ export type SentenceSpan = { text: string; start: number; end: number };
 export type ProseLine = { text: string; offset: number };
 
 const ABBREVIATION_TAIL =
-  /(?:\b(?:fig|figs|eq|eqs|et al|e\.g|i\.e|vs|cf|ref|refs|no|approx|dr|prof)|\b[A-Z])\.$/i;
+  /(?:\b(?:fig|figs|eq|eqs|et al|e\.g|i\.e|vs|cf|ref|refs|approx|dr|prof)|\b[A-Z])\.$/i;
+/** "No." abbreviates a number ("No. 5") but is also a whole answer ("No."), so
+ * it only keeps the sentence open when a number follows it. */
+const NUMBER_ABBREVIATION_TAIL = /\bno\.$/i;
 const TERMINATORS = new Set([".", "!", "?", "。", "！", "？"]);
 /** Characters that may close a sentence after its terminator and still belong
  * to it: a quoted or parenthesised sentence ends at the closing mark, not at
@@ -33,8 +36,15 @@ export function splitSentences(text: string): SentenceSpan[] {
       /\s/.test(next) ||
       text.startsWith(TOKEN_OPENER, end);
     if (!cjk && !breaks) continue;
-    const candidate = text.slice(start, i + 1);
-    if (ch === "." && ABBREVIATION_TAIL.test(candidate.trim())) continue;
+    const candidate = text.slice(start, i + 1).trim();
+    if (ch === "." && ABBREVIATION_TAIL.test(candidate)) continue;
+    if (
+      ch === "." &&
+      NUMBER_ABBREVIATION_TAIL.test(candidate) &&
+      /^\s*\d/.test(text.slice(end))
+    ) {
+      continue;
+    }
     push(out, text, start, end);
     start = end;
     i = end - 1;

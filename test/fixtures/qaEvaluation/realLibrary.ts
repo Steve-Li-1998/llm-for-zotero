@@ -36,6 +36,7 @@ const RD = { collectionName: "Representation_Drift" } as const;
 const PESCHKA = {
   paperTitle:
     "Numerics of thin-film free boundary problems for partial wetting",
+  paperItemId: 4457,
 } as const;
 
 export const realCases: RealCase[] = [
@@ -140,7 +141,10 @@ export const realCases: RealCase[] = [
   {
     id: "rp1",
     category: "factual",
-    scope: { paperTitle: "Representational drift in the mouse visual cortex" },
+    scope: {
+      paperTitle: "Representational drift in the mouse visual cortex",
+      paperItemId: 57,
+    },
     question:
       "What dataset does this paper analyze, and over what timescales does it report drift?",
     evidence: ["Allen Brain Observatory", "minutes to days"],
@@ -154,6 +158,7 @@ export const realCases: RealCase[] = [
     scope: {
       paperTitle:
         "Reward Expectation Reduces Representational Drift in the Hippocampus",
+      paperItemId: 49,
     },
     question:
       "What did the authors find about the effect of reward expectation on representational drift?",
@@ -168,6 +173,7 @@ export const realCases: RealCase[] = [
     scope: {
       paperTitle:
         "Reward Expectation Reduces Representational Drift in the Hippocampus",
+      paperItemId: 49,
     },
     question: "只根据这句话，作者最初的假设是什么？一句话回答。",
     provided:
@@ -182,6 +188,7 @@ export const realCases: RealCase[] = [
     category: "factual",
     scope: {
       paperTitle: "Stable task information from an unstable neural population",
+      paperItemId: 52,
     },
     question:
       "Which brain area was recorded, and what kind of decoder did the authors fit to each task variable?",
@@ -193,7 +200,10 @@ export const realCases: RealCase[] = [
   {
     id: "rp5",
     category: "reasoning",
-    scope: { paperTitle: "Causes and consequences of representational drift" },
+    scope: {
+      paperTitle: "Causes and consequences of representational drift",
+      paperItemId: 54,
+    },
     question:
       "According to this review, what could drift be for, and what does the review say limits its disruptive effects? Distinguish the review's statements from your own inference.",
     evidence: [
@@ -207,7 +217,10 @@ export const realCases: RealCase[] = [
   {
     id: "rp6",
     category: "verification",
-    scope: { paperTitle: "Representational drift in the mouse visual cortex" },
+    scope: {
+      paperTitle: "Representational drift in the mouse visual cortex",
+      paperItemId: 57,
+    },
     question:
       "Check this summary against the paper: 'Deitch et al. found that single-neuron responses were stable over days and that drift appeared only at the population level.' Is it accurate?",
     evidence: [

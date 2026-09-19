@@ -61,31 +61,61 @@ export function tokensForEval(text: string): Set<string> {
   return out;
 }
 
-type ProseLine = { text: string; offset: number };
+/** One non-blank line of the answer: prose, a whole blockquote block, or a line
+ * no claim can live in (code, heading, table, HTML). Blank lines are dropped,
+ * so "the next non-blank line" is simply the next block. */
+type DocumentBlock =
+  | { kind: "prose"; text: string }
+  | { kind: "quote"; text: string; ids: string[] }
+  | { kind: "other" };
 
-/** Prose lines only: no code, headings, blockquotes, tables or HTML. */
-function proseLines(markdown: string): ProseLine[] {
-  const lines: ProseLine[] = [];
-  let offset = 0;
+function tokenIds(text: string): string[] {
+  return [...text.matchAll(TOKEN_RE)].map((m) => m[1]);
+}
+
+function documentBlocks(markdown: string): DocumentBlock[] {
+  const blocks: DocumentBlock[] = [];
   let inFence = false;
-  for (const raw of markdown.split("\n")) {
-    const line = raw;
-    const start = offset;
-    offset += raw.length + 1;
+  let quoted: string[] | null = null;
+  const flushQuote = () => {
+    if (!quoted) return;
+    const joined = quoted.join(" ");
+    quoted = null;
+    blocks.push({
+      kind: "quote",
+      text: cleanClaim(joined),
+      ids: tokenIds(joined),
+    });
+  };
+  for (const line of markdown.split("\n")) {
     if (/^\s*```/.test(line)) {
+      flushQuote();
       inFence = !inFence;
+      blocks.push({ kind: "other" });
       continue;
     }
-    if (inFence) continue;
-    if (/^\s*(#{1,6}\s|>|\||<)/.test(line)) continue;
+    if (inFence) {
+      blocks.push({ kind: "other" });
+      continue;
+    }
+    if (!line.trim()) {
+      flushQuote();
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      (quoted ||= []).push(line.replace(/^\s*(?:>\s?)+/, ""));
+      continue;
+    }
+    flushQuote();
     const stripped = line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "");
-    if (!stripped.trim()) continue;
-    lines.push({
-      text: stripped,
-      offset: start + (line.length - stripped.length),
-    });
+    if (/^\s*(#{1,6}\s|\||<)/.test(line) || !stripped.trim()) {
+      blocks.push({ kind: "other" });
+      continue;
+    }
+    blocks.push({ kind: "prose", text: stripped });
   }
-  return lines;
+  flushQuote();
+  return blocks;
 }
 
 /** The sentence text a reader sees, without the quote tokens. */
@@ -119,26 +149,77 @@ function boundSentences(text: string): EvalSentence[] {
 
 type Claim = { text: string; ids: string[] };
 
+/** Sentences of one prose line as claims, tokens attached. */
+function lineClaims(text: string): Claim[] {
+  return boundSentences(text).map((sentence) => ({
+    text: cleanClaim(sentence.text),
+    ids: tokenIds(sentence.text),
+  }));
+}
+
 /** Every prose sentence of the answer with the quote tokens it carries,
- * including tokens written after it or alone on the next prose line. */
+ * including tokens written after it or alone on the next prose line.
+ * Blockquotes are not sentences of the answer, so they are not claims here;
+ * this is what the grounding ratio counts. */
 function answerClaims(markdown: string): Claim[] {
   const claims: Claim[] = [];
-  for (const line of proseLines(markdown)) {
-    const ids = [...line.text.matchAll(TOKEN_RE)].map((m) => m[1]);
-    if (!cleanClaim(line.text)) {
+  for (const block of documentBlocks(markdown)) {
+    if (block.kind !== "prose") continue;
+    if (!cleanClaim(block.text)) {
       // A token-only line cites the sentence before it rather than standing
       // as a claim of its own.
       const previous = claims[claims.length - 1];
-      if (previous) previous.ids.push(...ids);
-      else claims.push({ text: "", ids });
+      if (previous) previous.ids.push(...tokenIds(block.text));
+      else claims.push({ text: "", ids: tokenIds(block.text) });
       continue;
     }
-    for (const sentence of boundSentences(line.text))
-      claims.push({
-        text: cleanClaim(sentence.text),
-        ids: [...sentence.text.matchAll(TOKEN_RE)].map((m) => m[1]),
-      });
+    claims.push(...lineClaims(block.text));
   }
+  return claims;
+}
+
+/** What each quote token claims, for support scoring only.
+ *
+ * A quoted block is the claim its own tokens support, and it also collects the
+ * tokens of the lead-in sentence that introduces it ("… states: [[quote:q1]]")
+ * and of a bare token line written after it. Everything else keeps the prose
+ * sentence rule. Tokens appear in the order they are written. */
+function supportClaims(markdown: string): Claim[] {
+  const blocks = documentBlocks(markdown);
+  const claims: Claim[] = [];
+  /** The claim a bare token line or a trailing token binds to. */
+  let previous: Claim | undefined;
+  /** Lead-in tokens waiting for the quoted block they introduce. */
+  let pending: string[] = [];
+  blocks.forEach((block, index) => {
+    if (block.kind === "other") return;
+    if (block.kind === "quote") {
+      previous = { text: block.text, ids: [...pending, ...block.ids] };
+      pending = [];
+      claims.push(previous);
+      return;
+    }
+    if (!cleanClaim(block.text)) {
+      const ids = tokenIds(block.text);
+      if (previous) previous.ids.push(...ids);
+      else claims.push({ text: "", ids });
+      return;
+    }
+    const sentences = lineClaims(block.text);
+    const introduces = blocks[index + 1]?.kind === "quote";
+    sentences.forEach((claim, position) => {
+      if (
+        introduces &&
+        position === sentences.length - 1 &&
+        /[:：]$/.test(claim.text)
+      ) {
+        pending.push(...claim.ids);
+        claim.ids = [];
+      }
+      claims.push(claim);
+      previous = claim;
+    });
+  });
   return claims;
 }
 
@@ -154,7 +235,7 @@ export function measureSupport(
     overlap: number;
     anchorMatch?: string;
   }> = [];
-  for (const claim of answerClaims(answer)) {
+  for (const claim of supportClaims(answer)) {
     const claimTokens = tokensForEval(claim.text);
     for (const id of claim.ids) {
       const citation = byId.get(id);
@@ -195,4 +276,62 @@ export function measureGrounding(answer: string, citationIds: Set<string>) {
   }
   if (!sentences || !citationIds.size) return null;
   return { sentences, cited };
+}
+
+export type EvalCitation = {
+  id: string;
+  quoteText: string;
+  anchorMatch?: string;
+};
+
+/** Quote citations a tool result carries, wherever its payload nests them.
+ * Depth-limited and cycle-safe: the content is provider-shaped, not trusted. */
+export function collectEvalCitations(content: unknown): EvalCitation[] {
+  const out: EvalCitation[] = [];
+  const seen = new Set<unknown>();
+  const visit = (node: any, depth: number) => {
+    if (!node || typeof node !== "object" || depth > 8 || seen.has(node))
+      return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const entry of node) visit(entry, depth + 1);
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "quoteCitations" && Array.isArray(value)) {
+        for (const citation of value)
+          if (
+            citation &&
+            typeof citation === "object" &&
+            typeof citation.id === "string" &&
+            typeof citation.quoteText === "string"
+          )
+            out.push(citation as EvalCitation);
+        continue;
+      }
+      visit(value, depth + 1);
+    }
+  };
+  visit(content, 0);
+  return out;
+}
+
+/** The citations an answer is scored against: the ones the finished answer
+ * carries when it carries any, otherwise the ones its tools delivered. Shared
+ * by the live harness and the recompute script so they cannot disagree. */
+export function citationsFromEvents(events: any[]): {
+  citations: EvalCitation[];
+  finalCount: number;
+} {
+  const final = events.find((e) => e?.type === "final");
+  const fromFinal: EvalCitation[] = Array.isArray(final?.quoteCitations)
+    ? final.quoteCitations
+    : [];
+  const fromTools = events
+    .filter((e) => e?.type === "tool_result" && e.ok)
+    .flatMap((e) => collectEvalCitations(e.content));
+  return {
+    citations: fromFinal.length ? fromFinal : fromTools,
+    finalCount: fromFinal.length,
+  };
 }

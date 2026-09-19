@@ -9,6 +9,7 @@ import {
 } from "../test/fixtures/qaEvaluation/corpus";
 import { usageFromResponse } from "../test/helpers/qaUsage";
 import {
+  citationsFromEvents,
   measureGrounding,
   measureSupport,
 } from "../test/helpers/qaSupportMetrics";
@@ -46,40 +47,6 @@ const selected = new Set(
 );
 const clean = (value: string) =>
   value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ");
-type EvalCitation = { id: string; quoteText: string; anchorMatch?: string };
-
-/** Quote citations a tool result carries, wherever its payload nests them.
- * Depth-limited and cycle-safe: the content is provider-shaped, not trusted. */
-const collectCitations = (content: unknown): EvalCitation[] => {
-  const out: EvalCitation[] = [];
-  const seen = new Set<unknown>();
-  const visit = (node: any, depth: number) => {
-    if (!node || typeof node !== "object" || depth > 8 || seen.has(node))
-      return;
-    seen.add(node);
-    if (Array.isArray(node)) {
-      for (const entry of node) visit(entry, depth + 1);
-      return;
-    }
-    for (const [key, value] of Object.entries(node)) {
-      if (key === "quoteCitations" && Array.isArray(value)) {
-        for (const citation of value)
-          if (
-            citation &&
-            typeof citation === "object" &&
-            typeof citation.id === "string" &&
-            typeof citation.quoteText === "string"
-          )
-            out.push(citation as EvalCitation);
-        continue;
-      }
-      visit(value, depth + 1);
-    }
-  };
-  visit(content, 0);
-  return out;
-};
-
 /** Sections a read actually delivered: flat results, or the per-paper groups. */
 const deliveredSectionsOf = (content: any): string[] => {
   const rows: any[] = Array.isArray(content?.results)
@@ -406,20 +373,10 @@ describe("adaptive QA framework native evaluation", function () {
       const calls = events.filter((e) => e.type === "tool_call");
       const usage = requests.map((r) => r.usage).filter(Boolean);
       const answer = String(result?.text || "");
-      // The answer's own citations when the turn carries them; otherwise the
-      // ones the tools delivered, so a baseline run is still scored.
-      const finalEvent = events.find((e) => e.type === "final");
-      const finalQuoteCitations: EvalCitation[] = Array.isArray(
-        finalEvent?.quoteCitations,
-      )
-        ? finalEvent.quoteCitations
-        : [];
-      const toolQuoteCitations = events
-        .filter((e) => e.type === "tool_result" && e.ok)
-        .flatMap((e) => collectCitations(e.content));
-      const citations = finalQuoteCitations.length
-        ? finalQuoteCitations
-        : toolQuoteCitations;
+      // Same selection the recompute script applies to a stored report: the
+      // answer's own citations when the turn carries them, otherwise the ones
+      // the tools delivered, so a baseline run is still scored.
+      const { citations, finalCount } = citationsFromEvents(events);
       const report = {
         variant,
         repeat,
@@ -440,7 +397,7 @@ describe("adaptive QA framework native evaluation", function () {
           answer,
           new Set(citations.map((c) => c.id)),
         ),
-        finalQuoteCitations: finalQuoteCitations.length,
+        finalQuoteCitations: finalCount,
         deliveredSections: events
           .filter((e) => e.type === "tool_result" && e.name === "paper_read")
           .map((e) => ({

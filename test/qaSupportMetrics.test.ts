@@ -112,6 +112,50 @@ describe("qaSupportMetrics", function () {
     );
   });
 
+  describe("blockquote claims", function () {
+    const quote =
+      "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.";
+    const citations = [{ id: "q1", quoteText: quote }];
+    const claimOf = (answer: string) => {
+      const result = measureSupport(answer, citations);
+      assert.equal(result.tokens.length, 1, "exactly one scored token");
+      return result.tokens[0];
+    };
+
+    it("scores a token inside a blockquote against that block", function () {
+      const token = claimOf(`The paper states:\n\n> ${quote} [[quote:q1]]`);
+      assert.equal(token.claimSentence, quote);
+      assert.equal(token.overlap, 1);
+    });
+
+    it("binds a lead-in sentence ending in a colon to the block below it", function () {
+      const token = claimOf(`The paper states: [[quote:q1]]\n\n> ${quote}`);
+      assert.equal(token.claimSentence, quote);
+      assert.equal(token.overlap, 1);
+    });
+
+    it("binds a token after a block to that block", function () {
+      const token = claimOf(`The paper states:\n\n> ${quote}\n\n[[quote:q1]]`);
+      assert.equal(token.claimSentence, quote);
+      assert.equal(token.overlap, 1);
+    });
+
+    it("keeps the lead-in sentence when no block follows", function () {
+      const token = claimOf(
+        "The paper states: [[quote:q1]]\n\nA normal sentence follows here.",
+      );
+      assert.equal(token.claimSentence, "The paper states:");
+    });
+
+    it("still excludes blockquotes from the grounding sentence count", function () {
+      const answer = `The paper states this clearly enough to count here: [[quote:q1]]\n\n> ${quote}`;
+      assert.deepEqual(measureGrounding(answer, new Set(["q1"])), {
+        sentences: 1,
+        cited: 1,
+      });
+    });
+  });
+
   it("excludes fenced code and table rows from the sentence count", function () {
     const answer = [
       "```",

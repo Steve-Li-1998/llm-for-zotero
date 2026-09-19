@@ -295,4 +295,20 @@ export const realCases: RealCase[] = [
       "Distinguishes the geometric counterexample from a full moving thin-film solution",
     ],
   },
+  {
+    id: "rp11",
+    category: "clarification",
+    scope: {
+      paperTitle: "Geometric Stability: The Missing Axis of Representations",
+      paperItemId: 2462,
+    },
+    question:
+      'What exactly is the "boundary condition for geometric stability" here? Define it precisely.',
+    evidence: ["boundary condition for geometric stability"],
+    rubric: [
+      "Says in one sentence that the paper uses the phrase once, as a summary of the stability-alignment trade-off, without a formal definition",
+      "Explains it from the stated trade-off: unsupervised stability predicts task performance when the task is intrinsic to the data manifold, but not for high-level semantic tasks",
+      "No separate caveat paragraph, heading, or repeated limitation after that sentence",
+    ],
+  },
 ];

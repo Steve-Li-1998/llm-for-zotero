@@ -62,6 +62,12 @@ const repeat = Number(env("LLM_FOR_ZOTERO_QA_REPEAT") || 1);
 const selected = new Set(
   env("LLM_FOR_ZOTERO_QA_CASES").split(",").filter(Boolean),
 );
+/** The boundary every turn carries. A real-library case asks about the user's
+ * own library, where "selected evaluation papers" would name a corpus this
+ * suite never creates. */
+const turnSuffix = realLibrary
+  ? "Use my Zotero library and the supplied context only. Do not use external sources or modify the library. Keep the answer concise."
+  : "Use the supplied context and selected evaluation papers only. Do not use external sources or modify the library. Keep the answer concise.";
 const clean = (value: string) =>
   value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ");
 /** Sections a read actually delivered: flat results, or the per-paper groups. */
@@ -513,7 +519,7 @@ describe("adaptive QA framework native evaluation", function () {
                   ],
                 }
               : {}),
-            userText: `${entry.question}\n\nUse the supplied context and selected evaluation papers only. Do not use external sources or modify the library. Keep the answer concise.${entry.provided ? `\n\n[Provided context]\n${entry.provided}` : ""}`,
+            userText: `${entry.question}\n\n${turnSuffix}${entry.provided ? `\n\n[Provided context]\n${entry.provided}` : ""}`,
           },
           (event: any) => {
             if (

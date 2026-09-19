@@ -37,8 +37,12 @@ export function splitSentencesForEval(text: string): EvalSentence[] {
     const closing = CLOSERS.exec(text.slice(i + 1))?.[0] || "";
     const end = i + 1 + closing.length;
     const after = text[end];
+    // A quote token written straight onto the sentence ends it too.
     const boundary =
-      after === undefined || /\s/.test(after) || /[。！？]/.test(ch);
+      after === undefined ||
+      /\s/.test(after) ||
+      text.startsWith("[[quote:", end) ||
+      /[。！？]/.test(ch);
     if (!boundary) continue;
     const candidate = text.slice(start, end).trim();
     const terminated = closing

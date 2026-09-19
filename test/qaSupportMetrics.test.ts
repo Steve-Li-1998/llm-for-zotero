@@ -87,6 +87,25 @@ describe("qaSupportMetrics", function () {
     assert.equal(result.tokens[0].claimSentence, "Values were (84% and 85%).");
   });
 
+  it("ends a sentence when a quote token follows it directly", function () {
+    const withClosingMark = measureSupport(
+      'The count dropped to day 10."[[quote:q1]] Next sentence about mice.',
+      [{ id: "q1", quoteText: "The count dropped to day 10." }],
+    );
+    assert.equal(withClosingMark.tokens.length, 1);
+    assert.equal(
+      withClosingMark.tokens[0].claimSentence,
+      'The count dropped to day 10."',
+    );
+    assert.equal(withClosingMark.tokens[0].overlap, 1);
+
+    const bare = measureSupport("Accuracy stayed at 85%.[[quote:q2]] Next.", [
+      { id: "q2", quoteText: "Accuracy stayed at 85%." },
+    ]);
+    assert.equal(bare.tokens.length, 1);
+    assert.equal(bare.tokens[0].claimSentence, "Accuracy stayed at 85%.");
+  });
+
   it("ends a sentence on a standalone No.", function () {
     assert.deepEqual(
       splitSentencesForEval("No. The decoder fell to 62%.").map((s) => s.text),

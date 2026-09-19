@@ -100,7 +100,7 @@ function scanBlockquotes(markdown: string): BlockquoteScan {
         openBlock = blockLines.length;
         blockLines.push([]);
       }
-      blockLines[openBlock].push(raw.replace(/^\s*>+\s?/, ""));
+      blockLines[openBlock].push(raw.replace(/^\s*(?:>\s?)+/, ""));
     } else {
       openBlock = -1;
     }

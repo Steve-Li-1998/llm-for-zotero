@@ -47,6 +47,18 @@ describe("sentenceSplit", function () {
       ],
     );
   });
+  it("ends a sentence after a closing quote or bracket", function () {
+    assert.deepEqual(
+      splitSentences(
+        'The authors write that accuracy fell by day 10." [[quote:q1]] A later sentence about mice.',
+      ).map((s) => s.text),
+      [
+        'The authors write that accuracy fell by day 10."',
+        "[[quote:q1]] A later sentence about mice.",
+      ],
+    );
+  });
+
   it("keeps prose lines only and strips list markers", function () {
     const lines = collectProseLines(
       "# Title\n- first item here\n> quoted\n```\ncode\n```\n| a | b |\nplain line",
@@ -196,5 +208,81 @@ describe("claimAnchoring", function () {
       "A first sentence about decoders here. [[quote:q1]] A second sentence about mice.",
     );
     assert.equal(map.get("q1"), "A first sentence about decoders here.");
+  });
+
+  it("keeps a closing quote or bracket with the claim it ends", function () {
+    assert.equal(
+      extractClaimSentences(
+        'The authors write that accuracy fell by day 10." [[quote:q1]] A later sentence about mice.',
+      ).get("q1"),
+      'The authors write that accuracy fell by day 10."',
+    );
+    assert.equal(
+      extractClaimSentences(
+        "Values were (84% and 85%). [[quote:q2]] Next.",
+      ).get("q2"),
+      "Values were (84% and 85%).",
+    );
+  });
+
+  it("strips nested blockquote markers from the quoted claim", function () {
+    assert.equal(
+      extractClaimSentences("> > deep quote here [[quote:q1]]").get("q1"),
+      "deep quote here",
+    );
+  });
+
+  it("marks an anchor the claim already points at without rebuilding it", function () {
+    const original = {
+      ...citation(
+        "q1",
+        "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.",
+      ),
+      sourceMatchPageOccurrence: 2,
+    };
+    const { quoteCitations, decisions } = reanchorQuoteCitationsToClaims({
+      text: "The fixed decoder declined from 80% to 62% by day 10 [[quote:q1]].",
+      quoteCitations: [original],
+      passageTextByCitationId: new Map([["q1", passage]]),
+    });
+    assert.equal(decisions[0].match, "claim");
+    assert.deepEqual(quoteCitations[0], { ...original, anchorMatch: "claim" });
+    assert.equal(quoteCitations[0].sourceMatchPageOccurrence, 2);
+  });
+
+  it("re-anchors every citation against its own passage", function () {
+    const first = citation(
+      "q1",
+      "Median animal accuracy was 84% on day 1 and 85% on day 10.",
+    );
+    const second = citation(
+      "q2",
+      "An independently retrained daily decoder remained at 81%.",
+    );
+    const { quoteCitations, decisions } = reanchorQuoteCitationsToClaims({
+      text: "The fixed decoder declined from 80% to 62% by day 10 [[quote:q1]]. Downstream synaptic weights were not measured in this cohort [[quote:q2]].",
+      quoteCitations: [first, second],
+      passageTextByCitationId: new Map([
+        ["q1", passage],
+        [
+          "q2",
+          "Recovery was 81%. The treatment group recovered after washout to the same level as sham animals in the later sessions.",
+        ],
+      ]),
+    });
+    assert.deepEqual(
+      decisions.map((d) => [d.id, d.match]),
+      [
+        ["q1", "claim"],
+        ["q2", "passage"],
+      ],
+    );
+    assert.equal(
+      quoteCitations[0].quoteText,
+      "The fixed day-1 decoder declined from 80% to 62% accuracy by day 10.",
+    );
+    assert.equal(quoteCitations[0].anchorMatch, "claim");
+    assert.equal(quoteCitations[1].quoteText, second.quoteText);
+    assert.equal(quoteCitations[1].anchorMatch, "passage");
   });
 });

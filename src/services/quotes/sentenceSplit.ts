@@ -4,9 +4,14 @@ export type ProseLine = { text: string; offset: number };
 const ABBREVIATION_TAIL =
   /(?:\b(?:fig|figs|eq|eqs|et al|e\.g|i\.e|vs|cf|ref|refs|no|approx|dr|prof)|\b[A-Z])\.$/i;
 const TERMINATORS = new Set([".", "!", "?", "。", "！", "？"]);
+/** Characters that may close a sentence after its terminator and still belong
+ * to it: a quoted or parenthesised sentence ends at the closing mark, not at
+ * the full stop inside it. */
+const CLOSERS = new Set(['"', "'", "”", "’", ")", "]", "」", "』", "》"]);
 
 /** Sentence spans with offsets into the input. Decimal points and common
- * abbreviations do not end a sentence; CJK terminators always do. */
+ * abbreviations do not end a sentence; CJK terminators always do. A run of
+ * closing quotes or brackets after the terminator is part of the sentence. */
 export function splitSentences(text: string): SentenceSpan[] {
   const out: SentenceSpan[] = [];
   let start = 0;
@@ -14,14 +19,17 @@ export function splitSentences(text: string): SentenceSpan[] {
     const ch = text[i];
     if (!TERMINATORS.has(ch)) continue;
     const prev = text[i - 1] || "";
-    const next = text[i + 1];
-    if (ch === "." && /\d/.test(prev) && /\d/.test(next || "")) continue;
+    if (ch === "." && /\d/.test(prev) && /\d/.test(text[i + 1] || "")) continue;
+    let end = i + 1;
+    while (end < text.length && CLOSERS.has(text[end])) end++;
+    const next = text[end];
     const cjk = ch === "。" || ch === "！" || ch === "？";
     if (!cjk && next !== undefined && !/\s/.test(next)) continue;
     const candidate = text.slice(start, i + 1);
     if (ch === "." && ABBREVIATION_TAIL.test(candidate.trim())) continue;
-    push(out, text, start, i + 1);
-    start = i + 1;
+    push(out, text, start, end);
+    start = end;
+    i = end - 1;
   }
   push(out, text, start, text.length);
   return out;

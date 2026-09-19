@@ -24,7 +24,8 @@ function environmentValue(key: string): string {
   }
 }
 
-function stringPrefFromContents(contents: string, key: string): string {
+/** Reads one string pref out of a profile prefs.js, without loading it. */
+export function stringPrefFromContents(contents: string, key: string): string {
   const escaped = key.replace(/\./g, "\\.");
   const match = contents.match(
     new RegExp(`user_pref\\("${escaped}",\\s*("(?:\\\\.|[^"\\\\])*")\\);`),

@@ -6,6 +6,7 @@ import {
   cases,
   realPaperCases,
   libraryCases,
+  type QaCase,
 } from "../test/fixtures/qaEvaluation/corpus";
 import { usageFromResponse } from "../test/helpers/qaUsage";
 import {
@@ -21,25 +22,41 @@ import {
 import { measureAcquisition } from "../test/helpers/qaAcquisitionMetrics";
 import { acquisitionRealCases } from "../test/fixtures/qaEvaluation/acquisitionReal";
 import {
+  realCases,
+  type RealCase,
+} from "../test/fixtures/qaEvaluation/realLibrary";
+import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
 } from "../src/services/mineru/mineruCache";
-import { resolveLiveAgentCredentials } from "./liveAgentCredentials";
+import {
+  resolveLiveAgentCredentials,
+  stringPrefFromContents,
+} from "./liveAgentCredentials";
 declare const Zotero: any;
 declare const IOUtils: any;
 declare const Services: any;
 const env = (key: string) => String(Services.env.get(key) || "");
 const prefix = "extensions.zotero.llmforzotero";
 const directory = env("LLM_FOR_ZOTERO_QA_REPORT_DIR");
-const realPaper = env("LLM_FOR_ZOTERO_QA_REAL_PAPER") === "1";
-const acquisitionOnly = env("LLM_FOR_ZOTERO_QA_SUITE") === "acquisition";
-const evaluationCases = realPaper
-  ? acquisitionOnly
-    ? acquisitionRealCases
-    : realPaperCases
-  : acquisitionOnly
-    ? acquisitionCases
-    : [...cases, ...libraryCases];
+const suite = env("LLM_FOR_ZOTERO_QA_SUITE");
+const acquisitionOnly = suite === "acquisition";
+// The real-library suite answers from a snapshot of the user's own data
+// directory: it creates no fixture item, writes no PDF and no MinerU cache,
+// and erases nothing when it finishes.
+const realLibrary = suite === "real";
+const realPaper = env("LLM_FOR_ZOTERO_QA_REAL_PAPER") === "1" && !realLibrary;
+const semanticSearch = env("LLM_FOR_ZOTERO_QA_SEMANTIC") === "1";
+type EvaluationCase = QaCase | AcquisitionCase | RealCase;
+const evaluationCases: EvaluationCase[] = realLibrary
+  ? realCases
+  : realPaper
+    ? acquisitionOnly
+      ? acquisitionRealCases
+      : realPaperCases
+    : acquisitionOnly
+      ? acquisitionCases
+      : [...cases, ...libraryCases];
 const variant = env("LLM_FOR_ZOTERO_QA_VARIANT") || "unspecified";
 const repeat = Number(env("LLM_FOR_ZOTERO_QA_REPEAT") || 1);
 const selected = new Set(
@@ -69,6 +86,137 @@ const deliveredSectionsOf = (content: any): string[] => {
     ),
   ];
 };
+
+const EMBEDDING_PREF_KEYS = [
+  "embeddingApiBase",
+  "embeddingModel",
+  "embeddingApiKey",
+  "embeddingProvider",
+];
+/** Fixes the retrieval setting for the run.
+ *
+ * Semantic retrieval is opt-in because it needs the user's own embedding
+ * account, which the scaffold profile does not carry. The values are copied
+ * from the live profile's prefs.js straight into Zotero.Prefs; none of them is
+ * returned, reported or logged. Returns the names that were copied. */
+async function applyRetrievalPrefs(): Promise<string[]> {
+  Zotero.Prefs.set(`${prefix}.enableSemanticSearch`, semanticSearch, true);
+  if (!semanticSearch) return [];
+  const profilePath = env("LLM_FOR_ZOTERO_LIVE_PROFILE_PATH");
+  assert.isNotEmpty(
+    profilePath,
+    "LLM_FOR_ZOTERO_QA_SEMANTIC=1 needs LLM_FOR_ZOTERO_LIVE_PROFILE_PATH: the embedding settings are read from that profile",
+  );
+  const contents = String(await Zotero.File.getContentsAsync(profilePath));
+  const copied: string[] = [];
+  for (const key of EMBEDDING_PREF_KEYS) {
+    const value = stringPrefFromContents(contents, `${prefix}.${key}`);
+    if (!value) continue;
+    Zotero.Prefs.set(`${prefix}.${key}`, value, true);
+    copied.push(key);
+  }
+  // Without a base and a model the run would fall back to lexical retrieval
+  // while reporting itself as a semantic run.
+  for (const required of ["embeddingApiBase", "embeddingModel"])
+    assert.include(
+      copied,
+      required,
+      `a semantic run needs ${required} in the live profile prefs.js`,
+    );
+  return copied;
+}
+
+type RealScope = {
+  kind: "library" | "paper";
+  libraryID: number;
+  /** The scope fields of the turn request, as the panel would send them. */
+  request: Record<string, unknown>;
+  resolved: Record<string, number>;
+};
+/** Resolves a real-library case against the snapshot library, by collection
+ * name or by paper title. A missing or ambiguous target fails the case: it must
+ * never answer quietly under some other scope. */
+async function resolveRealScope(entry: RealCase): Promise<RealScope> {
+  const libraryID = Number(Zotero.Libraries.userLibraryID);
+  const scope = entry.scope;
+  if ("collectionName" in scope) {
+    const matches = Zotero.Collections.getByLibrary(libraryID, true).filter(
+      (collection: any) => collection.name === scope.collectionName,
+    );
+    assert.equal(
+      matches.length,
+      1,
+      `the library must hold exactly one collection named "${scope.collectionName}" (found ${matches.length})`,
+    );
+    const collectionId = Number(matches[0].id);
+    return {
+      kind: "library",
+      libraryID,
+      request: {
+        conversationKind: "global",
+        selectedCollectionContexts: [
+          { collectionId, name: scope.collectionName, libraryID },
+        ],
+        selectedPaperContexts: [],
+      },
+      resolved: { libraryID, collectionId },
+    };
+  }
+  if ("library" in scope)
+    return {
+      kind: "library",
+      libraryID,
+      request: {
+        conversationKind: "global",
+        selectedCollectionContexts: [],
+        selectedPaperContexts: [],
+      },
+      resolved: { libraryID },
+    };
+  // Same construction the plugin's own item search uses: an unscoped
+  // Zotero.Search would reach into other libraries.
+  const search = new Zotero.Search({ libraryID });
+  search.addCondition("title", "is", scope.paperTitle);
+  const ids: number[] = await search.search();
+  // A title search also returns attachments and notes, and a trashed item must
+  // not answer: only a live regular item can be the active paper.
+  const items = ids
+    .map((id) => Zotero.Items.get(id))
+    .filter((item: any) => item && item.isRegularItem?.() && !item.deleted);
+  assert.equal(
+    items.length,
+    1,
+    `the library must hold exactly one item titled "${scope.paperTitle}" (found ${items.length})`,
+  );
+  const item = items[0];
+  const attachment = await item.getBestAttachment();
+  assert.isOk(
+    attachment,
+    `"${scope.paperTitle}" must have an attachment to read`,
+  );
+  const itemId = Number(item.id);
+  const attachmentId = Number(attachment.id);
+  // Zotero stores a free-form date string; a paper context carries the year.
+  const year = (String(item.getField("date") || "").match(/\d{4}/) || [""])[0];
+  return {
+    kind: "paper",
+    libraryID,
+    request: {
+      conversationKind: "paper",
+      activeItemId: itemId,
+      activePaperContext: {
+        libraryID,
+        itemId,
+        contextItemId: attachmentId,
+        title: String(item.getField("title") || scope.paperTitle),
+        firstCreator: String(item.firstCreator || ""),
+        year,
+      },
+      selectedPaperContexts: [],
+    },
+    resolved: { libraryID, itemId, attachmentId },
+  };
+}
 
 describe("adaptive QA framework native evaluation", function () {
   this.timeout(360000);
@@ -107,26 +255,28 @@ describe("adaptive QA framework native evaluation", function () {
     Zotero.Prefs.set(`${prefix}.mineruGlobalAutoParse`, false, true);
     Zotero.Prefs.set(`${prefix}.mineruSyncEnabled`, false, true);
     Zotero.Prefs.set(`${prefix}.mineruEnabled`, true, true);
-    // Fixed lexical setting isolates harness cost from first-time remote indexing.
-    Zotero.Prefs.set(`${prefix}.enableSemanticSearch`, false, true);
-    const sources = realPaper
-      ? [
-          {
-            id: "peschka",
-            title:
-              "Numerics of thin-film free boundary problems for partial wetting",
-            author: "Peschka",
-            year: "2014",
-            text: String(
-              await Zotero.File.getContentsAsync(
-                `${env("LLM_FOR_ZOTERO_LIVE_PAPER_CACHE")}/full.md`,
+    const embeddingPrefs = await applyRetrievalPrefs();
+    const sources = realLibrary
+      ? // The snapshot library supplies the papers; nothing is created here.
+        []
+      : realPaper
+        ? [
+            {
+              id: "peschka",
+              title:
+                "Numerics of thin-film free boundary problems for partial wetting",
+              author: "Peschka",
+              year: "2014",
+              text: String(
+                await Zotero.File.getContentsAsync(
+                  `${env("LLM_FOR_ZOTERO_LIVE_PAPER_CACHE")}/full.md`,
+                ),
               ),
-            ),
-          },
-        ]
-      : acquisitionOnly
-        ? acquisitionPapers
-        : papers;
+            },
+          ]
+        : acquisitionOnly
+          ? acquisitionPapers
+          : papers;
     for (const source of sources) {
       const item = new Zotero.Item("journalArticle");
       item.libraryID = Zotero.Libraries.userLibraryID;
@@ -190,7 +340,7 @@ describe("adaptive QA framework native evaluation", function () {
         year: source.year,
       });
     }
-    if (!realPaper && !acquisitionOnly) {
+    if (!realLibrary && !realPaper && !acquisitionOnly) {
       // Library-chat cases need a collection scope rather than an active paper.
       const collection = new Zotero.Collection();
       collection.libraryID = Zotero.Libraries.userLibraryID;
@@ -210,22 +360,37 @@ describe("adaptive QA framework native evaluation", function () {
         libraryID: collection.libraryID,
       };
     }
-    await write(`setup-${variant}-${repeat}${realPaper ? "-real" : ""}.json`, {
-      variant,
-      repeat,
-      build: env("LLM_FOR_ZOTERO_QA_BUILD"),
-      profile: Services.dirsvc.get("ProfD", Components.interfaces.nsIFile).path,
-      dataDirectory: Zotero.DataDirectory.dir,
-      model: credentials!.model,
-      sourceType: realPaper
-        ? "real paper with existing extraction"
-        : "authored fictional fixtures",
-      semanticSearch: false,
-      suite: acquisitionOnly ? "acquisition" : "framework",
-      refs,
-    });
+    await write(
+      `setup-${variant}-${repeat}${realPaper ? "-real" : realLibrary ? "-real-library" : ""}.json`,
+      {
+        variant,
+        repeat,
+        build: env("LLM_FOR_ZOTERO_QA_BUILD"),
+        profile: Services.dirsvc.get("ProfD", Components.interfaces.nsIFile)
+          .path,
+        dataDirectory: Zotero.DataDirectory.dir,
+        model: credentials!.model,
+        sourceType: realLibrary
+          ? "user library snapshot addressed by collection name or paper title"
+          : realPaper
+            ? "real paper with existing extraction"
+            : "authored fictional fixtures",
+        semanticSearch,
+        // Names only: an embedding credential is never written to a report.
+        embeddingPrefs,
+        suite: realLibrary
+          ? "real"
+          : acquisitionOnly
+            ? "acquisition"
+            : "framework",
+        refs,
+      },
+    );
   });
   after(async function () {
+    // The real-library suite answers from the user's own library: it creates
+    // nothing there, so it must delete nothing either.
+    if (realLibrary) return;
     for (const id of [...created].reverse()) {
       const item = Zotero.Items.get(id);
       if (item) await item.eraseTx();
@@ -239,7 +404,14 @@ describe("adaptive QA framework native evaluation", function () {
     (c) => !selected.size || selected.has(c.id),
   )) {
     it(`${entry.id} ${entry.category}: ${entry.question}`, async function () {
-      const libraryCase = "library" in entry && Boolean(entry.library);
+      // Resolved before the clock starts, so a missing collection or paper
+      // reads as a lookup failure rather than a slow turn.
+      const realScope = realLibrary
+        ? await resolveRealScope(entry as RealCase)
+        : null;
+      const libraryCase = realScope
+        ? realScope.kind === "library"
+        : "library" in entry && Boolean(entry.library);
       const toolkit = Zotero.LLMForZotero.data.ztoolkit;
       const original = toolkit.getGlobal;
       const fetch = original.call(toolkit, "fetch");
@@ -304,22 +476,25 @@ describe("adaptive QA framework native evaluation", function () {
             conversationKey:
               Math.floor(Date.now() / 10) + evaluationCases.indexOf(entry),
             mode: "agent",
-            libraryID: refs[0].libraryID,
+            libraryID: realScope ? realScope.libraryID : refs[0].libraryID,
             // A library case has no active paper: the collection is the scope.
-            ...(libraryCase
-              ? {
-                  conversationKind: "global",
-                  selectedCollectionContexts: libraryScope
-                    ? [libraryScope]
-                    : [],
-                  selectedPaperContexts: [],
-                }
-              : {
-                  conversationKind: "paper",
-                  activeItemId: refs[0].itemId,
-                  activePaperContext: refs[0],
-                  selectedPaperContexts: entry.multi ? refs : [],
-                }),
+            ...(realScope
+              ? realScope.request
+              : libraryCase
+                ? {
+                    conversationKind: "global",
+                    selectedCollectionContexts: libraryScope
+                      ? [libraryScope]
+                      : [],
+                    selectedPaperContexts: [],
+                  }
+                : {
+                    conversationKind: "paper",
+                    activeItemId: refs[0].itemId,
+                    activePaperContext: refs[0],
+                    selectedPaperContexts:
+                      "multi" in entry && entry.multi ? refs : [],
+                  }),
             ...credentials,
             ...("history" in entry ? { history: entry.history } : {}),
             ...(entry.id === "p4"
@@ -388,6 +563,7 @@ describe("adaptive QA framework native evaluation", function () {
         ...("history" in entry ? { history: entry.history } : {}),
         sourceEvidence: entry.evidence,
         scope: libraryCase ? "library" : "paper",
+        ...(realScope ? { scopeResolved: realScope.resolved } : {}),
         outcome: result?.kind,
         error,
         answer,

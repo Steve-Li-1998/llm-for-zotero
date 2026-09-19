@@ -15,7 +15,8 @@ import {
   measureSupport,
 } from "../test/helpers/qaSupportMetrics";
 
-const REPORT_NAME = /^(before|after)-\d+-[a-z]\d+\.json$/;
+// Case ids carry one or more letters before their number (f1, p3, rl2).
+const REPORT_NAME = /^(before|after)-\d+-[a-z]+\d+\.json$/;
 
 /** Rewrites every report in `directory`; returns one summary line per report. */
 export async function recomputeQaSupport(directory: string): Promise<string[]> {

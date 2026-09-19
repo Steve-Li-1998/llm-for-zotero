@@ -79,6 +79,32 @@ describe("QA support recompute", function () {
       ),
       "utf8",
     );
+    // A real-library case id has more than one letter; it is still a report.
+    await writeFile(
+      join(directory, "after-1-rl2.json"),
+      JSON.stringify(
+        {
+          variant: "after",
+          repeat: 1,
+          id: "rl2",
+          answer: `The paper states:\n\n> ${quote} [[quote:q1]]`,
+          support: { ...stale, lowOverlapTokens: 2 },
+          grounding: null,
+          finalQuoteCitations: 0,
+          events: [
+            {
+              type: "tool_result",
+              name: "paper_read",
+              ok: true,
+              content: { quoteCitations: [{ id: "q1", quoteText: quote }] },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
     // Anything that is not a case report must be left alone.
     await writeFile(
       join(directory, "setup-before-1.json"),
@@ -88,6 +114,7 @@ describe("QA support recompute", function () {
 
     assert.deepEqual(await recomputeQaSupport(directory), [
       "after-1-f2.json: lowOverlapTokens 1 -> 0",
+      "after-1-rl2.json: lowOverlapTokens 2 -> 0",
       "before-1-f1.json: lowOverlapTokens 3 -> 0",
     ]);
 

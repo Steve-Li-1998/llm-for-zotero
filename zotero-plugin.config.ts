@@ -95,6 +95,14 @@ export default defineConfig({
             { recursive: true },
           );
         }
+        // A live QA run can answer from a copy of the user's own data
+        // directory (zotero.sqlite, storage, MinerU and embedding caches)
+        // instead of the empty scaffold profile. The copy is what the run
+        // writes to, so the original library is never touched.
+        const snapshot = process.env.LLM_FOR_ZOTERO_QA_DATA_SNAPSHOT;
+        if (snapshot) {
+          await cp(snapshot, ".scaffold/test/data", { recursive: true });
+        }
       },
       "test:bundleTests": () => patchGeneratedWorkflowTestReporter(),
     },

@@ -5,14 +5,21 @@ import { resolve } from "node:path";
 const directory = process.argv[2];
 if (!directory)
   throw new Error(
-    "Usage: node scripts/summarize-qa-evaluation.mjs REPORT_DIR [--real]",
+    "Usage: node scripts/summarize-qa-evaluation.mjs REPORT_DIR [--prefix p]",
   );
-const real = process.argv.includes("--real");
+// Suites are told apart by their case ids: the authored suite uses one letter
+// (f1, s1, l1), the approved real paper uses p, the real library uses r.
+const prefixFlag = process.argv.indexOf("--prefix");
+const prefix = prefixFlag === -1 ? null : process.argv[prefixFlag + 1];
+if (prefixFlag !== -1 && !prefix)
+  throw new Error("--prefix needs a case-id prefix, for example --prefix r");
+const selects = (id) =>
+  prefix ? id.startsWith(prefix) : /^[a-z]\d/.test(id) && !id.startsWith("p");
 const reports = [];
 for (const name of await readdir(directory)) {
-  if (!/^(before|after)-\d+-[a-z]\d+\.json$/.test(name)) continue;
+  if (!/^(before|after)-\d+-[a-z]+\d+\.json$/.test(name)) continue;
   const report = JSON.parse(await readFile(resolve(directory, name), "utf8"));
-  if (report.id.startsWith("p") === real) reports.push(report);
+  if (selects(String(report.id || ""))) reports.push(report);
 }
 const sum = (values) => values.reduce((a, b) => a + b, 0);
 const percentile = (values, fraction) => {
@@ -189,7 +196,7 @@ console.log(
   JSON.stringify(
     {
       directory: resolve(directory),
-      sourceSet: real ? "real" : "authored",
+      sourceSet: prefix ? `prefix:${prefix}` : "authored",
       unmatched,
       groups,
       pairs,

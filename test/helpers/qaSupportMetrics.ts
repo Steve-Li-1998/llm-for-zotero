@@ -3,8 +3,10 @@
 export type EvalSentence = { text: string; start: number; end: number };
 
 const ABBREVIATIONS =
-  /(?:\b(?:fig|figs|eq|eqs|et al|e\.g|i\.e|vs|cf|ref|refs|no|approx|dr|prof)|\b[A-Z])\.$/i;
+  /(?:\b(?:fig|figs|eq|eqs|et al|e\.g|i\.e|vs|cf|ref|refs|approx|dr|prof)|\b[A-Z])\.$/i;
 const TOKEN_RE = /\[\[quote:([A-Za-z0-9._:-]+)\]\]/g;
+/** A run of quote tokens opening a span: they cite what came before them. */
+const LEADING_TOKENS = /^\s*(?:\[\[quote:[A-Za-z0-9._:-]+\]\]\s*)+/;
 const STOPWORDS = new Set(
   "a an the and or of to in on at by for with from as is are was were be been it its this that these those we they he she their our not no than then which who whom whose what when where how also into over under between during after before about".split(
     " ",
@@ -86,6 +88,60 @@ function proseLines(markdown: string): ProseLine[] {
   return lines;
 }
 
+/** The sentence text a reader sees, without the quote tokens. */
+const cleanClaim = (text: string) =>
+  text
+    .replace(TOKEN_RE, "")
+    .replace(/\s+([.!?。！？])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** Sentences of one prose line, with each quote token bound to the sentence it
+ * supports. A token written after the terminal punctuation, or alone in its own
+ * span, belongs to the sentence before it, not to the one that follows. */
+function boundSentences(text: string): EvalSentence[] {
+  const out: EvalSentence[] = [];
+  for (const span of splitSentencesForEval(text)) {
+    const previous = out[out.length - 1];
+    const lead = LEADING_TOKENS.exec(text.slice(span.start, span.end));
+    if (!lead || !previous) {
+      out.push({ ...span });
+      continue;
+    }
+    const cut = span.start + lead[0].length;
+    previous.end = cut;
+    previous.text = text.slice(previous.start, cut).trim();
+    const rest = text.slice(cut, span.end).trim();
+    if (rest) out.push({ text: rest, start: cut, end: span.end });
+  }
+  return out;
+}
+
+type Claim = { text: string; ids: string[] };
+
+/** Every prose sentence of the answer with the quote tokens it carries,
+ * including tokens written after it or alone on the next prose line. */
+function answerClaims(markdown: string): Claim[] {
+  const claims: Claim[] = [];
+  for (const line of proseLines(markdown)) {
+    const ids = [...line.text.matchAll(TOKEN_RE)].map((m) => m[1]);
+    if (!cleanClaim(line.text)) {
+      // A token-only line cites the sentence before it rather than standing
+      // as a claim of its own.
+      const previous = claims[claims.length - 1];
+      if (previous) previous.ids.push(...ids);
+      else claims.push({ text: "", ids });
+      continue;
+    }
+    for (const sentence of boundSentences(line.text))
+      claims.push({
+        text: cleanClaim(sentence.text),
+        ids: [...sentence.text.matchAll(TOKEN_RE)].map((m) => m[1]),
+      });
+  }
+  return claims;
+}
+
 export function measureSupport(
   answer: string,
   citations: Array<{ id: string; quoteText?: string; anchorMatch?: string }>,
@@ -98,29 +154,17 @@ export function measureSupport(
     overlap: number;
     anchorMatch?: string;
   }> = [];
-  for (const line of proseLines(answer)) {
-    for (const match of line.text.matchAll(TOKEN_RE)) {
-      const id = match[1];
+  for (const claim of answerClaims(answer)) {
+    const claimTokens = tokensForEval(claim.text);
+    for (const id of claim.ids) {
       const citation = byId.get(id);
       if (!citation) continue;
-      const sentences = splitSentencesForEval(line.text);
-      const position = match.index || 0;
-      const claim =
-        sentences.find((s) => position >= s.start && position < s.end) ||
-        sentences.filter((s) => s.end <= position).pop() ||
-        sentences[0];
-      const claimSentence = (claim?.text || line.text)
-        .replace(TOKEN_RE, "")
-        .replace(/\s+([.!?。！？])/g, "$1")
-        .replace(/\s+/g, " ")
-        .trim();
-      const claimTokens = tokensForEval(claimSentence);
       const quoteTokens = tokensForEval(citation.quoteText || "");
       let shared = 0;
       for (const token of claimTokens) if (quoteTokens.has(token)) shared++;
       tokens.push({
         id,
-        claimSentence,
+        claimSentence: claim.text,
         quoteText: citation.quoteText || "",
         overlap: claimTokens.size ? shared / claimTokens.size : 0,
         anchorMatch: citation.anchorMatch,
@@ -144,14 +188,10 @@ export function measureSupport(
 export function measureGrounding(answer: string, citationIds: Set<string>) {
   let sentences = 0;
   let cited = 0;
-  for (const line of proseLines(answer)) {
-    for (const sentence of splitSentencesForEval(line.text)) {
-      const bare = sentence.text.replace(TOKEN_RE, "");
-      if (tokensForEval(bare).size < 6) continue;
-      sentences++;
-      const ids = [...sentence.text.matchAll(TOKEN_RE)].map((m) => m[1]);
-      if (ids.some((id) => citationIds.has(id))) cited++;
-    }
+  for (const claim of answerClaims(answer)) {
+    if (tokensForEval(claim.text).size < 6) continue;
+    sentences++;
+    if (claim.ids.some((id) => citationIds.has(id))) cited++;
   }
   if (!sentences || !citationIds.size) return null;
   return { sentences, cited };

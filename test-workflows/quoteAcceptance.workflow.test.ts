@@ -4,7 +4,9 @@ import { collectReaderSelectionDocuments } from "../src/modules/contextPanel/rea
 import {
   SUMMERFIELD_QUOTE,
   SUMMERFIELD_SOURCE_PREFIX,
+  SUMMERFIELD_SIMILARITY_QUOTE,
 } from "../test/fixtures/quoteAcceptance";
+import { buildFragmentedQuotePdf } from "../test/fixtures/fragmentedQuotePdf";
 
 describe("workflow: quote acceptance from unique passage evidence", function () {
   this.timeout(120000);
@@ -18,6 +20,16 @@ describe("workflow: quote acceptance from unique passage evidence", function () 
         "Reward-related pattern similarity increased reliably across the adolescent participants (F₂,₆₈ = 4.72; p = 0.012; N = 89)",
       source:
         "Reward-related pattern similarity increased reliably across the adolescent participants (F(268) = 4.72; p = 0.012; N = 89).",
+    },
+    {
+      name: "quote with fragmented words and closing delimiters",
+      prose: "Neurons that signal",
+      quote: SUMMERFIELD_SIMILARITY_QUOTE.replaceAll("→", "->"),
+      source: SUMMERFIELD_SIMILARITY_QUOTE.replaceAll("→", "->"),
+      highlightTail: "{x ->z}.",
+      fragmented: true,
+      followingQuote:
+        "A second complete quotation should navigate to its own page after the first search.",
     },
     {
       name: "quote containing a mid-sentence citation marker",
@@ -38,12 +50,24 @@ describe("workflow: quote acceptance from unique passage evidence", function () 
         .workflowTest as WorkflowTestApi;
       await api.reset();
       const { prose, quote, source } = scenario;
-      const markdown = `> ${quote}\n\n(Fixture, 2024)`;
+      const markdown = [quote, scenario.followingQuote]
+        .filter(Boolean)
+        .map((text) => `> ${text}\n\n(Fixture, 2024)`)
+        .join("\n\n");
       const fixture = await api.createPaperWithPdfFixture({
         title: "Quote acceptance fixture",
         pdfTitle: "Statistical source",
         pages: [source],
       });
+      if (scenario.fragmented) {
+        const attachment = Zotero.Items.get(fixture.pdfAttachmentId);
+        const path = await attachment.getFilePathAsync();
+        assert.isString(path);
+        await IOUtils.write(
+          path as string,
+          await buildFragmentedQuotePdf([source, scenario.followingQuote!]),
+        );
+      }
       const diagnosticLog: string[] = [];
       const onDebug = (message: string) => {
         if (/quote-locator|quote validation|quote source/i.test(message))
@@ -74,6 +98,24 @@ describe("workflow: quote acceptance from unique passage evidence", function () 
           pageReady(),
           "native PDF page is loaded before reopening chat",
         );
+        if (scenario.fragmented) {
+          const items = collectReaderSelectionDocuments(reader).flatMap((doc) =>
+            Array.from(
+              doc.querySelectorAll(".textLayer span"),
+              (node) => node.textContent,
+            ),
+          );
+          assert.include(
+            items,
+            "}",
+            "the native fixture splits the closing brace into its own text item",
+          );
+          assert.include(
+            items,
+            ".",
+            "the period is a separate native text item",
+          );
+        }
         await api.openStandaloneForItem(item.id);
         const context = {
           itemId: item.id,
@@ -113,17 +155,26 @@ describe("workflow: quote acceptance from unique passage evidence", function () 
         let card: HTMLElement | null = null;
         const deadline = Date.now() + 30000;
         while (Date.now() < deadline) {
-          card = win.document.querySelector(
-            '.llm-quote-card[data-quote-status="verified"]',
+          const cards = Array.from(
+            win.document.querySelectorAll<HTMLElement>(".llm-quote-card"),
           );
-          if (card) break;
+          if (
+            cards.length === (scenario.followingQuote ? 2 : 1) &&
+            cards.every((node) => node.dataset.quoteStatus === "verified")
+          ) {
+            card = cards[0];
+            break;
+          }
           await Zotero.Promise.delay(50);
         }
         assert.isOk(
           card,
           `stored quote should become verified; visibility=${win.document.visibilityState}; readers=${Zotero.Reader._readers.map((reader: any) => reader.itemID)}; ${diagnosticLog.join("\n")}; ${Array.from(win.document.querySelectorAll(".llm-quote-card"), (node) => node.outerHTML).join("\n")}`,
         );
-        assert.lengthOf(win.document.querySelectorAll(".llm-quote-card"), 1);
+        assert.lengthOf(
+          win.document.querySelectorAll(".llm-quote-card"),
+          scenario.followingQuote ? 2 : 1,
+        );
         assert.include(card!.textContent || "", prose);
         const button = card!.querySelector<HTMLElement>(".llm-citation-icon")!;
         assert.isOk(button, "verified quote has a source-navigation control");
@@ -162,6 +213,53 @@ describe("workflow: quote acceptance from unique passage evidence", function () 
             highlighted,
             scenario.highlightTail.replace(/\s+/g, ""),
             "the highlight covers the complete quote beyond the reference marker",
+          );
+        }
+        if (scenario.followingQuote) {
+          win.focus();
+          const followingCard =
+            win.document.querySelectorAll<HTMLElement>(".llm-quote-card")[1];
+          followingCard.scrollIntoView();
+          const followingNavigation = await api.observeCitationNavigationFocus(
+            followingCard.querySelector<HTMLElement>(".llm-citation-icon")!,
+          );
+          assert.isTrue(followingNavigation.started);
+          assert.isTrue(
+            followingNavigation.finished,
+            JSON.stringify(followingNavigation),
+          );
+          const matchLog = followingNavigation.diagnostics.find((message) =>
+            message.startsWith("LLM citation FindController exact match {"),
+          );
+          assert.isString(matchLog, JSON.stringify(followingNavigation));
+          assert.equal(
+            JSON.parse(matchLog!.slice(matchLog!.indexOf("{"))).pageIndex,
+            1,
+            "completion belongs to the new quote, not the previous page's search",
+          );
+          const highlightedFollowingQuote = () =>
+            collectReaderSelectionDocuments(reader)
+              .flatMap((doc) =>
+                Array.from(
+                  doc.querySelectorAll(
+                    '.page[data-page-number="2"] .highlight',
+                  ),
+                  (node) => node.textContent || "",
+                ),
+              )
+              .join("")
+              .replace(/\s+/g, "");
+          const expected = scenario.followingQuote.replace(/\s+/g, "");
+          const highlightDeadline = Date.now() + 5000;
+          while (
+            !highlightedFollowingQuote().includes(expected) &&
+            Date.now() < highlightDeadline
+          )
+            await Zotero.Promise.delay(25);
+          assert.include(
+            highlightedFollowingQuote(),
+            expected,
+            "the next quote highlights its complete wording on its own page",
           );
         }
         assert.deepEqual(

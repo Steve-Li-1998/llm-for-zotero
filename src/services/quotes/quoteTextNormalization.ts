@@ -125,6 +125,25 @@ export type QuoteTextIndex = {
   tokens: QuoteTextToken[];
 };
 
+type QuoteTextLayoutView = {
+  index: QuoteTextIndex;
+  /** One original UTF-16 offset for each character in the matching view. */
+  sourceOffsets: number[];
+};
+
+const quoteTextLayoutViews = new WeakMap<QuoteTextIndex, QuoteTextLayoutView>();
+
+function mapLayoutSpan(
+  view: QuoteTextLayoutView,
+  start: number,
+  end: number,
+): { sourceStart: number; sourceEnd: number } {
+  return {
+    sourceStart: view.sourceOffsets[start],
+    sourceEnd: view.sourceOffsets[end - 1] + 1,
+  };
+}
+
 export type AcademicQuoteTokenKind =
   | "prose"
   | "number"
@@ -289,8 +308,37 @@ function assignCanonicalOffsets(tokens: QuoteTextToken[]): QuoteTextToken[] {
   });
 }
 
+/** Join PDF text items without inventing whitespace inside words or formulae. */
+export function stripPdfTextItemBoundaries(value: string): string {
+  return value.replaceAll("\u0003", "");
+}
+
 export function buildQuoteTextIndex(value: string): QuoteTextIndex {
   const sourceText = typeof value === "string" ? value : "";
+  // PDF item boundaries describe segmentation, not characters in the paper.
+  // Every lexical and boundary check uses the same joined view. Keep a map
+  // back to the untouched source so navigation still receives its exact span.
+  if (sourceText.includes("\u0003")) {
+    const characters: string[] = [];
+    const sourceOffsets: number[] = [];
+    for (let offset = 0; offset < sourceText.length; offset += 1) {
+      if (sourceText[offset] === "\u0003") continue;
+      characters.push(sourceText[offset]);
+      sourceOffsets.push(offset);
+    }
+    const index = buildQuoteTextIndex(characters.join(""));
+    const view = { index, sourceOffsets };
+    const mappedIndex = {
+      sourceText,
+      canonicalText: index.canonicalText,
+      tokens: index.tokens.map((token) => ({
+        ...token,
+        ...mapLayoutSpan(view, token.sourceStart, token.sourceEnd),
+      })),
+    };
+    quoteTextLayoutViews.set(mappedIndex, view);
+    return mappedIndex;
+  }
   const tokens = assignCanonicalOffsets(
     mergeSourceTokens(rawTokensFromSource(sourceText), sourceText),
   );
@@ -374,11 +422,19 @@ function expandSourceSpanStart(
 
 function expandSourceSpanEnd(sourceText: string, sourceEnd: number): number {
   let cursor = sourceEnd;
-  while (
-    cursor < sourceText.length &&
-    SOURCE_SPAN_TRAILING_BOUNDARY_PATTERN.test(sourceText[cursor])
-  ) {
-    cursor += 1;
+  while (cursor < sourceText.length) {
+    if (
+      SOURCE_SPAN_TRAILING_BOUNDARY_PATTERN.test(sourceText[cursor]) ||
+      sourceText[cursor] === "$"
+    ) {
+      cursor += 1;
+      continue;
+    }
+    const closingSyntax = sourceText
+      .slice(cursor)
+      .match(/^(?:<\/(?:sup|sub|span|b|em|i|strong)>|\\[)\]])/iu)?.[0];
+    if (!closingSyntax) break;
+    cursor += closingSyntax.length;
   }
   return cursor;
 }
@@ -398,13 +454,7 @@ function resolveAlignedSourceEnd(params: {
   lastTokenEnd: number;
   queryIndex: QuoteTextIndex;
 }): number | null {
-  // HTML presentation can close after the last matched word/reference.
-  // Include it in the original source span before checking sentence punctuation.
-  const closingTags =
-    params.sourceText
-      .slice(params.lastTokenEnd)
-      .match(/^(?:<\/(?:sup|sub|span|b|em|i|strong)>)+/iu)?.[0] || "";
-  const lastTokenEnd = params.lastTokenEnd + closingTags.length;
+  const lastTokenEnd = params.lastTokenEnd;
   const adjacentEnd = expandSourceSpanEnd(params.sourceText, lastTokenEnd);
   if (!queryRequiresTerminalSentenceBoundary(params.queryIndex)) {
     return adjacentEnd;
@@ -461,6 +511,16 @@ export function findCanonicalQuoteSourceSpan(
   index: QuoteTextIndex,
   queryText: string,
 ): QuoteTextSourceSpan | null {
+  const view = quoteTextLayoutViews.get(index);
+  if (view) {
+    const span = findCanonicalQuoteSourceSpan(view.index, queryText);
+    if (!span) return null;
+    const mapped = mapLayoutSpan(view, span.sourceStart, span.sourceEnd);
+    return {
+      ...mapped,
+      text: index.sourceText.slice(mapped.sourceStart, mapped.sourceEnd),
+    };
+  }
   const canonicalQuery = normalizeQuoteTextCanonical(queryText);
   if (!index.canonicalText || !canonicalQuery) return null;
   const canonicalStart = findCanonicalTextMatchStart(
@@ -599,10 +659,11 @@ function sequentialManuscriptLineNumberTokenIndexes(
  */
 export function stripLikelyLayoutNumberArtifacts(value: string): string {
   const index = buildQuoteTextIndex(value);
+  const matchingIndex = quoteTextLayoutViews.get(index)?.index || index;
   let cursor = 0;
   let out = "";
   for (let tokenIndex = 0; tokenIndex < index.tokens.length; tokenIndex += 1) {
-    if (!isLikelyLayoutNumberToken(index, tokenIndex)) continue;
+    if (!isLikelyLayoutNumberToken(matchingIndex, tokenIndex)) continue;
     const token = index.tokens[tokenIndex];
     out += index.sourceText.slice(cursor, token.sourceStart);
     cursor = token.sourceEnd;
@@ -904,6 +965,21 @@ export function collectQuoteTextAlignmentRunsAllowingLayoutFragments(
   sourceIndex: QuoteTextIndex,
   queryIndex: QuoteTextIndex,
 ): QuoteTextAlignmentRun[] {
+  const sourceView = quoteTextLayoutViews.get(sourceIndex);
+  const queryView = quoteTextLayoutViews.get(queryIndex);
+  if (sourceView || queryView) {
+    return collectQuoteTextAlignmentRunsAllowingLayoutFragments(
+      sourceView?.index || sourceIndex,
+      queryView?.index || queryIndex,
+    ).map((run) =>
+      sourceView
+        ? {
+            ...run,
+            ...mapLayoutSpan(sourceView, run.sourceStart, run.sourceEnd),
+          }
+        : run,
+    );
+  }
   if (!sourceIndex.tokens.length || !queryIndex.tokens.length) return [];
   const sourceTokenCount = sourceIndex.tokens.length;
   const queryTokenCount = queryIndex.tokens.length;
@@ -1077,6 +1153,26 @@ export function findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
   index: QuoteTextIndex,
   queryIndex: QuoteTextIndex,
 ): QuoteTextAlignedSourceSpan[] {
+  const sourceView = quoteTextLayoutViews.get(index);
+  const queryView = quoteTextLayoutViews.get(queryIndex);
+  if (sourceView || queryView) {
+    return findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
+      sourceView?.index || index,
+      queryView?.index || queryIndex,
+    ).map((span) => {
+      if (!sourceView) return span;
+      const mapped = mapLayoutSpan(
+        sourceView,
+        span.sourceStart,
+        span.sourceEnd,
+      );
+      return {
+        ...span,
+        ...mapped,
+        text: index.sourceText.slice(mapped.sourceStart, mapped.sourceEnd),
+      };
+    });
+  }
   if (!index.tokens.length || !queryIndex.tokens.length) return [];
   const firstQueryToken = queryIndex.tokens[0];
   const canFilterCandidateStarts = !isLikelyLayoutNumberToken(queryIndex, 0);
@@ -1263,7 +1359,7 @@ function isInsideInlineMathRange(
 }
 
 export function normalizeAcademicMathContent(value: string): string {
-  let normalized = Array.from(value)
+  let normalized = Array.from(stripPdfTextItemBoundaries(value))
     .map((character) => UNICODE_SUPERSCRIPT_TO_ASCII[character] || character)
     .join("")
     .normalize("NFKC")
@@ -1415,6 +1511,8 @@ function academicMathSegmentsAgree(
   sourceText: string,
   displayedText: string,
 ): { supported: boolean; hardMismatch: boolean } {
+  sourceText = stripPdfTextItemBoundaries(sourceText);
+  displayedText = stripPdfTextItemBoundaries(displayedText);
   const displayedRanges = collectPairedInlineMathRanges(displayedText);
   if (!displayedRanges.length) {
     return { supported: true, hardMismatch: false };

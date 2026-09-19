@@ -1711,6 +1711,48 @@ describe("splitQuoteAtEllipsis", function () {
 });
 
 describe("page-native scrollToExactQuoteInReader", function () {
+  for (const previousMatchCount of [0, 1]) {
+    it(`waits for new results when an accepted query still exposes ${previousMatchCount} old matches`, async function () {
+      const previousMatches = previousMatchCount ? [[3], []] : [[], []];
+      const findController: any = {
+        _rawQuery: "new query",
+        pageMatches: previousMatches,
+        matchesCount: { total: previousMatchCount },
+        selected: { pageIdx: 0, matchIdx: previousMatchCount ? 0 : -1 },
+        _pendingFindMatches: new Set(),
+        _pagesToSearch: 0,
+      };
+      const previousSnapshot = {
+        query: "old query",
+        pageMatches: previousMatches,
+        pageMatchesLength: 2,
+        matchCount: previousMatchCount,
+        selectedPageIndex: 0,
+        selectedMatchIndex: previousMatchCount ? 0 : null,
+      };
+      const timer = setTimeout(() => {
+        findController.pageMatches = [[], [20]];
+        findController.matchesCount = { total: 1 };
+        findController.selected = { pageIdx: 1, matchIdx: 0 };
+      }, 40);
+      try {
+        const result = await waitForFindControllerPageMatchesForTests({
+          findController,
+          pagesCount: 2,
+          expectedQuery: "new query",
+          previousSnapshot,
+          acceptanceMs: 0,
+          hardDeadlineAt: Date.now() + 1000,
+        });
+        assert.equal(result.completion, "found");
+        assert.deepEqual(result.matchedPageIndexes, [1]);
+        assert.equal(result.selectedPageIndex, 1);
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+  }
+
   function createExactFindControllerReader(params: {
     pageItems: Array<Array<{ str: string; hasEOL?: boolean }>>;
     targetPageIndex: number;

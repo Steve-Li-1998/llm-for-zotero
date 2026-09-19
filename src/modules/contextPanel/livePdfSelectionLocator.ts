@@ -21,6 +21,7 @@ import {
   assessAcademicQuoteAlignment,
   buildQuoteTextIndex,
   findQuoteSourceSpansAllowingLayoutArtifacts,
+  stripPdfTextItemBoundaries,
   type QuoteTextIndex,
 } from "../../services/quotes/quoteTextNormalization";
 
@@ -2985,6 +2986,20 @@ function didFindControllerSearchStateChange(
   );
 }
 
+function hasFindControllerResultsForQuery(
+  findController: any,
+  snapshot: FindControllerSearchSnapshot,
+  expectedQuery: string,
+): boolean {
+  // Updating the query happens before PDF.js replaces the previous results.
+  // Neither old hits nor an old empty result are evidence about the new query.
+  return (
+    findController?._dirtyMatch !== true &&
+    (snapshot.query === expectedQuery ||
+      didFindControllerSearchStateChange(findController, snapshot))
+  );
+}
+
 async function waitForFindControllerSearchAcceptance(
   findController: any,
   expectedQuery: string,
@@ -3127,8 +3142,13 @@ function mergeFindControllerResultSnapshot(params: {
   const pageMatches = getFindControllerPageMatches(params.findController);
   const currentQuery = getFindControllerQuery(params.findController);
   const queryConfirmed =
-    currentQuery === params.expectedQuery ||
-    (currentQuery === undefined && params.allowUnobservableQuery === true);
+    (currentQuery === params.expectedQuery ||
+      (currentQuery === undefined && params.allowUnobservableQuery === true)) &&
+    hasFindControllerResultsForQuery(
+      params.findController,
+      params.previousSnapshot,
+      params.expectedQuery,
+    );
   // PDF.js replaces pageMatches in place for the newest query. Never attribute
   // a newer click's positive results to an older, superseded navigation.
   const summary = queryConfirmed
@@ -3171,8 +3191,7 @@ function mergeFindControllerResultSnapshot(params: {
     selectedPageIndex:
       queryConfirmed &&
       selectedPageIndex !== null &&
-      (summary.matchedPageIndexes.includes(selectedPageIndex) ||
-        summary.totalMatches > 0)
+      summary.matchedPageIndexes.includes(selectedPageIndex)
         ? selectedPageIndex
         : null,
     selectedMatchIndex: queryConfirmed ? selectedMatchIndex : null,
@@ -3287,6 +3306,11 @@ async function waitForFindControllerPageMatches(params: {
         Date.now() - startedAt >= 700;
       if (
         queryConfirmed &&
+        hasFindControllerResultsForQuery(
+          params.findController,
+          params.previousSnapshot,
+          params.expectedQuery,
+        ) &&
         (pageMatches.length >= params.pagesCount || pagesToSearch === 0) &&
         pendingCount === 0 &&
         canTrustEmptyCompletion
@@ -3541,9 +3565,7 @@ function normalizePageNativeFindControllerLiteral(
   sourceText: string,
   _quoteText: string,
 ): string {
-  return sourceText
-    .split(PDF_TEXT_ITEM_BOUNDARY)
-    .join("")
+  return stripPdfTextItemBoundaries(sourceText)
     .replace(/(\p{Ll})[-‐‑‒–—−]\s*\r?\n\s*(?=\p{Ll})/gu, "$1")
     .replace(/(\p{Lu})[-‐‑‒–—−]\s*\r?\n\s*(?=\p{L})/gu, "$1")
     .replace(/(\S)[-‐‑‒–—−]\s*\r?\n\s*/gu, "$1-")

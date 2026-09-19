@@ -22,6 +22,7 @@ import {
   findQuoteSourceSpansAllowingLayoutArtifactsFromIndex,
   normalizeQuoteTextCanonical,
   stripLikelyLayoutNumberArtifacts,
+  stripPdfTextItemBoundaries,
   type QuoteTextIndex,
 } from "./quoteTextNormalization";
 import { stripLeadingCitationSeparators } from "./citationText";
@@ -83,6 +84,7 @@ function isInvalidTextControlCode(code: number): boolean {
 }
 
 function stripInvalidTextControlChars(value: string): string {
+  value = stripPdfTextItemBoundaries(value);
   let out = "";
   for (let index = 0; index < value.length; index += 1) {
     const char = value[index];
@@ -1209,7 +1211,9 @@ function buildCompleteDisplayedSourceQuoteText(
   const locatorMatch = source.match(COMPLETE_TRAILING_SOURCE_LOCATOR_PATTERN);
   const locatorText = locatorMatch?.[1] || "";
   if (!locatorText || locatorMatch?.index === undefined) {
-    if (/[.,;:!?。！？、，；：]["'”’]?$/u.test(displayed)) {
+    // An authored closing delimiter already defines the excerpt's end.
+    // Keep surrounding clause punctuation in the source span for navigation.
+    if (/[.,;:!?。！？、，；：)\]}$]["'”’]?$/u.test(displayed)) {
       return displayed;
     }
     const punctuationMatch = source.match(/([.,;:!?。！？、，；：]+["'”’]?)$/u);
@@ -1743,21 +1747,22 @@ export function buildQuoteSourceIndex(params: {
   for (const source of sourceTexts) {
     const rawSourceText = source.sourceText || source.text;
     const normalizedSourceText = normalizeMultilineText(rawSourceText);
+    const hasPdfItemBoundaries =
+      typeof rawSourceText === "string" && rawSourceText.includes("\u0003");
     const reusableTextIndex =
       source.textIndex &&
-      (source.textIndex.sourceText === normalizedSourceText ||
-        normalizeMultilineText(source.textIndex.sourceText) ===
-          normalizedSourceText)
+      (hasPdfItemBoundaries
+        ? source.textIndex.sourceText === rawSourceText
+        : source.textIndex.sourceText === normalizedSourceText ||
+          normalizeMultilineText(source.textIndex.sourceText) ===
+            normalizedSourceText)
         ? source.textIndex
         : undefined;
-    // PDF item boundaries carry evidence that an intervening number is a
-    // reference marker. Keep that evidence until alignment; display strings
-    // are sanitized separately when the verified citation is constructed.
+    // Preserve native positions for the shared matching view. Reusing a
+    // sanitized index would turn item splits into spaces and discard that map.
     const sourceText =
       reusableTextIndex?.sourceText ||
-      (typeof rawSourceText === "string" && rawSourceText.includes("\u0003")
-        ? rawSourceText
-        : normalizedSourceText);
+      (hasPdfItemBoundaries ? rawSourceText : normalizedSourceText);
     const citationLabel = normalizeCitationLabel(
       source.sourceLabel || source.citationLabel,
     );

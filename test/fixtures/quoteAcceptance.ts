@@ -12,6 +12,10 @@ export const SUMMERFIELD_QUOTE =
   "the gradual rotation means that self-attention will implicitly encode the relative distance between two tokens, so position codes share with grid cells both the logic of representing position in terms of phases and enabling vector computation and the periodic (oscillatory) nature of the positional code.";
 export const SUMMERFIELD_SOURCE_PREFIX =
   "Position is encoded via gradual rotations of key and query matrices (Figures 3B and 3C).136 At first, position codes might sound like a mere engineering trick. However, ";
+export const SUMMERFIELD_SIMILARITY_QUOTE =
+  'Neurons that signal how the similarity space itself is organized allow us to compute how examples {x →y} and {y →z} constrain responses to the "zero-shot" query {x →z}.';
+export const SUMMERFIELD_SIMILARITY_READER_TEXT =
+  "Neurons that signal how the similarity\n\u0003space itself is organized allow us to compute how examples\u0003\n\u0003{\u0003x\u0003 \u0003→\u0003y\u0003}\u0003 \u0003and\u0003 \u0003{\u0003y\u0003 \u0003→\u0003z\u0003}\u0003 \u0003constrain responses to the ‘‘zero-shot’’ query\u0003\n\u0003{\u0003x\u0003 \u0003→\u0003z\u0003}\u0003.";
 export const CITATION_MARKER_QUOTE_CASES = [
   ["attached reference", "137"],
   ["HTML superscript reference", "<sup>137</sup>"],

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { assert } from "chai";
 import { BUILTIN_SKILL_FILES } from "../src/agent/skills";
 import { patchSkillFrontmatter } from "../src/agent/skills/frontmatterPatcher";
@@ -390,7 +391,7 @@ describe("user skill bootstrap upgrades", function () {
 
   it("migrates declarative supersession without replacing legacy match metadata", function () {
     const old = BUILTIN_SKILL_FILES["evidence-based-qa.md"]
-      .replace("version: 7", "version: 6\nmatch: legacy fixture only")
+      .replace(/version: \d+/, "version: 6\nmatch: legacy fixture only")
       .replace("supersedes: simple-paper-qa\n", "");
     const patched = patchSkillFrontmatter(
       old,
@@ -400,4 +401,53 @@ describe("user skill bootstrap upgrades", function () {
     assert.include(patched as string, "supersedes: simple-paper-qa");
     assert.include(patched as string, "match:");
   });
+  for (const [name, version] of [
+    ["simple-paper-qa", 8],
+    ["evidence-based-qa", 7],
+  ] as const) {
+    it(`upgrades the unmodified baseline ${name} skill without stored hashes`, async function () {
+      const baseDir = `/tmp/llm-for-zotero-baseline-${name}-upgrade`;
+      const raw = readFileSync(
+        new URL(
+          `./fixtures/qaEvaluation/skills/${name}-v${version}.md`,
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      const files: Record<string, string> = {};
+      const prefs = new Map<string, string>();
+      installMockSkillEnvironment(baseDir, files, prefs);
+      const filePath = getCanonicalSkillFilePath(name);
+      files[filePath] = raw;
+      await initUserSkills();
+      assert.equal(parseSkill(files[filePath]).version, version + 1);
+      assert.include(files[filePath], "supplied text");
+    });
+    it(`upgrades the tracked untouched baseline ${name} body`, async function () {
+      const baseDir = `/tmp/llm-for-zotero-tracked-${name}-upgrade`;
+      const raw = readFileSync(
+        new URL(
+          `./fixtures/qaEvaluation/skills/${name}-v${version}.md`,
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      const files: Record<string, string> = {};
+      const prefs = new Map<string, string>();
+      installMockSkillEnvironment(baseDir, files, prefs);
+      const filePath = getCanonicalSkillFilePath(name);
+      files[filePath] = raw;
+      prefs.set(
+        BODY_HASH_PREF_KEY,
+        JSON.stringify({
+          [`${name}.md`]: hashSkillForUpgrade(raw, parseSkill(raw).instruction),
+        }),
+      );
+      await initUserSkills();
+      assert.equal(
+        parseSkill(files[filePath]).instruction,
+        parseSkill(BUILTIN_SKILL_FILES[`${name}.md`]).instruction,
+      );
+    });
+  }
 });

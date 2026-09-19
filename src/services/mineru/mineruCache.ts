@@ -1865,8 +1865,23 @@ export async function buildAndWriteManifest(
   const rebuilt = buildManifest(mdContent, contentList, previous?.totalPages);
   // full.md no longer embeds the source images once a cache is finalized, so a
   // rebuild cannot recover figure blocks the stored manifest already knows.
+  const recovered = carryForwardManifestFigures(rebuilt, previous);
   const manifest: MineruManifest = {
-    ...carryForwardManifestFigures(rebuilt, previous),
+    ...recovered,
+    // An older finalized cache may have pruned content_list.json. Preserve
+    // page locations only for sections whose heading and source range agree.
+    sections: recovered.sections.map((section) => {
+      if (section.page !== undefined || !previous) return section;
+      const stored = previous.sections.find(
+        (old) =>
+          old.heading === section.heading &&
+          old.charStart === section.charStart &&
+          old.charEnd === section.charEnd,
+      );
+      return stored?.page !== undefined
+        ? { ...section, page: stored.page }
+        : section;
+    }),
     ...(rebuilt.figureBlocks?.length || !previous?.figureBlocks?.length
       ? {}
       : { figureBlocks: previous.figureBlocks }),

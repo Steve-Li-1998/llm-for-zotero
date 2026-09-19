@@ -24,7 +24,7 @@ const STOCK_SKILL_WORKFLOW_MARKERS: Record<string, string[]> = {
     "coverage frontier",
   ],
   "evidence-based-qa.md": [
-    "read then retrieve, then answer",
+    "scoped acquisition, then answer",
     "Targeted retrieval",
     "Use the evidence frontier rather than a call count",
   ],

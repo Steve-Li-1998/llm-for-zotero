@@ -160,8 +160,9 @@ const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
     "6upxur",
   ],
   "analyze-figures.md": ["msvqtf", "17o1bpl"],
-  "simple-paper-qa.md": ["1r2ban6", "1181x3a"],
+  "simple-paper-qa.md": ["yu43tj", "1r2ban6", "1181x3a"],
   "evidence-based-qa.md": [
+    "en0khz",
     "vyeyap",
     "1vhakii",
     "dxw5b3",
@@ -192,6 +193,7 @@ const BUILTIN_BOOTSTRAP_BODY_HASHES: Partial<
     "1t8gyg9",
   ],
   "evidence-based-qa.md": [
+    "41yh3d",
     "1aby95d",
     "1g0a76y",
     "4gj0dx",

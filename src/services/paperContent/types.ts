@@ -88,6 +88,8 @@ export type RetrievalStructureRule =
  * rule that reserved or back-filled its slot.
  */
 export type RetrievalExplanation = {
+  /** Retrieval signal only; neither lexical nor semantic ranking establishes claim support. */
+  querySignal?: "lexical" | "semantic" | "none";
   /** 1-based BM25 rank over the whole document. */
   bm25Rank: number;
   /** 1-based embedding rank, absent when embeddings did not run. */

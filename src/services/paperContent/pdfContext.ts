@@ -2763,6 +2763,8 @@ export async function buildPaperRetrievalCandidates(
       referenceConfidence: referenceConfidenceByChunk.get(chunk.index),
       why: {
         bm25Rank: bm25Rank[idx],
+        querySignal:
+          bm25Score > 0 ? "lexical" : embedRank ? "semantic" : "none",
         embeddingRank: embedRank ? embedRank[idx] : undefined,
         // A general read never reorders by section: the prior exists to break
         // ties inside an evidence read, nothing more.
@@ -2825,7 +2827,17 @@ export async function buildPaperRetrievalCandidates(
     (referenceTier.get(a) || 0) - (referenceTier.get(b) || 0) ||
     (adjustedRank.get(a) || 0) - (adjustedRank.get(b) || 0) ||
     (fusedRank.get(a) || 0) - (fusedRank.get(b) || 0);
-  const ranked = [...candidates].sort(byAdjustedRank);
+  const allRanked = [...candidates].sort(byAdjustedRank);
+  const requestedSections = new Set(options?.sectionIds || []);
+  const restricted = requestedSections.size
+    ? allRanked.filter(
+        (candidate) =>
+          candidate.sectionIndex !== undefined &&
+          requestedSections.has(sectionIdForIndex(candidate.sectionIndex)),
+      )
+    : [];
+  // Every later reservation and fallback must obey the same valid scope.
+  const ranked = restricted.length ? restricted : allRanked;
 
   // Stage 2 — structure.
   const selected = selectStructuredCandidates({

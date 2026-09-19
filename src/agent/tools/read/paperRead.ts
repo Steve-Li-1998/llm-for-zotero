@@ -9,6 +9,7 @@ import type {
   AgentToolResult,
 } from "../../types";
 import type { QuoteCitation } from "../../../shared/types";
+import { parseDocumentReferences } from "../../../shared/documentReferences";
 import type { PdfService } from "../../services/pdfService";
 import type { PdfPageService } from "../../services/pdfPageService";
 import { parsePageSelectionValue } from "../../services/pdfPageService";
@@ -583,7 +584,19 @@ function buildTargetedPaperGroups(
     const outline = outlineByPaper?.get(key);
     return {
       paperContext,
-      status: passages.length ? "matched" : "no_matches",
+      status: !passages.length
+        ? "no_matches"
+        : passages.every(
+              (passage) =>
+                (passage.why as { querySignal?: string } | undefined)
+                  ?.querySignal === "none",
+            )
+          ? "exploratory"
+          : "matched",
+      evidenceAssessment: {
+        support: "not_assessed",
+        scope: "retrieved_passages",
+      },
       sourceKind: "paper_text",
       citationLabel: formatPaperCitationLabel(paperContext),
       sourceLabel: formatPaperSourceLabel(paperContext),
@@ -1051,7 +1064,7 @@ export function createPaperReadTool(
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'outline' for the section list with ids and chunk ranges, then mode:'targeted' with sectionIds to read a named section, mode:'targeted' for relevance-ranked textual evidence, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections for known section names or query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -1433,8 +1446,19 @@ export function createPaperReadTool(
         throw new Error(describeNoDefaultPaperTarget(context.request));
       }
       if (mode === "figures") {
+        const explicitTablesOnly =
+          Boolean(input.figureLabels?.length) &&
+          input.figureLabels!.every((label) => {
+            const references = parseDocumentReferences(label);
+            return (
+              references.length > 0 &&
+              references.every((ref) => ref.kind === "table")
+            );
+          });
         if (
-          context.request.classifiedIntent?.semantic?.figures?.kind === "tables"
+          context.request.classifiedIntent?.semantic?.figures?.kind ===
+            "tables" ||
+          explicitTablesOnly
         ) {
           return {
             mode: "figures",
@@ -1708,11 +1732,22 @@ export function createPaperReadTool(
           buildDocumentOutline(await pdfService.ensurePaperContext(paper)),
         );
       }
-      const sectionFilter = resolveSectionFilter({
-        sectionIds: input.sectionIds,
-        sections: input.sections,
-        outlines: [...outlineByPaper.values()],
+      const sectionIdsByPaper = new Map<number, string[]>();
+      const filters = targets.map((paper) => {
+        const filter = resolveSectionFilter({
+          sectionIds: input.sectionIds,
+          sections: input.sections,
+          outlines: [outlineByPaper.get(paperContextKey(paper))!],
+        });
+        sectionIdsByPaper.set(paper.contextItemId, filter.sectionIds);
+        return filter;
       });
+      const sectionFilter = {
+        unmatchedNames: [
+          ...new Set(filters.flatMap((filter) => filter.unmatchedNames)),
+        ],
+        warnings: [...new Set(filters.flatMap((filter) => filter.warnings))],
+      };
       const question = [
         input.query || context.request.userText,
         sectionFilter.unmatchedNames.length
@@ -1734,9 +1769,7 @@ export function createPaperReadTool(
         profileOverride: context.request.advanced?.profileOverride,
         topK: input.topK,
         perPaperTopK: input.topK,
-        ...(sectionFilter.sectionIds.length
-          ? { sectionIds: sectionFilter.sectionIds }
-          : {}),
+        sectionIdsByPaper,
       });
       const quoteCitations: QuoteCitation[] = [];
       const embeddedOutlines = new Map<string, DocumentOutline>();

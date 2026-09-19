@@ -1,7 +1,7 @@
 ---
 id: evidence-based-qa
-description: Retrieve missing evidence for specific methods, results, or verification questions in selected papers or collections. Clarification or translation of sufficient supplied text needs no retrieval workflow.
-version: 8
+description: Locate specific passages in selected papers or collections that support a given claim, returning quoted evidence with page and section citations. Not for general questions — use simple-paper-qa for those.
+version: 7
 contexts: single-paper,paper-set,library-corpus
 activation: auto
 supersedes: simple-paper-qa
@@ -23,7 +23,7 @@ supersedes: simple-paper-qa
   To reset to default, delete this file — it will be recreated on next restart.
 -->
 
-## Evidence-Based Paper Q&A — scoped acquisition, then answer
+## Evidence-Based Paper Q&A — read then retrieve, then answer
 
 When the user asks about specific methods, results, data, or needs to locate
 a particular claim in a paper or selected collection, use a scoped evidence
@@ -33,9 +33,7 @@ approach.
 
 **Step 1 — Gather context:**
 
-- Reuse sufficient supplied text and prior evidence for clarification or follow-up questions. Short wording alone does not determine difficulty.
-- For a specific question about one paper, start with `paper_read({ mode:'targeted', query:'<the question>' })`; use `sections` for a known section name. Use overview for broad understanding and outline only when section addresses are needed.
-- For a single factual lookup, start with `topK:3`; use a larger set for multiple requested facts or comparison dimensions and expand only for a specific missing fact.
+- For one selected paper, start with `paper_read({ mode:'overview' })` to understand the paper's structure and main claims.
 - For multiple selected papers, call `paper_read({ mode:'targeted', query:'<the specific question>', targets:[...] })` with explicit `targets`.
 - For a selected collection/folder or whole-library evidence question, do not rely on the active-reader paper as an implicit target. Call `library_retrieve({ query:'<the specific question>', intent:'verify', depth:'evidence' })` for exact presence/absence, `intent:'enumerate'` when the user asks which papers contain evidence, or `intent:'summarize'` when the user asks for commonality, themes, comparison, or overview across the scoped pool. Then use `paper_read` only with explicit `targets` if close reading is still needed.
 - For bounded selected or collection-scoped multi-paper synthesis, prefer the returned body evidence, paper synthesis digest, and coverage frontier over stopping at metadata or abstracts.

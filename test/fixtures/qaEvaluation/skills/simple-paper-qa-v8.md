@@ -1,7 +1,7 @@
 ---
 id: simple-paper-qa
-description: Read one paper to answer open-ended questions when evidence is missing. Clarification, translation, or rewriting of sufficient supplied text needs no paper-reading workflow. Not for Zotero library operations.
-version: 9
+description: Answer open-ended natural-language questions about the content of one specific paper (what it argues, how it compares to X, what figure 3 means). Not for Zotero operations like editing metadata, tagging, or running scripts.
+version: 8
 contexts: single-paper
 activation: auto
 ---
@@ -25,12 +25,8 @@ activation: auto
 
 Use Zotero paper tools as resources, not a ritual.
 
-- For clarification of supplied text or a previous answer, reuse that evidence and answer directly when sufficient. Retrieve only for a concrete missing paper-specific fact.
 - For broad questions like "what is this paper about?", "summarize this", or "main message", start with `paper_read({ mode:'overview' })`, evaluate the evidence, and answer when it supports the response.
-- For a specific claim, method, result, or table, start with `paper_read({ mode:'targeted', query:'<the question>' })`.
-  For a named section, pass `sections:['<section name>']`; an outline is needed only to resolve an unclear section address.
-  For a single factual lookup, start with `topK:3`; increase the evidence set only when a specific requested fact remains missing.
-  Use a larger set for multiple distinct questions or comparison dimensions.
+- If the user asks for a specific claim, method, result, table, or named section that overview cannot answer, use `paper_read({ mode:'targeted', query:'<specific missing claim>' })` for that concrete gap.
 - Follow `paperEvidenceProgress`: `advanced` means evaluate the accumulated evidence, `unchanged` means do not repeat the read and name a concrete missing dimension before retrieving again, and `unavailable` means answer with the source limitation.
 - If overview reports `contentStatus:'no_pdf_attachment'`, answer from Zotero metadata/abstract if sufficient; otherwise use a specifically targeted external lookup when necessary and label it as external.
 - If overview reports `contentStatus:'no_extractable_pdf_text'`, answer from metadata/abstract and state the limitation.

@@ -1,12 +1,12 @@
 import { buildPaperRetrievalCandidates } from "../../services/paperContent/pdfContext";
 import type { RetrievalExplanation } from "../../services/paperContent/types";
 import {
-  buildRetrievalQueryPlanCacheKey,
   resolveRetrievalQueryPlan,
   type RetrievalQueryPlan,
 } from "../../services/retrieval/retrievalQueryPlan";
 import {
   callEmbeddings,
+  getResolvedEmbeddingConfig,
   resolveSemanticSearchState,
   type ChatParams,
 } from "../../utils/llmClient";
@@ -62,28 +62,36 @@ function dedupePaperContexts(
 
 type EvidenceCacheKey = string;
 
-function buildEvidenceCacheKey(
-  contextItemId: number,
-  queryKey: string,
-  sectionIds?: string[],
-): EvidenceCacheKey {
-  // Strip punctuation and normalise whitespace so minor phrasing variations
-  // (e.g. "What is the method?" vs "what is the method") share a cache entry.
-  const normalizedQ = queryKey
-    .trim()
-    .toLowerCase()
-    .replace(/[^\w\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
-  // A section-restricted read is a different read: it must never be served
-  // from the whole-document entry for the same question, or the other way
-  // round.
-  const sortedSectionIds = [...(sectionIds || [])].sort();
-  const sectionKey = sortedSectionIds.length
-    ? `::${sortedSectionIds.join(",")}`
-    : "";
-  return `${contextItemId}::${normalizedQ}${sectionKey}`;
+function buildEvidenceCacheKey(params: {
+  paper: PaperContextRef;
+  queryKey: string;
+  perPaperTopK: number;
+  sectionIds: readonly string[];
+  source: Awaited<ReturnType<PdfService["ensurePaperContext"]>>;
+  embeddingKey: string;
+  purpose?: string;
+  quotePolicy?: string;
+}): EvidenceCacheKey {
+  const fingerprints = [
+    ...new Set(
+      params.source?.chunkMeta
+        .map((meta) => meta.sourceFingerprint)
+        .filter(Boolean) || [],
+    ),
+  ];
+  // Preserve Unicode, mathematical operators, and the complete query identity.
+  // Unknown provenance uses the source text rather than reusing stale evidence.
+  return JSON.stringify([
+    params.paper.libraryID,
+    params.paper.contextItemId,
+    params.queryKey,
+    params.perPaperTopK,
+    [...params.sectionIds].sort(),
+    params.embeddingKey,
+    params.purpose,
+    params.quotePolicy,
+    fingerprints.length ? fingerprints : params.source?.chunks,
+  ]);
 }
 
 export class RetrievalService {
@@ -114,6 +122,7 @@ export class RetrievalService {
     perPaperTopK?: number;
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
+    sectionIdsByPaper?: ReadonlyMap<number, readonly string[]>;
   }): Promise<RetrievalResult[]> {
     const papers = dedupePaperContexts(params.papers);
     if (!papers.length) return [];
@@ -155,7 +164,15 @@ export class RetrievalService {
     queryPlan.retrievalPurpose = params.intent?.semantic?.retrievalPurpose;
     queryPlan.quoteAnchorPolicy =
       params.intent?.retrievalIntent === "verify" ? "verified" : "none";
-    const queryCacheKey = buildRetrievalQueryPlanCacheKey(queryPlan);
+    // The planner's similarity key strips operators and truncates long input.
+    // Evidence reuse must retain the complete query that selected these facts.
+    const queryCacheKey = JSON.stringify([
+      queryPlan.originalQuery,
+      queryPlan.variants,
+      queryPlan.semanticQuery,
+      queryPlan.lexicalTerms,
+      queryPlan.references,
+    ]);
     let embeddingsAvailable = false;
     try {
       // Honour an explicit "off": never spend a query-embedding call on a user
@@ -164,32 +181,49 @@ export class RetrievalService {
     } catch {
       embeddingsAvailable = false;
     }
-    let precomputedQueryEmbedding: number[] | undefined;
-    if (queryPlan.semanticQuery.trim() && embeddingsAvailable) {
+    let embeddingKey = "off";
+    if (embeddingsAvailable) {
       try {
-        precomputedQueryEmbedding = (
-          await callEmbeddings([queryPlan.semanticQuery])
-        )[0];
+        embeddingKey = getResolvedEmbeddingConfig().cacheKey;
       } catch {
-        // Embedding unavailable — buildPaperRetrievalCandidates will fall back.
+        embeddingsAvailable = false;
       }
     }
-    const sectionIds = (params.sectionIds || []).filter(
-      (sectionId) => typeof sectionId === "string" && sectionId.trim(),
-    );
+    let queryEmbedding: Promise<number[] | undefined> | undefined;
     const results: RetrievalResult[] = [];
     for (const paperContext of papers) {
-      const cacheKey = buildEvidenceCacheKey(
-        paperContext.contextItemId,
-        queryCacheKey,
+      const sectionIds = [
+        ...(params.sectionIdsByPaper?.get(paperContext.contextItemId) ??
+          params.sectionIds ??
+          []),
+      ].filter(Boolean);
+      const pdfContext = pdfContexts.get(paperContext.contextItemId);
+      const cacheKey = buildEvidenceCacheKey({
+        paper: paperContext,
+        queryKey: queryCacheKey,
+        perPaperTopK,
         sectionIds,
-      );
+        source: pdfContext,
+        embeddingKey,
+        purpose: queryPlan.retrievalPurpose,
+        quotePolicy: queryPlan.quoteAnchorPolicy,
+      });
       const cached = this.evidenceCache.get(cacheKey);
       if (cached) {
         results.push(...cached);
         continue;
       }
-      const pdfContext = pdfContexts.get(paperContext.contextItemId);
+      // Shared across this read's papers, and never spent for a cache hit.
+      if (
+        !queryEmbedding &&
+        queryPlan.semanticQuery.trim() &&
+        embeddingsAvailable
+      ) {
+        queryEmbedding = callEmbeddings([queryPlan.semanticQuery])
+          .then((values) => values[0])
+          .catch(() => undefined);
+      }
+      const precomputedQueryEmbedding = await queryEmbedding;
       const candidates = await this.candidateBuilder(
         paperContext,
         pdfContext,

@@ -9,7 +9,9 @@ import {
 } from "../src/modules/contextPanel/readerTextInclusion";
 import {
   activeContextPanels,
+  activeContextPanelRawItems,
   activeContextPanelStateSync,
+  chatHistory,
   clearAllState,
 } from "../src/modules/contextPanel/state";
 
@@ -192,6 +194,11 @@ describe("reader text inclusion", function () {
     const matching = fakePanelBody(conversationKey);
     const unrelated = fakePanelBody(9999);
     const disconnected = fakePanelBody(conversationKey, false);
+    const history = [
+      { role: "assistant" as const, text: "Saved answer", timestamp: 1 },
+    ];
+    chatHistory.set(conversationKey, history);
+    activeContextPanelRawItems.set(primary.body, null);
     const refreshed: string[] = [];
     activeContextPanelStateSync.set(primary.body, () =>
       refreshed.push("primary"),
@@ -206,6 +213,7 @@ describe("reader text inclusion", function () {
       refreshed.push("disconnected"),
     );
     activeContextPanels.set(disconnected.body, () => null);
+    activeContextPanelRawItems.set(disconnected.body, null);
 
     await includeReaderSelectedText({
       body: primary.body,
@@ -216,7 +224,17 @@ describe("reader text inclusion", function () {
 
     assert.deepEqual(refreshed, ["primary", "matching"]);
     assert.isFalse(activeContextPanels.has(disconnected.body));
+    assert.isFalse(activeContextPanelRawItems.has(disconnected.body));
     assert.isFalse(activeContextPanelStateSync.has(disconnected.body));
+    assert.isTrue(
+      activeContextPanelRawItems.has(primary.body),
+      "live panel identity survives cleanup of its sibling",
+    );
+    assert.strictEqual(
+      chatHistory.get(conversationKey),
+      history,
+      "panel cleanup must preserve conversation history",
+    );
   });
 
   it("reports no selection and invalid targets without mutating context", async function () {

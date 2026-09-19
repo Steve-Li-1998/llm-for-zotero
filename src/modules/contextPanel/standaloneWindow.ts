@@ -6,8 +6,8 @@ import {
 import { isConversationKeyForKind } from "../../shared/conversationKeySpace";
 import {
   activeContextPanels,
+  unregisterContextPanel,
   activeContextPanelRawItems,
-  activeContextPanelStateSync,
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
   selectedRuntimeModeCache,
@@ -340,9 +340,7 @@ function restoreEmbeddedPanelsAfterStandaloneClose(
     if (excludedBody && body === excludedBody) continue;
     if (!(body as Element).isConnected) {
       void releaseClaudeRuntimeForBody(body as Element);
-      activeContextPanels.delete(body);
-      activeContextPanelRawItems.delete(body);
-      activeContextPanelStateSync.delete(body);
+      unregisterContextPanel(body);
       continue;
     }
     const rawItem = activeContextPanelRawItems.get(body as Element) || null;
@@ -4327,9 +4325,7 @@ export function openStandaloneChat(options?: {
       disposeSetupHandlers(contentArea);
       clearPanelHostBinding(contentArea);
       void releaseClaudeRuntimeForBody(contentArea as Element);
-      activeContextPanels.delete(contentArea);
-      activeContextPanelRawItems.delete(contentArea);
-      activeContextPanelStateSync.delete(contentArea);
+      unregisterContextPanel(contentArea);
     }
     const sessionWin = getStandaloneSessionWindow();
     if (sessionWin === newWin || sessionWin === null) {

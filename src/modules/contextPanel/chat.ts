@@ -239,6 +239,7 @@ import {
   paperContextModeOverrides,
   paperContentSourceOverrides,
   activeContextPanels,
+  unregisterContextPanel,
   activeContextPanelStateSync,
   getCancelledRequestId,
   getPendingRequestId,
@@ -1581,8 +1582,7 @@ export function refreshActiveConversationPanels(
 ): void {
   for (const [body, getItem] of activeContextPanels) {
     if (!(body as Element).isConnected) {
-      activeContextPanels.delete(body);
-      activeContextPanelStateSync.delete(body);
+      unregisterContextPanel(body);
       continue;
     }
     const item = getItem();
@@ -3386,11 +3386,6 @@ export function isPanelConversationCurrent(
   return !activeItem || getConversationKey(activeItem) === conversationKey;
 }
 
-function cleanupDisconnectedPanelBody(body: Element): void {
-  activeContextPanels.delete(body);
-  activeContextPanelStateSync.delete(body);
-}
-
 function visitConversationPanelBodies(
   conversationKey: number,
   primaryBody: Element | null | undefined,
@@ -3405,7 +3400,7 @@ function visitConversationPanelBodies(
     if (visited.has(body)) return;
     visited.add(body);
     if (!body.isConnected) {
-      cleanupDisconnectedPanelBody(body);
+      unregisterContextPanel(body);
       return;
     }
     if (getPanelBodyConversationKey(body, fallbackItem) !== conversationKey) {
@@ -4772,7 +4767,7 @@ export function disposeChatRendering(body: Element): void {
   if (!box) return;
   disposeChatScrollViewport(box);
   for (const view of mountedAssistantViews.get(box)?.values() || []) {
-    disposeAgentTrace(view.trace);
+    if (view.trace) disposeAgentTrace(view.trace);
     if (view.answer) disposeStreamingMarkdown(view.answer);
   }
   mountedAssistantViews.delete(box);
@@ -10295,7 +10290,12 @@ export function renderForkSourceMarkerInto(
 type MountedAssistantView = {
   wrapper: HTMLElement;
   bubble: HTMLElement;
-  trace: HTMLElement;
+  trace: HTMLElement | null;
+  reasoningSummary?: string;
+  reasoningDetails?: string;
+  runMode?: Message["runMode"];
+  modelName?: string;
+  modelProviderLabel?: string;
   actionSummaryHost: HTMLElement;
   user: Message | null;
   runId?: string;
@@ -10329,33 +10329,45 @@ function updateMountedAssistantViews(
       message.compactMarker ||
       (message.documentId || message.planDocumentId) !== view.documentId ||
       message.agentRunId !== view.runId ||
-      message.generatedImages?.length
+      message.generatedImages?.length ||
+      // Ordinary Chat reuses answer DOM only. Changes to its surrounding
+      // thinking/model presentation retain the established full renderer.
+      (!view.trace &&
+        (message.reasoningSummary !== view.reasoningSummary ||
+          message.reasoningDetails !== view.reasoningDetails ||
+          message.runMode !== view.runMode ||
+          message.modelName !== view.modelName ||
+          message.modelProviderLabel !== view.modelProviderLabel))
     )
       return false;
   }
+  let hasAgentTrace = false;
   for (const message of messages) {
     const view = views.get(message)!;
     const events = message.agentRunId
       ? getCachedAgentRunEvents(message.agentRunId)
       : message.pendingAgentTraceEvents || [];
     let interleaved = false;
-    const trace = renderAgentTrace({
-      doc: box.ownerDocument,
-      panelItem: item,
-      message,
-      userMessage: view.user,
-      events,
-      previous: view.trace,
-      actionSummaryHost: view.actionSummaryHost,
-      allowPlanRecovery:
-        message === latestAssistantMessage(getConversationKey(item)),
-      onInterleavedText: () => {
-        interleaved = true;
-      },
-    });
-    if (trace && trace !== view.trace) {
-      view.trace.replaceWith(trace);
-      view.trace = trace;
+    if (view.trace) {
+      hasAgentTrace = true;
+      const trace = renderAgentTrace({
+        doc: box.ownerDocument,
+        panelItem: item,
+        message,
+        userMessage: view.user,
+        events,
+        previous: view.trace,
+        actionSummaryHost: view.actionSummaryHost,
+        allowPlanRecovery:
+          message === latestAssistantMessage(getConversationKey(item)),
+        onInterleavedText: () => {
+          interleaved = true;
+        },
+      });
+      if (trace && trace !== view.trace) {
+        view.trace.replaceWith(trace);
+        view.trace = trace;
+      }
     }
     if (
       message.text !== view.text ||
@@ -10366,7 +10378,12 @@ function updateMountedAssistantViews(
       if (!view.answer) {
         view.answer = box.ownerDocument.createElement("div");
         view.answer.className = "llm-assistant-answer";
-        view.bubble.insertBefore(view.answer, view.actionSummaryHost);
+        view.bubble.insertBefore(
+          view.answer,
+          view.actionSummaryHost.parentElement === view.bubble
+            ? view.actionSummaryHost
+            : null,
+        );
       }
       renderAssistantRichText({
         body,
@@ -10384,11 +10401,14 @@ function updateMountedAssistantViews(
       view.quoteCitations = message.quoteCitations;
       view.quoteOverride = message.quoteDisplayOverride;
       updateStreamingTurnNavigator(body, message);
-      view.bubble.querySelector(".llm-typing")?.remove();
+      if (message.text) {
+        view.bubble.classList.toggle("streaming", Boolean(message.streaming));
+        view.bubble.querySelector(".llm-typing")?.remove();
+      }
     }
     if (view.answer) view.answer.hidden = interleaved;
   }
-  syncFloatingPlanProgress(box, getConversationKey(item));
+  if (hasAgentTrace) syncFloatingPlanProgress(box, getConversationKey(item));
   scheduleChatScrollReconciliation(getConversationKey(item), box);
   return true;
 }
@@ -10562,7 +10582,7 @@ export function refreshChat(
       if (root) disposePlanProgress(root as HTMLElement);
     }
     for (const view of mountedAssistantViews.get(chatBox)?.values() || []) {
-      disposeAgentTrace(view.trace);
+      if (view.trace) disposeAgentTrace(view.trace);
       if (view.answer) disposeStreamingMarkdown(view.answer);
     }
     mountedAssistantViews.delete(chatBox);
@@ -11633,7 +11653,15 @@ export function refreshChat(
       if (agentTraceEl) {
         bubbleHeaderNodes.push(agentTraceEl);
       }
-      if (agentTraceEl) {
+      if (
+        agentTraceEl ||
+        (msg.streaming &&
+          msg.runMode !== "agent" &&
+          !msg.compactMarker &&
+          !hasGeneratedImages &&
+          !isClaudeStreamingConversation &&
+          renderProviderProtocol !== "web_sync")
+      ) {
         let views = mountedAssistantViews.get(chatBox);
         if (!views) {
           views = new Map();
@@ -11643,6 +11671,11 @@ export function refreshChat(
           wrapper,
           bubble,
           trace: agentTraceEl,
+          reasoningSummary: msg.reasoningSummary,
+          reasoningDetails: msg.reasoningDetails,
+          runMode: msg.runMode,
+          modelName: msg.modelName,
+          modelProviderLabel: msg.modelProviderLabel,
           actionSummaryHost,
           user: previousUserMessage,
           runId: msg.agentRunId,
@@ -12032,6 +12065,11 @@ export function refreshChat(
       const expandedQuoteCards = collectExpandedQuoteCardKeys(
         existingTargetedWrapper,
       );
+      // A completed ordinary Chat turn is no longer a streaming view.
+      // Do not retain its retired wrapper when a targeted refresh finalizes it.
+      const mounted = mountedAssistantViews.get(chatBox);
+      if (mounted?.get(msg)?.wrapper === existingTargetedWrapper)
+        mounted.delete(msg);
       existingTargetedWrapper.replaceWith(wrapper);
       restoreExpandedQuoteCards(wrapper, expandedQuoteCards);
     } else {
@@ -12116,8 +12154,7 @@ export function refreshConversationPanels(
 
   for (const [body, getItem] of activeContextPanels.entries()) {
     if (!(body as Element).isConnected) {
-      activeContextPanels.delete(body);
-      activeContextPanelStateSync.delete(body);
+      unregisterContextPanel(body);
       continue;
     }
     if (refreshedPanels.has(body)) continue;

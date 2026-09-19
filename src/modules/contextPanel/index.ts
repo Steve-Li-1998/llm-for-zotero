@@ -29,6 +29,7 @@ import type { Message } from "./types";
 import type { ConversationSystem } from "../../shared/types";
 import {
   activeContextPanels,
+  unregisterContextPanel,
   activeContextPanelRawItems,
   activeContextPanelStateSync,
   chatHistory,
@@ -1117,8 +1118,7 @@ function getActiveNoteItemFromWindow(
 function refreshPanelsForConversationKey(conversationKey: number): void {
   for (const [activeBody, syncPanelState] of activeContextPanelStateSync) {
     if (!(activeBody as Element).isConnected) {
-      activeContextPanels.delete(activeBody);
-      activeContextPanelStateSync.delete(activeBody);
+      unregisterContextPanel(activeBody);
       continue;
     }
     const activeRoot = activeBody.querySelector(
@@ -1142,8 +1142,7 @@ export function refreshNoteEditingPanelsForNote(noteId: number): number {
   let refreshedPanels = 0;
   for (const [activeBody, syncPanelState] of activeContextPanelStateSync) {
     if (!(activeBody as Element).isConnected) {
-      activeContextPanels.delete(activeBody);
-      activeContextPanelStateSync.delete(activeBody);
+      unregisterContextPanel(activeBody);
       continue;
     }
     const activeRoot = activeBody.querySelector(

@@ -527,6 +527,20 @@ export type WorkflowTestApi = {
     historyTurns: number;
     chunks: number;
   }) => Promise<import("./streamingReplay").StreamingReplayResult>;
+  exerciseChatRenderingLifecycle: (
+    panelId: string,
+  ) => ReturnType<
+    typeof import("./chatRenderingReplay").exerciseChatRenderingLifecycle
+  >;
+  memoryProbeInspect: (input: {
+    label: string;
+    gc?: boolean;
+  }) => Promise<import("./chatMemoryReplay").MemoryProbeSample>;
+  exerciseChatModeStreamingTurn: (input: {
+    panelId?: string;
+    turnIndex: number;
+    chunks: number;
+  }) => Promise<import("./chatMemoryReplay").ChatModeTurnResult>;
   exerciseNativeStreamingReplay: (input: {
     surface: "embedded" | "standalone";
     historyTurns: number;

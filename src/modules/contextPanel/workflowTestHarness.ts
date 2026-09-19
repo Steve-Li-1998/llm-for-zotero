@@ -12,6 +12,11 @@ import {
 import { exercisePlanHistoryReplay } from "./planHistoryReplay";
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import { exerciseStreamingReplay } from "./streamingReplay";
+import { exerciseChatRenderingLifecycle } from "./chatRenderingReplay";
+import {
+  memoryProbeInspect,
+  exerciseChatModeStreamingTurn,
+} from "./chatMemoryReplay";
 import { exerciseAgentDeliveryReplay } from "./agentDeliveryReplay";
 import { buildUI } from "./buildUI";
 import { getAgentRuntime } from "../../agent";
@@ -5388,6 +5393,31 @@ export function installWorkflowTestHarness(targetAddon: {
       exercisePlanHistoryReplay(getPanel(input.panelId), input),
     exerciseStreamingReplay: (input) =>
       exerciseStreamingReplay(getPanel(input.panelId), input),
+    exerciseChatRenderingLifecycle: (panelId) =>
+      exerciseChatRenderingLifecycle(getPanel(panelId)),
+    memoryProbeInspect: (input) => {
+      assertWorkflowTestEnabled();
+      return memoryProbeInspect(input);
+    },
+    exerciseChatModeStreamingTurn: async (input) => {
+      assertWorkflowTestEnabled();
+      if (input.panelId) {
+        const panel = getPanel(input.panelId);
+        await ensureConversationLoaded(panel.item);
+        return exerciseChatModeStreamingTurn(panel, input);
+      }
+      const win = Zotero.getMainWindow();
+      const host = getReaderContextPanelForTab(
+        win.document,
+        (win as any).Zotero_Tabs.selectedID,
+      );
+      const root = host?.querySelector<HTMLElement>("#llm-main");
+      const body = root?.parentElement;
+      const item = body && activeContextPanels.get(body)?.();
+      if (!root?.isConnected || !body || !item)
+        throw new Error("Memory replay requires a mounted reader chat panel");
+      return exerciseChatModeStreamingTurn({ body, item }, input);
+    },
     exerciseNativeStreamingReplay: async (input) => {
       assertWorkflowTestEnabled();
       const win =

@@ -100,6 +100,7 @@ import {
   draftInputCache,
   webChatDraftInputCache,
   activeContextPanels,
+  unregisterContextPanel,
   activeContextPanelRawItems,
   activeContextPanelStateSync,
   inlineEditTarget,
@@ -8188,6 +8189,9 @@ export function setupHandlers(
     unregisterQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
     queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
     activeContextPanelStateSync.delete(body);
+    // Rebuilding the root of a still-mounted body must retain its raw paper
+    // identity. A detached body, however, owns no surviving UI registration.
+    if (!body.isConnected) unregisterContextPanel(body);
     delete (body as any).__llmApplyResolvedClaudeEffort;
     delete (body as any).__llmRefreshContextSourceForCurrentItem;
     delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];

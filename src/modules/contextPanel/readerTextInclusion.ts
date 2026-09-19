@@ -9,7 +9,11 @@ import {
   getCurrentSelectionPageLocationFromReader,
   resolveCurrentSelectionPageLocationFromReader,
 } from "./livePdfSelectionLocator";
-import { activeContextPanels, activeContextPanelStateSync } from "./state";
+import {
+  activeContextPanels,
+  activeContextPanelStateSync,
+  unregisterContextPanel,
+} from "./state";
 import { normalizeSelectedText, setStatus } from "./textUtils";
 import type { PaperContextRef } from "./types";
 import {
@@ -71,8 +75,7 @@ function refreshSelectedTextPanels(
 
   for (const body of bodies) {
     if (body !== primaryBody && !body.isConnected) {
-      activeContextPanels.delete(body);
-      activeContextPanelStateSync.delete(body);
+      unregisterContextPanel(body);
       continue;
     }
     if (

@@ -74,6 +74,13 @@ export const activeContextPanelRawItems = new Map<
   Zotero.Item | null
 >();
 export const activeContextPanelStateSync = new Map<Element, () => void>();
+
+/** Release all strong registrations owned by a retired panel, never its conversation. */
+export function unregisterContextPanel(body: Element): void {
+  activeContextPanels.delete(body);
+  activeContextPanelRawItems.delete(body);
+  activeContextPanelStateSync.delete(body);
+}
 export const shortcutEscapeListenerAttached = new WeakSet<Document>();
 export let readerContextPanelRegistered = false;
 export function setReaderContextPanelRegistered(value: boolean) {

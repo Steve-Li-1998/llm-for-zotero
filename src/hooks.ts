@@ -30,6 +30,7 @@ import {
 import { createZToolkit } from "./utils/ztoolkit";
 import {
   activeContextPanels,
+  unregisterContextPanel,
   clearAllState,
   initFontScale,
 } from "./modules/contextPanel/state";
@@ -483,7 +484,9 @@ function registerPrefsPane() {
 
 async function onMainWindowUnload(win: Window): Promise<void> {
   for (const [body] of activeContextPanels) {
-    if (body.ownerDocument === win.document) disposeSetupHandlers(body);
+    if (body.ownerDocument !== win.document) continue;
+    disposeSetupHandlers(body);
+    unregisterContextPanel(body);
   }
   dedicatedChatPaneDisposers.get(win)?.();
   dedicatedChatPaneDisposers.delete(win);

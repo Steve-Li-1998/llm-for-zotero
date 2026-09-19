@@ -12,6 +12,7 @@ import {
 } from "../src/modules/contextPanel/chat";
 import {
   activeContextPanels,
+  activeContextPanelRawItems,
   activeContextPanelStateSync,
   clearAllState,
 } from "../src/modules/contextPanel/state";
@@ -119,6 +120,7 @@ describe("chat panel conversation ownership", function () {
     bodies.forEach((body, index) => {
       const item = index === 2 ? itemB : itemA;
       activeContextPanels.set(body, () => item);
+      activeContextPanelRawItems.set(body, item);
       activeContextPanelStateSync.set(body, () => {
         refreshCounts[index] += 1;
       });
@@ -131,6 +133,7 @@ describe("chat panel conversation ownership", function () {
 
     assert.deepEqual(refreshCounts, [1, 1, 0, 0]);
     assert.isFalse(activeContextPanels.has(bodies[3]));
+    assert.isFalse(activeContextPanelRawItems.has(bodies[3]));
   });
 
   it("caches a delayed A trace without repainting a body now owned by B", async function () {

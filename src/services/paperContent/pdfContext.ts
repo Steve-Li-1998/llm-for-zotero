@@ -2338,13 +2338,13 @@ export function selectStructuredCandidates(params: {
   let pool = params.ranked;
   if (requestedSectionIds.length) {
     const wanted = new Set(requestedSectionIds);
-    const restricted = params.ranked.filter(
+    // Same rule as the ranking stage: a requested scope that matches nothing
+    // returns nothing rather than widening to the whole document.
+    pool = params.ranked.filter(
       (candidate) =>
         candidate.sectionIndex !== undefined &&
         wanted.has(sectionIdForIndex(candidate.sectionIndex)),
     );
-    // Unknown ids are ignored; an empty pool falls back to the whole document.
-    if (restricted.length) pool = restricted;
   }
   if (!pool.length) return [];
   // A read of fewer than four chunks has no room for structure: a reserved
@@ -2837,7 +2837,9 @@ export async function buildPaperRetrievalCandidates(
       )
     : [];
   // Every later reservation and fallback must obey the same valid scope.
-  const ranked = restricted.length ? restricted : allRanked;
+  // A requested scope that matches nothing returns nothing: falling back to
+  // the whole document would deliver out-of-scope passages without a warning.
+  const ranked = requestedSections.size ? restricted : allRanked;
 
   // Stage 2 — structure.
   const selected = selectStructuredCandidates({

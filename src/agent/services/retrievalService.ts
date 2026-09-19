@@ -10,6 +10,7 @@ import {
   resolveSemanticSearchState,
   type ChatParams,
 } from "../../utils/llmClient";
+import { fnv1a32 } from "../../utils/fnv1a";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
 import {
   formatPaperCitationLabel,
@@ -62,7 +63,8 @@ function dedupePaperContexts(
 
 type EvidenceCacheKey = string;
 
-function buildEvidenceCacheKey(params: {
+/** Exported for the cache-key unit tests; not part of the service contract. */
+export function buildEvidenceCacheKey(params: {
   paper: PaperContextRef;
   queryKey: string;
   perPaperTopK: number;
@@ -80,7 +82,8 @@ function buildEvidenceCacheKey(params: {
     ),
   ];
   // Preserve Unicode, mathematical operators, and the complete query identity.
-  // Unknown provenance uses the source text rather than reusing stale evidence.
+  // Unknown provenance digests the source text rather than reusing stale
+  // evidence: a whole paper in the key would grow the cache without bound.
   return JSON.stringify([
     params.paper.libraryID,
     params.paper.contextItemId,
@@ -90,7 +93,13 @@ function buildEvidenceCacheKey(params: {
     params.embeddingKey,
     params.purpose,
     params.quotePolicy,
-    fingerprints.length ? fingerprints : params.source?.chunks,
+    fingerprints.length
+      ? fingerprints
+      : params.source
+        ? `chunks:${params.source.chunks.length}:${fnv1a32(
+            params.source.chunks.join("\n"),
+          )}`
+        : undefined,
   ]);
 }
 

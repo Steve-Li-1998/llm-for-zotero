@@ -2,9 +2,13 @@ import { assert } from "chai";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 import type {
   PaperContextCandidate,
+  PdfChunkMeta,
   PdfContext,
 } from "../src/services/paperContent/types";
-import { RetrievalService } from "../src/agent/services/retrievalService";
+import {
+  buildEvidenceCacheKey,
+  RetrievalService,
+} from "../src/agent/services/retrievalService";
 
 describe("RetrievalService", function () {
   it("keeps evidence-mode ordering instead of re-sorting by raw hybrid score", async function () {
@@ -223,5 +227,81 @@ describe("RetrievalService", function () {
     assert.equal(results[0].chunkIndex, 7);
     assert.equal(results[0].paperContext.itemId, 2);
     assert.equal(results[1].paperContext.itemId, 1);
+  });
+});
+
+describe("evidence cache key", function () {
+  const paper: PaperContextRef = {
+    itemId: 3,
+    contextItemId: 33,
+    title: "Long Paper",
+    firstCreator: "Nguyen",
+    year: "2026",
+  };
+  const PARAGRAPH =
+    "The adaptive front tracking scheme moves every boundary vertex by one " +
+    "explicit Euler step of the extended velocity field. ";
+
+  /** A paper of unknown provenance: no chunk carries a sourceFingerprint. */
+  function buildLongSource(chunks: string[]): PdfContext {
+    return {
+      title: "Long Paper",
+      chunks,
+      chunkMeta: chunks.map((text, chunkIndex) => ({
+        chunkIndex,
+        text,
+        normalizedText: text.toLowerCase(),
+        chunkKind: "body",
+      })) as PdfChunkMeta[],
+      chunkStats: [],
+      docFreq: {},
+      avgChunkLength: 0,
+      fullLength: chunks.join("\n").length,
+    } as PdfContext;
+  }
+
+  function keyFor(source: PdfContext): string {
+    return buildEvidenceCacheKey({
+      paper,
+      queryKey: JSON.stringify(["how is the front velocity computed"]),
+      perPaperTopK: 8,
+      sectionIds: [],
+      source,
+      embeddingKey: "off",
+    });
+  }
+
+  const chunks = Array.from(
+    { length: 200 },
+    (_, index) => `${index}. ${PARAGRAPH.repeat(10)}`,
+  );
+
+  it("stays bounded for a 200 kB paper with no chunk fingerprints", function () {
+    const source = buildLongSource(chunks);
+    assert.isAbove(
+      source.chunks.join("\n").length,
+      200_000,
+      "the fixture is a 200 kB paper",
+    );
+    assert.isTrue(
+      source.chunkMeta.every((meta) => !meta.sourceFingerprint),
+      "the fixture has no chunk provenance",
+    );
+    assert.isBelow(keyFor(source).length, 512);
+  });
+
+  it("gives identical sources the same key and a changed chunk a new one", function () {
+    assert.equal(
+      keyFor(buildLongSource(chunks)),
+      keyFor(buildLongSource([...chunks])),
+      "the same text reuses the same evidence",
+    );
+    const edited = [...chunks];
+    edited[7] = `${edited[7]} The mobility is frozen at the previous level.`;
+    assert.notEqual(
+      keyFor(buildLongSource(edited)),
+      keyFor(buildLongSource(chunks)),
+      "a re-parsed paper never reuses stale evidence",
+    );
   });
 });

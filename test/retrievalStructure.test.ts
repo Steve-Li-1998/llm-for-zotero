@@ -676,4 +676,60 @@ describe("structure stage on the math fixture", function () {
     );
     assert.notEqual(out[0].chunkKind, "conclusion");
   });
+
+  it("returns nothing for a requested section that holds no passages", async function () {
+    const ctx = await buildFixturePdfContext("mathDoubleHash", 9202);
+    const paperRef: PaperContextRef = {
+      itemId: 101,
+      contextItemId: 9202,
+      title: "Mock",
+      firstCreator: "Tester",
+      year: "2026",
+    };
+    const plan = buildRetrievalQueryPlan({
+      query: "kinematic relation between film height and normal speed",
+    });
+    const readSection = async (
+      sectionId: string,
+    ): Promise<PaperContextCandidate[]> =>
+      buildPaperRetrievalCandidates(
+        paperRef,
+        ctx,
+        plan.originalQuery,
+        { queryPlan: plan },
+        {
+          topK: 8,
+          mode: "evidence",
+          queryPlan: plan,
+          sectionIds: [sectionId],
+        },
+      );
+
+    // No chunk of the fixture carries section s999.
+    assert.isEmpty(
+      await readSection("s999"),
+      "an empty scope never widens to the whole document",
+    );
+
+    const chunksPerSection = new Map<number, number>();
+    for (const meta of ctx.chunkMeta) {
+      if (meta.sectionIndex === undefined) continue;
+      chunksPerSection.set(
+        meta.sectionIndex,
+        (chunksPerSection.get(meta.sectionIndex) || 0) + 1,
+      );
+    }
+    const [populatedSectionIndex] = [...chunksPerSection.entries()].sort(
+      (left, right) => right[1] - left[1] || left[0] - right[0],
+    )[0];
+    const inScope = await readSection(`s${populatedSectionIndex}`);
+    assert.isNotEmpty(inScope, "a populated section still reads");
+    for (const candidate of inScope) {
+      assert.equal(
+        candidate.sectionIndex,
+        populatedSectionIndex,
+        candidate.chunkText.slice(0, 60),
+      );
+    }
+  });
 });

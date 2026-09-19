@@ -223,6 +223,34 @@ describe("paper_read outline mode and section ids", function () {
     assert.isNotEmpty(output.papers[0].passages);
   });
 
+  it("warns when the requested sections hold no passages", async function () {
+    const sectionId = await kinematicSectionId();
+    const tool = createPaperReadTool(
+      { ensurePaperContext: async () => ctx } as never,
+      { retrieveEvidence: async () => [] } as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paper],
+        resolvePaperContextTarget: (target: { itemId?: number }) =>
+          target.itemId === paper.itemId ? paper : null,
+      } as never,
+    ) as unknown as AgentToolDefinition<never, unknown>;
+    const output = (await run(
+      {
+        mode: "targeted",
+        query: "How is the velocity of the free boundary computed?",
+        sectionIds: [sectionId],
+      },
+      tool,
+    )) as TargetedResult;
+    assert.include(
+      output.warnings || [],
+      `Requested sections contain no passages: ${sectionId}`,
+      `warnings were ${JSON.stringify(output.warnings)}`,
+    );
+    assert.equal(output.papers[0].status, "no_matches");
+  });
+
   it("converts section names to section ids", async function () {
     const output = (await run({
       mode: "targeted",

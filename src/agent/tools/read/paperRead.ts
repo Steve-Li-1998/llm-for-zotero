@@ -1776,6 +1776,20 @@ export function createPaperReadTool(
         perPaperTopK: input.topK,
         sectionIdsByPaper,
       });
+      // Retrieval never widens a requested scope, so an empty read of named
+      // sections is reported instead of being answered from the whole paper.
+      const papersWithPassages = new Set(
+        results.map((result) => result.paperContext?.contextItemId),
+      );
+      for (const paper of targets) {
+        const requestedSectionIds = sectionIdsByPaper.get(paper.contextItemId);
+        if (!requestedSectionIds?.length) continue;
+        if (papersWithPassages.has(paper.contextItemId)) continue;
+        const warning = `Requested sections contain no passages: ${requestedSectionIds.join(", ")}`;
+        if (!sectionFilter.warnings.includes(warning)) {
+          sectionFilter.warnings.push(warning);
+        }
+      }
       const quoteCitations: QuoteCitation[] = [];
       const embeddedOutlines = new Map<string, DocumentOutline>();
       for (const [key, outline] of outlineByPaper) {

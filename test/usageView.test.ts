@@ -309,14 +309,14 @@ describe("usage heatmap popover copy", function () {
     );
   });
 
-  it("admits when the day's tokens are an input-only estimate", function () {
+  it("admits when the day's tokens are an estimate", function () {
     assert.equal(
       describeUsageHeatmapPopover(
         day({ providerRows: 2, estimateRows: 1 }),
         "questions",
         { locale: "en-US" },
       )[2],
-      "42.1k tokens · input-only estimate",
+      "42.1k tokens · estimate",
     );
   });
 
@@ -564,14 +564,14 @@ describe("usage estimate note", function () {
     assert.isNull(describeUsageEstimateNote({}));
   });
 
-  it("names the estimated turns and what is missing from them", function () {
+  it("names the estimated turns and says both numbers are estimates", function () {
     assert.strictEqual(
       describeUsageEstimateNote({ estimatedTurns: 1 }),
-      "Includes 1 turn from before this tab existed: input tokens are estimated and output was never recorded.",
+      "Includes 1 turn from before this tab existed: its tokens are estimated from the stored text.",
     );
     assert.strictEqual(
       describeUsageEstimateNote({ estimatedTurns: 1240 }),
-      "Includes 1,240 turns from before this tab existed: input tokens are estimated and output was never recorded.",
+      "Includes 1,240 turns from before this tab existed: their tokens are estimated from the stored text.",
     );
   });
 });

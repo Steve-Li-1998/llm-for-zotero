@@ -358,7 +358,7 @@ describe("usage heatmap hover popover", function () {
       "the card moved with the pointer",
     );
     // Day 3 also carries the backfilled turn, so its tokens are an estimate.
-    assert.include(collectOwnText(card)[2]!, "input-only estimate");
+    assert.include(collectOwnText(card)[2]!, "· estimate");
   });
 
   it("hides again when the pointer leaves the grid", function () {

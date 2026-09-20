@@ -506,10 +506,11 @@ describe("workflow: usage statistics preferences tab", function () {
     }
   });
 
-  it("says plainly that pre-cutover tokens are input-only estimates", async function () {
+  it("says plainly that pre-cutover tokens are estimates", async function () {
     await initUsageStore();
-    // One turn rebuilt from chat history by the backfill: input tokens only,
-    // no output, and flagged as reconstructed.
+    // One turn rebuilt from chat history by the backfill: both numbers are
+    // estimates -- input from the recorded context size, output from the
+    // stored answer text -- and the row is flagged as reconstructed.
     assert.isTrue(
       await recordUsageEvent({
         mode: "library",
@@ -519,7 +520,8 @@ describe("workflow: usage statistics preferences tab", function () {
         provider: "DeepSeek",
         runtime: "chat",
         promptTokens: 4200,
-        totalTokens: 4200,
+        completionTokens: 380,
+        totalTokens: 4580,
         tokenSource: "history-estimate",
       }),
       "the backfilled fixture row must be written",
@@ -536,8 +538,8 @@ describe("workflow: usage statistics preferences tab", function () {
       );
       assert.match(
         note!.textContent || "",
-        /input tokens are estimated and output was never recorded/,
-        "the caveat names exactly what is estimated and what is missing",
+        /tokens are estimated from the stored text/,
+        "the caveat says both numbers are estimated, and from what",
       );
       assert.lengthOf(
         root.querySelectorAll("[data-usage-estimate-note]"),

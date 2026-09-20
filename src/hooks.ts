@@ -211,6 +211,24 @@ function scheduleConversationMaintenance(
     }
   });
 
+  // The first backfill could not estimate output tokens at all, and the text
+  // only upgrade that followed left a thinking model's hidden reasoning
+  // uncounted. This pass RECOMPUTES every reconstructed row from the stored
+  // answer and reasoning, so any profile state converges on the same number.
+  // It waits for the pass above internally, so these two deferred tasks cannot
+  // race, and on a profile that never ran the first pass it correctly finds
+  // nothing to do.
+  runDeferredStartupTask("usage history output estimate", async () => {
+    const { backfillUsageHistoryOutputTokens } =
+      await import("./utils/usageHistoryBackfill");
+    const result = await backfillUsageHistoryOutputTokens();
+    if (result.applied && result.rowsUpdated > 0) {
+      ztoolkit.log(
+        `LLM: Usage ledger estimated output tokens for ${result.rowsUpdated} backfilled turn(s) across ${result.conversations} conversation(s)`,
+      );
+    }
+  });
+
   runDeferredStartupTask("conversation search index refresh", async () => {
     const { refreshConversationSearchIndex } =
       await import("./shared/conversationSearchIndex");

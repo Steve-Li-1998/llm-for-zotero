@@ -7,6 +7,8 @@ import {
 import { resetConversationWriteFenceForTests } from "../src/shared/conversationWriteFence";
 import {
   USAGE_EVENTS_TABLE,
+  USAGE_UNREPORTED_HEAL_INDEX,
+  USAGE_UNREPORTED_HEAL_SQL,
   initUsageStore,
   loadUsageEventsForConversation,
   recordUsageEvent,
@@ -194,6 +196,45 @@ describe("usage token provenance", function () {
     assert.lengthOf(rows, 2);
     assert.strictEqual(rows[0]!.tokenSource, "unreported");
     assert.strictEqual(rows[1]!.tokenSource, "provider");
+  });
+
+  it("heals a zero-token row an older build wrote after the column existed", async function () {
+    // A downgrade/upgrade cycle: the column is there, but the build that
+    // wrote this row knew nothing about it and took the DEFAULT.
+    await initUsageStore();
+    harness.db.exec(
+      `INSERT INTO ${USAGE_EVENTS_TABLE}
+        (timestamp, local_date, mode, conversation_key, total_tokens)
+       VALUES (3, '2026-09-19', 'paper', ${PAPER_KEY}, 0)`,
+    );
+    assert.strictEqual(
+      String(
+        harness.all(
+          `SELECT token_source AS s FROM ${USAGE_EVENTS_TABLE} WHERE timestamp = 3`,
+        )[0]!.s,
+      ),
+      "provider",
+    );
+
+    resetUsageStoreForTests();
+    await initUsageStore();
+
+    const rows = await loadUsageEventsForConversation(PAPER_KEY);
+    assert.lengthOf(rows, 1);
+    assert.strictEqual(rows[0]!.tokenSource, "unreported");
+  });
+
+  it("finds the rows to heal through an index instead of scanning the ledger", async function () {
+    // The healing pass runs on EVERY startup, so at a year's worth of rows a
+    // full scan would be a measurable part of every launch. The partial index
+    // holds only the rows that still need healing -- usually none at all.
+    await initUsageStore();
+    const plan = harness
+      .all(`EXPLAIN QUERY PLAN ${USAGE_UNREPORTED_HEAL_SQL}`)
+      .map((row) => String(row.detail))
+      .join(" | ");
+    assert.include(plan, `USING INDEX ${USAGE_UNREPORTED_HEAL_INDEX}`);
+    assert.notInclude(plan, `SCAN ${USAGE_EVENTS_TABLE}`);
   });
 
   it("counts unreported turns in the model breakdown", async function () {

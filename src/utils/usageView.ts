@@ -457,8 +457,8 @@ export type UsageHeatmapPopoverDay = {
  *
  * Line three obeys the same honesty rule as the Tokens card: a day whose rows
  * were never measured says so instead of printing "0 tokens", and a day
- * rebuilt from chat history says its number is an input-only estimate. A day
- * with no rows at all makes no claim about tokens whatsoever.
+ * rebuilt from chat history says its number is an estimate. A day with no rows
+ * at all makes no claim about tokens whatsoever.
  */
 export function describeUsageHeatmapPopover(
   day: UsageHeatmapPopoverDay,
@@ -488,7 +488,7 @@ export function describeUsageHeatmapPopover(
     return [
       date,
       activity,
-      usageText("{tokens} tokens · input-only estimate", {
+      usageText("{tokens} tokens · estimate", {
         tokens: formatUsageTokens(day.totalTokens),
       }),
     ];
@@ -766,9 +766,10 @@ export function describeUsageModelSource(model: {
  *
  * Turns from before the ledger existed are rebuilt from stored chat history
  * (`src/utils/usageHistoryBackfill.ts`): their input tokens are the size of the
- * prompt the plugin assembled, never a billed count, and their output tokens
- * were never recorded at all. Question counts and papers stay exact -- they
- * come from real messages -- so only the token copy carries this.
+ * prompt the plugin assembled, and their output tokens are estimated from the
+ * stored answer AND the stored reasoning, which a thinking model is billed for
+ * too (`src/utils/usageTokenEstimate.ts`). Neither is a billed count. Question counts and papers stay exact -- they come from real messages
+ * -- so only the token copy carries this.
  */
 export function describeUsageEstimateNote(input: {
   estimatedTurns?: number;
@@ -778,10 +779,10 @@ export function describeUsageEstimateNote(input: {
   return usageText(
     plural(
       estimated,
-      "Includes {count} turn from before this tab existed: input tokens are" +
-        " estimated and output was never recorded.",
-      "Includes {count} turns from before this tab existed: input tokens are" +
-        " estimated and output was never recorded.",
+      "Includes {count} turn from before this tab existed: its tokens are" +
+        " estimated from the stored text.",
+      "Includes {count} turns from before this tab existed: their tokens are" +
+        " estimated from the stored text.",
     ),
     { count: formatUsageCount(estimated) },
   );

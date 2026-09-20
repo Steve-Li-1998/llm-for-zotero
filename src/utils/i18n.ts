@@ -1123,7 +1123,7 @@ const zhCN: Record<string, string> = {
   "{tokens} tokens": "{tokens} Token",
   "{tokens} tokens · removed from your library":
     "{tokens} Token · 已从文献库中移除",
-  "{tokens} tokens · input-only estimate": "{tokens} Token · 仅输入的估算值",
+  "{tokens} tokens · estimate": "{tokens} Token · 估算值",
   "Tokens not reported": "Token 未报告",
   "No activity": "没有活动",
   "{count} question across {days} active day":
@@ -1147,10 +1147,10 @@ const zhCN: Record<string, string> = {
   "not reported by the provider": "服务商未报告",
   "no tokens recorded in this range": "此时间范围内没有 Token 记录",
   "no usage in this range": "此时间范围内没有用量",
-  "Includes {count} turn from before this tab existed: input tokens are estimated and output was never recorded.":
-    "包含 {count} 轮本标签页出现之前的对话：输入 Token 为估算值，输出 Token 从未记录。",
-  "Includes {count} turns from before this tab existed: input tokens are estimated and output was never recorded.":
-    "包含 {count} 轮本标签页出现之前的对话：输入 Token 为估算值，输出 Token 从未记录。",
+  "Includes {count} turn from before this tab existed: its tokens are estimated from the stored text.":
+    "包含 {count} 轮本标签页出现之前的对话：其 Token 数由已存储的文本估算得出。",
+  "Includes {count} turns from before this tab existed: their tokens are estimated from the stored text.":
+    "包含 {count} 轮本标签页出现之前的对话：其 Token 数由已存储的文本估算得出。",
   "Export CSV": "导出 CSV",
   "Reset statistics": "重置统计",
   "Export usage statistics": "导出用量统计",

@@ -107,7 +107,7 @@ export type UsageHeatmapDay = {
   providerRows: number;
   /** Rows whose provider never reported usage; their tokens are unknown. */
   unreportedRows: number;
-  /** Rows rebuilt from stored chat history: input estimated, no output. */
+  /** Rows rebuilt from stored chat history: both numbers are estimates. */
   estimateRows: number;
 };
 
@@ -148,9 +148,10 @@ export type UsageModelUsage = {
   unreportedTurns: number;
   /**
    * Turns whose tokens were reconstructed from stored history
-   * (`token_source = 'history-estimate'`). They carry an INPUT estimate and no
-   * output at all, so a range that contains them must say so rather than let
-   * the split read like a measured bill.
+   * (`token_source = 'history-estimate'`). Their input is estimated from the
+   * recorded context size and their output from the stored answer text, so a
+   * range that contains them must say so rather than let the split read like
+   * a measured bill.
    */
   estimatedTurns: number;
 };

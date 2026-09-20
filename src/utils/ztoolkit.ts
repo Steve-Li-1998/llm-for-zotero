@@ -1,7 +1,33 @@
 import { ZoteroToolkit } from "zotero-plugin-toolkit";
 import { config } from "../../package.json";
+import { appLogger, formatAppLogError, setAppLogSink } from "../core/logging";
 
-export { createZToolkit };
+export { createZToolkit, disposeAppLogging, installAppLogging };
+
+type LogToolkit = {
+  log: (...args: unknown[]) => unknown;
+};
+
+function isErrorValue(value: unknown): value is {
+  name?: unknown;
+  message?: unknown;
+  stack?: unknown;
+} {
+  return (
+    value instanceof Error ||
+    Object.prototype.toString.call(value) === "[object Error]"
+  );
+}
+
+function installAppLogging(toolkit: LogToolkit): void {
+  const writeToolkitLog = toolkit.log.bind(toolkit);
+  setAppLogSink((_level, args) =>
+    writeToolkitLog(
+      ...args.map((arg) => (isErrorValue(arg) ? formatAppLogError(arg) : arg)),
+    ),
+  );
+  toolkit.log = (...args: unknown[]) => appLogger.debug(...args);
+}
 
 function createZToolkit() {
   const _ztoolkit = new ZoteroToolkit();
@@ -29,6 +55,14 @@ function initZToolkit(_ztoolkit: ReturnType<typeof createZToolkit>) {
     "default",
     `chrome://${config.addonRef}/content/icons/icon.svg`,
   );
+
+  // The toolkit compatibility entry point is diagnostic. Application source
+  // uses explicit facade methods for warning, lifecycle, and trace severity.
+  installAppLogging(_ztoolkit);
+}
+
+function disposeAppLogging(): void {
+  setAppLogSink(null);
 }
 
 import { BasicTool, unregister } from "zotero-plugin-toolkit";

@@ -1,3 +1,4 @@
+import { appLogger } from "../../../../core/logging";
 import { createElement } from "../../../../utils/domHelpers";
 import { t } from "../../../../utils/i18n";
 import { createHistoryActivityIndicator } from "../../historyActivity";
@@ -1189,7 +1190,7 @@ export function createHistoryLifecycleController(
         if (currentTask?.task === task) {
           historySearchDocumentTasks.delete(entry.conversationKey);
         }
-        ztoolkit.log("LLM: Failed to index conversation history for search", {
+        appLogger.warn("LLM: Failed to index conversation history for search", {
           conversationKey: entry.conversationKey,
           error,
         });
@@ -1612,7 +1613,7 @@ export function createHistoryLifecycleController(
       restoreHistorySearchInputFocus();
       return;
     } catch (err) {
-      ztoolkit.log("LLM: DB-backed conversation history search failed", err);
+      appLogger.warn("LLM: DB-backed conversation history search failed", err);
     }
 
     try {
@@ -1634,7 +1635,10 @@ export function createHistoryLifecycleController(
       restoreHistorySearchInputFocus();
       return;
     } catch (err) {
-      ztoolkit.log("LLM: Failed to load searchable conversation history", err);
+      appLogger.warn(
+        "LLM: Failed to load searchable conversation history",
+        err,
+      );
     }
     if (requestId !== historySearchLoadSeq) return;
     historySearchEntries = [];
@@ -1904,7 +1908,7 @@ export function createHistoryLifecycleController(
             }
           }
         } catch (err) {
-          ztoolkit.log("LLM: Failed to load paper history entries", err);
+          appLogger.warn("LLM: Failed to load paper history entries", err);
         }
         paperEntries.sort((a, b) => {
           if (b.lastActivityAt !== a.lastActivityAt) {
@@ -1949,7 +1953,7 @@ export function createHistoryLifecycleController(
               kind: "global",
             });
           } catch (err) {
-            ztoolkit.log(
+            appLogger.warn(
               "LLM: Failed to ensure active Claude history row",
               err,
             );
@@ -1967,7 +1971,7 @@ export function createHistoryLifecycleController(
             limit: GLOBAL_HISTORY_LIMIT,
           });
         } catch (err) {
-          ztoolkit.log(
+          appLogger.warn(
             "LLM: Failed to load Claude global history entries",
             err,
           );
@@ -2036,7 +2040,10 @@ export function createHistoryLifecycleController(
               kind: "global",
             });
           } catch (err) {
-            ztoolkit.log("LLM: Failed to ensure active Codex history row", err);
+            appLogger.warn(
+              "LLM: Failed to ensure active Codex history row",
+              err,
+            );
           }
         }
         if (requestId !== globalHistoryLoadSeq) return;
@@ -2051,7 +2058,10 @@ export function createHistoryLifecycleController(
             limit: GLOBAL_HISTORY_LIMIT,
           });
         } catch (err) {
-          ztoolkit.log("LLM: Failed to load Codex global history entries", err);
+          appLogger.warn(
+            "LLM: Failed to load Codex global history entries",
+            err,
+          );
         }
         if (requestId !== globalHistoryLoadSeq) return;
 
@@ -2116,7 +2126,7 @@ export function createHistoryLifecycleController(
               kind: "global",
             });
           } catch (err) {
-            ztoolkit.log(
+            appLogger.warn(
               "LLM: Failed to ensure active global history row",
               err,
             );
@@ -2134,7 +2144,7 @@ export function createHistoryLifecycleController(
             limit: GLOBAL_HISTORY_LIMIT,
           });
         } catch (err) {
-          ztoolkit.log("LLM: Failed to load global history entries", err);
+          appLogger.warn("LLM: Failed to load global history entries", err);
         }
         if (requestId !== globalHistoryLoadSeq) return;
 
@@ -2284,13 +2294,16 @@ export function createHistoryLifecycleController(
       ensured.kind !== "global" ||
       ensured.libraryID !== libraryID
     ) {
-      ztoolkit.log("LLM: Refused to switch to mismatched global conversation", {
-        system,
-        conversationKey: normalizedConversationKey,
-        libraryID,
-        registeredLibraryID: ensured?.libraryID,
-        registeredKind: ensured?.kind,
-      });
+      appLogger.warn(
+        "LLM: Refused to switch to mismatched global conversation",
+        {
+          system,
+          conversationKey: normalizedConversationKey,
+          libraryID,
+          registeredLibraryID: ensured?.libraryID,
+          registeredKind: ensured?.kind,
+        },
+      );
       if (status)
         setStatus(status, t("Could not load this conversation"), "error");
       return false;
@@ -2782,7 +2795,7 @@ export function createHistoryLifecycleController(
             | undefined,
       });
     } catch (err) {
-      ztoolkit.log("LLM: Failed to select searched conversation paper", {
+      appLogger.warn("LLM: Failed to select searched conversation paper", {
         paperItemID: paperItem.id,
         error: err,
       });
@@ -3021,7 +3034,7 @@ export function createHistoryLifecycleController(
         throughAssistantTimestamp: assistantTimestamp,
       });
     } catch (err) {
-      ztoolkit.log("LLM: Failed to fork conversation", err);
+      appLogger.warn("LLM: Failed to fork conversation", err);
     }
     if (!result?.entry?.conversationKey) {
       if (status) setStatus(status, t("Failed to fork conversation"), "error");
@@ -3064,7 +3077,7 @@ export function createHistoryLifecycleController(
         getConversationWriteGeneration(nextConversationKey),
       );
     } catch (err) {
-      ztoolkit.log("LLM: Failed to refresh fork attachment refs", err);
+      appLogger.warn("LLM: Failed to refresh fork attachment refs", err);
     }
     void refreshGlobalHistoryHeader();
     showTopToast(t("Conversation forked"));
@@ -3097,7 +3110,7 @@ export function createHistoryLifecycleController(
       try {
         return await searchIndexedConversationHistory(libraryID, query);
       } catch (err) {
-        ztoolkit.log("LLM: DB-backed history search popup failed", err);
+        appLogger.warn("LLM: DB-backed history search popup failed", err);
         return await searchLoadedConversationHistory(libraryID, query);
       }
     },
@@ -3111,7 +3124,7 @@ export function createHistoryLifecycleController(
       await queueHistoryDeletion(entry);
     },
     translate: t,
-    log: (...args) => ztoolkit.log("LLM: history search popup", args),
+    log: (...args) => appLogger.warn("LLM: history search popup", args),
     resolveLabel: (entry) => resolveHistoryScopeChipLabel(entry),
     resolveScopeLabel: (entry) => resolveHistoryScopeLabel(entry),
   });
@@ -3371,7 +3384,7 @@ export function createHistoryLifecycleController(
       await refreshGlobalHistoryHeader();
       if (status) setStatus(status, t("Conversation renamed"), "ready");
     } catch (err) {
-      ztoolkit.log("LLM: Failed to rename conversation", err);
+      appLogger.warn("LLM: Failed to rename conversation", err);
       if (status)
         setStatus(status, t("Failed to rename conversation"), "error");
     }
@@ -3402,7 +3415,7 @@ export function createHistoryLifecycleController(
           summary.scopedConversationKey || entry.scopedConversationKey,
       };
     } catch (err) {
-      ztoolkit.log("LLM: Failed to hydrate history row before deletion", {
+      appLogger.warn("LLM: Failed to hydrate history row before deletion", {
         conversationKey: entry.conversationKey,
         error: err,
       });
@@ -3512,7 +3525,7 @@ export function createHistoryLifecycleController(
     // filtered but otherwise live conversation.
     invalidateHistorySearchDocument(targetEntry.conversationKey);
 
-    ztoolkit.log("LLM: Queued history deletion", {
+    appLogger.debug("LLM: Queued history deletion", {
       kind: targetEntry.kind,
       conversationKey: targetEntry.conversationKey,
       libraryID,
@@ -3717,7 +3730,7 @@ export function createHistoryLifecycleController(
       return false;
     }
 
-    ztoolkit.log("LLM: + conversation action", {
+    appLogger.debug("LLM: + conversation action", {
       libraryID,
       targetConversationKey,
       action: reuseReason ? "reuse" : "create",
@@ -3830,7 +3843,7 @@ export function createHistoryLifecycleController(
       return false;
     }
 
-    ztoolkit.log("LLM: + paper conversation action", {
+    appLogger.debug("LLM: + paper conversation action", {
       libraryID,
       paperItemID,
       targetConversationKey,
@@ -3913,7 +3926,7 @@ export function createHistoryLifecycleController(
     // again, switching now would snap the panel onto the hidden session row
     // and override the conversation they just navigated back to.
     if (!isWebChatMode()) return false;
-    ztoolkit.log("LLM: webchat session conversation", {
+    appLogger.debug("LLM: webchat session conversation", {
       libraryID,
       paperItemID,
       conversationKey: session.conversationKey,
@@ -3970,7 +3983,7 @@ export function createHistoryLifecycleController(
 
       // [webchat] In webchat mode, "+" creates a new ChatGPT conversation
       const { selectedEntry: _debugEntry } = getSelectedModelInfo();
-      ztoolkit.log(
+      appLogger.debug(
         `[webchat] + clicked: authMode=${_debugEntry?.authMode}, entryId=${_debugEntry?.entryId}, isWebChat=${_debugEntry?.authMode === "webchat"}`,
       );
       if (isWebChatMode()) {
@@ -3991,7 +4004,10 @@ export function createHistoryLifecycleController(
             ]);
             await sendNewChat(getRelayBaseUrl());
           } catch (err) {
-            ztoolkit.log("[webchat] Failed to trigger immediate new chat", err);
+            appLogger.warn(
+              "[webchat] Failed to trigger immediate new chat",
+              err,
+            );
           }
         })();
         const key = getConversationKey(item);
@@ -4127,7 +4143,7 @@ export function createHistoryLifecycleController(
           forceFresh: true,
           excludeConversationKey: entry.conversationKey,
         }),
-      log: (message, ...args) => ztoolkit.log(message, ...args),
+      log: (message, ...args) => appLogger.warn(message, ...args),
     });
   };
 

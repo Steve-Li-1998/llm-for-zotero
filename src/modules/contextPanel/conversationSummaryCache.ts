@@ -17,6 +17,7 @@
  * pair at the start of the history so it is compatible with all model APIs.
  */
 
+import { appLogger } from "../../core/logging";
 import type { ChatMessage, ChatParams } from "../../utils/llmClient";
 import { fingerprintSecret } from "../../utils/secretFingerprint";
 import {
@@ -137,7 +138,7 @@ function recordSummaryFailure(
     // Logged once, at the point the conversation gives up — logging every
     // attempt would reintroduce the per-turn noise this exists to remove.
     if (typeof ztoolkit !== "undefined") {
-      ztoolkit.log(
+      appLogger.warn(
         `LLM: conversation ${key} stopped attempting background summaries after ${attempts} failure(s)`,
         describeUtilityLLMFailure(failure),
       );

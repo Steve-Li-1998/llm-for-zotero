@@ -142,6 +142,7 @@ export type PendingDeletionStoreEnv = {
   setTimer?: (fn: () => void, delayMs: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   log?: (message: string, ...args: unknown[]) => void;
+  warn?: (message: string, ...args: unknown[]) => void;
 };
 
 type ZoteroDbLike = {
@@ -215,6 +216,7 @@ function defaultEnv(): Required<PendingDeletionStoreEnv> {
     setTimer: defaultSetTimer,
     clearTimer: defaultClearTimer,
     log: () => {},
+    warn: () => {},
   };
 }
 
@@ -373,6 +375,7 @@ export function configurePendingDeletionStoreEnv(
     setTimer: next.setTimer || defaults.setTimer,
     clearTimer: next.clearTimer || defaults.clearTimer,
     log: next.log || defaults.log,
+    warn: next.warn || next.log || defaults.warn,
   };
 }
 
@@ -382,8 +385,10 @@ export function configurePendingDeletionStoreEnv(
 // "Check logs" points at nothing.
 export function setPendingDeletionStoreLogger(
   log: (message: string, ...args: unknown[]) => void,
+  warn: (message: string, ...args: unknown[]) => void = log,
 ): void {
   env.log = log;
+  env.warn = warn;
 }
 
 export function resetPendingDeletionStoreForTests(): void {
@@ -438,7 +443,7 @@ function notify(event: PendingDeletionEvent): void {
     try {
       listener(event);
     } catch (err) {
-      env.log("LLM: pending deletion listener failed", err);
+      env.warn("LLM: pending deletion listener failed", err);
     }
   }
 }
@@ -610,7 +615,7 @@ async function deleteRow(id: string): Promise<void> {
       id,
     ]);
   } catch (err) {
-    env.log("LLM: failed to delete pending-deletion row", { id, err });
+    env.warn("LLM: failed to delete pending-deletion row", { id, err });
   }
 }
 
@@ -633,7 +638,7 @@ async function persistAttempts(entry: PendingDeletionEntry): Promise<void> {
       [entry.attempts, entry.id],
     );
   } catch (err) {
-    env.log("LLM: failed to persist pending-deletion attempts", {
+    env.warn("LLM: failed to persist pending-deletion attempts", {
       id: entry.id,
       err,
     });
@@ -665,7 +670,7 @@ async function persistConversationState(
     );
     return true;
   } catch (err) {
-    env.log("LLM: failed to persist pending conversation deletion state", {
+    env.warn("LLM: failed to persist pending conversation deletion state", {
       id: entry.id,
       err,
     });
@@ -738,7 +743,7 @@ async function undoInternal(id: string): Promise<PendingDeletionEntry | null> {
     // The durable intent could not be withdrawn; leave the entry (and its
     // timer) in place so state stays consistent, and let the caller
     // surface the failure instead of claiming "restored".
-    env.log("LLM: undo failed to withdraw pending-deletion row", {
+    env.warn("LLM: undo failed to withdraw pending-deletion row", {
       id,
       err,
     });
@@ -773,7 +778,7 @@ async function purgePendingTurnEntriesForConversation(
     try {
       await deleteRowStrict(turnEntry.id);
     } catch (error) {
-      env.log(
+      env.warn(
         "LLM: failed to remove pending turn intent after conversation deletion",
         {
           conversationKey,
@@ -824,7 +829,7 @@ async function finalizeInternalUnsafe(
   if (!entry) return true;
   clearEntryTimer(id);
   if (!finalizers) {
-    env.log("LLM: pending deletion finalizers not configured", { id, reason });
+    env.warn("LLM: pending deletion finalizers not configured", { id, reason });
     // Keep the retry heartbeat alive — without it the entry would sit hidden
     // forever with a dead undo window until the next sweep.
     armTimer(id, getFinalizeRetryDelayMs(entry.attempts + 1));
@@ -868,7 +873,7 @@ async function finalizeInternalUnsafe(
       localDeleted = Boolean(outcome?.localDeleted);
     }
   } catch (err) {
-    env.log("LLM: pending deletion finalize threw", { id, reason, err });
+    env.warn("LLM: pending deletion finalize threw", { id, reason, err });
     ok = false;
   }
   if (quarantined && entry.kind === "conversation") {
@@ -954,7 +959,10 @@ async function finalizeInternalUnsafe(
       try {
         await deleteRowStrict(id);
       } catch (err) {
-        env.log(
+        // Local finalization may have succeeded completely, making this the
+        // first and only observed database failure. Keep it visible; the retry
+        // remains paced by the timer armed below.
+        env.warn(
           "LLM: failed to withdraw pending-deletion row after finalize; retrying",
           { id, reason, err },
         );
@@ -993,6 +1001,8 @@ async function finalizeInternalUnsafe(
   if (entry.attempts > Number.MAX_SAFE_INTEGER - 1) {
     entry.attempts = Number.MAX_SAFE_INTEGER - 1;
   }
+  // Finalizers warn the actionable cause. This repeated scheduling record is
+  // diagnostic, and there is deliberately no give-up transition below.
   env.log("LLM: pending deletion finalize failed; scheduling retry", {
     id,
     reason,
@@ -1248,7 +1258,7 @@ export const pendingDeletionStore = {
           // window; after expiry the finalizer moves this row to durable
           // quarantined_identity and retries only after a deterministic repair.
           // Numeric-key deletion is never a fallback.
-          env.log(
+          env.warn(
             "LLM: queueing conversation deletion without a complete catalog identity witness; finalizer will quarantine",
             {
               conversationKey: input.conversationKey,
@@ -1285,7 +1295,7 @@ export const pendingDeletionStore = {
         try {
           await insertRow(entry);
         } catch (err) {
-          env.log("LLM: failed to persist pending conversation deletion", err);
+          env.warn("LLM: failed to persist pending conversation deletion", err);
           return null;
         }
         intentPersisted = true;
@@ -1362,7 +1372,7 @@ export const pendingDeletionStore = {
         try {
           await insertRow(entry);
         } catch (err) {
-          env.log("LLM: failed to persist pending turn deletion", err);
+          env.warn("LLM: failed to persist pending turn deletion", err);
           return null;
         }
         entries.set(entry.id, entry);
@@ -1694,7 +1704,7 @@ export const pendingDeletionStore = {
     try {
       await pendingDeletionStore.loadPersistedFence();
     } catch (error) {
-      env.log("LLM: pending deletion fence reload failed", { error });
+      env.warn("LLM: pending deletion fence reload failed", { error });
     }
     return persistedFenceLoaded;
   },
@@ -1751,7 +1761,7 @@ async function loadPersistedIntentsUnlocked(
         freezeConversationWrites(quarantinedKey);
         bumpConversationWriteGeneration(quarantinedKey);
       }
-      env.log("LLM: quarantining unreadable pending-deletion row", {
+      env.warn("LLM: quarantining unreadable pending-deletion row", {
         rowId,
       });
       // Never drop a durable user deletion because an old manifest cannot
@@ -1768,7 +1778,7 @@ async function loadPersistedIntentsUnlocked(
             [rowId],
           );
         } catch (error) {
-          env.log("LLM: failed to mark unreadable deletion as quarantined", {
+          env.warn("LLM: failed to mark unreadable deletion as quarantined", {
             rowId,
             error,
           });

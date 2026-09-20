@@ -14,6 +14,7 @@ import {
   libraryIndexService,
   normalizeLibraryIndexText,
 } from "../../../services/libraryIndexService";
+import { appLogger } from "../../../core/logging";
 import type { PaperContextRef } from "../../../shared/types";
 import type {
   EditableArticleCreator,
@@ -1058,7 +1059,7 @@ export class ItemCapability {
       // Otherwise a genuine fallback: the in-memory path applies the same
       // filters and returns correct results. It is logged because silence is
       // what masked the `year` operator bug for as long as it existed.
-      Zotero.debug(
+      appLogger.debug(
         `[agent] Zotero.Search listing failed, falling back to in-memory filtering: ${
           error instanceof Error ? error.message : String(error)
         }`,

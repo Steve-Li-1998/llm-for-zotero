@@ -1,3 +1,4 @@
+import { appLogger } from "./core/logging";
 import { initLocale } from "./utils/locale";
 import { initI18n } from "./utils/i18n";
 import { registerPrefsScripts } from "./modules/preferenceScript";
@@ -22,12 +23,15 @@ import { initChatStore } from "./utils/chatStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
 import { pendingDeletionStore } from "./core/conversations/pendingDeletionStore";
-import { configurePendingDeletionSubsystem } from "./modules/contextPanel/pendingDeletionWiring";
+import {
+  configurePendingDeletionSubsystem,
+  disposePendingDeletionSubsystem,
+} from "./modules/contextPanel/pendingDeletionWiring";
 import {
   runDeferredLegacyMigrations,
   runStartupPreferenceMigrations,
 } from "./utils/migrations";
-import { createZToolkit } from "./utils/ztoolkit";
+import { createZToolkit, disposeAppLogging } from "./utils/ztoolkit";
 import {
   activeContextPanels,
   unregisterContextPanel,
@@ -80,7 +84,9 @@ async function measureStartupPhase<T>(
   try {
     return await task();
   } finally {
-    ztoolkit.log(`LLM startup: ${label} completed in ${Date.now() - start}ms`);
+    appLogger.info(
+      `LLM startup: ${label} completed in ${Date.now() - start}ms`,
+    );
   }
 }
 
@@ -92,11 +98,11 @@ function runDeferredStartupTask(
     const start = Date.now();
     try {
       await task();
-      ztoolkit.log(
+      appLogger.info(
         `LLM startup deferred: ${label} completed in ${Date.now() - start}ms`,
       );
     } catch (err) {
-      ztoolkit.log(`LLM: Deferred startup task failed: ${label}`, err);
+      appLogger.warn(`LLM: Deferred startup task failed: ${label}`, err);
     }
   })();
 }
@@ -126,13 +132,13 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
     await measureStartupPhase("upstream chat store", initChatStore);
     readiness.chatStoreReady = true;
   } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize chat store", err);
+    appLogger.warn("LLM: Failed to initialize chat store", err);
   }
   try {
     await measureStartupPhase("Claude Code store", initClaudeCodeStore);
     readiness.claudeStoreReady = true;
   } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize Claude Code store", err);
+    appLogger.warn("LLM: Failed to initialize Claude Code store", err);
   }
   try {
     await measureStartupPhase(
@@ -141,7 +147,7 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
     );
     readiness.codexStoreReady = true;
   } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize Codex App Server store", err);
+    appLogger.warn("LLM: Failed to initialize Codex App Server store", err);
   }
   try {
     await measureStartupPhase("pending deletion store", async () => {
@@ -157,7 +163,7 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
       readiness.pendingDeletionReady = true;
     });
   } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize pending deletion store", err);
+    appLogger.warn("LLM: Failed to initialize pending deletion store", err);
   }
 
   return readiness;
@@ -201,7 +207,7 @@ function scheduleConversationIntegrityAudit(): void {
       await import("./shared/conversationIntegrity");
     const report = await auditConversationIntegrity();
     if (!report.ok) {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM: Conversation history integrity audit found issues",
         report,
       );
@@ -214,7 +220,7 @@ function scheduleConversationIntegrityAudit(): void {
       await import("./shared/conversationKeyLedger");
     const quarantined = await logConversationKeyQuarantineSummary();
     if (quarantined) {
-      ztoolkit.log(
+      appLogger.warn(
         `LLM: ${quarantined} conversation identity conflict(s) are quarantined; see the ledger log entry for keys and reasons`,
       );
     }
@@ -339,7 +345,7 @@ async function onStartup() {
       runStartupPreferenceMigrations();
     });
   } catch (err) {
-    ztoolkit.log("LLM: Failed to run legacy migration", err);
+    appLogger.warn("LLM: Failed to run legacy migration", err);
   }
 
   initLocale();
@@ -362,7 +368,7 @@ async function onStartup() {
   // one now behaves the same way. The store retries the load on first write,
   // so a transient database error self-heals instead of persisting.
   if (!conversationStoreReadiness.pendingDeletionReady) {
-    ztoolkit.log(
+    appLogger.warn(
       "LLM: pending deletion fence not loaded at startup; will retry before the next conversation write",
     );
   }
@@ -509,6 +515,8 @@ async function onShutdown(): Promise<void> {
   await zoteroChangeDispatcher.flush();
   unregisterPaperConversationRestoreNotifications();
   await shutdownPaperRestoreSelections();
+  disposePendingDeletionSubsystem();
+  disposeAppLogging();
   ztoolkit.unregisterAll();
   unregisterReaderSelectionTracking();
   unregisterAllNoteEditingSelectionTracking();
@@ -566,7 +574,7 @@ async function onNotify(
 ) {
   await zoteroChangeDispatcher.dispatch({ event, type, ids, extraData });
   // You can add your code to the corresponding notify type
-  ztoolkit.log("notify", event, type, ids, extraData);
+  appLogger.debug("notify", event, type, ids, extraData);
   return;
 }
 

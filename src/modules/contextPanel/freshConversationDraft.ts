@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import {
   conversationRepository,
   type ConversationCatalogEntry,
@@ -39,7 +40,7 @@ function emptyResult(): FreshConversationDraftResult {
 
 function logFreshDraftError(message: string, err: unknown): void {
   try {
-    ztoolkit?.log?.(message, err);
+    appLogger.debug?.(message, err);
   } catch (_error) {
     void _error;
   }

@@ -12,6 +12,7 @@
  * before the click is made.
  */
 
+import { appLogger } from "../../core/logging";
 import { listAgentRunEvents } from "../../agent/store/traceStore";
 import { MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE } from "../../services/quotes/quoteCitations";
 import { summarizeQuoteTextSupport } from "../../services/quotes/quoteTextSearch";
@@ -140,7 +141,10 @@ async function loadRunEvidencePassages(
     // A locked or busy database is transient.  Caching the empty result would
     // silently disable provenance for the rest of the session, so this stays
     // uncached and the next click tries again.
-    ztoolkit.log("LLM quote provenance: could not read agent run trace", error);
+    appLogger.warn(
+      "LLM quote provenance: could not read agent run trace",
+      error,
+    );
     return null;
   }
   // The quote is likelier to have come from a later round than an earlier one,

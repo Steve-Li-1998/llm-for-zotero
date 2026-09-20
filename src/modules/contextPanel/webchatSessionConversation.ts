@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { conversationRepository } from "../../core/conversations/repository";
 import { findWebchatSessionPaperConversationKey } from "../../utils/chatStore";
 
@@ -117,7 +118,10 @@ async function resolveWebChatSessionConversationUncoalesced(params: {
     }
   } catch (err) {
     try {
-      ztoolkit?.log?.("LLM: Failed to reuse webchat session conversation", err);
+      appLogger.warn?.(
+        "LLM: Failed to reuse webchat session conversation",
+        err,
+      );
     } catch (_error) {
       void _error;
     }

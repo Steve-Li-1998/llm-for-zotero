@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import {
   installConversationKeyLedgerAgentTriggers,
   isConversationKeyRetiredInMemory,
@@ -65,7 +66,7 @@ async function ensureConversationMemoryStore(): Promise<boolean> {
       await installConversationKeyLedgerAgentTriggers();
       return true;
     } catch (error) {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM Agent: Failed to initialize conversation memory store",
         error,
       );
@@ -165,7 +166,7 @@ async function loadConversationMemory(
       })
       .filter((entry) => entry.question || entry.answerExcerpt);
   } catch (error) {
-    ztoolkit.log("LLM Agent: Failed to load conversation memory", error);
+    appLogger.warn("LLM Agent: Failed to load conversation memory", error);
     return [];
   }
 }
@@ -218,7 +219,7 @@ export async function recordAgentTurn(
     );
   } catch (error) {
     if (isConversationKeyRetiredInMemory(key)) store.delete(key);
-    ztoolkit.log("LLM Agent: Failed to persist conversation memory", error);
+    appLogger.warn("LLM Agent: Failed to persist conversation memory", error);
   }
 }
 
@@ -263,6 +264,6 @@ export async function clearAgentMemory(conversationKey: number): Promise<void> {
       [key],
     );
   } catch (error) {
-    ztoolkit.log("LLM Agent: Failed to clear conversation memory", error);
+    appLogger.warn("LLM Agent: Failed to clear conversation memory", error);
   }
 }

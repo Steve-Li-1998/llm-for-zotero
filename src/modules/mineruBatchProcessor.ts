@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import { getMineruCheckpointRoot } from "../services/mineru/mineruCheckpoint";
 import {
   parsePdfWithMineru,
@@ -338,7 +339,7 @@ async function processNext(): Promise<void> {
   try {
     const pdfItem = Zotero.Items.get(entry.attachmentId);
     if (!pdfItem) {
-      ztoolkit.log(
+      appLogger.debug(
         `MinerU batch: item ${entry.attachmentId} not found, skipping`,
       );
       setItemFailed(entry.attachmentId, "Item not found");
@@ -351,7 +352,7 @@ async function processNext(): Promise<void> {
     ).getFilePathAsync?.();
 
     if (!pdfPath) {
-      ztoolkit.log(
+      appLogger.debug(
         `MinerU batch: no file path for ${entry.attachmentId}, skipping`,
       );
       setItemFailed(entry.attachmentId, "No file path");
@@ -383,7 +384,7 @@ async function processNext(): Promise<void> {
         void publishMineruCachePackageForAttachment(entry.attachmentId).then(
           (published) => {
             if (published.status === "error") {
-              ztoolkit.log(
+              appLogger.warn(
                 "LLM: MinerU sync package publish failed",
                 published,
               );
@@ -407,7 +408,7 @@ async function processNext(): Promise<void> {
       state.lastFailedItemId = null;
     } else {
       const failReason = lastProgressStage || "No content returned";
-      ztoolkit.log(
+      appLogger.warn(
         `MinerU batch: no content returned for "${entry.title}", skipping`,
       );
       setItemFailed(entry.attachmentId, failReason);
@@ -417,7 +418,7 @@ async function processNext(): Promise<void> {
     }
   } catch (e) {
     if (e instanceof MineruCancelledError) {
-      ztoolkit.log(`MinerU batch: cancelled "${entry.title}"`);
+      appLogger.debug(`MinerU batch: cancelled "${entry.title}"`);
       setItemFailed(entry.attachmentId, "Cancelled");
       // Put the item back so it can be retried on resume
       queue.unshift(entry);
@@ -453,13 +454,13 @@ async function processNext(): Promise<void> {
       updateMineruPdfPageCount(entry.attachmentId, e.pageCount);
       clearItemStatus(entry.attachmentId);
       state.totalCount--;
-      ztoolkit.log(`MinerU batch: skipped "${entry.title}" - ${e.message}`);
+      appLogger.debug(`MinerU batch: skipped "${entry.title}" - ${e.message}`);
       currentAbort = null;
       scheduleNext();
       return;
     }
     const errMsg = (e as Error).message || String(e);
-    ztoolkit.log(`MinerU batch: error processing "${entry.title}":`, e);
+    appLogger.warn(`MinerU batch: error processing "${entry.title}":`, e);
     setItemFailed(entry.attachmentId, errMsg);
     state.lastFailedItemId = entry.attachmentId;
     state.lastFailedMessage = errMsg;
@@ -794,7 +795,7 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
         tagsAuto: tagNames.automatic,
       });
     } catch (err) {
-      ztoolkit.log("LLM MinerU: Failed to process item", pdfAtt?.id, err);
+      appLogger.warn("LLM MinerU: Failed to process item", pdfAtt?.id, err);
     }
   }
 

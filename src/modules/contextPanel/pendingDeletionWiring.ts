@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import {
   configurePendingDeletionFinalizers,
   setPendingDeletionStoreLogger,
@@ -9,9 +10,10 @@ import {
   processPendingConversationCleanupJobs,
 } from "./conversationDeletion";
 import {
-  completeConversationCleanupJob,
   enqueueConversationCleanupJob,
-  failConversationCleanupJob,
+  getNextConversationCleanupJobDueAt,
+  onConversationCleanupJobsChanged,
+  performConversationCleanupJobAttempt,
 } from "../../core/conversations/conversationCleanupJobs";
 import { initAgentSubsystem } from "../../agent";
 import {
@@ -27,10 +29,57 @@ import {
 } from "../../claudeCode/runtime";
 import { clearConversationOwnedRuntimeState } from "./state";
 import { sweepOrphanedAgentTraceExports } from "../../agent/store/traceStore";
+import { onBackgroundCleanupNeeded } from "../../core/maintenance/backgroundCleanupSignals";
 
 let configured = false;
 let forcedTurnFinalizeFailures = 0;
-let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+
+const SLOW_MAINTENANCE_INTERVAL_MS = 30 * 60 * 1000;
+const EVENT_MAINTENANCE_DELAY_MS = 5_000;
+const PROVIDER_DISCOVERY_RETRY_MIN_MS = 5_000;
+const PROVIDER_DISCOVERY_RETRY_MAX_MS = 5 * 60 * 1000;
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
+
+type MaintenanceTimer = ReturnType<typeof setTimeout>;
+type PendingDeletionMaintenanceEnv = {
+  now: () => number;
+  setTimer: (callback: () => void, delayMs: number) => MaintenanceTimer;
+  clearTimer: (timer: MaintenanceTimer) => void;
+  getNextProviderCleanupAt: () => Promise<number | null>;
+  processProviderCleanup: () => Promise<void>;
+  collectAttachments: () => Promise<void>;
+  sweepTraces: () => Promise<void>;
+};
+
+const defaultMaintenanceEnv: PendingDeletionMaintenanceEnv = {
+  now: Date.now,
+  setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimer: (timer) => clearTimeout(timer),
+  getNextProviderCleanupAt: () =>
+    getNextConversationCleanupJobDueAt({ includeAttentionRequired: true }),
+  processProviderCleanup: () =>
+    processPendingConversationCleanupJobs({
+      getCoreAgentRuntime: initAgentSubsystem,
+      log: safeLog,
+      includeAttentionRequired: true,
+    }),
+  collectAttachments: () =>
+    collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS),
+  sweepTraces: sweepOrphanedAgentTraceExports,
+};
+
+let maintenanceEnv = defaultMaintenanceEnv;
+let lifecycleGeneration = 0;
+let providerTimer: MaintenanceTimer | null = null;
+let providerLoop: Promise<void> | null = null;
+let providerWakePending = false;
+let providerFailureDelayMs = PROVIDER_DISCOVERY_RETRY_MIN_MS;
+let slowTimer: MaintenanceTimer | null = null;
+let slowTimerDueAt: number | null = null;
+let slowSweep: Promise<void> | null = null;
+let slowRequestedDelayMs: number | null = null;
+let unsubscribeProviderChanges: (() => void) | null = null;
+let unsubscribeBackgroundCleanup: (() => void) | null = null;
 
 // Test-only: make the next N queued-turn finalize attempts fail so workflow
 // tests can drive the failed-finalize path through the real runtime.
@@ -38,36 +87,222 @@ export function forcePendingTurnFinalizeFailuresForTests(count: number): void {
   forcedTurnFinalizeFailures = Math.max(0, Math.floor(count));
 }
 
-// ztoolkit is an ambient plugin global; outside the plugin runtime (unit
-// tests) it does not exist, so logging stays best-effort.
+// Cleanup retries use the diagnostic channel; failures in the scheduler and
+// durable-store plumbing use safeWarn below so the default still exposes them.
 function safeLog(message: string, ...args: unknown[]): void {
   try {
-    ztoolkit.log(message, ...args);
+    appLogger.debug(message, ...args);
   } catch {
     /* logging is best-effort outside plugin runtime */
   }
+}
+
+function safeWarn(message: string, ...args: unknown[]): void {
+  try {
+    appLogger.warn(message, ...args);
+  } catch {
+    /* logging is best-effort outside plugin runtime */
+  }
+}
+
+function unrefTimer(timer: MaintenanceTimer): void {
+  const maybeUnref = timer as MaintenanceTimer & { unref?: () => void };
+  maybeUnref.unref?.();
+}
+
+function isActive(generation: number): boolean {
+  return configured && generation === lifecycleGeneration;
+}
+
+function clearProviderTimer(): void {
+  if (providerTimer === null) return;
+  maintenanceEnv.clearTimer(providerTimer);
+  providerTimer = null;
+}
+
+function scheduleProviderTimer(delayMs: number, generation: number): void {
+  if (!isActive(generation)) return;
+  clearProviderTimer();
+  providerTimer = maintenanceEnv.setTimer(
+    () => {
+      if (!isActive(generation)) return;
+      providerTimer = null;
+      requestProviderCleanupWake();
+    },
+    Math.min(MAX_TIMER_DELAY_MS, Math.max(0, Math.floor(delayMs))),
+  );
+  unrefTimer(providerTimer);
+}
+
+async function runProviderCleanupLoop(generation: number): Promise<void> {
+  let processedDueWork = false;
+  while (isActive(generation) && providerWakePending) {
+    providerWakePending = false;
+    let nextAttemptAt: number | null;
+    try {
+      nextAttemptAt = await maintenanceEnv.getNextProviderCleanupAt();
+    } catch (error) {
+      safeWarn("LLM: provider cleanup discovery failed", error);
+      if (isActive(generation)) {
+        scheduleProviderTimer(providerFailureDelayMs, generation);
+        providerFailureDelayMs = Math.min(
+          PROVIDER_DISCOVERY_RETRY_MAX_MS,
+          providerFailureDelayMs * 2,
+        );
+      }
+      return;
+    }
+    if (!isActive(generation)) return;
+    providerFailureDelayMs = PROVIDER_DISCOVERY_RETRY_MIN_MS;
+    if (providerWakePending) continue;
+    if (nextAttemptAt === null) return;
+    const delayMs = nextAttemptAt - maintenanceEnv.now();
+    if (delayMs > 0) {
+      scheduleProviderTimer(delayMs, generation);
+      return;
+    }
+    if (processedDueWork) {
+      // A valid due job should either be removed or receive a future retry
+      // deadline. Bound an unexpected no-progress row instead of replacing the
+      // old five-second poll with a tight asynchronous loop.
+      scheduleProviderTimer(PROVIDER_DISCOVERY_RETRY_MIN_MS, generation);
+      return;
+    }
+    try {
+      await maintenanceEnv.processProviderCleanup();
+    } catch (error) {
+      safeWarn("LLM: provider cleanup sweep failed", error);
+      if (isActive(generation)) {
+        scheduleProviderTimer(providerFailureDelayMs, generation);
+        providerFailureDelayMs = Math.min(
+          PROVIDER_DISCOVERY_RETRY_MAX_MS,
+          providerFailureDelayMs * 2,
+        );
+      }
+      return;
+    }
+    processedDueWork = true;
+    // Mutations normally signal while the sweep is running. Re-query even if
+    // a boundary failed to signal so the durable queue remains authoritative.
+    providerWakePending = true;
+  }
+}
+
+function requestProviderCleanupWake(): void {
+  if (!configured) return;
+  providerWakePending = true;
+  clearProviderTimer();
+  if (providerLoop) return;
+  const generation = lifecycleGeneration;
+  const task = runProviderCleanupLoop(generation).finally(() => {
+    if (providerLoop === task) {
+      providerLoop = null;
+    }
+    if (configured && providerWakePending) {
+      requestProviderCleanupWake();
+    }
+  });
+  providerLoop = task;
+}
+
+function clearSlowTimer(): void {
+  if (slowTimer !== null) maintenanceEnv.clearTimer(slowTimer);
+  slowTimer = null;
+  slowTimerDueAt = null;
+}
+
+async function runSlowMaintenanceSweep(generation: number): Promise<void> {
+  try {
+    await maintenanceEnv.collectAttachments();
+  } catch (error) {
+    safeWarn("LLM: attachment GC sweep failed", error);
+  }
+  if (!isActive(generation)) return;
+  try {
+    await maintenanceEnv.sweepTraces();
+  } catch (error) {
+    safeWarn("LLM: agent trace cleanup sweep failed", error);
+  }
+}
+
+function startSlowMaintenanceSweep(generation: number): void {
+  if (!isActive(generation)) return;
+  if (slowSweep) {
+    slowRequestedDelayMs = 0;
+    return;
+  }
+  const task = runSlowMaintenanceSweep(generation).finally(() => {
+    if (slowSweep === task) {
+      slowSweep = null;
+    }
+    if (!configured) return;
+    const nextDelay = slowRequestedDelayMs;
+    slowRequestedDelayMs = null;
+    if (nextDelay !== null) {
+      scheduleSlowMaintenance(nextDelay);
+    } else if (isActive(generation)) {
+      scheduleSlowMaintenance(SLOW_MAINTENANCE_INTERVAL_MS);
+    }
+  });
+  slowSweep = task;
+}
+
+function scheduleSlowMaintenance(delayMs = EVENT_MAINTENANCE_DELAY_MS): void {
+  if (!configured) return;
+  const normalizedDelay = Math.max(0, Math.floor(delayMs));
+  if (slowSweep) {
+    slowRequestedDelayMs =
+      slowRequestedDelayMs === null
+        ? normalizedDelay
+        : Math.min(slowRequestedDelayMs, normalizedDelay);
+    return;
+  }
+  const dueAt = maintenanceEnv.now() + normalizedDelay;
+  if (slowTimer !== null && slowTimerDueAt !== null && slowTimerDueAt <= dueAt)
+    return;
+  clearSlowTimer();
+  const generation = lifecycleGeneration;
+  slowTimerDueAt = dueAt;
+  slowTimer = maintenanceEnv.setTimer(
+    () => {
+      if (!isActive(generation)) return;
+      slowTimer = null;
+      slowTimerDueAt = null;
+      startSlowMaintenanceSweep(generation);
+    },
+    Math.min(MAX_TIMER_DELAY_MS, normalizedDelay),
+  );
+  unrefTimer(slowTimer);
+}
+
+export function configurePendingDeletionMaintenanceEnvForTests(
+  overrides: Partial<PendingDeletionMaintenanceEnv>,
+): void {
+  maintenanceEnv = { ...defaultMaintenanceEnv, ...overrides };
+}
+
+export async function flushPendingDeletionMaintenanceForTests(): Promise<void> {
+  await providerLoop;
+  await slowSweep;
 }
 
 export function configurePendingDeletionSubsystem(): void {
   if (configured) return;
   configured = true;
   void initRecentlyDeletedConversationTombstones().catch((err) =>
-    safeLog("LLM: durable deletion tombstone load failed", err),
+    safeWarn("LLM: durable deletion tombstone load failed", err),
   );
   // The store's default logger is a no-op, so in production every queue
   // failure, retry and give-up was silent while the UI told the user to
   // "Check logs". Only the logger is replaced — the store keeps its default
   // main-window-bound timers.
-  setPendingDeletionStoreLogger(safeLog);
-  const scheduleAttachmentGc = () => {
-    void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
-      (err) => safeLog("LLM: attachment GC after queued deletion failed", err),
-    );
-  };
+  setPendingDeletionStoreLogger(safeLog, safeWarn);
+  const scheduleAttachmentGc = () => scheduleSlowMaintenance();
   configurePendingDeletionFinalizers({
     finalizeConversation: (entry) =>
       finalizeQueuedConversationDeletion(entry, {
         log: safeLog,
+        warn: safeWarn,
         getCoreAgentRuntime: initAgentSubsystem,
         scheduleAttachmentGc,
         clearConversationOwnedRuntimeState,
@@ -80,6 +315,7 @@ export function configurePendingDeletionSubsystem(): void {
       }
       return finalizeQueuedTurnDeletion(entry, {
         log: safeLog,
+        warn: safeWarn,
         scheduleAttachmentGc,
         detachProviderSession: async (turn) => {
           if (turn.system === "codex") {
@@ -102,17 +338,21 @@ export function configurePendingDeletionSubsystem(): void {
                   "Codex turn deletion could not persist its provider cleanup obligation",
                 );
               }
-              try {
-                await archiveCodexAppServerThread({
-                  threadId: providerSessionId,
-                });
-              } catch (error) {
-                if (!isProviderNotFoundError(error)) {
-                  await failConversationCleanupJob(job, error);
-                  throw error;
-                }
+              const attempt = await performConversationCleanupJobAttempt(
+                job,
+                async () => {
+                  try {
+                    await archiveCodexAppServerThread({
+                      threadId: providerSessionId,
+                    });
+                  } catch (error) {
+                    if (!isProviderNotFoundError(error)) throw error;
+                  }
+                },
+              );
+              if (!attempt.ok) {
+                throw attempt.error;
               }
-              await completeConversationCleanupJob(job.id);
             }
             await clearCodexConversationSessionMetadata(
               turn.conversationKey,
@@ -156,7 +396,27 @@ export function configurePendingDeletionSubsystem(): void {
                 "Claude turn deletion could not persist its provider cleanup obligation",
               );
             }
-            try {
+            if (job) {
+              const attempt = await performConversationCleanupJobAttempt(
+                job,
+                async () => {
+                  await invalidateClaudeConversationSessionWithinWriteLock(
+                    await initAgentSubsystem(),
+                    {
+                      conversationKey: turn.conversationKey,
+                      scope,
+                      metadata: {
+                        ...(providerSessionId ? { providerSessionId } : {}),
+                        ...(turn.instanceID
+                          ? { instanceID: turn.instanceID }
+                          : {}),
+                      },
+                    },
+                  );
+                },
+              );
+              if (!attempt.ok) throw attempt.error;
+            } else {
               await invalidateClaudeConversationSessionWithinWriteLock(
                 await initAgentSubsystem(),
                 {
@@ -168,50 +428,42 @@ export function configurePendingDeletionSubsystem(): void {
                   },
                 },
               );
-            } catch (error) {
-              if (job) await failConversationCleanupJob(job, error);
-              throw error;
             }
-            if (job) await completeConversationCleanupJob(job.id);
           }
         },
       });
     },
   });
-  void processPendingConversationCleanupJobs({
-    getCoreAgentRuntime: initAgentSubsystem,
-    log: safeLog,
-    includeAttentionRequired: true,
-  }).catch((err) => safeLog("LLM: provider cleanup sweep failed", err));
-  void sweepOrphanedAgentTraceExports().catch((err) =>
-    safeLog("LLM: agent trace cleanup sweep failed", err),
+  unsubscribeProviderChanges = onConversationCleanupJobsChanged(
+    requestProviderCleanupWake,
   );
-  const scheduleCleanupSweep = () => {
-    cleanupTimer = setTimeout(() => {
-      void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
-        (err) => safeLog("LLM: attachment GC sweep failed", err),
-      );
-      void sweepOrphanedAgentTraceExports().catch((err) =>
-        safeLog("LLM: agent trace cleanup sweep failed", err),
-      );
-      void processPendingConversationCleanupJobs({
-        getCoreAgentRuntime: initAgentSubsystem,
-        log: safeLog,
-        includeAttentionRequired: true,
-      })
-        .catch((err) => safeLog("LLM: provider cleanup sweep failed", err))
-        .finally(scheduleCleanupSweep);
-    }, 5_000);
-    const maybeUnref = cleanupTimer as ReturnType<typeof setTimeout> & {
-      unref?: () => void;
-    };
-    maybeUnref.unref?.();
-  };
-  scheduleCleanupSweep();
+  unsubscribeBackgroundCleanup = onBackgroundCleanupNeeded(() =>
+    scheduleSlowMaintenance(),
+  );
+  requestProviderCleanupWake();
+  // Startup attachment reconciliation and agent trace initialization each run
+  // once in their owning subsystem. This timer is the crash/age-eligibility
+  // backstop after that initial pass.
+  scheduleSlowMaintenance(SLOW_MAINTENANCE_INTERVAL_MS);
+}
+
+export function disposePendingDeletionSubsystem(): void {
+  if (!configured) return;
+  configured = false;
+  lifecycleGeneration += 1;
+  providerWakePending = false;
+  slowRequestedDelayMs = null;
+  clearProviderTimer();
+  clearSlowTimer();
+  unsubscribeProviderChanges?.();
+  unsubscribeProviderChanges = null;
+  unsubscribeBackgroundCleanup?.();
+  unsubscribeBackgroundCleanup = null;
 }
 
 export function resetPendingDeletionSubsystemForTests(): void {
-  configured = false;
-  if (cleanupTimer) clearTimeout(cleanupTimer);
-  cleanupTimer = null;
+  disposePendingDeletionSubsystem();
+  forcedTurnFinalizeFailures = 0;
+  providerFailureDelayMs = PROVIDER_DISCOVERY_RETRY_MIN_MS;
+  maintenanceEnv = defaultMaintenanceEnv;
 }

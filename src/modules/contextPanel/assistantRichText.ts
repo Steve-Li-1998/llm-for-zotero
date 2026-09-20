@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import type { Message } from "./types";
 import type { WebSourceAnchor } from "../../webAccess/types";
 import { stripWebSourceMarkersForDisplay } from "../../webAccess/attribution";
@@ -74,7 +75,7 @@ export function decorateCompletedAssistantCitationLinks(
     renderQuoteCitationPlaceholders(params);
     if (!webSourceAnchors.length) decorateAssistantCitationLinks(params);
   } catch (error) {
-    ztoolkit.log("LLM citation decoration error:", error);
+    appLogger.warn("LLM citation decoration error:", error);
   }
 }
 

@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import type {
   PlanCitationSource,
   PlanDocument,
@@ -112,7 +113,7 @@ export function buildDocumentCitationContext(
       gateway: new ZoteroGateway(),
     });
   } catch (error) {
-    ztoolkit.log("LLM document citation group display unavailable", error);
+    appLogger.warn("LLM document citation group display unavailable", error);
   }
   // Gecko's chrome-document HTML parser strips zotero:// attributes. Carry
   // only bundle-bound identities through it as inert fragments, then restore
@@ -195,7 +196,7 @@ export function scheduleCitationStyleRegistryRepair(params: {
   citationStyleRegistryRepairRoots.add(params.root);
   const report = (error: unknown) => {
     try {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM document citation group display repair unavailable",
         error,
       );

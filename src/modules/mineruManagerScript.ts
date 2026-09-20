@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import { getMineruCheckpointProgress } from "../services/mineru/mineruCheckpoint";
 import {
   getMineruBatchState,
@@ -2576,7 +2577,7 @@ export async function registerMineruManagerScript(
           statusEl.title = msg;
           statusEl.style.color = "#dc2626";
         }
-        ztoolkit.log("LLM MinerU: repair failed", error);
+        appLogger.warn("LLM MinerU: repair failed", error);
       } finally {
         isRepairing = false;
         updateButtons();
@@ -2643,13 +2644,13 @@ export async function registerMineruManagerScript(
     try {
       allItems = await getMineruItemList();
     } catch (err) {
-      ztoolkit.log("LLM MinerU: getMineruItemList failed", err);
+      appLogger.warn("LLM MinerU: getMineruItemList failed", err);
       allItems = [];
     }
     try {
       collectionTree = getLibraryCollectionTree();
     } catch (err) {
-      ztoolkit.log("LLM MinerU: getLibraryCollectionTree failed", err);
+      appLogger.warn("LLM MinerU: getLibraryCollectionTree failed", err);
       collectionTree = [];
     }
     buildCollectionMaps();

@@ -11,6 +11,7 @@ import type {
 import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
+import { appLogger } from "../core/logging";
 import {
   LocalDocumentPathStreamRedactor,
   redactAllRememberedLocalDocumentPathsFromTerminalText,
@@ -283,7 +284,7 @@ export class CodexAppServerProcess {
             const redactedLine =
               redactAllRememberedLocalDocumentPathsFromTerminalText(trimmed);
             this.appendDiagnostic(`${redactedLine}\n`, "stdout");
-            Zotero.debug?.(
+            appLogger.debug(
               `[llm-for-zotero] codex app-server: failed to parse line: ${redactedLine}`,
             );
           }
@@ -389,7 +390,7 @@ export class CodexAppServerProcess {
         const handlers = this.requestHandlers.get(msg.method);
         if (!handlers?.size) {
           try {
-            ztoolkit.log("Codex app-server: unhandled server request", {
+            appLogger.warn("Codex app-server: unhandled server request", {
               method: msg.method,
               params: redactAllRememberedLocalDocumentPathsFromTerminalValue(
                 msg.params,
@@ -776,7 +777,7 @@ export async function resolveCodexAppServerTurnInputWithFallback(params: {
       throw error;
     }
     params.proc.setInjectItemsSupport("unsupported");
-    ztoolkit.log(
+    appLogger.debug(
       "Codex app-server: thread/inject_items unsupported; using legacy flattened input",
       { context: params.logContext },
     );
@@ -1413,7 +1414,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
             5000,
           )
           .catch((error) => {
-            ztoolkit.log(
+            appLogger.warn(
               "Codex app-server: turn/interrupt failed; destroying process",
               new Error(
                 redactAllRememberedLocalDocumentPathsFromTerminalText(

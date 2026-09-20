@@ -4,6 +4,7 @@
  * Provides streaming and non-streaming API calls to OpenAI-compatible endpoints.
  */
 
+import { appLogger } from "../core/logging";
 import { config } from "../../package.json";
 import { DEFAULT_SYSTEM_PROMPT } from "./llmDefaults";
 import {
@@ -1006,7 +1007,7 @@ export async function readLocalFileBytes(path: string): Promise<Uint8Array> {
       const bytes = coerceToBytes(data);
       if (bytes) return bytes;
     } catch (err) {
-      ztoolkit.log("LLM: Zotero.File.getContentsAsync failed", err);
+      appLogger.warn("LLM: Zotero.File.getContentsAsync failed", err);
     }
   }
   if (zoteroFile?.getBinaryContentsAsync) {
@@ -1016,7 +1017,7 @@ export async function readLocalFileBytes(path: string): Promise<Uint8Array> {
       const bytes = coerceToBytes(data);
       if (bytes) return bytes;
     } catch (err) {
-      ztoolkit.log("LLM: Zotero.File.getBinaryContentsAsync failed", err);
+      appLogger.warn("LLM: Zotero.File.getBinaryContentsAsync failed", err);
     }
   }
 
@@ -1028,13 +1029,13 @@ export async function readLocalFileBytes(path: string): Promise<Uint8Array> {
       if (res.ok) {
         return new Uint8Array(await res.arrayBuffer());
       }
-      ztoolkit.log(
+      appLogger.warn(
         "LLM: fetch(file://) returned non-OK status",
         res.status,
         res.statusText,
       );
     } catch (err) {
-      ztoolkit.log("LLM: fetch(file://) failed", err);
+      appLogger.warn("LLM: fetch(file://) failed", err);
     }
   }
 
@@ -1189,7 +1190,7 @@ async function uploadAttachmentForResponses(params: {
         }
       : headers;
     if (uploadRequest.mode === "manual") {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM: Uploading attachment via manual multipart fallback",
         params.attachment.name,
       );
@@ -1247,7 +1248,7 @@ export async function uploadFilesForResponses(params: {
       seen.add(fileId);
       fileIds.push(fileId);
     } catch (err) {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM: Failed to upload attachment to Responses API",
         attachment.name,
         err,
@@ -3207,7 +3208,7 @@ export async function parseOllamaChatStream(
     try {
       parsed = JSON.parse(trimmed) as OllamaChatChunk;
     } catch (err) {
-      ztoolkit.log("Ollama stream parse error:", err);
+      appLogger.warn("Ollama stream parse error:", err);
       return;
     }
     if (parsed.error) {
@@ -3780,7 +3781,7 @@ async function postWithTemperatureFallback(params: {
       retryCapKey,
       capRecovery,
     );
-    ztoolkit.log("LLM: Retrying after output cap rejection", {
+    appLogger.debug("LLM: Retrying after output cap rejection", {
       url: params.url,
       key: retryCapKey,
       requested: requestPayload[retryCapKey],
@@ -3940,7 +3941,7 @@ export async function postWithReasoningFallback(params: {
       if (attemptedSelections.has(nextKey)) {
         throw err;
       }
-      ztoolkit.log("LLM: Retrying after reasoning payload rejection", {
+      appLogger.debug("LLM: Retrying after reasoning payload rejection", {
         model: params.modelName,
         from: getReasoningSelectionKey(reasoningSelection),
         to: nextKey,
@@ -4052,7 +4053,7 @@ function resolveAndLogOutputPolicy(params: {
   profileOverride?: ModelProfileOverride;
 }): OutputRequestPolicy {
   const policy = resolveOutputRequestPolicy(params);
-  ztoolkit.log("LLM: Resolved per-response output policy", {
+  appLogger.debug("LLM: Resolved per-response output policy", {
     model: params.model,
     protocol: params.protocol,
     settingMode: params.setting?.mode || "auto",
@@ -4133,7 +4134,10 @@ async function callNativeProtocol(params: {
         const base64 = await readFileRefAsBase64(att.storedPath);
         pdfParts.push({ base64 });
       } catch (err) {
-        ztoolkit.log(`LLM: Failed to read PDF attachment for ${protocol}`, err);
+        appLogger.warn(
+          `LLM: Failed to read PDF attachment for ${protocol}`,
+          err,
+        );
       }
     }
   }
@@ -4321,7 +4325,7 @@ export async function callLLM(params: ChatParams): Promise<ModelTurnOutcome> {
     signal: params.signal,
   });
   if (inputCap.capped) {
-    ztoolkit.log("LLM: Applied model-aware input cap", {
+    appLogger.debug("LLM: Applied model-aware input cap", {
       model,
       beforeTokens: inputCap.estimatedBeforeTokens,
       afterTokens: inputCap.estimatedAfterTokens,
@@ -4478,7 +4482,7 @@ export async function callLLMStream(
     signal: params.signal,
   });
   if (inputCap.capped) {
-    ztoolkit.log("LLM: Applied model-aware input cap", {
+    appLogger.debug("LLM: Applied model-aware input cap", {
       model,
       beforeTokens: inputCap.estimatedBeforeTokens,
       afterTokens: inputCap.estimatedAfterTokens,
@@ -4812,7 +4816,7 @@ export async function parseStreamResponse(
             onDelta(answer);
           }
         } catch (err) {
-          ztoolkit.log("LLM stream parse error:", err);
+          appLogger.warn("LLM stream parse error:", err);
         }
       }
     }
@@ -5320,7 +5324,7 @@ export async function parseResponsesStream(
             }
           }
         } catch (err) {
-          ztoolkit.log("LLM responses stream parse error:", err);
+          appLogger.warn("LLM responses stream parse error:", err);
         }
       }
     }

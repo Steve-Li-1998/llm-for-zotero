@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "../../utils/textSanitization";
 import { clearCitationPageCache } from "./citationNavigationCache";
@@ -1934,13 +1935,17 @@ async function extractPageTextsFromPdfWorkerItemId(
 ): Promise<ExtractedPageTextIndexSource | null> {
   try {
     if (!Number.isFinite(itemId) || itemId <= 0) {
-      ztoolkit.log("LLM quote-locator: PDFWorker — no valid itemID on reader");
+      appLogger.debug(
+        "LLM quote-locator: PDFWorker — no valid itemID on reader",
+      );
       return null;
     }
 
     const result = await Zotero.PDFWorker.getFullText(itemId);
     if (!result || !result.text) {
-      ztoolkit.log("LLM quote-locator: PDFWorker.getFullText returned no text");
+      appLogger.debug(
+        "LLM quote-locator: PDFWorker.getFullText returned no text",
+      );
       return null;
     }
 
@@ -1951,7 +1956,7 @@ async function extractPageTextsFromPdfWorkerItemId(
       // Fallback: if pageChars is unavailable, try splitting by form-feed
       const ffPages = fullText.split("\f");
       if (ffPages.length > 1) {
-        ztoolkit.log(
+        appLogger.debug(
           "LLM quote-locator: PDFWorker — no pageChars, using form-feed split:",
           ffPages.length,
           "pages",
@@ -1965,7 +1970,7 @@ async function extractPageTextsFromPdfWorkerItemId(
         }
         return pages.length > 0 ? { pages, pageCount: ffPages.length } : null;
       }
-      ztoolkit.log(
+      appLogger.warn(
         "LLM quote-locator: PDFWorker — no pageChars and no form-feeds, cannot split into pages",
       );
       return null;
@@ -1986,7 +1991,7 @@ async function extractPageTextsFromPdfWorkerItemId(
       offset += charCount;
     }
 
-    ztoolkit.log(
+    appLogger.debug(
       "LLM quote-locator: PDFWorker extracted",
       pages.length,
       "pages from",
@@ -1997,7 +2002,7 @@ async function extractPageTextsFromPdfWorkerItemId(
     );
     return pages.length > 0 ? { pages, pageCount: pageChars.length } : null;
   } catch (e) {
-    ztoolkit.log("LLM quote-locator: PDFWorker strategy failed:", e);
+    appLogger.debug("LLM quote-locator: PDFWorker strategy failed:", e);
     return null;
   }
 }
@@ -2027,32 +2032,34 @@ async function extractPageTextsFromViewer(
   try {
     const app = getPdfViewerApplication(reader);
     if (!app) {
-      ztoolkit.log("LLM quote-locator: getPdfViewerApplication returned null");
+      appLogger.debug(
+        "LLM quote-locator: getPdfViewerApplication returned null",
+      );
       return null;
     }
     if (!app.pdfDocument) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM quote-locator: app found but pdfDocument is null/undefined",
       );
       return null;
     }
     const pdfDoc = resolveGeckoMethodOwner(app.pdfDocument, "getPage");
     if (!pdfDoc) {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM quote-locator: pdfDocument.getPage is unavailable through the Gecko wrapper",
       );
       return null;
     }
     const numPages = Number(pdfDoc.numPages);
     if (!Number.isFinite(numPages) || numPages < 1) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM quote-locator: pdfDocument.numPages =",
         pdfDoc.numPages,
       );
       return null;
     }
 
-    ztoolkit.log(
+    appLogger.debug(
       "LLM quote-locator: extracting text from",
       numPages,
       "pages via viewer API",
@@ -2067,7 +2074,7 @@ async function extractPageTextsFromViewer(
           "getTextContent",
         );
         if (!page) {
-          ztoolkit.log(
+          appLogger.debug(
             "LLM quote-locator: page",
             i,
             "does not expose getTextContent through the Gecko wrapper",
@@ -2117,7 +2124,7 @@ async function extractPageTextsFromViewer(
           });
         }
       } catch (e) {
-        ztoolkit.log(
+        appLogger.debug(
           "LLM quote-locator: page",
           i,
           "text extraction failed:",
@@ -2126,7 +2133,7 @@ async function extractPageTextsFromViewer(
       }
     }
     if (pages.length) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM quote-locator: viewer API extracted",
         pages.length,
         "pages",
@@ -2134,7 +2141,7 @@ async function extractPageTextsFromViewer(
     }
     return pages.length > 0 ? { pages, pageCount: numPages } : null;
   } catch (e) {
-    ztoolkit.log("LLM quote-locator: viewer API strategy failed:", e);
+    appLogger.debug("LLM quote-locator: viewer API strategy failed:", e);
     return null;
   }
 }
@@ -2508,7 +2515,7 @@ export async function warmPageTextCache(
 
       // Strategy 1: pdf.js viewer API — ALL pages from viewer iframe
       if (!extracted) {
-        ztoolkit.log(
+        appLogger.debug(
           "LLM quote-locator: PDFWorker unavailable, trying viewer API",
         );
         extracted = await extractPageTextsFromViewer(reader);
@@ -2517,7 +2524,7 @@ export async function warmPageTextCache(
 
       // Strategy 2: DOM text layer scraping — rendered pages only
       if (!extracted) {
-        ztoolkit.log(
+        appLogger.debug(
           "LLM quote-locator: viewer API unavailable, falling back to DOM text layers",
         );
         const rendered = extractRenderedPageTexts(reader);
@@ -2528,7 +2535,7 @@ export async function warmPageTextCache(
               getPagesCount(getPdfViewerApplication(reader)) || undefined,
           };
           coverage = "partial-dom";
-          ztoolkit.log(
+          appLogger.debug(
             "LLM quote-locator: DOM extracted",
             extracted.pages.length,
             "rendered pages",
@@ -2537,7 +2544,7 @@ export async function warmPageTextCache(
       }
 
       if (!extracted?.pages.length) {
-        ztoolkit.log(
+        appLogger.warn(
           "LLM quote-locator: all extraction strategies failed — no pages",
         );
         return null;
@@ -2558,7 +2565,7 @@ export async function warmPageTextCache(
       storeCachedPageTextIndex(keys, result);
       return result;
     } catch (e) {
-      ztoolkit.log("LLM quote-locator: warmPageTextCache error:", e);
+      appLogger.debug("LLM quote-locator: warmPageTextCache error:", e);
       return null;
     } finally {
       if (task) clearCachedPageTextPromise(keys, task);
@@ -2645,7 +2652,7 @@ export async function warmPageTextCacheForAttachment(
       storeCachedPageTextIndex(keys, result);
       return result;
     } catch (e) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM quote-locator: warmPageTextCacheForAttachment error:",
         e,
       );
@@ -2721,7 +2728,7 @@ export async function warmQuoteLocationCacheForAttachment(
       }
       return location;
     } catch (e) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM quote-locator: warmQuoteLocationCacheForAttachment error:",
         e,
       );
@@ -3461,7 +3468,7 @@ async function searchFindControllerForQuery(
         acceptanceMs = Date.now() - dispatchStartedAt;
       }
     } catch (err) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM paragraph-jump: find-bar input approach failed, will try eventBus",
         err,
       );
@@ -3943,7 +3950,7 @@ async function restoreFindControllerUserState(
       findBar.close();
     }
   } catch (error) {
-    ztoolkit.log("LLM paragraph-jump: could not restore prior find state", {
+    appLogger.debug("LLM paragraph-jump: could not restore prior find state", {
       error,
     });
   }
@@ -4048,7 +4055,7 @@ function logFindControllerDiagnostic(
   details: Record<string, unknown>,
 ): void {
   if (typeof ztoolkit !== "undefined") {
-    ztoolkit.log(message, details);
+    appLogger.debug(message, details);
   }
 }
 

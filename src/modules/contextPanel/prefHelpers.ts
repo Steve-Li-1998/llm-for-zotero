@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { isValidReasoningLevelId } from "../../modelCapabilities";
 import {
   config,
@@ -966,7 +967,7 @@ function getAssistantNoteMap(): Record<string, string> {
   try {
     return getJsonPref(ASSISTANT_NOTE_MAP_PREF_KEY);
   } catch (err) {
-    ztoolkit.log("LLM: Failed to read assistantNoteMap pref:", err);
+    appLogger.warn("LLM: Failed to read assistantNoteMap pref:", err);
     return {};
   }
 }
@@ -975,7 +976,7 @@ function setAssistantNoteMap(value: Record<string, string>): void {
   try {
     setJsonPref(ASSISTANT_NOTE_MAP_PREF_KEY, value);
   } catch (err) {
-    ztoolkit.log("LLM: Failed to write assistantNoteMap pref:", err);
+    appLogger.warn("LLM: Failed to write assistantNoteMap pref:", err);
   }
 }
 
@@ -1003,7 +1004,7 @@ export function getTrackedAssistantNoteForParent(
   try {
     note = Zotero.Items.get(noteId) || null;
   } catch {
-    ztoolkit.log(`LLM: Failed to get note item ${noteId}`);
+    appLogger.warn(`LLM: Failed to get note item ${noteId}`);
     removeAssistantNoteMapEntry(parentItemId);
     return null;
   }

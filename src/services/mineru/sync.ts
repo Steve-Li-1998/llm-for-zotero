@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { unzipSync, zipSync } from "fflate";
 import { config, version as addonVersion } from "../../../package.json";
 import { joinLocalPath, getLocalParentPath } from "../../utils/localPath";
@@ -892,7 +893,7 @@ async function packageProvenanceMatchesSource(
   ).trim();
   const sourceKey = getItemKey(sourceAttachment);
   if (metadataKey && sourceKey && metadataKey !== sourceKey) {
-    ztoolkit.log(
+    appLogger.warn(
       "LLM: MinerU sync package source key mismatch",
       metadataKey,
       sourceAttachment.id,
@@ -1103,7 +1104,7 @@ async function prunePackageCandidates(
     try {
       await deletePackageAttachment(candidate.item);
     } catch {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM: Failed to prune duplicate MinerU sync package",
         candidate.item.id,
       );
@@ -1514,7 +1515,7 @@ export async function repairSyncedMineruCacheForAttachment(
           );
           const diverged = uniqueHashes.size > 1;
           if (diverged) {
-            ztoolkit.log(
+            appLogger.warn(
               "LLM: MinerU sync package divergence detected",
               sourceKey,
               [...uniqueHashes],
@@ -2095,7 +2096,7 @@ export async function repairMineruCaches(
       }
     } catch (error) {
       result.failed += 1;
-      ztoolkit.log("LLM: MinerU cache repair failed", item.id, error);
+      appLogger.warn("LLM: MinerU cache repair failed", item.id, error);
     }
 
     if (result.checked % batchSize === 0) {
@@ -2180,7 +2181,7 @@ export function startMineruSyncMigrationIfEnabled(): void {
   if (!isMineruSyncEnabled() || migrationTask) return;
   migrationTask = publishExistingMineruCaches()
     .catch((error) => {
-      ztoolkit.log("LLM: MinerU sync migration failed", error);
+      appLogger.warn("LLM: MinerU sync migration failed", error);
       return {
         scanned: 0,
         published: 0,

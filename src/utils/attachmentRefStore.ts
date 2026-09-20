@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import {
   ATTACHMENT_BLOBS_TABLE,
   extractManagedBlobHash,
@@ -13,6 +14,7 @@ import {
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
 } from "../shared/conversationWriteFence";
+import { getMaintenanceQueryOptions } from "../core/logging";
 
 export type AttachmentRefOwnerType = "conversation" | "note";
 
@@ -22,6 +24,19 @@ export const ATTACHMENT_GC_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 
 let refStoreInitTask: Promise<void> | null = null;
 let attachmentMutationChain: Promise<void> = Promise.resolve();
+
+function queryAttachmentMaintenance(
+  sql: string,
+  params?: unknown[],
+): Promise<unknown> {
+  return (
+    Zotero.DB.queryAsync as unknown as (
+      sql: string,
+      params?: unknown[],
+      options?: { debug?: boolean },
+    ) => Promise<unknown>
+  )(sql, params, getMaintenanceQueryOptions());
+}
 
 async function withAttachmentMutationLock<T>(
   task: () => Promise<T>,
@@ -284,7 +299,7 @@ export async function collectAndDeleteUnreferencedBlobs(
       ? Math.max(0, Math.floor(minAgeMs))
       : ATTACHMENT_GC_MIN_AGE_MS;
     const cutoff = Date.now() - minAge;
-    const rows = (await Zotero.DB.queryAsync(
+    const rows = (await queryAttachmentMaintenance(
       `SELECT b.hash AS hash, b.path AS path
        FROM ${ATTACHMENT_BLOBS_TABLE} b
        LEFT JOIN ${ATTACHMENT_REFS_TABLE} r
@@ -306,14 +321,14 @@ export async function collectAndDeleteUnreferencedBlobs(
         try {
           await removeAttachmentFile(path);
         } catch (err) {
-          ztoolkit.log(
+          appLogger.warn(
             "LLM: Failed to delete unreferenced attachment blob",
             err,
           );
           continue;
         }
       }
-      await Zotero.DB.queryAsync(
+      await queryAttachmentMaintenance(
         `DELETE FROM ${ATTACHMENT_BLOBS_TABLE}
          WHERE hash = ?
            AND NOT EXISTS (

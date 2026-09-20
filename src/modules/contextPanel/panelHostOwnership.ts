@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
   resolveActiveNoteSession,
@@ -396,7 +397,7 @@ function logOwnershipVerdict(
   logged.add(key);
   loggedVerdicts.set(body, logged);
   try {
-    ztoolkit.log("LLM: panel ownership blocked", {
+    appLogger.debug("LLM: panel ownership blocked", {
       operation,
       surface: binding?.surface || "unknown",
       tabType: binding?.tabType || "",

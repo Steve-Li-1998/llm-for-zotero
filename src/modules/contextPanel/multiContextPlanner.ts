@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import type {
   ChatMessage,
   ChatParams,
@@ -1701,7 +1702,7 @@ export async function resolveMultiContextPlan(params: {
     advanced: params.advanced,
   });
   if (figureInputs.warnings.length && typeof ztoolkit !== "undefined") {
-    ztoolkit.log(
+    appLogger.warn(
       "LLM: Normal-chat figure extraction warnings",
       figureInputs.warnings,
     );

@@ -2,6 +2,7 @@ import type { PaperContextRef } from "../../shared/types";
 import type { AgentToolContext } from "../types";
 import type { EditableArticleMetadataPatch } from "./zoteroGateway";
 import type { ZoteroGateway } from "./zoteroGateway";
+import { appLogger } from "../../core/logging";
 
 type SearchMode =
   | "recommendations"
@@ -148,7 +149,7 @@ async function fetchJson(
  * do not send Access-Control-Allow-Origin headers.
  */
 async function zoteroFetchText(url: string): Promise<string> {
-  Zotero.debug(`[llm-for-zotero] zoteroFetchText: ${url.slice(0, 120)}...`);
+  appLogger.debug(`[llm-for-zotero] zoteroFetchText: ${url.slice(0, 120)}...`);
   try {
     const xhr = await Zotero.HTTP.request("GET", url, {
       headers: { "User-Agent": USER_AGENT },
@@ -156,12 +157,12 @@ async function zoteroFetchText(url: string): Promise<string> {
       timeout: 15000,
     });
     const text = xhr.responseText ?? "";
-    Zotero.debug(
+    appLogger.debug(
       `[llm-for-zotero] zoteroFetchText: status=${xhr.status}, responseLength=${text.length}`,
     );
     return text;
   } catch (error) {
-    Zotero.debug(
+    appLogger.warn(
       `[llm-for-zotero] zoteroFetchText FAILED: ${error instanceof Error ? error.message : String(error)}`,
     );
     throw error;
@@ -173,7 +174,7 @@ async function zoteroFetchJson(url: string): Promise<unknown> {
   try {
     return JSON.parse(text);
   } catch (error) {
-    Zotero.debug(
+    appLogger.warn(
       `[llm-for-zotero] zoteroFetchJson: JSON parse failed, text preview: ${text.slice(0, 200)}`,
     );
     throw new Error(
@@ -279,7 +280,7 @@ async function resolveOpenAlexWork(
     )) as Record<string, unknown>;
     return raw ?? null;
   } catch (err) {
-    ztoolkit.log("LLM: OpenAlex DOI fetch failed", err);
+    appLogger.warn("LLM: OpenAlex DOI fetch failed", err);
     return null;
   }
 }
@@ -653,7 +654,7 @@ async function lookupCrossRefByDoi(
         [yearStr, authorLabel, venue].filter(Boolean).join(" · ") || undefined,
     };
   } catch (err) {
-    ztoolkit.log("LLM: CrossRef metadata fetch failed", err);
+    appLogger.warn("LLM: CrossRef metadata fetch failed", err);
     return null;
   }
 }
@@ -1050,11 +1051,11 @@ export class LiteratureSearchService {
         return { results: [], message: "No search query available for arXiv." };
       }
       try {
-        Zotero.debug(
+        appLogger.debug(
           `[llm-for-zotero] arXiv search: query="${query}", limit=${limit}`,
         );
         const results = dedupe(await fetchArxivSearch(query, limit));
-        Zotero.debug(
+        appLogger.debug(
           `[llm-for-zotero] arXiv search returned ${results.length} results`,
         );
         return {
@@ -1065,7 +1066,7 @@ export class LiteratureSearchService {
         };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        Zotero.debug(`[llm-for-zotero] arXiv search failed: ${msg}`);
+        appLogger.warn(`[llm-for-zotero] arXiv search failed: ${msg}`);
         return {
           results: [],
           source: "arXiv",
@@ -1084,11 +1085,11 @@ export class LiteratureSearchService {
         };
       }
       try {
-        Zotero.debug(
+        appLogger.debug(
           `[llm-for-zotero] Europe PMC search: query="${query}", limit=${limit}`,
         );
         const results = dedupe(await fetchEuropePmcSearch(query, limit));
-        Zotero.debug(
+        appLogger.debug(
           `[llm-for-zotero] Europe PMC search returned ${results.length} results`,
         );
         return {
@@ -1099,7 +1100,7 @@ export class LiteratureSearchService {
         };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        Zotero.debug(`[llm-for-zotero] Europe PMC search failed: ${msg}`);
+        appLogger.warn(`[llm-for-zotero] Europe PMC search failed: ${msg}`);
         return {
           results: [],
           source: "Europe PMC",

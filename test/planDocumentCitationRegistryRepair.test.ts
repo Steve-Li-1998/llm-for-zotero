@@ -4,6 +4,7 @@ import type {
   PlanDocument,
 } from "../src/agent/documents/types";
 import { scheduleCitationStyleRegistryRepair } from "../src/modules/contextPanel/planDocumentPresentation";
+import { setAppLogSinkForTests } from "../src/core/logging";
 
 /**
  * Zotero loads its citation style registry a few seconds after the app is
@@ -15,8 +16,6 @@ describe("document citation style registry repair", function () {
   const scope = globalThis as typeof globalThis & { Zotero?: any };
   const original = scope.Zotero;
   const logged: unknown[][] = [];
-  const toolkitScope = globalThis as typeof globalThis & { ztoolkit?: any };
-  const originalToolkit = toolkitScope.ztoolkit;
 
   const source = (itemKey: string) => ({
     libraryID: 3,
@@ -107,16 +106,12 @@ describe("document citation style registry repair", function () {
   beforeEach(function () {
     logged.length = 0;
     initCalls = 0;
-    toolkitScope.ztoolkit = {
-      log: (...args: unknown[]) => {
-        logged.push(args);
-      },
-    };
+    setAppLogSinkForTests((_level, args) => logged.push([...args]));
   });
 
   afterEach(function () {
     scope.Zotero = original;
-    toolkitScope.ztoolkit = originalToolkit;
+    setAppLogSinkForTests(null);
   });
 
   it("leaves a document without a grouped citation alone", function () {

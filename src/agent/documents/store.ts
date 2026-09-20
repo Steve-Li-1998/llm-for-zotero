@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import {
   decodeDocumentActionState,
   decodeDocumentCoverageItem,
@@ -894,7 +895,7 @@ export async function sweepPlanDocumentStorage(): Promise<void> {
         [path],
       );
     } catch (error) {
-      ztoolkit.log("LLM: Failed to clean plan document asset", error);
+      appLogger.warn("LLM: Failed to clean plan document asset", error);
     }
   }
   if (typeof io?.getChildren !== "function") return;

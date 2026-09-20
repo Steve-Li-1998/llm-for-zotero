@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { getCurrentLocalTimestamp } from "./textUtils";
 import { sanitizeText, escapeNoteHtml } from "../../utils/textSanitization";
@@ -108,14 +109,14 @@ async function renderRawNoteHtmlForSave(
         },
       );
     } catch (err) {
-      ztoolkit.log("Note figure render error:", err);
+      appLogger.warn("Note figure render error:", err);
       noteSource = raw;
     }
   }
   try {
     return renderMarkdownForNote(noteSource);
   } catch (err) {
-    ztoolkit.log("Note markdown render error:", err);
+    appLogger.warn("Note markdown render error:", err);
     return escapeNoteHtml(noteSource).replace(/\n/g, "<br/>");
   }
 }
@@ -736,7 +737,7 @@ async function normalizeHistoryAttachmentsToSharedBlobs(
           contentHash: imported.contentHash,
         });
       } catch (err) {
-        ztoolkit.log("LLM: Failed to normalize note attachment blob", err);
+        appLogger.warn("LLM: Failed to normalize note attachment blob", err);
         nextAttachments.push({
           ...attachment,
           storedPath: undefined,
@@ -1185,7 +1186,7 @@ export async function createAssistantResponseNote(params: {
         note.addToCollection(Math.floor(collectionId));
         filedCollections.push(Math.floor(collectionId));
       } catch (error) {
-        ztoolkit.log(
+        appLogger.warn(
           `LLM: Could not file response note into collection ${collectionId}`,
           error,
         );
@@ -1209,11 +1210,11 @@ export async function createAssistantResponseNote(params: {
       );
       return { html, warnings };
     },
-    log: (message, error) => ztoolkit.log(message, error),
+    log: (message, error) => appLogger.warn(message, error),
   });
   const noteId = persisted.noteId;
   if (persisted.warnings.length) {
-    ztoolkit.log(
+    appLogger.warn(
       `LLM: Response note ${noteId} saved with warnings:`,
       persisted.warnings,
     );
@@ -1223,9 +1224,9 @@ export async function createAssistantResponseNote(params: {
       params.destination.kind === "item"
         ? `parent ${parentId}`
         : `library ${libraryID}`;
-    ztoolkit.log(`LLM: Created response note ${noteId} for ${target}`);
+    appLogger.info(`LLM: Created response note ${noteId} for ${target}`);
   } else {
-    ztoolkit.log(
+    appLogger.warn(
       "LLM: Warning – response note was saved but could not determine note ID",
     );
   }
@@ -1305,14 +1306,14 @@ export async function createNoteFromAssistantText(
         // throws here, falling through to create a new note instead of
         // reporting a success that never reached the database.
         await persistVerifiedNoteHtml(existingNote, appendedHtml);
-        ztoolkit.log(
+        appLogger.info(
           `LLM: Appended to existing note ${existingNote.id} for parent ${parentId}`,
         );
         return { status: "appended", noteId: existingNote.id };
       } catch (appendErr) {
         // If appending fails (e.g. note was deleted externally), fall through
         // to create a new note instead.
-        ztoolkit.log(
+        appLogger.debug(
           "LLM: Failed to append to existing note, creating new:",
           appendErr,
         );
@@ -1509,11 +1510,11 @@ export async function createNoteFromChatHistory(
       }
       return { html: payload.noteHtml, warnings };
     },
-    log: (message, error) => ztoolkit.log(message, error),
+    log: (message, error) => appLogger.warn(message, error),
   });
   const noteId = persisted.noteId;
   if (persisted.warnings.length) {
-    ztoolkit.log(
+    appLogger.warn(
       `LLM: Chat history note ${noteId} saved with warnings:`,
       persisted.warnings,
     );
@@ -1522,14 +1523,14 @@ export async function createNoteFromChatHistory(
   try {
     await replaceOwnerAttachmentRefs("note", noteId, attachmentHashes);
   } catch (err) {
-    ztoolkit.log("LLM: Failed to persist note attachment refs", err);
+    appLogger.warn("LLM: Failed to persist note attachment refs", err);
   }
   void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
     (err) => {
-      ztoolkit.log("LLM: Attachment GC after note export failed", err);
+      appLogger.warn("LLM: Attachment GC after note export failed", err);
     },
   );
-  ztoolkit.log(
+  appLogger.info(
     `LLM: Created chat history note ${noteId} for parent ${parentId}`,
   );
   return {
@@ -1609,11 +1610,11 @@ export async function createStandaloneNoteFromChatHistory(
       }
       return { html: payload.noteHtml, warnings };
     },
-    log: (message, error) => ztoolkit.log(message, error),
+    log: (message, error) => appLogger.warn(message, error),
   });
   const noteId = persisted.noteId;
   if (persisted.warnings.length) {
-    ztoolkit.log(
+    appLogger.warn(
       `LLM: Standalone chat history note ${noteId} saved with warnings:`,
       persisted.warnings,
     );
@@ -1622,17 +1623,20 @@ export async function createStandaloneNoteFromChatHistory(
   try {
     await replaceOwnerAttachmentRefs("note", noteId, attachmentHashes);
   } catch (err) {
-    ztoolkit.log("LLM: Failed to persist standalone note attachment refs", err);
+    appLogger.warn(
+      "LLM: Failed to persist standalone note attachment refs",
+      err,
+    );
   }
   void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
     (err) => {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM: Attachment GC after standalone note export failed",
         err,
       );
     },
   );
-  ztoolkit.log(
+  appLogger.info(
     `LLM: Created standalone chat history note ${noteId} in library ${normalizedLibraryID}`,
   );
   return {

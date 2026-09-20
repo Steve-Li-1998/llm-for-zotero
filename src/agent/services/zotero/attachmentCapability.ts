@@ -9,6 +9,7 @@
  * lookup gets exactly the behaviour it asked for.
  */
 
+import { appLogger } from "../../../core/logging";
 import { ensureMineruCacheDirForAttachment } from "../../../services/mineru/sync";
 import {
   importNoteImageAsset,
@@ -62,14 +63,14 @@ export class AttachmentCapability {
           const stateNum = await Zotero.Fulltext.getIndexedState(att);
           indexingState = FULLTEXT_INDEX_STATE_MAP[stateNum] ?? "unavailable";
         } catch (err) {
-          ztoolkit.log("LLM: Fulltext index state check failed", err);
+          appLogger.warn("LLM: Fulltext index state check failed", err);
           indexingState = "unavailable";
         }
         // Check if MinerU has parsed this PDF
         try {
           mineruCacheDir = await ensureMineruCacheDirForAttachment(att);
         } catch (err) {
-          ztoolkit.log("LLM: MinerU cache check failed", err);
+          appLogger.warn("LLM: MinerU cache check failed", err);
         }
       }
       const readableTextChars =
@@ -145,7 +146,7 @@ export class AttachmentCapability {
       const stateNum = await Zotero.Fulltext.getIndexedState(item);
       indexingState = FULLTEXT_INDEX_STATE_MAP[stateNum] ?? "unavailable";
     } catch (err) {
-      ztoolkit.log("LLM: Attachment indexing state check failed", err);
+      appLogger.warn("LLM: Attachment indexing state check failed", err);
     }
     return {
       attachmentId: params.attachmentId,

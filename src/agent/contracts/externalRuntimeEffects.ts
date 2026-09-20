@@ -2,6 +2,7 @@ import { fingerprintText } from "./actionOperationEvidence";
 import { OPERATION_CATALOG } from "./operationCatalog";
 import { recordJournalObservation } from "../store/changeJournal";
 import type { AgentActionParameters, AgentActionReceipt } from "./types";
+import { appLogger } from "../../core/logging";
 
 /**
  * Receipts for effects a connected client performed inside its own runtime.
@@ -161,7 +162,7 @@ export async function recordExternalRuntimeEffect(params: {
   } catch (error) {
     // The client already ran the effect. A supplementary audit failure must not
     // turn that into a failed decision the caller retries.
-    Zotero.debug?.(
+    appLogger.warn(
       `External runtime effect audit could not be recorded: ${String(error)}`,
     );
   }

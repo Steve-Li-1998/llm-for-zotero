@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { deleteMineruCheckpoint, hashMineruBytes } from "./mineruCheckpoint";
 import { MineruCancelledError } from "../../utils/mineruClient";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
@@ -2096,6 +2097,6 @@ export async function cleanupLegacyContentMdFiles(): Promise<void> {
   }
 
   if (cleaned > 0) {
-    ztoolkit.log(`LLM: Cleaned up ${cleaned} legacy _content.md file(s).`);
+    appLogger.info(`LLM: Cleaned up ${cleaned} legacy _content.md file(s).`);
   }
 }

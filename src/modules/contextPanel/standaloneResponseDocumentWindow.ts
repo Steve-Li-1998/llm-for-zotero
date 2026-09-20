@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { HTML_NS } from "../../utils/domHelpers";
 import type { Message } from "./types";
 import type { ResponseActionTarget } from "./state";
@@ -125,7 +126,10 @@ export function openStandaloneResponseDocument(
     render: (doc, root) =>
       renderResponseDocument(doc, root, sourceBody, target),
     onInitializationFailure: (error) => {
-      ztoolkit.log("LLM: Failed to initialize response document window", error);
+      appLogger.warn(
+        "LLM: Failed to initialize response document window",
+        error,
+      );
       reportSourceStatus(
         sourceBody,
         "The response window could not be opened",

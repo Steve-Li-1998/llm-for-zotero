@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import type { GeneratedChatImage } from "../../shared/types";
 import {
   isRenderableGeneratedImageSrc,
@@ -61,7 +62,7 @@ export async function copyGeneratedImageToClipboard(
   try {
     asset = await resolveGeneratedImageAsset(image);
   } catch (err) {
-    ztoolkit.log("LLM: Generated image read failed, falling back:", err);
+    appLogger.debug("LLM: Generated image read failed, falling back:", err);
   }
   const win = body.ownerDocument?.defaultView as
     | (Window & {
@@ -78,7 +79,7 @@ export async function copyGeneratedImageToClipboard(
       await win.navigator.clipboard.write([item]);
       return "image";
     } catch (err) {
-      ztoolkit.log("LLM: Image clipboard write failed, falling back:", err);
+      appLogger.debug("LLM: Image clipboard write failed, falling back:", err);
     }
   }
 
@@ -142,7 +143,7 @@ function getZoteroFilePickerConstructor(): GeneratedImageFilePickerConstructor |
       ) as { FilePicker?: GeneratedImageFilePickerConstructor };
       if (typeof mod?.FilePicker === "function") return mod.FilePicker;
     } catch (err) {
-      ztoolkit.log("LLM: Zotero FilePicker module import failed", err);
+      appLogger.debug("LLM: Zotero FilePicker module import failed", err);
     }
   }
   return null;
@@ -174,27 +175,33 @@ function configureGeneratedImageFilePicker(
   try {
     picker.defaultString = defaultName;
   } catch (err) {
-    ztoolkit.log("LLM: Failed to set generated image default filename", err);
+    appLogger.debug("LLM: Failed to set generated image default filename", err);
   }
   const extMatch = defaultName.match(/\.([A-Za-z0-9]+)$/);
   if (extMatch?.[1]) {
     try {
       picker.defaultExtension = extMatch[1];
     } catch (err) {
-      ztoolkit.log("LLM: Failed to set generated image default extension", err);
+      appLogger.debug(
+        "LLM: Failed to set generated image default extension",
+        err,
+      );
     }
   }
   try {
     picker.appendFilter?.("Images", "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg");
   } catch (err) {
-    ztoolkit.log("LLM: Failed to add generated image file filter", err);
+    appLogger.debug("LLM: Failed to add generated image file filter", err);
   }
   const filterAll = picker.filterAll ?? constants.filterAll;
   if (typeof filterAll === "number") {
     try {
       picker.appendFilters?.(filterAll);
     } catch (err) {
-      ztoolkit.log("LLM: Failed to add generated image all-files filter", err);
+      appLogger.debug(
+        "LLM: Failed to add generated image all-files filter",
+        err,
+      );
     }
   }
 }
@@ -249,7 +256,7 @@ async function pickGeneratedImageSavePath(
       configureGeneratedImageFilePicker(picker, parentWindow, fileName, {});
       return await resolveGeneratedImageFilePickerResult(picker, {});
     } catch (err) {
-      ztoolkit.log("LLM: Zotero file picker failed", err);
+      appLogger.warn("LLM: Zotero file picker failed", err);
     }
   }
 
@@ -283,7 +290,7 @@ async function pickGeneratedImageSavePath(
       returnReplace: nsIFilePicker.returnReplace,
     });
   } catch (err) {
-    ztoolkit.log("LLM: XPCOM file picker failed", err);
+    appLogger.warn("LLM: XPCOM file picker failed", err);
     return { status: "unavailable" };
   }
 }
@@ -362,7 +369,7 @@ export function renderAssistantGeneratedImagesInto(
           event.stopImmediatePropagation();
         }
         return Promise.resolve(onClick()).catch((error) => {
-          ztoolkit.log("LLM: Generated image action failed:", error);
+          appLogger.warn("LLM: Generated image action failed:", error);
           report(
             error instanceof Error
               ? error.message

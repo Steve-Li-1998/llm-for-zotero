@@ -31,6 +31,7 @@ import {
   storeRecoveryText,
 } from "../../store/journalRecoveryBlobStore";
 import { zoteroChangeDispatcher } from "../../../services/zoteroChangeDispatcher";
+import { appLogger } from "../../../core/logging";
 import { LibraryMutationService } from "../../services/libraryMutationService";
 import { ZoteroGateway } from "../../services/zoteroGateway";
 import {
@@ -173,14 +174,14 @@ export function compileScript(
     } catch (error) {
       // Loud, not silent: a sandbox that fails to compile means privileged
       // source is no longer isolated from the plugin realm.
-      Zotero.debug?.(
+      appLogger.error(
         `[llm-for-zotero] zotero_script sandbox compile failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     }
   } else {
-    Zotero.debug?.(
+    appLogger.error(
       "[llm-for-zotero] zotero_script sandbox unavailable; refusing privileged execution.",
     );
   }

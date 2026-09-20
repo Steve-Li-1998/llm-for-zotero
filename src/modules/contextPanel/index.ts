@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { getSidebarLayout } from "./sidebarLayout";
 /**
  * Context Panel Module
@@ -309,7 +310,7 @@ export function registerReaderContextPanel() {
         if (!claimDeferredChatRender(body, chatRenderCycle)) return;
         refreshChat(body, resolvedState.item);
       } catch (err) {
-        ztoolkit.log("LLM: embedded panel reconciliation failed", err);
+        appLogger.warn("LLM: embedded panel reconciliation failed", err);
       }
     })();
   };
@@ -338,7 +339,7 @@ export function registerReaderContextPanel() {
         if (!section.collapsible) section.setAttribute("open", "true");
       }
       setEnabled(true);
-      ztoolkit.log(`LLM: panel init tabType=${tabType}`);
+      appLogger.debug(`LLM: panel init tabType=${tabType}`);
     },
     onItemChange: ({ body, setEnabled, tabType, item }) => {
       setEnabled(true);
@@ -733,7 +734,9 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
             normalizeSelectedText(selectedText) ||
             resolveSelectedTextForPopupAction();
           if (!effectiveSelectedText) {
-            ztoolkit.log("LLM: Add Text popup action skipped (no selection)");
+            appLogger.debug(
+              "LLM: Add Text popup action skipped (no selection)",
+            );
             return null;
           }
           try {
@@ -769,7 +772,7 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                   tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
                 });
             if (!target) {
-              ztoolkit.log(
+              appLogger.warn(
                 "LLM: Add Text popup action skipped (reader panel unavailable)",
               );
               return null;
@@ -784,7 +787,7 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
               Number(target.root.dataset.itemId || 0),
             );
             if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
-              ztoolkit.log(
+              appLogger.debug(
                 "LLM: Add Text popup action skipped (invalid conversation target)",
               );
               return null;
@@ -833,10 +836,10 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
               reader: event.reader as any,
               paperContext: selectedPaperContext,
               initialLocation: selectedTextLocation,
-              log: (message, ...args) => ztoolkit.log(message, ...args),
+              log: (message, ...args) => appLogger.debug(message, ...args),
             });
           } catch (err) {
-            ztoolkit.log("LLM: Add Text popup action failed", err);
+            appLogger.warn("LLM: Add Text popup action failed", err);
             return null;
           }
         };
@@ -937,7 +940,7 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
           popupSentinelEl = addTextBtn;
           stripPopupRowChrome(addTextBtn.parentElement as HTMLElement | null);
         } catch (err) {
-          ztoolkit.log("LLM: failed to append Add Text popup button", err);
+          appLogger.warn("LLM: failed to append Add Text popup button", err);
         }
       }
 
@@ -985,7 +988,7 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
             }, 30_000);
           }
         } catch (_err) {
-          ztoolkit.log("LLM: selection popup sentinel failed", _err);
+          appLogger.warn("LLM: selection popup sentinel failed", _err);
         }
       }
     } else {
@@ -1021,7 +1024,10 @@ export function registerReaderSelectionTracking() {
     timerHost: globalThis,
     intervalDelayMs: __env__ === "test" ? 50 : undefined,
     onError: (error) => {
-      ztoolkit.log("LLM: reader selection tracking health check failed", error);
+      appLogger.warn(
+        "LLM: reader selection tracking health check failed",
+        error,
+      );
     },
   });
 }
@@ -1258,17 +1264,20 @@ export function clearConversation(itemId: number) {
   chatHistory.set(itemId, []);
   loadedConversationKeys.add(itemId);
   void clearStoredConversation(itemId).catch((err) => {
-    ztoolkit.log("LLM: Failed to clear persisted chat history", err);
+    appLogger.warn("LLM: Failed to clear persisted chat history", err);
   });
   void clearOwnerAttachmentRefs("conversation", itemId).catch((err) => {
-    ztoolkit.log(
+    appLogger.warn(
       "LLM: Failed to clear persisted conversation attachment refs",
       err,
     );
   });
   void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
     (err) => {
-      ztoolkit.log("LLM: Failed to collect unreferenced attachment blobs", err);
+      appLogger.warn(
+        "LLM: Failed to collect unreferenced attachment blobs",
+        err,
+      );
     },
   );
 }

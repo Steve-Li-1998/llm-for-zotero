@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import {
   fileUrlToPath,
   getLocalParentPath,
@@ -277,7 +278,7 @@ async function removePath(path: string, recursive: boolean): Promise<void> {
       await io.remove(path, { recursive, ignoreAbsent: true });
       return;
     } catch (err) {
-      ztoolkit.log("LLM: IOUtils.remove failed", err);
+      appLogger.debug("LLM: IOUtils.remove failed", err);
     }
   }
   const osFile = getOSFile();
@@ -293,7 +294,7 @@ async function removePath(path: string, recursive: boolean): Promise<void> {
       await osFile.remove(path, { ignoreAbsent: true });
     }
   } catch (err) {
-    ztoolkit.log("LLM: OS.File remove failed", err);
+    appLogger.warn("LLM: OS.File remove failed", err);
   }
 }
 

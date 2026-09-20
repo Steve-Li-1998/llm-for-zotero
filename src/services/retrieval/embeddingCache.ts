@@ -10,6 +10,7 @@
  *  - MinerU cache invalidation (cascade via clearEmbeddingCache)
  */
 
+import { appLogger } from "../../core/logging";
 import { joinLocalPath } from "../../utils/localPath";
 
 const EMBEDDING_CACHE_DIR = "llm-for-zotero-embeddings";
@@ -257,7 +258,7 @@ export async function saveCachedEmbeddings(
     const json = JSON.stringify(entry);
     await writeFileBytes(getCachePath(itemId), new TextEncoder().encode(json));
   } catch (err) {
-    ztoolkit.log("Failed to save embedding cache:", err);
+    appLogger.debug("Failed to save embedding cache:", err);
   }
 }
 

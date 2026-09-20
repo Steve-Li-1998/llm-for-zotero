@@ -1,3 +1,4 @@
+import { appLogger } from "../../../../core/logging";
 import {
   MAX_SELECTED_IMAGES,
   MAX_UPLOAD_PDF_SIZE_BYTES,
@@ -243,7 +244,7 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
           nextImages.push(optimizedDataUrl);
           addedCount += 1;
         } catch (err) {
-          ztoolkit.log("LLM: Failed to read image upload", err);
+          appLogger.warn("LLM: Failed to read image upload", err);
         }
         continue;
       }
@@ -258,7 +259,7 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
           textContent = await readFileAsText(deps.body, normalizedFile);
           if (!ownership()) return;
         } catch (err) {
-          ztoolkit.log("LLM: Failed to read text upload", err);
+          appLogger.warn("LLM: Failed to read text upload", err);
         }
       }
 
@@ -276,7 +277,7 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
         contentHash = persisted.contentHash;
       } catch (err) {
         failedPersistCount += 1;
-        ztoolkit.log("LLM: Failed to persist uploaded attachment", err);
+        appLogger.warn("LLM: Failed to persist uploaded attachment", err);
         continue;
       }
 

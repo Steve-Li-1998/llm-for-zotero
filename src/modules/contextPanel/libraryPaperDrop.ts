@@ -3,6 +3,7 @@ import {
   isZoteroItemDragEvent,
   parseZoteroItemDragData,
 } from "./setupHandlers/controllers/fileIntakeController";
+import { appLogger } from "../../core/logging";
 
 type ChatDropTarget = Element & { _forceRenderAll: () => Promise<void> };
 
@@ -76,7 +77,7 @@ export function installLibraryPaperDrop(
           await dispatchZoteroItemsToSidebar(target, items);
         }
       } catch (error) {
-        Zotero.debug(`LLM: sidebar context drop failed: ${String(error)}`);
+        appLogger.warn(`LLM: sidebar context drop failed: ${String(error)}`);
       } finally {
         dropPending = false;
       }

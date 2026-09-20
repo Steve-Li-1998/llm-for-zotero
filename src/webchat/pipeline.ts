@@ -7,6 +7,7 @@
  *   - Submits via the embedded Zotero relay → Chrome extension → provider site
  */
 
+import { appLogger } from "../core/logging";
 import { readLocalFileBytes } from "../utils/llmClient";
 import { isAbsoluteLocalPath } from "../utils/localPath";
 import type { PaperContextRef } from "../modules/contextPanel/types";
@@ -207,7 +208,7 @@ export async function sendWebChatQuestion(
     onThinkingSnapshot,
   } = opts;
 
-  ztoolkit.log(`[webchat] sendWebChatQuestion: sendPdf=${sendPdf}`);
+  appLogger.debug(`[webchat] sendWebChatQuestion: sendPdf=${sendPdf}`);
 
   // --- Resolve and read the current paper's PDF (only when explicitly requested) ---
   let pdfBase64: string | null = null;

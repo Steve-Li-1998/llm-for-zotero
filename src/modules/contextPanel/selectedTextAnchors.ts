@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import type {
   PaperContextRef,
   ResolvedSelectedTextAnchor,
@@ -410,7 +411,7 @@ export async function resolveSelectedTextAnchors(params: {
   ).filter((entry): entry is ProvisionalAnchor => Boolean(entry));
   const resolved = allocateAnchorText(provisional);
   for (const anchor of resolved) {
-    ztoolkit.log("LLM: selected-text anchor resolved", {
+    appLogger.debug("LLM: selected-text anchor resolved", {
       contextIndex: anchor.contextIndex,
       contextItemId: anchor.contextItemId,
       pageIndex: anchor.pageIndex,

@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import {
   readNativeQuestions,
   buildNativeQuestionAction,
@@ -44,9 +45,8 @@ import {
 } from "../../codexAppServer/store";
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
 import {
-  completeConversationCleanupJob,
   enqueueConversationCleanupJob,
-  failConversationCleanupJob,
+  performConversationCleanupJobAttempt,
 } from "../../core/conversations/conversationCleanupJobs";
 import {
   getClaudeAutoCompactThresholdPercent,
@@ -624,7 +624,7 @@ async function validateConversationScopeForItem(params: {
     const registered = validation.registered
       ? `; registered as ${validation.registered.system}/${validation.registered.kind} library ${validation.registered.libraryID} ${registeredLabel} id ${validation.registered.conversationID}`
       : "";
-    ztoolkit.log(
+    appLogger.warn(
       `LLM: Refused to use mismatched ${scope.system}/${scope.kind} conversation ${scope.conversationKey} for library ${scope.libraryID} ${targetLabel} (${validation.reason})${registered}`,
     );
   }
@@ -1676,7 +1676,7 @@ async function loadConversationForkLinkCache(
     }
   } catch (err) {
     conversationForkLinks.delete(conversationKey);
-    ztoolkit.log("LLM: Failed to load conversation fork link", err);
+    appLogger.warn("LLM: Failed to load conversation fork link", err);
   }
 }
 
@@ -1987,7 +1987,7 @@ async function persistConversationMessage(
       );
     });
   } catch (err) {
-    ztoolkit.log("LLM: Failed to persist chat message", err);
+    appLogger.warn("LLM: Failed to persist chat message", err);
   }
 }
 
@@ -2435,7 +2435,7 @@ export async function ensureConversationLoaded(
         return;
       }
       if (!storedMessagesMatchActivePaper(item, storedMessages)) {
-        ztoolkit.log(
+        appLogger.warn(
           `LLM: Refused to render conversation ${conversationKey} because stored paper contexts do not include the active paper.`,
         );
         blockedConversationLoadKeys.add(conversationKey);
@@ -2472,7 +2472,7 @@ export async function ensureConversationLoaded(
       }
       shouldMarkLoaded = true;
     } catch (err) {
-      ztoolkit.log("LLM: Failed to load chat history", err);
+      appLogger.warn("LLM: Failed to load chat history", err);
       if (
         pendingDeletionStore.isConversationPendingDeletion(conversationKey) ||
         (instanceID &&
@@ -2593,7 +2593,7 @@ async function ensureAgentRunTraceLoaded(
         agentRunTraceCache.set(normalizedRunId, trace.events);
       }
     } catch (err) {
-      ztoolkit.log("LLM: Failed to load agent run trace", err);
+      appLogger.warn("LLM: Failed to load agent run trace", err);
     } finally {
       agentRunTraceLoadingTasks.delete(normalizedRunId);
       if (body && item && !isFrozen()) {
@@ -2727,7 +2727,7 @@ export function buildRenderedMarkdownClipboardPayload(
   try {
     renderedHtml = renderMarkdownForNote(safeText);
   } catch (err) {
-    ztoolkit.log("LLM: Copy markdown render error:", err);
+    appLogger.warn("LLM: Copy markdown render error:", err);
   }
   return { plainText: safeText, renderedHtml };
 }
@@ -2776,7 +2776,7 @@ export async function copyRenderedMarkdownToClipboard(
         await win.navigator.clipboard.write([item]);
         return;
       } catch (err) {
-        ztoolkit.log("LLM: Rich clipboard write failed, falling back:", err);
+        appLogger.debug("LLM: Rich clipboard write failed, falling back:", err);
       }
     }
   }
@@ -2952,7 +2952,7 @@ function showNativeMcpActionCard(
       resolve({ approved: false });
       return;
     }
-    ztoolkit.log("Codex app-server native confirmation requested", {
+    appLogger.debug("Codex app-server native confirmation requested", {
       requestId,
       toolName: action.toolName,
       mode: action.mode || "approval",
@@ -2961,7 +2961,7 @@ function showNativeMcpActionCard(
     const ui = getPanelRequestUI(body);
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc || !ui.chatBox) {
-      ztoolkit.log("Codex app-server native confirmation unavailable", {
+      appLogger.warn("Codex app-server native confirmation unavailable", {
         requestId,
         reason: "missing_panel_review_card_ui",
       });
@@ -2972,7 +2972,7 @@ function showNativeMcpActionCard(
 
     try {
       getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
-        ztoolkit.log("Codex app-server native confirmation resolved", {
+        appLogger.debug("Codex app-server native confirmation resolved", {
           requestId,
           approved: resolution.approved,
           actionId: resolution.actionId,
@@ -2982,7 +2982,7 @@ function showNativeMcpActionCard(
         resolve(resolution);
       });
     } catch (error) {
-      ztoolkit.log("Codex app-server native confirmation unavailable", {
+      appLogger.warn("Codex app-server native confirmation unavailable", {
         requestId,
         reason: error instanceof Error ? error.message : String(error),
       });
@@ -3005,7 +3005,7 @@ function showNativeMcpActionCard(
     if (renderedCard) {
       scheduleChatContentScroll(ui.chatBox);
       syncInlineActionCardAttr(body);
-      ztoolkit.log("Codex app-server native confirmation rendered", {
+      appLogger.debug("Codex app-server native confirmation rendered", {
         requestId,
         toolName: action.toolName,
         mode: action.mode || "approval",
@@ -3023,7 +3023,7 @@ function showNativeMcpActionCard(
     ui.chatBox.appendChild(wrapper);
     scheduleChatContentScroll(ui.chatBox);
     syncInlineActionCardAttr(body);
-    ztoolkit.log("Codex app-server native confirmation rendered", {
+    appLogger.debug("Codex app-server native confirmation rendered", {
       requestId,
       toolName: action.toolName,
       mode: action.mode || "approval",
@@ -3176,7 +3176,7 @@ export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
     );
   } catch (error) {
     if (typeof ztoolkit !== "undefined") {
-      ztoolkit.log(
+      appLogger.warn(
         "Codex app-server native approval UI unavailable; denying request",
         {
           method: params.request.method,
@@ -3911,7 +3911,7 @@ function buildCodexNativeTurnCallbacks(ctx: {
             }
           }
         })().catch((error) =>
-          ztoolkit.log("LLM: Failed to synchronize MCP plan state", error),
+          appLogger.warn("LLM: Failed to synchronize MCP plan state", error),
         );
       }
       const label =
@@ -4694,7 +4694,7 @@ async function buildContextPlanForRequest(params: {
                 : `Retrieval${semanticTag} (${plan.selectedPaperCount} papers, ${plan.selectedChunkCount} chunks)`;
     params.setStatusSafely(modeStatus, "sending");
   }
-  ztoolkit.log("LLM: Multi-context plan", {
+  appLogger.debug("LLM: Multi-context plan", {
     mode: plan.mode,
     strategy: plan.strategy,
     selectedPaperCount: plan.selectedPaperCount,
@@ -6153,7 +6153,7 @@ export async function editLatestUserMessageAndRetry(
       conversationGeneration,
     );
   } catch (err) {
-    ztoolkit.log("LLM: Failed to persist edited latest user message", err);
+    appLogger.warn("LLM: Failed to persist edited latest user message", err);
     return "persist-failed";
   }
 
@@ -7204,16 +7204,19 @@ async function detachProviderForEdit(
       providerSessionId,
     });
     if (!job) return false;
-    try {
-      await archiveCodexAppServerThread({ threadId: providerSessionId });
-      await completeConversationCleanupJob(job.id);
-    } catch (error) {
-      if (!/not found|unknown thread|does not exist/i.test(String(error))) {
-        await failConversationCleanupJob(job, error);
-        return false;
-      }
-      await completeConversationCleanupJob(job.id);
-    }
+    const attempt = await performConversationCleanupJobAttempt(
+      job,
+      async () => {
+        try {
+          await archiveCodexAppServerThread({ threadId: providerSessionId });
+        } catch (error) {
+          if (!/not found|unknown thread|does not exist/i.test(String(error))) {
+            throw error;
+          }
+        }
+      },
+    );
+    if (!attempt.ok) return false;
     await clearCodexConversationSessionMetadata(
       conversationKey,
       providerSessionId,
@@ -7242,8 +7245,8 @@ async function detachProviderForEdit(
       providerSessionId,
     });
     if (!job) return false;
-    try {
-      await invalidateClaudeConversationSessionWithinWriteLock(
+    const attempt = await performConversationCleanupJobAttempt(job, async () =>
+      invalidateClaudeConversationSessionWithinWriteLock(
         await initAgentSubsystem(),
         {
           conversationKey,
@@ -7253,12 +7256,9 @@ async function detachProviderForEdit(
             instanceID: catalog.instanceID,
           },
         },
-      );
-      await completeConversationCleanupJob(job.id);
-    } catch (error) {
-      await failConversationCleanupJob(job, error);
-      return false;
-    }
+      ),
+    );
+    if (!attempt.ok) return false;
   }
   return true;
 }
@@ -7381,7 +7381,7 @@ export async function editUserTurnAndRetry(opts: {
   // An edit cannot cancel a whole-conversation deletion. Only explicit Undo
   // can withdraw that intent during its own window.
   if (pendingDeletionStore.isConversationPendingDeletion(conversationKey)) {
-    ztoolkit.log(
+    appLogger.debug(
       "LLM: editUserTurnAndRetry — conversation is frozen by pending deletion",
     );
     return false;
@@ -7394,7 +7394,7 @@ export async function editUserTurnAndRetry(opts: {
     (m) => m.role === "user" && m.timestamp === userTimestamp,
   );
   if (userIndex < 0) {
-    ztoolkit.log("LLM: editUserTurnAndRetry — user message not found");
+    appLogger.debug("LLM: editUserTurnAndRetry — user message not found");
     return false;
   }
   const assistantIndex = userIndex + 1;
@@ -7402,11 +7402,11 @@ export async function editUserTurnAndRetry(opts: {
     assistantIndex >= history.length ||
     history[assistantIndex]?.role !== "assistant"
   ) {
-    ztoolkit.log("LLM: editUserTurnAndRetry — assistant message not found");
+    appLogger.debug("LLM: editUserTurnAndRetry — assistant message not found");
     return false;
   }
   if (history[assistantIndex]!.streaming) {
-    ztoolkit.log("LLM: editUserTurnAndRetry — assistant is still streaming");
+    appLogger.debug("LLM: editUserTurnAndRetry — assistant is still streaming");
     return false;
   }
   const retryRequestConfig = resolveEffectiveRequestConfig({
@@ -7497,7 +7497,7 @@ export async function editUserTurnAndRetry(opts: {
       },
     );
     if (!providerReset) {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM: editUserTurnAndRetry — provider history could not be detached",
       );
       return false;
@@ -7544,7 +7544,7 @@ export async function editUserTurnAndRetry(opts: {
         break;
       }
     } catch (err) {
-      ztoolkit.log("LLM: Failed to delete subsequent stored turn", err);
+      appLogger.warn("LLM: Failed to delete subsequent stored turn", err);
       trailingDeleteFailed = true;
       break;
     }
@@ -7561,7 +7561,10 @@ export async function editUserTurnAndRetry(opts: {
         restored.map((message) => toPanelMessage(message)),
       );
     } catch (err) {
-      ztoolkit.log("LLM: Failed to restore history after edit truncation", err);
+      appLogger.warn(
+        "LLM: Failed to restore history after edit truncation",
+        err,
+      );
     }
     return false;
   }
@@ -7573,7 +7576,7 @@ export async function editUserTurnAndRetry(opts: {
     try {
       await clearAgentConversationState(conversationKey);
     } catch (err) {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM: Failed to clear agent state after edit truncation",
         err,
       );
@@ -7739,7 +7742,7 @@ export async function editUserTurnAndRetry(opts: {
       retryStorageSystem,
     );
   } catch (err) {
-    ztoolkit.log("LLM: Failed to persist edited user message", err);
+    appLogger.warn("LLM: Failed to persist edited user message", err);
     try {
       const restored = await loadStoredConversationByKey(
         conversationKey,
@@ -7751,7 +7754,7 @@ export async function editUserTurnAndRetry(opts: {
         restored.map((message) => toPanelMessage(message)),
       );
     } catch (restoreError) {
-      ztoolkit.log(
+      appLogger.warn(
         "LLM: Failed to restore history after edit persistence failure",
         restoreError,
       );
@@ -7772,7 +7775,7 @@ export async function editUserTurnAndRetry(opts: {
       conversationGeneration,
     );
   } catch (err) {
-    ztoolkit.log("LLM: Failed to reconcile edit attachment refs", err);
+    appLogger.warn("LLM: Failed to reconcile edit attachment refs", err);
     return false;
   }
 
@@ -11414,7 +11417,7 @@ export function refreshChat(
             try {
               syncComposeContextForInlineEdit(body, item, msg);
             } catch (syncErr) {
-              ztoolkit.log(
+              appLogger.warn(
                 "LLM: Failed to sync compose context for inline edit",
                 syncErr,
               );
@@ -11573,7 +11576,7 @@ export function refreshChat(
               },
             });
           } catch (err) {
-            ztoolkit.log("LLM render error:", err);
+            appLogger.warn("LLM render error:", err);
             answerHost.textContent = safeText;
           }
         decorateWebSourceIndicators(answerHost, doc, webSourceAnchors);
@@ -11668,7 +11671,7 @@ export function refreshChat(
           try {
             renderRenderedMarkdownInto(text, reasoningSummaryText, doc);
           } catch (err) {
-            ztoolkit.log("LLM reasoning render error:", err);
+            appLogger.warn("LLM reasoning render error:", err);
             text.textContent = reasoningSummaryText;
           }
           summaryBlock.append(label, text);
@@ -11690,7 +11693,7 @@ export function refreshChat(
           try {
             renderRenderedMarkdownInto(text, reasoningDetailsText, doc);
           } catch (err) {
-            ztoolkit.log("LLM reasoning render error:", err);
+            appLogger.warn("LLM reasoning render error:", err);
             text.textContent = reasoningDetailsText;
           }
           detailsBlock.append(label, text);

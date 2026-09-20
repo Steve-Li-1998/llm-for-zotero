@@ -4,6 +4,7 @@ import {
 } from "./sidebarLayout";
 import { installPersistentLibraryChatPane } from "./persistentLibraryChatPane";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
+import { appLogger } from "../../core/logging";
 
 type TabSelectionObserver = {
   registerObserver: (
@@ -51,7 +52,7 @@ export function installDedicatedChatPane(
         | (Element & { _forceRenderAll?: () => Promise<void> })
         | null;
       void section?._forceRenderAll?.().catch((error: unknown) => {
-        Zotero.debug(
+        appLogger.warn(
           `LLM: dedicated pane reconciliation failed: ${String(error)}`,
         );
       });

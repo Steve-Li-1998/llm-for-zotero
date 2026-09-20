@@ -1,3 +1,5 @@
+import { appLogger } from "../core/logging";
+
 /**
  * Bridge debug logger. Callers already gate these logs behind bridge debug prefs,
  * so this file only needs to emit them consistently in Zotero/browser contexts.
@@ -16,17 +18,9 @@ function formatMessage(message: string, payload?: unknown): string {
 }
 
 export function dbg(message: string, payload?: unknown): void {
+  if (!appLogger.isEnabled("debug")) return;
   const fullMessage = formatMessage(message, payload);
-  try {
-    ztoolkit?.log?.(fullMessage);
-  } catch {
-    // ignore debug logging failures
-  }
-  try {
-    console.log(fullMessage);
-  } catch {
-    // ignore debug logging failures
-  }
+  appLogger.debug(fullMessage);
 }
 
 export function dbgError(message: string, error: unknown): void {
@@ -34,14 +28,5 @@ export function dbgError(message: string, error: unknown): void {
     `ERROR: ${message}`,
     error instanceof Error ? { message: error.message } : error,
   );
-  try {
-    ztoolkit?.log?.(fullMessage);
-  } catch {
-    // ignore debug logging failures
-  }
-  try {
-    console.error(fullMessage);
-  } catch {
-    // ignore debug logging failures
-  }
+  appLogger.warn(fullMessage);
 }

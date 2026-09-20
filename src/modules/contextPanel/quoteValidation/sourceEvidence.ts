@@ -6,6 +6,7 @@
  * right now", so the gate and the background validator both work from one
  * reading of the caches.
  */
+import { appLogger } from "../../../core/logging";
 import type { AgentRuntimeRequestInput as AgentRuntimeRequest } from "../../../agent/types";
 import {
   getActiveReaderForSelectedTab,
@@ -85,7 +86,7 @@ function resolveQuoteSourceContextItem(
     const item = Zotero.Items.get(contextItemId);
     return item || null;
   } catch (error) {
-    ztoolkit.log("LLM: unable to resolve quote source context item", {
+    appLogger.warn("LLM: unable to resolve quote source context item", {
       contextItemId,
       error,
     });
@@ -121,7 +122,7 @@ async function ensureQuoteSourceTextCachedForPaper(
       });
     }
   } catch (error) {
-    ztoolkit.log("LLM: quote source text cache warm failed", {
+    appLogger.debug("LLM: quote source text cache warm failed", {
       contextItemId,
       sourceMode: paper.contentSourceMode,
       error,
@@ -298,7 +299,7 @@ export async function warmQuoteSourceCachesForPaperContexts(
                 ),
         });
       } catch (error) {
-        ztoolkit.log("LLM: PDF page quote source text cache warm failed", {
+        appLogger.debug("LLM: PDF page quote source text cache warm failed", {
           contextItemId,
           error,
         });

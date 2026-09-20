@@ -815,12 +815,35 @@ and cloud MinerU involve their respective services or companion runtimes.
 > Please [open an issue](https://github.com/yilewang/llm-for-zotero/issues) on
 > GitHub.
 
+### Diagnostic logging
+
+The plugin keeps routine diagnostics quiet by default while retaining warnings and errors.
+To collect more detail, open Zotero's Advanced Configuration Editor and change the string preference `extensions.zotero.llmforzotero.logLevel`.
+
+| Value            | Diagnostic detail                                                |
+| ---------------- | ---------------------------------------------------------------- |
+| `warn` (default) | Errors and actionable warnings                                   |
+| `info`           | Significant lifecycle events and warnings/errors                 |
+| `debug`          | Detailed application diagnostics                                 |
+| `trace`          | The most detailed diagnostics, including routine maintenance SQL |
+
+Changes take effect immediately; an invalid value falls back to `warn`.
+Use Zotero's **Help → Debug Output Logging** controls to record or view the output, reproduce the problem, and then restore `warn`.
+This preference controls the plugin's diagnostic verbosity; Zotero's controls determine whether debug output is recorded or displayed.
+Other plugins' logging is unaffected.
+
 ## Contributing
 
 Contributions are welcome. Bug reports, feature requests, documentation
 improvements, and pull requests are all useful. Please
 [open an issue](https://github.com/yilewang/llm-for-zotero/issues) or submit a
 PR.
+
+### Maintenance and logging regression tests
+
+Run `LLM_FOR_ZOTERO_TEST_ENTRIES=test-maintenance npm run test:workflow` with the repository's native Zotero test environment configured.
+This suite measures idle maintenance first in a fresh disposable scaffold profile, then checks live diagnostic levels against Zotero's debug output.
+Keep it separate from deletion workflows, which intentionally leave pending cleanup and retry work.
 
 ### Model capability registry
 

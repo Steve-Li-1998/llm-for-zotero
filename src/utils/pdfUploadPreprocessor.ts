@@ -6,6 +6,7 @@
  * a separate file upload step before the PDF can be referenced in messages.
  */
 
+import { appLogger } from "../core/logging";
 import { buildManualMultipartBody, type MultipartField } from "./multipart";
 
 type UploadResult = {
@@ -86,7 +87,7 @@ async function uploadPdfToQwen(
   const fetchFn = getFetch();
   const base = normalizeQwenFileUploadBase(apiBase);
 
-  ztoolkit.log("LLM: Qwen PDF upload starting", {
+  appLogger.debug("LLM: Qwen PDF upload starting", {
     base,
     fileName,
     size: pdfBytes.byteLength,
@@ -122,7 +123,7 @@ async function uploadPdfToQwen(
     id?: string;
     status?: string;
   };
-  ztoolkit.log("LLM: Qwen PDF upload response", uploadData);
+  appLogger.debug("LLM: Qwen PDF upload response", uploadData);
   const fileId = uploadData?.id;
   if (!fileId) {
     throw new Error("Qwen file upload returned no file ID");
@@ -145,7 +146,7 @@ async function uploadPdfToKimi(
   const fetchFn = getFetch();
   const base = apiBase.replace(/\/+$/, "");
 
-  ztoolkit.log("LLM: Kimi PDF upload starting", {
+  appLogger.debug("LLM: Kimi PDF upload starting", {
     base,
     fileName,
     size: pdfBytes.byteLength,
@@ -181,14 +182,14 @@ async function uploadPdfToKimi(
     id?: string;
     status?: string;
   };
-  ztoolkit.log("LLM: Kimi PDF upload response", uploadData);
+  appLogger.debug("LLM: Kimi PDF upload response", uploadData);
   const fileId = uploadData?.id;
   if (!fileId) {
     throw new Error("Kimi file upload returned no file ID");
   }
 
   // Extract file content
-  ztoolkit.log("LLM: Kimi extracting file content", { fileId });
+  appLogger.debug("LLM: Kimi extracting file content", { fileId });
   const contentResponse = await fetchFn(`${base}/files/${fileId}/content`, {
     method: "GET",
     headers: {
@@ -204,7 +205,10 @@ async function uploadPdfToKimi(
   }
 
   const extractedText = await contentResponse.text();
-  ztoolkit.log("LLM: Kimi extracted text length", extractedText?.length || 0);
+  appLogger.debug(
+    "LLM: Kimi extracted text length",
+    extractedText?.length || 0,
+  );
   if (!extractedText?.trim()) {
     throw new Error("Kimi returned empty extracted content");
   }

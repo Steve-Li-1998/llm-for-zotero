@@ -6,6 +6,7 @@
  * messages nearest the viewport first, and it re-renders only the messages
  * whose display actually changed.
  */
+import { appLogger } from "../../../core/logging";
 import { getConversationKey } from "../conversationIdentity";
 import { isQuoteValidationPreempted } from "../quoteValidationActivity";
 import { activeContextPanels, chatHistory } from "../state";
@@ -304,7 +305,7 @@ function startConversationQuoteValidation(conversationKey: number): void {
       }
     }
   })().catch((error) => {
-    ztoolkit.log("LLM: background quote validation failed", error);
+    appLogger.warn("LLM: background quote validation failed", error);
   });
   quoteValidationTasks.set(conversationKey, task);
   void task.finally(() => {

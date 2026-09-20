@@ -13,6 +13,7 @@
  * missing, and shares one in-flight promise between concurrent callers.
  */
 
+import { appLogger } from "../core/logging";
 import {
   classifyConversationKey,
   type ConversationKeyKind,
@@ -209,13 +210,7 @@ function getUsageDb(): UsageDb | null {
 }
 
 function logUsageStoreWarning(message: string, error?: unknown): void {
-  const log = (globalThis as { ztoolkit?: { log?: (...a: unknown[]) => void } })
-    .ztoolkit?.log;
-  try {
-    if (typeof log === "function") log(`LLM: ${message}`, error);
-  } catch {
-    // A logging failure must never surface in a chat turn.
-  }
+  appLogger.warn(`LLM: ${message}`, error);
 }
 
 function normalizePositiveInt(value: unknown): number | null {

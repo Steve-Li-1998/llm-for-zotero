@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import {
   parsePdfWithMineru,
   publishMineruParsedResult,
@@ -133,7 +134,7 @@ function showNotification(title: string, message: string): void {
     progressWindow.show();
     setTimeout(() => progressWindow.close(), 3000);
   } catch (err) {
-    ztoolkit.log("MinerU auto-parse: failed to show notification", err);
+    appLogger.warn("MinerU auto-parse: failed to show notification", err);
   }
 }
 
@@ -228,7 +229,7 @@ function clearReadinessRetryTimer(attachmentId: number): void {
 function discardStaleEntry(entry: QueueEntry, reason: string): void {
   clearReadinessRetryTimer(entry.attachmentId);
   clearItemStatus(entry.attachmentId);
-  ztoolkit.log(
+  appLogger.debug(
     `MinerU auto-parse: skipping stale PDF ${entry.attachmentId} (${reason})`,
   );
 }
@@ -238,7 +239,7 @@ function scheduleReadinessRetry(entry: QueueEntry, reason: string): boolean {
   const delay = READINESS_RETRY_DELAYS_MS[retryCount];
   if (delay == null) {
     setItemFailed(entry.attachmentId, reason);
-    ztoolkit.log(
+    appLogger.debug(
       `MinerU auto-parse: PDF ${entry.attachmentId} still not ready after ${retryCount} retry attempt(s): ${reason}`,
     );
     return false;
@@ -262,7 +263,7 @@ function scheduleReadinessRetry(entry: QueueEntry, reason: string): boolean {
   readinessRetryTimers.set(entry.attachmentId, { timer, entry: retryEntry });
   setItemProcessing(entry.attachmentId);
   currentStatusMessage = `Waiting for Zotero file readiness: ${entry.title}`;
-  ztoolkit.log(
+  appLogger.debug(
     `MinerU auto-parse: PDF ${entry.attachmentId} not ready (${reason}); retrying in ${Math.round(delay / 1000)}s`,
   );
   notifyProgress();
@@ -287,12 +288,12 @@ function removeDeletedAttachmentsFromQueue(ids: number[]): void {
     clearReadinessRetryTimer(id);
     clearItemStatus(id);
     if (cancelMineruTask(id)) {
-      ztoolkit.log(`MinerU auto-parse: cancelled deleted PDF ${id}`);
+      appLogger.debug(`MinerU auto-parse: cancelled deleted PDF ${id}`);
     }
   }
 
   if (previousLength !== processingQueue.length) {
-    ztoolkit.log(
+    appLogger.debug(
       `MinerU auto-parse: removed ${
         previousLength - processingQueue.length
       } deleted PDF(s) from queue`,
@@ -325,7 +326,7 @@ async function cleanupRemovedAttachmentArtifacts(
     await cancelMineruTaskAndWait(itemId);
     const result = await cleanupMineruArtifactsForRemovedAttachment(itemId);
     if (result.failed > 0) {
-      ztoolkit.log(
+      appLogger.warn(
         "MinerU auto-parse: failed to clean removed attachment artifacts",
         result,
       );
@@ -388,7 +389,7 @@ async function processQueue(): Promise<void> {
         })
       ).status !== "missing"
     ) {
-      ztoolkit.log(
+      appLogger.debug(
         `MinerU auto-parse: skipping available item ${entry.attachmentId}`,
       );
       continue;
@@ -413,7 +414,7 @@ async function processQueue(): Promise<void> {
       ).getFilePathAsync?.();
 
       if (!pdfPath) {
-        ztoolkit.log(
+        appLogger.debug(
           `MinerU auto-parse: no file path for ${entry.attachmentId}`,
         );
         if (scheduleReadinessRetry(entry, "No file path")) {
@@ -424,7 +425,7 @@ async function processQueue(): Promise<void> {
         continue;
       }
 
-      ztoolkit.log(`MinerU auto-parse: processing ${entry.title}`);
+      appLogger.debug(`MinerU auto-parse: processing ${entry.title}`);
       let lastProgressStage = "";
       const { value: result } = await runMineruTaskOnce(
         entry.attachmentId,
@@ -453,7 +454,7 @@ async function processQueue(): Promise<void> {
           void publishMineruCachePackageForAttachment(entry.attachmentId).then(
             (published) => {
               if (published.status === "error") {
-                ztoolkit.log(
+                appLogger.warn(
                   "LLM: MinerU sync package publish failed",
                   published,
                 );
@@ -477,7 +478,7 @@ async function processQueue(): Promise<void> {
         processedCount++;
         currentStatusMessage = `Cached: ${entry.title}`;
         notifyProgress();
-        ztoolkit.log(`MinerU auto-parse: cached ${entry.title}`);
+        appLogger.debug(`MinerU auto-parse: cached ${entry.title}`);
       } else {
         const reason = lastProgressStage || "No content returned";
         if (scheduleReadinessRetry(entry, reason)) {
@@ -485,7 +486,7 @@ async function processQueue(): Promise<void> {
         }
         errorCount++;
         setItemFailed(entry.attachmentId, reason);
-        ztoolkit.log(
+        appLogger.warn(
           `MinerU auto-parse: no content for ${entry.title}: ${reason}`,
         );
       }
@@ -503,11 +504,11 @@ async function processQueue(): Promise<void> {
         if (stoppedAbortAttachmentIds.has(entry.attachmentId)) {
           stoppedAbortAttachmentIds.delete(entry.attachmentId);
           clearItemStatus(entry.attachmentId);
-          ztoolkit.log(`MinerU auto-parse: stopped ${entry.title}`);
+          appLogger.debug(`MinerU auto-parse: stopped ${entry.title}`);
           break;
         }
         errorCount++;
-        ztoolkit.log(`MinerU auto-parse: cancelled ${entry.title}`);
+        appLogger.debug(`MinerU auto-parse: cancelled ${entry.title}`);
         setItemFailed(entry.attachmentId, "Cancelled");
         processingQueue.unshift(entry);
         currentStatusMessage = `Paused: ${entry.title}`;
@@ -515,7 +516,7 @@ async function processQueue(): Promise<void> {
       }
       if (e instanceof MineruRateLimitError) {
         errorCount++;
-        ztoolkit.log(
+        appLogger.warn(
           `MinerU auto-parse: rate limited - ${(e as Error).message}`,
         );
         setItemFailed(entry.attachmentId, "Rate limited");
@@ -531,7 +532,7 @@ async function processQueue(): Promise<void> {
       if (e instanceof MineruPageLimitError) {
         updateMineruPdfPageCount(entry.attachmentId, e.pageCount);
         clearItemStatus(entry.attachmentId);
-        ztoolkit.log(
+        appLogger.debug(
           `MinerU auto-parse: skipped ${entry.title} - ${e.message}`,
         );
         currentStatusMessage = `Skipped: ${entry.title} (${e.pageCount} pages)`;
@@ -541,7 +542,7 @@ async function processQueue(): Promise<void> {
       errorCount++;
       const errorMsg = (e as Error).message || String(e);
       setItemFailed(entry.attachmentId, errorMsg);
-      ztoolkit.log(`MinerU auto-parse: error processing ${entry.title}:`, e);
+      appLogger.warn(`MinerU auto-parse: error processing ${entry.title}:`, e);
     } finally {
       if (currentAttachmentId === entry.attachmentId) {
         currentAttachmentId = null;
@@ -628,7 +629,7 @@ async function enqueuePdfIfEligible(
     filenameMatcher,
   });
   if (eligibility.excluded) {
-    ztoolkit.log(
+    appLogger.debug(
       `MinerU auto-parse: PDF ${pdf.id} excluded by parse filter (${
         eligibility.reasonLabel || "unknown reason"
       })`,
@@ -643,11 +644,11 @@ async function enqueuePdfIfEligible(
       })
     ).status !== "missing"
   ) {
-    ztoolkit.log(`MinerU auto-parse: PDF ${pdf.id} already available`);
+    appLogger.debug(`MinerU auto-parse: PDF ${pdf.id} already available`);
     return;
   }
 
-  ztoolkit.log(`MinerU auto-parse: enqueuing ${title}`);
+  appLogger.debug(`MinerU auto-parse: enqueuing ${title}`);
   enqueueForProcessing(pdf.id, title, parentItemId);
 }
 
@@ -673,7 +674,7 @@ async function handleItemNotification(
 
   if (!isGlobalAutoParseEnabled()) return;
 
-  ztoolkit.log(
+  appLogger.debug(
     `MinerU auto-parse: handling ${itemIds.length} ${event} item(s)`,
   );
 
@@ -683,13 +684,15 @@ async function handleItemNotification(
     const item = Zotero.Items.get(itemId);
     if (!item) continue;
 
-    ztoolkit.log(
+    appLogger.debug(
       `MinerU auto-parse: checking item ${itemId} (type: ${item.itemType})`,
     );
 
     if (item.isRegularItem?.()) {
       const pdfs = getPdfAttachments(item);
-      ztoolkit.log(`MinerU auto-parse: found ${pdfs.length} PDF attachment(s)`);
+      appLogger.debug(
+        `MinerU auto-parse: found ${pdfs.length} PDF attachment(s)`,
+      );
       for (const pdf of pdfs) {
         const title = item.getField?.("title") || `Item ${pdf.id}`;
         await enqueuePdfIfEligible(pdf, title, item.id, event, filenameMatcher);
@@ -756,10 +759,10 @@ export function startAutoWatch(): void {
         ["item"],
         "mineruAutoWatch",
       );
-      ztoolkit.log("MinerU auto-parse: started");
+      appLogger.info("MinerU auto-parse: started");
     }
   } catch (err) {
-    ztoolkit.log("MinerU auto-parse: failed to start", err);
+    appLogger.warn("MinerU auto-parse: failed to start", err);
   }
 }
 
@@ -774,7 +777,7 @@ export function pauseAutoWatch(): void {
     ? `Pausing MinerU auto-parse: ${currentItemTitle}`
     : "Pausing MinerU auto-parse.";
   notifyProgress();
-  ztoolkit.log("MinerU auto-parse: paused");
+  appLogger.info("MinerU auto-parse: paused");
 }
 
 export function resumeAutoWatch(): void {
@@ -785,7 +788,7 @@ export function resumeAutoWatch(): void {
   if (processingQueue.length > 0) {
     void processQueue();
   }
-  ztoolkit.log("MinerU auto-parse: resumed");
+  appLogger.info("MinerU auto-parse: resumed");
 }
 
 export function stopAutoWatch(): void {
@@ -829,7 +832,7 @@ export function stopAutoWatch(): void {
   }
 
   progressListeners.clear();
-  ztoolkit.log("MinerU auto-parse: stopped");
+  appLogger.info("MinerU auto-parse: stopped");
 }
 
 export function getAutoWatchStatus(): AutoWatchStatus {

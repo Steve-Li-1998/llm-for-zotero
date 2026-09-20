@@ -1,4 +1,5 @@
 import { recordJournalObservation } from "../../store/changeJournal";
+import { appLogger } from "../../../core/logging";
 import { ToolExecutionFailure, ToolInputRejection } from "./failure";
 import { buildActionCallDigest } from "../../authorization/proposal";
 import type {
@@ -672,7 +673,7 @@ export class InvocationController {
     }).catch((error) => {
       // Mutation receipts remain authoritative. A supplementary audit failure
       // must not invite replay of an action whose native outcome is already known.
-      Zotero.debug?.(
+      appLogger.warn(
         `Execution authorization audit could not be recorded: ${String(error)}`,
       );
     });

@@ -1,3 +1,4 @@
+import { appLogger } from "../../../../core/logging";
 import { MAX_SELECTED_IMAGES } from "../../constants";
 import type {
   LocalDocumentResource,
@@ -466,7 +467,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           },
           setStatusMessage: deps.setStatusMessage,
           logError: (message, ...args) => {
-            ztoolkit.log(message, ...args);
+            appLogger.debug(message, ...args);
           },
           isScreenshotUnsupportedModel: deps.isScreenshotUnsupportedModel,
           getModelPdfSupport: deps.getModelPdfSupport,
@@ -644,7 +645,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           titleSeed,
           titleGeneration,
         ).catch((err) => {
-          ztoolkit.log("LLM: Failed to touch conversation title", err);
+          appLogger.warn("LLM: Failed to touch conversation title", err);
         });
       }
 

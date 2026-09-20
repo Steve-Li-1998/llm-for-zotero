@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { canonicalNoteHtml } from "../../utils/noteHtml";
 import { sha256Text } from "../store/journalRecoveryBlobStore";
 import {
@@ -314,7 +315,7 @@ async function saveDocumentNote(
           return { html, warnings };
         }
       : undefined,
-    log: (message, error) => ztoolkit.log(message, error),
+    log: (message, error) => appLogger.warn(message, error),
   });
   const created = Zotero.Items.get(persisted.noteId) || note;
   if (!created.key) throw new Error("Created note has no stable Zotero key");

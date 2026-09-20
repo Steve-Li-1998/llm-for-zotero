@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { SELECTED_TEXT_MAX_LENGTH } from "./constants";
 import { synthesizeSelectedTextContexts } from "../../services/context/normalizers";
 import type {
@@ -608,7 +609,7 @@ export function getSelectedTextWithinBubble(
 
     return sanitizeText(temp.textContent || "").trim();
   } catch (err) {
-    ztoolkit.log("LLM: Selected text extraction failed:", err);
+    appLogger.warn("LLM: Selected text extraction failed:", err);
     return "";
   }
 }

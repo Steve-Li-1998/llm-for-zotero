@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { escapeNoteHtml, sanitizeText } from "../../utils/textSanitization";
 import {
@@ -90,7 +91,7 @@ export function renderRawNoteHtml(contentText: string): string {
   try {
     return renderMarkdownForNote(raw);
   } catch (error) {
-    ztoolkit.log("Note markdown render error:", error);
+    appLogger.warn("Note markdown render error:", error);
     return escapeNoteHtml(raw).replace(/\n/g, "<br/>");
   }
 }

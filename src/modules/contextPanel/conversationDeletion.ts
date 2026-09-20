@@ -43,6 +43,7 @@ import { removeConversationAttachmentFiles } from "../../services/attachmentStor
 import {
   buildClaudeScope,
   invalidateClaudeConversationSession,
+  invalidateClaudeConversationSessionWithinWriteLock,
 } from "../../claudeCode/runtime";
 import {
   activeClaudeGlobalConversationByLibrary,
@@ -56,10 +57,10 @@ import {
 } from "../../claudeCode/prefs";
 import { getRegisteredConversationScope } from "../../shared/conversationRegistry";
 import {
-  completeConversationCleanupJob,
   enqueueConversationCleanupJob,
-  failConversationCleanupJob,
   listDueConversationCleanupJobs,
+  performConversationCleanupJobAttempt,
+  scheduleConversationCleanupJobsChangedNotification,
   type ConversationCleanupProviderScope,
   type ConversationCleanupJob,
 } from "../../core/conversations/conversationCleanupJobs";
@@ -156,6 +157,10 @@ type ConversationDeletionOperations = {
     conversationKey: number,
     target: ConversationDeletionTarget,
   ) => Promise<void>;
+  invalidateClaudeConversationWithinWriteLock: (
+    conversationKey: number,
+    target: ConversationDeletionTarget,
+  ) => Promise<void>;
   clearRememberedSelection: (
     target: ConversationDeletionTarget,
   ) => void | Promise<void>;
@@ -163,6 +168,7 @@ type ConversationDeletionOperations = {
 
 export type ConversationDeletionDeps = {
   log?: (message: string, ...args: unknown[]) => void;
+  warn?: (message: string, ...args: unknown[]) => void;
   cancelPendingRequest?: (conversationKey: number) => void;
   clearConversationOwnedRuntimeState?: (conversationKey: number) => void;
   /** Compatibility hook for older callers; not used by the production path. */
@@ -345,6 +351,27 @@ function buildOperations(
         return;
       }
       await invalidateClaudeConversationSession(
+        (await deps.getCoreAgentRuntime()) as any,
+        {
+          conversationKey,
+          scope: getClaudeProviderScope(target),
+          metadata: target.providerSessionId
+            ? {
+                providerSessionId: target.providerSessionId,
+                instanceID: target.instanceID,
+              }
+            : target.instanceID
+              ? { instanceID: target.instanceID }
+              : undefined,
+        },
+      );
+    },
+    invalidateClaudeConversationWithinWriteLock: async (
+      conversationKey,
+      target,
+    ) => {
+      if (!deps.getCoreAgentRuntime) return;
+      await invalidateClaudeConversationSessionWithinWriteLock(
         (await deps.getCoreAgentRuntime()) as any,
         {
           conversationKey,
@@ -621,7 +648,7 @@ export async function finalizeConversationDeletion(
   const result = createResult();
   const conversationKey = normalizePositiveInt(target.conversationKey);
   const libraryID = normalizePositiveInt(target.libraryID);
-  const log = deps.log;
+  const log = deps.warn || deps.log;
   if (!conversationKey || !libraryID) {
     recordIssue(
       result,
@@ -871,25 +898,22 @@ export async function finalizeConversationDeletion(
         "codex_thread_archive",
         "LLM: Failed to archive deleted Codex thread; local conversation is already deleted",
         async () => {
-          try {
-            await operations.archiveCodexThread(codexThreadId);
-          } catch (error) {
-            if (isProviderNotFoundError(error)) return;
-            throw error;
+          const attempt = await performConversationCleanupJobAttempt(
+            job,
+            async () => {
+              try {
+                await operations.archiveCodexThread(codexThreadId);
+              } catch (error) {
+                if (!isProviderNotFoundError(error)) throw error;
+              }
+            },
+          );
+          if (!attempt.ok) {
+            throw attempt.error;
           }
-          await completeConversationCleanupJob(job.id);
         },
         log,
       );
-      if (
-        result.warnings.some((issue) => issue.code === "codex_thread_archive")
-      ) {
-        await failConversationCleanupJob(
-          job,
-          result.warnings.find((issue) => issue.code === "codex_thread_archive")
-            ?.error,
-        );
-      }
     } else if (
       !result.errors.some((issue) => issue.code === "codex_thread_archive")
     ) {
@@ -944,21 +968,16 @@ export async function finalizeConversationDeletion(
         "claude_session",
         "LLM: Failed to invalidate deleted Claude conversation; local conversation is already deleted",
         async () => {
-          await operations.invalidateClaudeConversation(
-            conversationKey,
-            normalizedTarget,
+          const attempt = await performConversationCleanupJobAttempt(job, () =>
+            operations.invalidateClaudeConversation(
+              conversationKey,
+              normalizedTarget,
+            ),
           );
-          await completeConversationCleanupJob(job.id);
+          if (!attempt.ok) throw attempt.error;
         },
         log,
       );
-      if (result.warnings.some((issue) => issue.code === "claude_session")) {
-        await failConversationCleanupJob(
-          job,
-          result.warnings.find((issue) => issue.code === "claude_session")
-            ?.error,
-        );
-      }
     } else {
       // The catalog may not have captured a provider session yet even though
       // the Claude bridge has already retained a scoped runtime. Make the
@@ -979,6 +998,12 @@ export async function finalizeConversationDeletion(
     }
   }
 
+  // The local transaction can persist cleanup jobs for folded pending turns
+  // in addition to the primary session attempted above. Wake only after all
+  // foreground attempts have left the conversation write lock and registered
+  // with the process-local coalescer.
+  scheduleConversationCleanupJobsChangedNotification();
+
   return result;
 }
 
@@ -993,48 +1018,57 @@ export async function processPendingConversationCleanupJobs(
   });
   if (!jobs.length) return;
   const operations = buildOperations(deps);
+  const invalidateClaudeWithinWriteLock =
+    deps.operations?.invalidateClaudeConversationWithinWriteLock ||
+    deps.operations?.invalidateClaudeConversation ||
+    operations.invalidateClaudeConversationWithinWriteLock;
   await Promise.all(
     jobs.map(async (job) => {
-      try {
-        if (job.operation === "codex_archive") {
-          try {
-            await operations.archiveCodexThread(job.providerSessionId);
-          } catch (error) {
-            if (!isProviderNotFoundError(error)) throw error;
-          }
-        } else if (job.operation === "claude_invalidate") {
-          if (!job.providerSessionId) {
-            // An empty-session Claude job is a pre-Clear lifecycle witness.
-            // If a replacement turn has already persisted, the catalog still
-            // has no provider ID until post-turn capture. Do not consume the
-            // witness in that window: leave it retryable so the new turn can
-            // observe it and force a fresh provider session.
-            const current = await conversationRepository.getCatalogEntry({
-              system: "claude_code",
-              kind: job.conversationKind,
-              conversationKey: job.conversationKey,
-            });
-            if (current && current.userTurnCount > 0) {
-              throw new Error(
-                "Claude empty-session cleanup deferred while replacement turn is active",
-              );
+      // Foreground edit and turn-deletion flows already hold this lock when
+      // they persist and immediately attempt the same job. Background work
+      // must acquire the lock before attempt ownership; the reverse ordering
+      // can deadlock when each path waits on the other.
+      await withConversationWriteLock(job.conversationKey, () =>
+        performConversationCleanupJobAttempt(job, async () => {
+          if (job.operation === "codex_archive") {
+            try {
+              await operations.archiveCodexThread(job.providerSessionId);
+            } catch (error) {
+              if (!isProviderNotFoundError(error)) throw error;
             }
+            return;
           }
-          await operations.invalidateClaudeConversation(job.conversationKey, {
-            instanceID: job.instanceID || undefined,
-            conversationKey: job.conversationKey,
-            kind: job.conversationKind,
-            conversationSystem: "claude_code",
-            libraryID: job.libraryID,
-            paperItemID: job.paperItemID,
-            providerScope: job.providerScope,
-            providerSessionId: job.providerSessionId,
-          });
-        }
-        await completeConversationCleanupJob(job.id);
-      } catch (error) {
-        await failConversationCleanupJob(job, error);
-      }
+          if (job.operation === "claude_invalidate") {
+            if (!job.providerSessionId) {
+              // An empty-session Claude job is a pre-Clear lifecycle witness.
+              // If a replacement turn has already persisted, the catalog still
+              // has no provider ID until post-turn capture. Do not consume the
+              // witness in that window: leave it retryable so the new turn can
+              // observe it and force a fresh provider session.
+              const current = await conversationRepository.getCatalogEntry({
+                system: "claude_code",
+                kind: job.conversationKind,
+                conversationKey: job.conversationKey,
+              });
+              if (current && current.userTurnCount > 0) {
+                throw new Error(
+                  "Claude empty-session cleanup deferred while replacement turn is active",
+                );
+              }
+            }
+            await invalidateClaudeWithinWriteLock(job.conversationKey, {
+              instanceID: job.instanceID || undefined,
+              conversationKey: job.conversationKey,
+              kind: job.conversationKind,
+              conversationSystem: "claude_code",
+              libraryID: job.libraryID,
+              paperItemID: job.paperItemID,
+              providerScope: job.providerScope,
+              providerSessionId: job.providerSessionId,
+            });
+          }
+        }),
+      );
     }),
   );
 }
@@ -1428,12 +1462,13 @@ export async function finalizeQueuedTurnDeletion(
   entry: PendingTurnDeletionEntry,
   deps: {
     log?: (message: string, ...args: unknown[]) => void;
+    warn?: (message: string, ...args: unknown[]) => void;
     scheduleAttachmentGc?: () => void;
     detachProviderSession?: (entry: PendingTurnDeletionEntry) => Promise<void>;
     clearAgentConversationState?: (conversationKey: number) => Promise<void>;
   } = {},
 ): Promise<boolean | PendingFinalizeOutcome> {
-  const log = deps.log || (() => {});
+  const warn = deps.warn || deps.log || (() => {});
   return withConversationWriteLock(entry.conversationKey, async () => {
     try {
       const deleteTarget = {
@@ -1456,13 +1491,13 @@ export async function finalizeQueuedTurnDeletion(
       };
       await conversationRepository.deleteTurnMessages(deleteTarget);
     } catch (err) {
-      log("LLM: queued turn deletion failed to delete rows", err);
+      warn("LLM: queued turn deletion failed to delete rows", err);
       return false;
     }
     try {
       await deps.detachProviderSession?.(entry);
     } catch (err) {
-      log("LLM: queued turn deletion failed to detach provider session", err);
+      warn("LLM: queued turn deletion failed to detach provider session", err);
       return { ok: false, localDeleted: true };
     }
     if (entry.system === "codex") {
@@ -1479,7 +1514,10 @@ export async function finalizeQueuedTurnDeletion(
       // Persistent agent rows were already purged atomically.  Keep the intent
       // retryable so in-memory caches and trace files are cleared before the
       // queue reports the turn as complete.
-      log("LLM: queued turn deletion could not clear agent runtime state", err);
+      warn(
+        "LLM: queued turn deletion could not clear agent runtime state",
+        err,
+      );
       return { ok: false, localDeleted: true };
     }
     const history = chatHistory.get(entry.conversationKey);
@@ -1511,7 +1549,10 @@ export async function finalizeQueuedTurnDeletion(
       // recomputation must keep the durable turn intent alive so a later retry
       // can remove the stale references; reporting success here would make the
       // deleted blobs permanently unreachable from lifecycle cleanup.
-      log("LLM: queued turn deletion could not reconcile attachment refs", err);
+      warn(
+        "LLM: queued turn deletion could not reconcile attachment refs",
+        err,
+      );
       return { ok: false, localDeleted: true };
     }
     deps.scheduleAttachmentGc?.();

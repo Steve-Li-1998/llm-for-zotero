@@ -1,6 +1,7 @@
 declare const Zotero: any;
 
 import type { ConversationSystem } from "../../shared/types";
+import { getMaintenanceQueryOptions } from "../logging";
 
 export type ConversationCleanupProviderScope = {
   scopeType: "paper" | "open";
@@ -35,16 +36,75 @@ export type ConversationCleanupJob = {
 
 type CleanupJobRow = Record<string, unknown>;
 
-function getDb(): {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-} | null {
+type ConversationCleanupJobsChangedListener = () => void;
+
+const cleanupJobsChangedListeners =
+  new Set<ConversationCleanupJobsChangedListener>();
+const cleanupJobAttempts = new Map<
+  string,
+  Promise<ConversationCleanupJobAttemptResult>
+>();
+let cleanupJobsChangedNotificationScheduled = false;
+
+export type ConversationCleanupJobAttemptResult =
+  | { ok: true }
+  | { ok: false; error: unknown; deferred?: boolean };
+
+/**
+ * Observe committed changes to the durable cleanup queue. Transactional
+ * inserts deliberately do not emit here: their caller must notify only after
+ * the owning transaction commits.
+ */
+export function onConversationCleanupJobsChanged(
+  listener: ConversationCleanupJobsChangedListener,
+): () => void {
+  cleanupJobsChangedListeners.add(listener);
+  return () => cleanupJobsChangedListeners.delete(listener);
+}
+
+export function notifyConversationCleanupJobsChanged(): void {
+  for (const listener of [...cleanupJobsChangedListeners]) {
+    try {
+      listener();
+    } catch {
+      // Queue persistence must never fail because a process-local observer did.
+    }
+  }
+}
+
+export function scheduleConversationCleanupJobsChangedNotification(): void {
+  if (cleanupJobsChangedNotificationScheduled) return;
+  cleanupJobsChangedNotificationScheduled = true;
+  const timer = setTimeout(() => {
+    cleanupJobsChangedNotificationScheduled = false;
+    notifyConversationCleanupJobsChanged();
+  }, 0);
+  const maybeUnref = timer as ReturnType<typeof setTimeout> & {
+    unref?: () => void;
+  };
+  maybeUnref.unref?.();
+}
+
+type CleanupDb = {
+  queryAsync: (
+    sql: string,
+    params?: unknown[],
+    options?: { debug?: boolean },
+  ) => Promise<unknown>;
+};
+
+function getDb(): CleanupDb | null {
   const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
     .Zotero?.DB;
-  return typeof db?.queryAsync === "function"
-    ? (db as {
-        queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-      })
-    : null;
+  return typeof db?.queryAsync === "function" ? (db as CleanupDb) : null;
+}
+
+function queryCleanupDb(
+  db: CleanupDb,
+  sql: string,
+  params?: unknown[],
+): Promise<unknown> {
+  return db.queryAsync(sql, params, getMaintenanceQueryOptions());
 }
 
 function normalizePositiveInt(value: unknown): number {
@@ -149,9 +209,9 @@ export async function initConversationCleanupJobs(): Promise<void> {
   if (initPromise) return initPromise;
   const db = getDb();
   if (!db) return;
-  initPromise = db
-    .queryAsync(
-      `CREATE TABLE IF NOT EXISTS ${CONVERSATION_CLEANUP_JOBS_TABLE} (
+  initPromise = queryCleanupDb(
+    db,
+    `CREATE TABLE IF NOT EXISTS ${CONVERSATION_CLEANUP_JOBS_TABLE} (
         id TEXT PRIMARY KEY,
         operation TEXT NOT NULL CHECK(operation IN ('codex_archive', 'claude_invalidate')),
         system TEXT NOT NULL,
@@ -169,7 +229,7 @@ export async function initConversationCleanupJobs(): Promise<void> {
         last_error TEXT,
         provider_cleanup_state TEXT NOT NULL DEFAULT 'pending'
       )`,
-    )
+  )
     .then(async () => {
       for (const definition of [
         "conversation_kind TEXT NOT NULL DEFAULT 'global'",
@@ -182,7 +242,8 @@ export async function initConversationCleanupJobs(): Promise<void> {
         "provider_cleanup_state TEXT NOT NULL DEFAULT 'pending'",
       ]) {
         try {
-          await db.queryAsync(
+          await queryCleanupDb(
+            db,
             `ALTER TABLE ${CONVERSATION_CLEANUP_JOBS_TABLE} ADD COLUMN ${definition}`,
           );
         } catch (error) {
@@ -194,7 +255,8 @@ export async function initConversationCleanupJobs(): Promise<void> {
       // uniqueness fence. Collapse any legacy duplicates before installing
       // the composite identity index; concurrent callers are then serialized
       // by SQLite rather than creating duplicate provider obligations.
-      await db.queryAsync(
+      await queryCleanupDb(
+        db,
         `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
          WHERE rowid IN (
            SELECT newer.rowid
@@ -208,7 +270,8 @@ export async function initConversationCleanupJobs(): Promise<void> {
             AND older.rowid < newer.rowid
          )`,
       );
-      await db.queryAsync(
+      await queryCleanupDb(
+        db,
         `CREATE UNIQUE INDEX IF NOT EXISTS
           llm_for_zotero_conversation_cleanup_jobs_identity
          ON ${CONVERSATION_CLEANUP_JOBS_TABLE}
@@ -256,7 +319,13 @@ export async function enqueueConversationCleanupJob(params: {
     return null;
   }
   await initConversationCleanupJobs();
-  return enqueueConversationCleanupJobInTransaction(params);
+  const job = await enqueueConversationCleanupJobInTransaction(params);
+  // Give an enqueueing foreground flow one turn to register its coalesced
+  // immediate provider attempt. Otherwise a background wake can acquire the
+  // same job while that flow still holds the conversation write lock and then
+  // deadlock when the foreground joins an invalidation waiting on that lock.
+  if (job) scheduleConversationCleanupJobsChangedNotification();
+  return job;
 }
 
 /**
@@ -293,7 +362,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
   ) {
     return null;
   }
-  const existing = (await db.queryAsync(
+  const existing = (await queryCleanupDb(
+    db,
     `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
             conversation_kind, library_id, paper_item_id,
             provider_scope_type, provider_scope_id, provider_scope_label,
@@ -337,7 +407,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
     providerCleanupState: "pending",
   };
   try {
-    await db.queryAsync(
+    await queryCleanupDb(
+      db,
       `INSERT INTO ${CONVERSATION_CLEANUP_JOBS_TABLE}
         (id, operation, system, conversation_key, instance_id, conversation_kind, library_id, paper_item_id,
          provider_scope_type, provider_scope_id, provider_scope_label,
@@ -362,7 +433,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
     );
   } catch (error) {
     if (!/unique|constraint/i.test(String(error))) throw error;
-    const raced = (await db.queryAsync(
+    const raced = (await queryCleanupDb(
+      db,
       `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
               conversation_kind, library_id, paper_item_id,
               provider_scope_type, provider_scope_id, provider_scope_label,
@@ -401,7 +473,8 @@ export async function hasPendingEmptyClaudeCleanupJob(params: {
   try {
     await initConversationCleanupJobs();
     const instancePredicate = instanceID ? "AND instance_id = ?" : "";
-    const rows = (await db.queryAsync(
+    const rows = (await queryCleanupDb(
+      db,
       `SELECT 1
        FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
        WHERE operation = 'claude_invalidate'
@@ -430,7 +503,8 @@ export async function listDueConversationCleanupJobs(
   const db = getDb();
   if (!db) return [];
   await initConversationCleanupJobs();
-  const rows = (await db.queryAsync(
+  const rows = (await queryCleanupDb(
+    db,
     `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
             conversation_kind, library_id, paper_item_id,
             provider_scope_type, provider_scope_id, provider_scope_label,
@@ -447,16 +521,64 @@ export async function listDueConversationCleanupJobs(
     .filter((job): job is ConversationCleanupJob => Boolean(job));
 }
 
+export async function getNextConversationCleanupJobDueAt(
+  options: { includeAttentionRequired?: boolean } = {},
+): Promise<number | null> {
+  const db = getDb();
+  if (!db) return null;
+  await initConversationCleanupJobs();
+  const rows = (await queryCleanupDb(
+    db,
+    `SELECT MIN(next_attempt_at) AS next_attempt_at
+     FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
+     WHERE (provider_cleanup_state = 'pending'
+            OR (? = 1 AND provider_cleanup_state = 'attention_required'))
+       AND id <> ''
+       AND operation IN ('codex_archive', 'claude_invalidate')
+       AND system IN ('upstream', 'claude_code', 'codex')
+       AND conversation_key > 0
+       AND (provider_session_id <> ''
+            OR (operation = 'claude_invalidate' AND instance_id <> ''))`,
+    [options.includeAttentionRequired ? 1 : 0],
+  )) as CleanupJobRow[] | undefined;
+  const raw = rows?.[0]?.next_attempt_at;
+  if (raw === null || raw === undefined || raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+}
+
+async function getConversationCleanupJobByID(
+  id: string,
+): Promise<ConversationCleanupJob | null> {
+  const db = getDb();
+  if (!db || !id) return null;
+  await initConversationCleanupJobs();
+  const rows = (await queryCleanupDb(
+    db,
+    `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
+            conversation_kind, library_id, paper_item_id,
+            provider_scope_type, provider_scope_id, provider_scope_label,
+            attempts, next_attempt_at, last_error, provider_cleanup_state
+     FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
+     WHERE id = ?
+     LIMIT 1`,
+    [id],
+  )) as CleanupJobRow[] | undefined;
+  return rows?.[0] ? rowToJob(rows[0]) : null;
+}
+
 export async function completeConversationCleanupJob(
   id: string,
 ): Promise<void> {
   const db = getDb();
   if (!db || !id) return;
   await initConversationCleanupJobs();
-  await db.queryAsync(
+  await queryCleanupDb(
+    db,
     `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE} WHERE id = ?`,
     [id],
   );
+  notifyConversationCleanupJobsChanged();
 }
 
 export async function failConversationCleanupJob(
@@ -476,7 +598,8 @@ export async function failConversationCleanupJob(
   const message = String(
     error instanceof Error ? error.message : error || "provider cleanup failed",
   ).slice(0, 512);
-  await db.queryAsync(
+  await queryCleanupDb(
+    db,
     `UPDATE ${CONVERSATION_CLEANUP_JOBS_TABLE}
      SET attempts = ?, next_attempt_at = ?, last_error = ?, provider_cleanup_state = ?
      WHERE id = ?`,
@@ -490,4 +613,52 @@ export async function failConversationCleanupJob(
       job.id,
     ],
   );
+  notifyConversationCleanupJobsChanged();
+}
+
+/**
+ * Coalesce provider work for one durable job inside this plugin process.
+ * Deletion paths normally attempt cleanup immediately after persisting the
+ * job, while the background scheduler wakes from the same insert. Sharing the
+ * full attempt prevents the scheduler from concurrently archiving or
+ * invalidating the same provider session and ensures every waiter observes the
+ * retry deadline written by the attempt owner.
+ */
+export function performConversationCleanupJobAttempt(
+  job: ConversationCleanupJob,
+  operation: () => Promise<void>,
+): Promise<ConversationCleanupJobAttemptResult> {
+  const existing = cleanupJobAttempts.get(job.id);
+  if (existing) return existing;
+  const attempt = (async (): Promise<ConversationCleanupJobAttemptResult> => {
+    // A jobs list can be overtaken by an inline deletion attempt. Re-read the
+    // authoritative row after acquiring the process-local attempt slot so a
+    // late list cannot repeat a completed operation or bypass a newly written
+    // retry deadline with stale attempts/nextAttemptAt values.
+    const current = await getConversationCleanupJobByID(job.id);
+    if (!current) return { ok: true };
+    if (current.nextAttemptAt > Date.now()) {
+      return {
+        ok: false,
+        deferred: true,
+        error: new Error(
+          `Provider cleanup retry is deferred until ${current.nextAttemptAt}`,
+        ),
+      };
+    }
+    try {
+      await operation();
+      await completeConversationCleanupJob(current.id);
+      return { ok: true };
+    } catch (error) {
+      await failConversationCleanupJob(current, error);
+      return { ok: false, error };
+    }
+  })().finally(() => {
+    if (cleanupJobAttempts.get(job.id) === attempt) {
+      cleanupJobAttempts.delete(job.id);
+    }
+  });
+  cleanupJobAttempts.set(job.id, attempt);
+  return attempt;
 }

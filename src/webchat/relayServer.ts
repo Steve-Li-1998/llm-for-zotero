@@ -22,6 +22,7 @@
  *   POST /llm-for-zotero/webchat/load_chat
  */
 
+import { appLogger } from "../core/logging";
 import {
   getWebChatConversationId,
   getWebChatTarget,
@@ -2514,7 +2515,7 @@ export function registerWebChatRelay(): void {
     Zotero.Server.Endpoints[path] = EndpointClass;
   }
   const port = Zotero.Prefs.get("httpServer.port") || 23119;
-  ztoolkit.log(
+  appLogger.info(
     `[webchat] Relay registered: ${Object.keys(ENDPOINTS).length} endpoints on port ${port}`,
   );
 }

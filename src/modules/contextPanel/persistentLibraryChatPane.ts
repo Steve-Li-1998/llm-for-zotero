@@ -1,5 +1,6 @@
 import { syncSidebarSectionLayout } from "./sidebarLayout";
 import { installLibraryPaperDrop } from "./libraryPaperDrop";
+import { appLogger } from "../../core/logging";
 type NativeChatSection = Element & {
   item: Zotero.Item | null;
   tabType: string;
@@ -81,7 +82,7 @@ export function installPersistentLibraryChatPane(doc: Document) {
       section.item = null;
       if (chat)
         void section._forceRenderAll().catch((error: unknown) => {
-          Zotero.debug(
+          appLogger.warn(
             `LLM: empty library pane render failed: ${String(error)}`,
           );
         });

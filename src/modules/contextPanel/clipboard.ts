@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { sanitizeText } from "../../utils/textSanitization";
 
 export async function copyTextToClipboard(
@@ -15,7 +16,7 @@ export async function copyTextToClipboard(
       await win.navigator.clipboard.writeText(safeText);
       return;
     } catch (err) {
-      ztoolkit.log("Clipboard API copy failed:", err);
+      appLogger.debug("Clipboard API copy failed:", err);
     }
   }
 
@@ -35,6 +36,6 @@ export async function copyTextToClipboard(
       | undefined;
     if (svc) svc.copyString(safeText);
   } catch (err) {
-    ztoolkit.log("Clipboard fallback copy failed:", err);
+    appLogger.warn("Clipboard fallback copy failed:", err);
   }
 }

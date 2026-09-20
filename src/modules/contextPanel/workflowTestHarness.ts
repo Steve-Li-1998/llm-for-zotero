@@ -1,4 +1,5 @@
 import { callLLM, callLLMStream } from "../../utils/llmClient";
+import { appLogger } from "../../core/logging";
 import { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
 import { createAgentModelAdapter } from "../../agent/model/factory";
 import { resolveAgentRuntimeRequest } from "../../agent/context/resolvedAgentRequest";
@@ -5765,7 +5766,7 @@ export function installWorkflowTestHarness(targetAddon: {
       assertWorkflowTestEnabled();
       const getMainWindow = Zotero.getMainWindow;
       const mainWindow = getMainWindow();
-      const originalLog = ztoolkit.log;
+      const originalDebug = appLogger.debug;
       const diagnostics: string[] = [];
       const getFullText = Zotero.PDFWorker.getFullText;
       if (options?.forceViewerFallbackForItemId) {
@@ -5776,7 +5777,7 @@ export function installWorkflowTestHarness(targetAddon: {
             : result;
         };
       }
-      ztoolkit.log = (...args) => {
+      appLogger.debug = (...args) => {
         if (/citation|quote-locator/i.test(String(args[0])))
           diagnostics.push(
             args
@@ -5785,7 +5786,7 @@ export function installWorkflowTestHarness(targetAddon: {
               )
               .join(" "),
           );
-        return originalLog.apply(ztoolkit, args);
+        return originalDebug(...args);
       };
       let focusRequests = 0;
       const observedWindow = new Proxy(mainWindow, {
@@ -5840,7 +5841,7 @@ export function installWorkflowTestHarness(targetAddon: {
         };
       } finally {
         Zotero.getMainWindow = getMainWindow;
-        ztoolkit.log = originalLog;
+        appLogger.debug = originalDebug;
         Zotero.PDFWorker.getFullText = getFullText;
       }
     },

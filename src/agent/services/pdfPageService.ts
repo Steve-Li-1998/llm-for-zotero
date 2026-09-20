@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import type { SemanticDecisions } from "../model/semanticDecisions";
 import {
   ensureAttachmentBlobFromPath,
@@ -744,13 +745,13 @@ function restoreNonReaderTab(savedTabId: string | number | null): void {
   // savedTabId is captured before the PDF operation opens a reader tab.
   // Falls back to "zotero-pane" (library tab) if no ID was available.
   const targetTabId = savedTabId || "zotero-pane";
-  ztoolkit.log(
+  appLogger.debug(
     `[LLM] restoreNonReaderTab: target="${targetTabId}" (saved=${savedTabId ?? "null"})`,
   );
   const doRestore = (label: string) => {
     const ok = selectZoteroTab(targetTabId);
     if (!ok) {
-      ztoolkit.log(
+      appLogger.warn(
         `[LLM] restoreNonReaderTab(${label}): selectZoteroTab("${targetTabId}") failed`,
       );
     }

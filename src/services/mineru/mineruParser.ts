@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
@@ -78,7 +79,7 @@ async function cleanupMineruChunkDirectory(path: string): Promise<void> {
       ignoreAbsent: true,
     });
   } catch (error) {
-    ztoolkit.log("MinerU: failed to clean temporary chunk directory", error);
+    appLogger.warn("MinerU: failed to clean temporary chunk directory", error);
   }
 }
 
@@ -89,7 +90,7 @@ export async function parsePdfWithMineru(
   options: { maxPages?: number; attachmentId?: number } = {},
 ): Promise<MinerUResult> {
   const report = (stage: string) => {
-    ztoolkit.log(`MinerU: ${stage}`);
+    appLogger.debug(`MinerU: ${stage}`);
     onProgress?.(stage);
   };
 
@@ -245,7 +246,7 @@ export async function publishMineruParsedResult(
   try {
     await deleteMineruCheckpoint(attachment.id);
   } catch (error) {
-    ztoolkit.log(
+    appLogger.debug(
       "MinerU: completed cache is available; checkpoint cleanup failed",
       error,
     );

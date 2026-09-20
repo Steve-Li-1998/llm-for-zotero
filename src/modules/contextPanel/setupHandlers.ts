@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { copyNoteEditingSelectedTextContext } from "./noteEditing/selectionController";
 import { createNoteConversationItem } from "../../services/notes/conversationItem";
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -796,12 +797,12 @@ export function setupHandlers(
   } = panelRefs;
 
   if (!inputBox || !sendBtn) {
-    ztoolkit.log("LLM: Could not find input or send button");
+    appLogger.warn("LLM: Could not find input or send button");
     return;
   }
 
   if (!panelRoot) {
-    ztoolkit.log("LLM: Could not find panel root");
+    appLogger.warn("LLM: Could not find panel root");
     return;
   }
 
@@ -918,7 +919,7 @@ export function setupHandlers(
 
   const panelDoc = body.ownerDocument;
   if (!panelDoc) {
-    ztoolkit.log("LLM: Could not find panel document");
+    appLogger.warn("LLM: Could not find panel document");
     return;
   }
   const panelWin = panelDoc?.defaultView || null;
@@ -937,7 +938,7 @@ export function setupHandlers(
     try {
       hooks?.onConversationHistoryChanged?.();
     } catch (err) {
-      ztoolkit.log("LLM: standalone history hook failed", err);
+      appLogger.warn("LLM: standalone history hook failed", err);
     }
   };
   const isGlobalMode = () => resolveDisplayConversationKind(item) === "global";
@@ -1106,7 +1107,7 @@ export function setupHandlers(
         claudeModelCatalogStatus = "error";
         claudeModelCatalogError =
           error instanceof Error ? error.message : String(error);
-        ztoolkit.log("Claude Code: failed to load model catalog", error);
+        appLogger.warn("Claude Code: failed to load model catalog", error);
       })
       .finally(() => {
         if (requestId !== claudeModelCatalogRequestId) return;
@@ -1190,7 +1191,7 @@ export function setupHandlers(
         codexModelCatalogStatus = "error";
         codexModelCatalogError =
           error instanceof Error ? error.message : String(error);
-        ztoolkit.log("Codex app-server: failed to load model catalog", error);
+        appLogger.warn("Codex app-server: failed to load model catalog", error);
       })
       .finally(() => {
         codexModelCatalogInFlight = null;
@@ -1357,7 +1358,7 @@ export function setupHandlers(
         ]);
       })
       .catch((err: unknown) => {
-        ztoolkit.log("LLM: Failed to warm Claude mode caches", err);
+        appLogger.warn("LLM: Failed to warm Claude mode caches", err);
       })
       .finally(() => {
         claudeWarmupInFlight = null;
@@ -1940,7 +1941,7 @@ export function setupHandlers(
         void initAgentSubsystem()
           .then((coreRuntime) => invalidateAllClaudeHotRuntimes(coreRuntime))
           .catch((err: unknown) => {
-            ztoolkit.log(
+            appLogger.warn(
               "LLM: Failed to invalidate all Claude hot runtimes",
               err,
             );
@@ -2027,7 +2028,7 @@ export function setupHandlers(
       attachmentGcTimer = null;
       void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
         (err) => {
-          ztoolkit.log("LLM: Attachment GC failed", err);
+          appLogger.warn("LLM: Attachment GC failed", err);
         },
       );
     };
@@ -2185,7 +2186,7 @@ export function setupHandlers(
     refreshChatPreservingScroll: () => refreshChatPreservingScroll(),
     refreshGlobalHistoryHeader: () => refreshGlobalHistoryHeader(),
     logError: (message, ...args) => {
-      ztoolkit.log(message, ...args);
+      appLogger.debug(message, ...args);
     },
   };
 
@@ -2261,7 +2262,7 @@ export function setupHandlers(
     queueTurnDeletion: (target) => queueTurnDeletion(target),
     forkConversationFromTurn: (target) => forkConversationFromTurn(target),
     logError: (message, error) => {
-      ztoolkit.log(message, error);
+      appLogger.debug(message, error);
     },
   });
 
@@ -3359,7 +3360,7 @@ export function setupHandlers(
         setStatus(status, t("Showing MinerU cache in file system."), "ready");
       }
     } catch (error) {
-      ztoolkit.log("LLM: Failed to show MinerU cache folder", error);
+      appLogger.warn("LLM: Failed to show MinerU cache folder", error);
       if (status) {
         setStatus(
           status,
@@ -4376,7 +4377,7 @@ export function setupHandlers(
           !isManagedBlobPath(removedEntry.storedPath)
         ) {
           void removeAttachmentFile(removedEntry.storedPath).catch((err) => {
-            ztoolkit.log(
+            appLogger.warn(
               "LLM: Failed to remove discarded attachment file",
               err,
             );
@@ -4791,7 +4792,7 @@ export function setupHandlers(
         }
       : undefined,
     log: (message, ...args) => {
-      ztoolkit.log(message, ...args);
+      appLogger.debug(message, ...args);
     },
   });
   refreshGlobalHistoryHeader =
@@ -4828,7 +4829,7 @@ export function setupHandlers(
   const recoverDriftedPanelScopeForRuntimeToggle = () => {
     if (!item) return;
     if (evaluatePanelOwnership(body, item) !== "stale-candidate") return;
-    ztoolkit.log(
+    appLogger.debug(
       "LLM: re-resolving a drifted panel scope for the runtime toggle",
       {
         conversationKey: getConversationKey(item),
@@ -4860,7 +4861,7 @@ export function setupHandlers(
       );
       await switchConversationSystem(nextSystem, { forceFresh: true });
     } catch (err) {
-      ztoolkit.log("LLM: Failed to switch conversation runtime", err);
+      appLogger.warn("LLM: Failed to switch conversation runtime", err);
     } finally {
       runtimeSystemSwitchInFlight = false;
       updateRuntimeSystemToggles();
@@ -5854,7 +5855,7 @@ export function setupHandlers(
       (await switchPaperConversation()) === true,
     refreshChatPreservingScroll: () => refreshChatPreservingScroll(),
     resetComposePreviewUI: () => resetComposePreviewUI(),
-    log: (message, ...args) => ztoolkit.log(message, ...args),
+    log: (message, ...args) => appLogger.warn(message, ...args),
   });
   leaveWebChatMode = webChatModeController.leaveWebChatMode;
   if (hooks) {
@@ -6237,7 +6238,7 @@ export function setupHandlers(
         }
       : undefined,
     log: (message, ...args) => {
-      ztoolkit.log(message, ...args);
+      appLogger.debug(message, ...args);
     },
   });
   const { warmUpWebChatHistory } = webChatHistoryController;
@@ -6387,7 +6388,10 @@ export function setupHandlers(
     // explicitly targeted one.
     if (!isStandalonePanel) {
       void switchPaperConversation().catch((err) => {
-        ztoolkit.log("LLM: Failed to restore paper conversation session", err);
+        appLogger.warn(
+          "LLM: Failed to restore paper conversation session",
+          err,
+        );
       });
     }
   } else {
@@ -6575,7 +6579,7 @@ export function setupHandlers(
         }
       : undefined,
     log: (message, ...args) => {
-      ztoolkit.log(message, ...args);
+      appLogger.debug(message, ...args);
     },
   });
   const {
@@ -6653,7 +6657,7 @@ export function setupHandlers(
         }
       : undefined,
     logError: (message, error) => {
-      ztoolkit.log(message, error);
+      appLogger.debug(message, error);
     },
     activatePlanMode,
     isPlanAvailable,
@@ -6906,7 +6910,7 @@ export function setupHandlers(
   syncRequestUiForCurrentConversation();
   const pdfPaperResolver = createPdfPaperAttachmentResolver({
     logError: (message, ...args) => {
-      ztoolkit.log(message, ...args);
+      appLogger.debug(message, ...args);
     },
   });
   const localPdfResourceResolver = createLocalPdfResourceResolver();
@@ -7223,7 +7227,7 @@ export function setupHandlers(
               }
             : undefined,
           logError: (message, ...args) => {
-            ztoolkit.log(message, ...args);
+            appLogger.debug(message, ...args);
           },
           isScreenshotUnsupportedModel,
           getModelPdfSupport: (
@@ -7817,7 +7821,7 @@ export function setupHandlers(
         }
       : undefined,
     log: (message, ...args) => {
-      ztoolkit.log(message, ...args);
+      appLogger.debug(message, ...args);
     },
   });
 
@@ -7986,7 +7990,7 @@ export function setupHandlers(
         }
       : undefined,
     logError: (message, error) => {
-      ztoolkit.log(message, error);
+      appLogger.debug(message, error);
     },
   });
 

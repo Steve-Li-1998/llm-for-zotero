@@ -96,9 +96,11 @@ import {
 import {
   enqueueConversationCleanupJobInTransaction,
   initConversationCleanupJobs,
+  scheduleConversationCleanupJobsChangedNotification,
   type ConversationCleanupProviderScope,
 } from "./conversationCleanupJobs";
 import { copyPlanDocumentOwnersForFork } from "../../agent/documents/store";
+import { notifyBackgroundCleanupNeeded } from "../maintenance/backgroundCleanupSignals";
 
 export type ConversationCatalogKind = "global" | "paper";
 
@@ -1352,6 +1354,7 @@ export const conversationRepository = {
         ...target,
         conversationKey,
       });
+      scheduleConversationCleanupJobsChangedNotification();
       return;
     }
     const cleanupForkLink = async () => {
@@ -1466,6 +1469,7 @@ export const conversationRepository = {
         onBeforeCommit: target.onBeforeCommit,
         onCommit,
       });
+      notifyBackgroundCleanupNeeded();
       return;
     }
     if (target.system === "codex") {
@@ -1480,6 +1484,7 @@ export const conversationRepository = {
         conversationKey,
         instanceID: target.instanceID,
       });
+      notifyBackgroundCleanupNeeded();
       return;
     }
     await deleteUpstreamConversationLocalRows(conversationKey, target.kind, {
@@ -1488,6 +1493,7 @@ export const conversationRepository = {
       onBeforeCommit: target.onBeforeCommit,
       onCommit,
     });
+    notifyBackgroundCleanupNeeded();
   },
 
   async preflightDeleteLocalConversationRows(

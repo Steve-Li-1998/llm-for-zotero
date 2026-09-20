@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import { evaluatePreparedActionContract } from "./contracts/actionEvaluation";
 import { config } from "../../package.json";
 import {
@@ -2484,7 +2485,7 @@ export function createExternalBackendBridgeRuntime(options: {
         cachedTools = await fetchExternalTools(bridgeUrl, encodedSources);
         cacheExpiresAt = Date.now() + TOOL_CACHE_TTL_MS;
       } catch (error) {
-        ztoolkit.log("LLM Agent: Failed to refresh external actions", error);
+        appLogger.warn("LLM Agent: Failed to refresh external actions", error);
       } finally {
         refreshInFlight = null;
       }
@@ -2596,7 +2597,7 @@ export function createExternalBackendBridgeRuntime(options: {
           bridgeUrl,
           "Failed to refresh Claude models",
         );
-        ztoolkit.log(
+        appLogger.warn(
           "LLM Agent: Failed to refresh Claude model catalog",
           message,
           error,
@@ -2665,7 +2666,7 @@ export function createExternalBackendBridgeRuntime(options: {
           bridgeUrl,
           "Failed to refresh slash commands",
         );
-        ztoolkit.log(
+        appLogger.warn(
           "LLM Agent: Failed to refresh slash commands",
           message,
           error,
@@ -3804,12 +3805,7 @@ export function createExternalBackendBridgeRuntime(options: {
           await persistIfLive(() =>
             finishAgentRun(fallbackRunId, failedRunStatus, message),
           );
-          if (
-            typeof ztoolkit !== "undefined" &&
-            typeof ztoolkit.log === "function"
-          ) {
-            ztoolkit.log("LLM Agent: External bridge unavailable", message);
-          }
+          appLogger.warn("LLM Agent: External bridge unavailable", message);
           throw new Error(message);
         } finally {
           unregisterMcpToolActivity();

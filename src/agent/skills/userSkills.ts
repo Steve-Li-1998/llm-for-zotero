@@ -30,6 +30,7 @@ import {
 } from "./managedBlock";
 import { joinLocalPath } from "../../utils/localPath";
 import { patchSkillFrontmatter } from "./frontmatterPatcher";
+import { appLogger } from "../../core/logging";
 import {
   getCanonicalSkillDir,
   getCanonicalSkillFilePath,
@@ -397,11 +398,11 @@ async function migrateLegacyFlatSkills(
       if (BUILTIN_SKILL_FILENAMES.has(filename)) {
         seeded.add(filename);
       }
-      Zotero.debug?.(
+      appLogger.info(
         `[llm-for-zotero] Migrated skill ${filename} to ${targetFile}`,
       );
     } catch (err) {
-      Zotero.debug?.(
+      appLogger.warn(
         `[llm-for-zotero] Skill migration warning for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -540,7 +541,7 @@ export async function initUserSkills(): Promise<void> {
           await io.remove(filePath);
           delete bodyHashes[file];
           seeded.delete(file);
-          Zotero.debug?.(
+          appLogger.info(
             `[llm-for-zotero] Removed obsolete ${file}` +
               (unmodifiedByBootstrap
                 ? " (bootstrap: shipped fingerprint match)"
@@ -549,10 +550,10 @@ export async function initUserSkills(): Promise<void> {
         } else {
           // Customized or unknown legacy copy → keep as personal skill
           seeded.delete(file);
-          Zotero.debug?.(`[llm-for-zotero] Kept ${file} as personal skill`);
+          appLogger.debug(`[llm-for-zotero] Kept ${file} as personal skill`);
         }
       } catch (err) {
-        Zotero.debug?.(
+        appLogger.warn(
           `[llm-for-zotero] Obsolete skill cleanup warning for ${file}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -584,7 +585,7 @@ export async function initUserSkills(): Promise<void> {
         await io.write(filePath, encoder.encode(shippedContent));
         bodyHashes[filename] = shippedHash;
         seeded.add(filename);
-        Zotero.debug?.(`[llm-for-zotero] Seeded skill: ${filename}`);
+        appLogger.info(`[llm-for-zotero] Seeded skill: ${filename}`);
         continue;
       }
 
@@ -624,7 +625,7 @@ export async function initUserSkills(): Promise<void> {
         !matchesKnownHash(storedHash, knownHistoricalBodyHashes);
 
       if (trackedCustomizedBody) {
-        Zotero.debug?.(
+        appLogger.debug(
           `[llm-for-zotero] Kept customized skill body: ${filename} ` +
             `(shipped v${shippedSkill.version} available — use preferences to restore defaults)`,
         );
@@ -637,7 +638,7 @@ export async function initUserSkills(): Promise<void> {
           if (spliced !== null) {
             await io.write(filePath, encoder.encode(spliced));
             bodyHashes[filename] = shippedHash;
-            Zotero.debug?.(
+            appLogger.info(
               `[llm-for-zotero] Refreshed managed block: ${filename}`,
             );
             seeded.add(filename);
@@ -646,7 +647,7 @@ export async function initUserSkills(): Promise<void> {
         }
         await io.write(filePath, encoder.encode(shippedContent));
         bodyHashes[filename] = shippedHash;
-        Zotero.debug?.(`[llm-for-zotero] Upgraded skill: ${filename}`);
+        appLogger.info(`[llm-for-zotero] Upgraded skill: ${filename}`);
       } else if (!storedHash) {
         // Bootstrap: no hash record (pre-hash installation). Only upgrade if
         // the raw file still matches a known shipped version for this built-in;
@@ -660,7 +661,7 @@ export async function initUserSkills(): Promise<void> {
         ) {
           await io.write(filePath, encoder.encode(shippedContent));
           bodyHashes[filename] = shippedHash;
-          Zotero.debug?.(
+          appLogger.info(
             `[llm-for-zotero] Bootstrap-upgraded skill: ${filename} (v${onDiskSkill.version} → v${shippedSkill.version})`,
           );
         } else {
@@ -672,7 +673,7 @@ export async function initUserSkills(): Promise<void> {
         // storedHash exists but differs from on-disk → user customized.
         // Leave file alone, but log so the developer / advanced user knows
         // a shipped update is available (surfaced via the preferences UI).
-        Zotero.debug?.(
+        appLogger.debug(
           `[llm-for-zotero] Kept customized skill: ${filename} ` +
             `(shipped v${shippedSkill.version} available — use preferences to restore defaults)`,
         );
@@ -680,7 +681,7 @@ export async function initUserSkills(): Promise<void> {
 
       seeded.add(filename);
     } catch (err) {
-      Zotero.debug?.(
+      appLogger.warn(
         `[llm-for-zotero] Skill processing error for ${filename}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -711,12 +712,12 @@ export async function initUserSkills(): Promise<void> {
         );
         if (patched) {
           await io.write(filePath, encoder.encode(patched));
-          Zotero.debug?.(
+          appLogger.info(
             `[llm-for-zotero] Patched skill metadata: ${filename}`,
           );
         }
       } catch (err) {
-        Zotero.debug?.(
+        appLogger.warn(
           `[llm-for-zotero] Skill metadata patch warning for ${filename}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
@@ -758,20 +759,20 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
         OBSOLETE_SKILL_FILENAMES.has(filename) ||
         OBSOLETE_SKILL_IDS.has(skill.id)
       ) {
-        Zotero.debug?.(
+        appLogger.debug(
           `[llm-for-zotero] Skipping obsolete preserved skill file: ${filePath}`,
         );
         continue;
       }
 
       if (skill.id === "unknown" || !skill.instruction.trim()) {
-        Zotero.debug?.(
+        appLogger.warn(
           `[llm-for-zotero] Skipping invalid skill file (missing id or instruction): ${filePath}`,
         );
         continue;
       }
       for (const diagnostic of getSkillRoutingDiagnostics(skill)) {
-        Zotero.debug?.(
+        appLogger.debug(
           `[llm-for-zotero] Skill routing diagnostic for ${skill.id}: ${diagnostic}`,
         );
       }
@@ -789,14 +790,14 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
 
       skills.push(skill);
     } catch (err) {
-      Zotero.debug?.(
+      appLogger.warn(
         `[llm-for-zotero] Error loading skill file ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
 
   if (skills.length > 0) {
-    Zotero.debug?.(
+    appLogger.info(
       `[llm-for-zotero] Loaded ${skills.length} skill(s) from ${dir}`,
     );
   }
@@ -825,7 +826,7 @@ export async function deleteSkillFile(filePath: string): Promise<boolean> {
     await io.remove(target, { recursive: true, ignoreAbsent: true });
     return true;
   } catch (err) {
-    Zotero.debug?.(
+    appLogger.warn(
       `[llm-for-zotero] Failed to delete skill file ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
     );
     return false;
@@ -895,7 +896,7 @@ Describe precisely when and how the agent should apply this workflow.
     await io.write(filePath, encoder.encode(template));
     return filePath;
   } catch (err) {
-    Zotero.debug?.(
+    appLogger.warn(
       `[llm-for-zotero] Failed to create skill template: ${err instanceof Error ? err.message : String(err)}`,
     );
     return null;
@@ -984,7 +985,7 @@ export async function getSkillListing(): Promise<SkillListingEntry[]> {
         managedBlockOutdated,
       });
     } catch (err) {
-      Zotero.debug?.(
+      appLogger.warn(
         `[llm-for-zotero] Error listing skill file ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -1042,10 +1043,10 @@ export async function restoreSkillToDefault(
     const seeded = getSeededSkills();
     seeded.add(filename);
     setSeededSkills(seeded);
-    Zotero.debug?.(`[llm-for-zotero] Restored skill to default: ${filename}`);
+    appLogger.info(`[llm-for-zotero] Restored skill to default: ${filename}`);
     return true;
   } catch (err) {
-    Zotero.debug?.(
+    appLogger.warn(
       `[llm-for-zotero] Failed to restore skill ${filename}: ${err instanceof Error ? err.message : String(err)}`,
     );
     return false;
@@ -1094,7 +1095,7 @@ export async function openSkillFile(filePath: string): Promise<void> {
       fileModule.File.reveal(filePath);
     }
   } catch (err) {
-    Zotero.debug?.(
+    appLogger.warn(
       `[llm-for-zotero] Failed to open skill file ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }

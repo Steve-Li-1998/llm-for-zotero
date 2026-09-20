@@ -3,6 +3,7 @@ import {
   config,
   GLOBAL_CONVERSATION_KEY_BASE,
 } from "./constants";
+import { appLogger } from "../../core/logging";
 import { isConversationKeyForKind } from "../../shared/conversationKeySpace";
 import {
   activeContextPanels,
@@ -244,7 +245,7 @@ function clampStandaloneWindowSize(win: Window): void {
       win.resizeTo(nextWidth, nextHeight);
     }
   } catch (err) {
-    ztoolkit.log("LLM: standalone minimum size fallback failed", err);
+    appLogger.debug("LLM: standalone minimum size fallback failed", err);
   }
 }
 
@@ -374,7 +375,7 @@ function restoreEmbeddedPanelsAfterStandaloneClose(
         if (!isPanelOperationLeaseCurrent(hostLease)) return;
         refreshChat(body as Element, resolved.item);
       } catch (err) {
-        ztoolkit.log("LLM: side panel restore failed", err);
+        appLogger.warn("LLM: side panel restore failed", err);
       }
     })();
   }
@@ -427,7 +428,7 @@ export function renderStandalonePlaceholder(body: Element): void {
         getStandaloneSessionWindow() ||
         (addon.data.standaloneWindow as Window | undefined) ||
         null;
-      ztoolkit.log(
+      appLogger.debug(
         "LLM: close standalone clicked, win=",
         Boolean(win),
         "closed=",
@@ -437,7 +438,7 @@ export function renderStandalonePlaceholder(body: Element): void {
         (win as any).close();
       }
     } catch (err) {
-      ztoolkit.log("LLM: close standalone failed", err);
+      appLogger.warn("LLM: close standalone failed", err);
     }
   });
 
@@ -706,7 +707,7 @@ export function openStandaloneChat(options?: {
     setStandaloneSessionWindow(newWin);
     // Register the real unload handler now that the document is loaded.
     newWin.addEventListener("unload", cleanupWindow, { once: true });
-    ztoolkit.log("LLM: standalone initWindow start");
+    appLogger.debug("LLM: standalone initWindow start");
 
     const scheduleStandaloneAttachmentGc = (delayMs = 5_000) => {
       const clearTimer = () => {
@@ -719,7 +720,7 @@ export function openStandaloneChat(options?: {
         standaloneAttachmentGcTimer = null;
         void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
           (err) => {
-            ztoolkit.log("LLM: standalone attachment GC failed", err);
+            appLogger.warn("LLM: standalone attachment GC failed", err);
           },
         );
       }, delayMs);
@@ -1605,7 +1606,7 @@ export function openStandaloneChat(options?: {
                   webChatIsolatedConversationKeys.add(key);
                   refreshChat(contentArea, activeItem);
                 } catch (err) {
-                  ztoolkit.log(
+                  appLogger.warn(
                     "LLM: standalone webchat sidebar load failed",
                     err,
                   );
@@ -1629,7 +1630,7 @@ export function openStandaloneChat(options?: {
             sidebarList.appendChild(row);
           }
         } catch (err) {
-          ztoolkit.log("LLM: standalone webchat sidebar fetch failed", err);
+          appLogger.warn("LLM: standalone webchat sidebar fetch failed", err);
           loadingEl.textContent = t("Failed to fetch history");
         } finally {
           webHistoryRefreshBtn.disabled = false;
@@ -1846,7 +1847,7 @@ export function openStandaloneChat(options?: {
           const shortcutMode = standaloneMode === "open" ? "library" : "paper";
           void renderShortcuts(contentArea, mountedItem, shortcutMode);
         } catch (err) {
-          ztoolkit.log("LLM: standalone mountChatPanel sync failed", err);
+          appLogger.warn("LLM: standalone mountChatPanel sync failed", err);
         }
 
         void (async () => {
@@ -1858,7 +1859,7 @@ export function openStandaloneChat(options?: {
             // Refresh sidebar after conversation is confirmed loaded
             scheduleStandaloneSidebarRender();
           } catch (err) {
-            ztoolkit.log("LLM: standalone mount async failed", err);
+            appLogger.warn("LLM: standalone mount async failed", err);
           }
         })();
       };
@@ -1961,7 +1962,7 @@ export function openStandaloneChat(options?: {
         if (cancelled) return;
         // In webchat mode, sidebar is managed by renderWebChatSidebar() — skip local rendering
         if (isInWebChatMode) return;
-        ztoolkit.log(
+        appLogger.debug(
           "LLM: standalone renderSidebar",
           "mode=" + standaloneMode,
           "hasBasePaper=" + Boolean(currentBasePaperItem),
@@ -1991,7 +1992,7 @@ export function openStandaloneChat(options?: {
             renderSidebarItems(conversations);
           } else {
             if (!currentBasePaperItem) {
-              ztoolkit.log(
+              appLogger.debug(
                 "LLM: standalone renderSidebar paper mode — currentBasePaperItem is null",
               );
               clearSidebarList();
@@ -2001,7 +2002,7 @@ export function openStandaloneChat(options?: {
             const paperLibID = Number(
               currentBasePaperItem.libraryID || libraryID,
             );
-            ztoolkit.log(
+            appLogger.debug(
               "LLM: standalone renderSidebar paper query",
               "paperID=" + paperID,
               "libraryID=" + paperLibID,
@@ -2027,7 +2028,7 @@ export function openStandaloneChat(options?: {
             renderSidebarItems(conversations);
           }
         } catch (err) {
-          ztoolkit.log("LLM: standalone sidebar render failed", err);
+          appLogger.warn("LLM: standalone sidebar render failed", err);
         }
       };
 
@@ -2219,7 +2220,7 @@ export function openStandaloneChat(options?: {
                 | undefined,
           });
         } catch (err) {
-          ztoolkit.log("LLM: Failed to select standalone history paper", {
+          appLogger.warn("LLM: Failed to select standalone history paper", {
             paperItemID: paperItem.id,
             error: err,
           });
@@ -2353,7 +2354,7 @@ export function openStandaloneChat(options?: {
           }
           return true;
         } catch (err) {
-          ztoolkit.log("LLM: standalone search navigate failed", err);
+          appLogger.warn("LLM: standalone search navigate failed", err);
           return false;
         }
       };
@@ -2369,7 +2370,7 @@ export function openStandaloneChat(options?: {
           );
         },
         translate: t,
-        log: (...args) => ztoolkit.log("LLM: standalone search popup", args),
+        log: (...args) => appLogger.warn("LLM: standalone search popup", args),
         resolveLabel: (entry) =>
           isOrphanHistoryEntry(entry)
             ? t("Orphan")
@@ -2406,7 +2407,7 @@ export function openStandaloneChat(options?: {
         try {
           await refreshClaudeSlashCommands(await initAgentSubsystem(), true);
         } catch (err) {
-          ztoolkit.log("LLM: Claude project command refresh failed", err);
+          appLogger.warn("LLM: Claude project command refresh failed", err);
         }
       };
 
@@ -2599,7 +2600,7 @@ export function openStandaloneChat(options?: {
           errorEl.className = "llm-standalone-sidebar-empty";
           errorEl.textContent = t("Failed to load skills");
           skillGrid.appendChild(errorEl);
-          Zotero.debug?.(
+          appLogger.warn(
             `[llm-for-zotero] Standalone skill grid render failed: ${
               err instanceof Error ? err.message : String(err)
             }`,
@@ -2739,7 +2740,7 @@ export function openStandaloneChat(options?: {
             skillRefreshBtn.disabled = false;
           }, 1500);
         } catch (err) {
-          Zotero.debug?.(
+          appLogger.warn(
             `[llm-for-zotero] Skill refresh failed: ${
               err instanceof Error ? err.message : String(err)
             }`,
@@ -2892,7 +2893,7 @@ export function openStandaloneChat(options?: {
           if (cancelled) return;
           setStandaloneHistoryStatus(t("Conversation renamed"), "ready");
         } catch (err) {
-          ztoolkit.log("LLM: standalone rename conversation failed", err);
+          appLogger.warn("LLM: standalone rename conversation failed", err);
           if (cancelled) return;
           setStandaloneHistoryStatus(
             t("Failed to rename conversation"),
@@ -3033,7 +3034,7 @@ export function openStandaloneChat(options?: {
                 mode: "paper",
               });
             },
-            log: (message, ...args) => ztoolkit.log(message, ...args),
+            log: (message, ...args) => appLogger.warn(message, ...args),
           },
         );
       };
@@ -3202,7 +3203,7 @@ export function openStandaloneChat(options?: {
           }
           return toSidebarConversation(summary);
         } catch (err) {
-          ztoolkit.log(
+          appLogger.warn(
             "LLM: Failed to hydrate standalone history row before deletion",
             { conversationKey, error: err },
           );
@@ -3279,7 +3280,7 @@ export function openStandaloneChat(options?: {
             "ready",
           );
         } catch (err) {
-          ztoolkit.log("LLM: standalone delete conversation failed", err);
+          appLogger.warn("LLM: standalone delete conversation failed", err);
           if (isActive) {
             await switchStandaloneToConversationEntry(entry).catch(() => {});
           }
@@ -3640,7 +3641,7 @@ export function openStandaloneChat(options?: {
             }
           }
         } catch (err) {
-          ztoolkit.log("LLM: standalone new chat failed", err);
+          appLogger.warn("LLM: standalone new chat failed", err);
         } finally {
           explicitNewChatInFlight = false;
         }
@@ -3950,7 +3951,7 @@ export function openStandaloneChat(options?: {
                 invalidateAllClaudeHotRuntimes(coreRuntime),
               )
               .catch((err) => {
-                ztoolkit.log(
+                appLogger.warn(
                   "LLM: Failed to invalidate all Claude hot runtimes",
                   err,
                 );
@@ -4116,7 +4117,7 @@ export function openStandaloneChat(options?: {
             showNoPaperChatSourceStatus();
           }
         } catch (err) {
-          ztoolkit.log("LLM: standalone mode switch failed", err);
+          appLogger.warn("LLM: standalone mode switch failed", err);
           if (mode === "paper") showNoPaperChatSourceStatus();
         }
       };
@@ -4247,21 +4248,21 @@ export function openStandaloneChat(options?: {
 
       // Initial mount preserves the current paper/library conversation. The
       // only automatic blank draft is created once during Zotero startup.
-      ztoolkit.log(
+      appLogger.debug(
         "LLM: standalone mounting initial item",
         "mode=" + standaloneMode,
         "itemId=" + (initialMountedItem?.id ?? "null"),
         "convKey=" + getConversationKey(initialMountedItem),
       );
       mountChatPanel(initialMountedItem, currentRawContextItem);
-      ztoolkit.log(
+      appLogger.debug(
         "LLM: standalone renderSidebar start",
         "mode=" + standaloneMode,
       );
       scheduleStandaloneSidebarRender();
       renderStandalonePlaceholdersInEmbeddedPanels(contentArea);
     } catch (err) {
-      ztoolkit.log("LLM: standalone initWindow failed", err);
+      appLogger.warn("LLM: standalone initWindow failed", err);
       // Show a visible error so the window isn't silently blank
       try {
         const root = newWin.document?.getElementById(

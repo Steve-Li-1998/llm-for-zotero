@@ -5,6 +5,11 @@ import {
 } from "../src/modules/contextPanel/conversationDeletion";
 import { chatHistory } from "../src/modules/contextPanel/state";
 import type { Message } from "../src/modules/contextPanel/types";
+import {
+  appLogger,
+  setAppLogSinkForTests,
+  type AppLogLevel,
+} from "../src/core/logging";
 
 const globalScope = globalThis as typeof globalThis & {
   Zotero?: Record<string, unknown>;
@@ -18,6 +23,7 @@ function message(role: "user" | "assistant", timestamp: number): Message {
 describe("finalizeQueuedTurnDeletion", function () {
   afterEach(function () {
     chatHistory.clear();
+    setAppLogSinkForTests(null);
     globalScope.Zotero = originalZotero;
   });
 
@@ -89,6 +95,51 @@ describe("finalizeQueuedTurnDeletion", function () {
     });
     assert.isFalse(ok);
     assert.lengthOf(chatHistory.get(5)!, 2);
+  });
+
+  it("keeps an actual queued-deletion failure visible at the default level", async function () {
+    const emitted: Array<{ level: AppLogLevel; args: readonly unknown[] }> = [];
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Prefs: { get: () => "warn" },
+      DB: {
+        queryAsync: async (sql: string) => {
+          if (sql.includes("DELETE")) throw new Error("native DB locked");
+          return [];
+        },
+        executeTransaction: async (fn: () => Promise<unknown>) => fn(),
+      },
+    };
+    setAppLogSinkForTests((level, args) => emitted.push({ level, args }));
+
+    const ok = await finalizeQueuedTurnDeletion(
+      {
+        id: "pd-warning",
+        kind: "turn",
+        conversationKey: 5,
+        system: "upstream",
+        userTimestamp: 100,
+        assistantTimestamp: 200,
+        queuedAt: 1,
+        expiresAt: 2,
+        attempts: 0,
+      },
+      {
+        log: (...args) => appLogger.debug(...args),
+        warn: (...args) => appLogger.warn(...args),
+      },
+    );
+
+    assert.isFalse(ok);
+    assert.deepEqual(
+      emitted.map(({ level }) => level),
+      ["warn"],
+    );
+    assert.equal(
+      emitted[0]?.args[0],
+      "LLM: queued turn deletion failed to delete rows",
+    );
+    assert.instanceOf(emitted[0]?.args[1], Error);
   });
 });
 

@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import {
   buildZoteroMcpConfigValue,
   getZoteroMcpAllowedToolNames,
@@ -564,7 +565,7 @@ export async function probeCodexZoteroMcpThroughAppServer(
       try {
         await proc.sendRequest("thread/archive", { threadId });
       } catch (error) {
-        ztoolkit.log(
+        appLogger.debug(
           "Codex app-server MCP probe: failed to archive disposable thread",
           error,
         );
@@ -608,7 +609,7 @@ export async function installOrUpdateCodexZoteroMcpConfig(
 
   const reload = await sendOptional(proc, "config/mcpServer/reload", {});
   if (!reload.ok) {
-    ztoolkit.log("Codex app-server MCP reload failed", reload.error);
+    appLogger.warn("Codex app-server MCP reload failed", reload.error);
   }
 
   clearCodexZoteroMcpPreflightCache();

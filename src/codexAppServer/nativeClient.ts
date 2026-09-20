@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import { buildApprovedPlanExecutionInstructions } from "../agent/plans/executionInstructions";
 import { createAbortController } from "../utils/apiHelpers";
 import { readNativeQuestions } from "./nativeQuestions";
@@ -1005,7 +1006,7 @@ async function resolveCodexNativeSkillInputItems(params: {
 
     return { skillInputs, fallbackSkillIds };
   } catch (error) {
-    ztoolkit.log(
+    appLogger.warn(
       "Codex app-server native: failed to resolve structured skill inputs",
       error,
     );
@@ -1421,7 +1422,7 @@ function logCodexNativeApprovalDecision(params: {
 }): void {
   const target =
     params.decision.target || getApprovalRequestTarget(params.requestParams);
-  ztoolkit.log("Codex app-server native approval", {
+  appLogger.debug("Codex app-server native approval", {
     method: params.method,
     target: params.redactText ? params.redactText(target) : target,
     approved: params.decision.approved,
@@ -1499,7 +1500,7 @@ function registerNativeGuardianReviewHandlers(params: {
     CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
     (rawParams) => {
       if (!isDeniedTrustedZoteroMcpGuardianReview(rawParams)) {
-        ztoolkit.log("Codex app-server native guardian review observed", {
+        appLogger.debug("Codex app-server native guardian review observed", {
           method: CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
           target: params.redactText
             ? params.redactText(getApprovalRequestTarget(rawParams))
@@ -1511,14 +1512,14 @@ function registerNativeGuardianReviewHandlers(params: {
       try {
         params.isTurnStillLive?.();
       } catch (error) {
-        ztoolkit.log(
+        appLogger.debug(
           "Codex app-server native: ignored guardian approval after lifecycle change",
           error,
         );
         return;
       }
       const event = buildGuardianAssessmentEvent(rawParams);
-      ztoolkit.log(
+      appLogger.debug(
         "Codex app-server native: approving trusted Zotero MCP guardian denial",
         params.redactValue ? params.redactValue(event) : event,
       );
@@ -1528,7 +1529,7 @@ function registerNativeGuardianReviewHandlers(params: {
           event,
         })
         .catch((error) => {
-          ztoolkit.log(
+          appLogger.warn(
             "Codex app-server native: failed to approve trusted Zotero MCP guardian denial",
             params.redactText
               ? new Error(
@@ -2127,7 +2128,7 @@ async function startNativeThread(params: {
     const fallbackParams = { ...threadStartParams };
     delete fallbackParams.developerInstructions;
     developerInstructionsAccepted = false;
-    ztoolkit.log(
+    appLogger.debug(
       "Codex app-server native: thread/start developerInstructions unsupported; using visible context fallback",
     );
     threadResult = await params.proc.sendRequest(
@@ -2187,7 +2188,7 @@ async function resumeNativeThread(params: {
     const fallbackParams = { ...threadResumeParams };
     delete fallbackParams.developerInstructions;
     developerInstructionsAccepted = false;
-    ztoolkit.log(
+    appLogger.debug(
       "Codex app-server native: thread/resume developerInstructions unsupported; using visible context fallback",
     );
     threadResult = await params.proc.sendRequest(
@@ -2344,7 +2345,7 @@ async function enqueueCodexArchiveRecovery(params: {
     if (!job) return false;
     return true;
   } catch (error) {
-    ztoolkit.log(
+    appLogger.warn(
       "Codex app-server native: failed to persist archive recovery job",
       error,
     );
@@ -2456,7 +2457,7 @@ async function resolveNativeThread(params: {
       }
       return { ...resumedThread, resumed: true };
     } catch (error) {
-      ztoolkit.log(
+      appLogger.warn(
         "Codex app-server native: thread/resume failed; starting a new persistent thread",
         error,
       );
@@ -2509,7 +2510,7 @@ async function resolveNativeThread(params: {
         threadId: thread.threadId,
       });
     } catch (error) {
-      ztoolkit.log(
+      appLogger.warn(
         "Codex app-server native: failed to archive stale thread after conversation clear",
         error,
       );
@@ -2564,7 +2565,10 @@ async function setNativeThreadName(params: {
       name,
     });
   } catch (error) {
-    ztoolkit.log("Codex app-server native: failed to sync thread title", error);
+    appLogger.warn(
+      "Codex app-server native: failed to sync thread title",
+      error,
+    );
   }
 }
 
@@ -2915,7 +2919,7 @@ async function verifyCodexAppServerThreadHistory(params: {
     });
     return true;
   } catch (error) {
-    ztoolkit.log(
+    appLogger.warn(
       "Codex app-server native: thread/read verification failed",
       error,
     );
@@ -3166,7 +3170,7 @@ export async function runCodexAppServerNativeTurn(input: {
           } catch (error) {
             // The client's effect and its durable receipt are already settled;
             // a dead or superseded turn must not turn that into a failure.
-            ztoolkit.log(
+            appLogger.debug(
               "Codex app-server native: effect receipt not published",
               error,
             );
@@ -4202,7 +4206,7 @@ export async function runCodexAppServerNativeTurn(input: {
               threadId: storedThreadId,
             });
           } catch (error) {
-            ztoolkit.log(
+            appLogger.warn(
               "Codex app-server native: failed to archive the prior persistent thread after a raw-PDF turn",
               redactTerminalValue(error),
             );

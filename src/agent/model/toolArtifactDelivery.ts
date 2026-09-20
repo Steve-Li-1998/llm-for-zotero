@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { readAttachmentBytes } from "../../services/attachmentStorage";
 import type {
   AgentAdapterToolCallResult,
@@ -198,7 +199,7 @@ export async function buildArtifactFollowupMessage(
           },
         });
       } catch (error) {
-        ztoolkit.log(
+        appLogger.warn(
           "LLM Agent: Failed to load image artifact",
           artifact,
           error,

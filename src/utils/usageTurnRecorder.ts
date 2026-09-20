@@ -33,6 +33,7 @@
  */
 
 import type { UsageStats } from "../shared/llm";
+import { appLogger } from "../core/logging";
 import {
   areConversationWritesFrozen,
   isConversationWriteGenerationCurrent,
@@ -108,13 +109,7 @@ function defaultIsWriteAllowed(identity: UsageTurnIdentity): boolean {
 }
 
 function defaultLog(message: string, error?: unknown): void {
-  const log = (globalThis as { ztoolkit?: { log?: (...a: unknown[]) => void } })
-    .ztoolkit?.log;
-  try {
-    if (typeof log === "function") log(`LLM: ${message}`, error);
-  } catch {
-    // Logging must never be the thing that breaks a turn.
-  }
+  appLogger.warn(`LLM: ${message}`, error);
 }
 
 export function createTurnUsageRecorder(

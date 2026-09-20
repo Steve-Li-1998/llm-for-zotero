@@ -73,6 +73,7 @@
  */
 
 import { classifyConversationKey } from "../shared/conversationKeySpace";
+import { appLogger } from "../core/logging";
 import {
   hasConversationSchemaMigration,
   markConversationSchemaMigrationApplied,
@@ -212,14 +213,7 @@ function getDb(): BackfillDb | null {
 }
 
 function log(message: string, error?: unknown): void {
-  const write = (
-    globalThis as { ztoolkit?: { log?: (...a: unknown[]) => void } }
-  ).ztoolkit?.log;
-  try {
-    if (typeof write === "function") write(`LLM: ${message}`, error);
-  } catch {
-    // A logging failure must never be the thing that breaks startup.
-  }
+  appLogger.warn(`LLM: ${message}`, error);
 }
 
 function normalizePositiveInt(value: unknown): number | null {

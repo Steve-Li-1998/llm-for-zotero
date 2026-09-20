@@ -27,6 +27,7 @@
  */
 
 import { config } from "../../../package.json";
+import { appLogger } from "../../core/logging";
 import { registerAddonDialog } from "../../utils/dialogRegistry";
 import { el } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
@@ -212,11 +213,7 @@ function resolveColorScheme(doc: Document): UsageColorScheme {
 }
 
 function log(message: string, error?: unknown): void {
-  try {
-    ztoolkit.log(`LLM: ${message}`, error);
-  } catch {
-    // Logging must never be the reason the panel fails to render.
-  }
+  appLogger.warn(`LLM: ${message}`, error);
 }
 
 // ── element helpers ─────────────────────────────────────────────────

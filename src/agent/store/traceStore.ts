@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { config } from "../../../package.json";
 import { getClaudeRuntimeRootDir } from "../../claudeCode/projectSkills";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
@@ -19,6 +20,7 @@ import type {
   AgentRunRecord,
   AgentRunStatus,
 } from "../types";
+import { getMaintenanceQueryOptions } from "../../core/logging";
 
 const AGENT_RUNS_TABLE = "llm_for_zotero_agent_runs";
 const AGENT_RUN_EVENTS_TABLE = "llm_for_zotero_agent_run_events";
@@ -44,6 +46,7 @@ type AgentRunRow = {
 
 const traceExportTimers = new Map<string, number>();
 const traceExportInFlight = new Map<string, Promise<void>>();
+let orphanedTraceSweepInFlight: Promise<void> | null = null;
 const runConversationKeys = new Map<string, number>();
 const deletedRunIDsByConversation = new Map<
   number,
@@ -202,7 +205,7 @@ function scheduleAgentRunTraceExport(runId: string, delayMs = 250): void {
     traceExportTimers.delete(normalizedRunId);
     const task = exportAgentRunTrace(normalizedRunId)
       .catch((error) => {
-        ztoolkit.log(
+        appLogger.warn(
           "LLM: Failed to export agent trace",
           normalizedRunId,
           error,
@@ -279,7 +282,7 @@ export async function initAgentTraceStore(): Promise<void> {
 
 /** Remove deterministic trace files whose manifest was deleted before the
  * process crashed.  Only files produced by this store are considered. */
-export async function sweepOrphanedAgentTraceExports(): Promise<void> {
+async function runOrphanedAgentTraceExportSweep(): Promise<void> {
   const io = getIOUtils();
   if (!io?.getChildren || !io.remove) return;
   let manifestRows: Array<{ runId?: unknown }> = [];
@@ -287,11 +290,22 @@ export async function sweepOrphanedAgentTraceExports(): Promise<void> {
     runId?: unknown;
     exportPath?: unknown;
   }> = [];
+  const queryMaintenance = (
+    sql: string,
+    params?: unknown[],
+  ): Promise<unknown> =>
+    (
+      Zotero.DB.queryAsync as unknown as (
+        sql: string,
+        params?: unknown[],
+        options?: { debug?: boolean },
+      ) => Promise<unknown>
+    )(sql, params, getMaintenanceQueryOptions());
   try {
-    manifestRows = (await Zotero.DB.queryAsync(
+    manifestRows = (await queryMaintenance(
       `SELECT run_id AS runId FROM ${AGENT_TRACE_EXPORTS_TABLE}`,
     )) as Array<{ runId?: unknown }>;
-    cleanupRows = (await Zotero.DB.queryAsync(
+    cleanupRows = (await queryMaintenance(
       `SELECT run_id AS runId, export_path AS exportPath
        FROM ${AGENT_TRACE_FILE_CLEANUP_TABLE}`,
     )) as typeof cleanupRows;
@@ -309,7 +323,7 @@ export async function sweepOrphanedAgentTraceExports(): Promise<void> {
     if (!runId || !path) continue;
     try {
       await io.remove(path);
-      await Zotero.DB.queryAsync(
+      await queryMaintenance(
         `DELETE FROM ${AGENT_TRACE_FILE_CLEANUP_TABLE} WHERE run_id = ?`,
         [runId],
       );
@@ -337,6 +351,17 @@ export async function sweepOrphanedAgentTraceExports(): Promise<void> {
     if (live.has(name)) continue;
     await io.remove(path).catch(() => {});
   }
+}
+
+export function sweepOrphanedAgentTraceExports(): Promise<void> {
+  if (orphanedTraceSweepInFlight) return orphanedTraceSweepInFlight;
+  const task = runOrphanedAgentTraceExportSweep().finally(() => {
+    if (orphanedTraceSweepInFlight === task) {
+      orphanedTraceSweepInFlight = null;
+    }
+  });
+  orphanedTraceSweepInFlight = task;
+  return task;
 }
 
 /** Remember run IDs before the deletion transaction removes their rows. */

@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { setStatus } from "./textUtils";
 import { sanitizeText } from "../../utils/textSanitization";
 import {
@@ -248,7 +249,7 @@ function logCitationNavigationTiming(
   timing: CitationNavigationTiming,
   outcome: string,
 ): void {
-  ztoolkit.log("LLM citation navigation timing", {
+  appLogger.debug("LLM citation navigation timing", {
     outcome,
     totalMs: Date.now() - timing.startedAt,
     marks: timing.marks,
@@ -1658,7 +1659,7 @@ function logParagraphJumpFailure(params: {
   pageLabel: string;
   paragraphJump: ExactQuoteJumpResult;
 }): void {
-  ztoolkit.log("LLM citation paragraph jump failed", {
+  appLogger.warn("LLM citation paragraph jump failed", {
     contextItemId: params.contextItemId,
     citationLabel: params.displayCitationLabel,
     quoteTextLength: sanitizeText(params.quoteText || "").length,
@@ -2044,7 +2045,7 @@ function startCitationQuoteLocationCacheWarm(
     }
   }
   if (warmCandidates.length || queued) {
-    ztoolkit.log("LLM citation quote warm", {
+    appLogger.debug("LLM citation quote warm", {
       candidateCount: candidates.length,
       warmCandidateCount: warmCandidates.length,
       queued,
@@ -2618,7 +2619,7 @@ async function buildOrderedCitationCandidates(
     searchedCandidates,
     dynamicFallbackCandidates,
   );
-  ztoolkit.log(
+  appLogger.debug(
     "LLM citation navigation: candidate resolution",
     JSON.stringify({
       citationLabel: extractedCitation?.sourceLabel || "",
@@ -3891,7 +3892,7 @@ async function resolveAndNavigateAssistantCitation(params: {
     timingOutcome = "not-found";
   } catch (error) {
     timingOutcome = "error";
-    ztoolkit.log("LLM: Failed to navigate assistant citation", error);
+    appLogger.warn("LLM: Failed to navigate assistant citation", error);
     if (status) {
       setStatus(
         status,
@@ -5149,7 +5150,7 @@ function decorateInlineCitationNodes(params: {
     }
   };
   walk(params.bubble);
-  ztoolkit.log(
+  appLogger.debug(
     "LLM citation decoration: inline text targets =",
     targets.length,
   );
@@ -5336,7 +5337,7 @@ export function decorateAssistantCitationLinks(params: {
   ) as Element[];
   const rawBlockquoteTexts =
     extractMarkdownBlockquoteTextsForCitationDecoration(display.markdown);
-  ztoolkit.log(
+  appLogger.debug(
     "LLM citation decoration: blockquotes found =",
     blockquotes.length,
     "candidates =",
@@ -5407,12 +5408,12 @@ export function decorateAssistantCitationLinks(params: {
 
     if (!extractedCitation) {
       if (!citationEl) {
-        ztoolkit.log(
+        appLogger.debug(
           "LLM citation decoration: no sibling citation and no inline tail citation for blockquote, text =",
           (blockquote.textContent || "").slice(0, 80),
         );
       } else {
-        ztoolkit.log(
+        appLogger.debug(
           "LLM citation decoration: sibling text not a citation, text =",
           JSON.stringify((citationEl.textContent || "").slice(0, 80)),
         );
@@ -5423,12 +5424,12 @@ export function decorateAssistantCitationLinks(params: {
     }
 
     if (!citationEl) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM citation decoration: citation parsed but no target element available",
       );
       continue;
     }
-    ztoolkit.log(
+    appLogger.debug(
       "LLM citation decoration: creating button for",
       extractedCitation.sourceLabel,
     );
@@ -5439,7 +5440,7 @@ export function decorateAssistantCitationLinks(params: {
       quoteCitations,
     });
     if (!trustedQuoteCitation) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM citation decoration: rendering untrusted source-backed quote as fallback quote card",
         "source =",
         extractedCitation.sourceLabel,

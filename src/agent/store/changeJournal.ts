@@ -9,6 +9,7 @@
  */
 
 import { sweepOrphanRecoveryBlobs } from "./journalRecoveryBlobStore";
+import { appLogger } from "../../core/logging";
 
 export const LEGACY_JOURNAL_TABLE = "llm_for_zotero_agent_change_journal";
 export const JOURNAL_ACTIONS_TABLE = "llm_for_zotero_agent_journal_actions_v2";
@@ -465,7 +466,7 @@ export async function initAgentChangeJournal(): Promise<void> {
   });
   await sweepOrphanRecoveryBlobs(await listRecoveryBlobPaths()).catch(
     (error) => {
-      Zotero.debug?.(
+      appLogger.warn(
         `[llm-for-zotero] Could not sweep orphaned journal recovery blobs: ${
           error instanceof Error ? error.message : String(error)
         }`,
@@ -790,7 +791,7 @@ async function removeRecoveryBlobPaths(paths: string[]): Promise<void> {
   if (typeof io?.remove !== "function") return;
   for (const path of new Set(paths.filter(Boolean))) {
     await io.remove(path, { ignoreAbsent: true }).catch((error: unknown) => {
-      Zotero.debug?.(
+      appLogger.warn(
         `[llm-for-zotero] Could not remove journal recovery blob ${path}: ${
           error instanceof Error ? error.message : String(error)
         }`,
@@ -844,7 +845,7 @@ export async function sweepJournalRecoveryBlobCleanup(
         [String(row.cleanup_id || "")],
       );
     } catch (error) {
-      Zotero.debug?.(
+      appLogger.warn(
         `[llm-for-zotero] Deferred journal blob cleanup failed for ${path}: ${
           error instanceof Error ? error.message : String(error)
         }`,

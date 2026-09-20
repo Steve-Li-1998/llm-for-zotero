@@ -342,7 +342,9 @@ describe("shared conversation store mechanics", function () {
   describe("diagnostics", function () {
     it("prefixes every store warning and survives a missing Zotero global", function () {
       logConversationStoreWarning("something drifted");
-      assert.deepEqual(harness.debugMessages, ["LLM: something drifted"]);
+      assert.deepEqual(harness.debugMessages, [
+        "[llm-for-zotero] [warn] LLM: something drifted",
+      ]);
 
       const saved = globalScope.Zotero;
       globalScope.Zotero = undefined;

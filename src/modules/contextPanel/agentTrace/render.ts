@@ -1,3 +1,4 @@
+import { appLogger } from "../../../core/logging";
 import type {
   AgentActionSummaryResultCard,
   AgentNoteChangeResultCard,
@@ -6009,7 +6010,7 @@ function renderPlanContainer(params: {
         if (disposed || !root.isConnected) return;
         if (stored) paint({ artifact: stored });
       })
-      .catch((error) => ztoolkit.log("LLM: Failed to hydrate plan:", error));
+      .catch((error) => appLogger.warn("LLM: Failed to hydrate plan:", error));
   }
   return root;
 }

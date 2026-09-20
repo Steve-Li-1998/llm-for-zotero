@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { usesMaxCompletionTokens } from "../../utils/apiHelpers";
 import {
   buildReasoningPayload,
@@ -588,7 +589,7 @@ async function parseOpenAIChatCompletionStream(
             }
           }
         } catch (err) {
-          ztoolkit.log("LLM: Malformed SSE line in OpenAI stream", err);
+          appLogger.warn("LLM: Malformed SSE line in OpenAI stream", err);
         }
       }
     }

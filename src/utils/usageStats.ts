@@ -18,6 +18,7 @@
  * against that must return an empty result, not an error dialog.
  */
 
+import { appLogger } from "../core/logging";
 import {
   buildPaperDisplayLabels,
   type PaperDisplayMetadata,
@@ -196,13 +197,7 @@ function getUsageDb(): UsageDb | null {
 }
 
 function logUsageStatsWarning(message: string, error?: unknown): void {
-  const log = (globalThis as { ztoolkit?: { log?: (...a: unknown[]) => void } })
-    .ztoolkit?.log;
-  try {
-    if (typeof log === "function") log(`LLM: ${message}`, error);
-  } catch {
-    // A logging failure must never surface in the Usage view.
-  }
+  appLogger.warn(`LLM: ${message}`, error);
 }
 
 /**

@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import { HTML_NS } from "../../utils/domHelpers";
 
 function estimateDataUrlByteLength(dataUrl: string): number {
@@ -87,7 +88,7 @@ async function optimizeImageDataUrl(
     }
     return canvas.toDataURL("image/jpeg", jpegQuality);
   } catch (err) {
-    ztoolkit.log("Screenshot optimize failed:", err);
+    appLogger.debug("Screenshot optimize failed:", err);
     return dataUrl;
   }
 }
@@ -102,7 +103,7 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
     // Find the appropriate container (body for HTML, documentElement for XUL)
     const container = doc.body || doc.documentElement;
     if (!container) {
-      ztoolkit.log("Screenshot: No container found");
+      appLogger.debug("Screenshot: No container found");
       resolve(null);
       return;
     }
@@ -184,9 +185,9 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
 
     try {
       container.appendChild(overlay);
-      ztoolkit.log("Screenshot: Overlay appended to", container.tagName);
+      appLogger.debug("Screenshot: Overlay appended to", container.tagName);
     } catch (err) {
-      ztoolkit.log("Screenshot: Failed to append overlay", err);
+      appLogger.warn("Screenshot: Failed to append overlay", err);
       resolve(null);
       return;
     }
@@ -207,7 +208,7 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
     const safeResolve = (value: string | null, reason: string) => {
       if (resolved) return;
       resolved = true;
-      ztoolkit.log(
+      appLogger.debug(
         "Screenshot: Resolving with",
         value ? "image" : "null",
         "-",
@@ -218,7 +219,7 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      ztoolkit.log("Screenshot: Key pressed:", e.key);
+      appLogger.debug("Screenshot: Key pressed:", e.key);
       if (e.key === "Escape") {
         safeResolve(null, "Escape pressed");
       }
@@ -227,7 +228,7 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
     doc.addEventListener("keydown", onKeyDown);
 
     cancelBtn.addEventListener("click", (e: MouseEvent) => {
-      ztoolkit.log("Screenshot: Cancel button clicked");
+      appLogger.debug("Screenshot: Cancel button clicked");
       e.preventDefault();
       e.stopPropagation();
       safeResolve(null, "Cancel clicked");
@@ -236,18 +237,18 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
     // Wait before accepting mouse events to prevent button click from triggering
     setTimeout(() => {
       isReady = true;
-      ztoolkit.log("Screenshot: Now ready for selection");
+      appLogger.debug("Screenshot: Now ready for selection");
     }, 200);
 
     overlay.addEventListener("mousedown", (e: MouseEvent) => {
-      ztoolkit.log(
+      appLogger.debug(
         "Screenshot: mousedown, isReady:",
         isReady,
         "target:",
         (e.target as Element)?.tagName,
       );
       if (!isReady) {
-        ztoolkit.log("Screenshot: Ignoring mousedown - not ready yet");
+        appLogger.debug("Screenshot: Ignoring mousedown - not ready yet");
         return;
       }
       if (e.target === cancelBtn) return;
@@ -261,7 +262,7 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
       selection.style.width = "0px";
       selection.style.height = "0px";
       selection.style.display = "block";
-      ztoolkit.log("Screenshot: Selection started at", startX, startY);
+      appLogger.debug("Screenshot: Selection started at", startX, startY);
     });
 
     overlay.addEventListener("mousemove", (e: MouseEvent) => {
@@ -282,18 +283,18 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
     });
 
     overlay.addEventListener("mouseup", async (e: MouseEvent) => {
-      ztoolkit.log(
+      appLogger.debug(
         "Screenshot: mouseup, isReady:",
         isReady,
         "isSelecting:",
         isSelecting,
       );
       if (!isReady) {
-        ztoolkit.log("Screenshot: Ignoring mouseup - not ready yet");
+        appLogger.debug("Screenshot: Ignoring mouseup - not ready yet");
         return;
       }
       if (!isSelecting) {
-        ztoolkit.log("Screenshot: Ignoring mouseup - not selecting");
+        appLogger.debug("Screenshot: Ignoring mouseup - not selecting");
         return;
       }
       e.preventDefault();
@@ -308,11 +309,11 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
       const width = Math.abs(endX - startX);
       const height = Math.abs(endY - startY);
 
-      ztoolkit.log("Screenshot: Selection size:", width, "x", height);
+      appLogger.debug("Screenshot: Selection size:", width, "x", height);
 
       // Minimum selection size - just reset if too small
       if (width < 20 || height < 20) {
-        ztoolkit.log("Screenshot: Selection too small, resetting");
+        appLogger.debug("Screenshot: Selection too small, resetting");
         selection.style.display = "none";
         return;
       }
@@ -324,7 +325,7 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
         const dataUrl = await captureRegion(win, left, top, width, height);
         safeResolve(dataUrl, "Capture complete");
       } catch (err) {
-        ztoolkit.log("Screenshot capture failed:", err);
+        appLogger.warn("Screenshot capture failed:", err);
         safeResolve(null, "Capture error");
       }
     });
@@ -398,7 +399,7 @@ async function captureRegion(
     }
 
     // Fallback: use Firefox's drawWindow if available
-    ztoolkit.log("No PDF canvas found, using fallback capture");
+    appLogger.debug("No PDF canvas found, using fallback capture");
 
     const canvas = win.document.createElement("canvas") as HTMLCanvasElement;
     canvas.width = width;
@@ -425,13 +426,13 @@ async function captureRegion(
         ).drawWindow(win, x, y, width, height, "white");
         return canvas.toDataURL("image/png");
       } catch (err) {
-        ztoolkit.log("drawWindow failed:", err);
+        appLogger.debug("drawWindow failed:", err);
       }
     }
 
     return null;
   } catch (err) {
-    ztoolkit.log("Capture region error:", err);
+    appLogger.warn("Capture region error:", err);
     return null;
   }
 }

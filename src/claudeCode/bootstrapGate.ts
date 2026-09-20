@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import type { ConversationSystem } from "../shared/types";
 import { ensureClaudeProjectBootstrap } from "./bootstrap";
 import {
@@ -39,7 +40,7 @@ export async function applyClaudeCodeModePreferenceChange(
     getConversationSystemPref,
     setConversationSystemPref,
     ensureClaudeProjectBootstrap,
-    log: (...args: unknown[]) => ztoolkit.log(...args),
+    log: (...args: unknown[]) => appLogger.warn(...args),
   },
 ): Promise<void> {
   applyAgentBackendUi(enabled);

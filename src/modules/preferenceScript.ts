@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import { createProviderRequestScope } from "../utils/providerTransport";
 import {
   getSidebarLayout,
@@ -933,7 +934,7 @@ async function confirmCodexFullAccess(): Promise<boolean> {
 
 export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (!_window) {
-    ztoolkit.log("Preferences window not available");
+    appLogger.debug("Preferences window not available");
     return;
   }
 
@@ -969,7 +970,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       notice.show();
       setTimeout(() => notice.close(), 6000);
     } catch (err) {
-      ztoolkit.log("LLM: failed to show output-limit migration notice", err);
+      appLogger.warn("LLM: failed to show output-limit migration notice", err);
     }
   }
 
@@ -3638,7 +3639,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       renderCodexReasoningOptions(catalog.models, true);
     } catch (error) {
       if (refreshId !== codexReasoningCatalogRefreshId) return;
-      ztoolkit.log(
+      appLogger.warn(
         "Codex app-server: failed to load the model catalog in preferences",
         error,
       );

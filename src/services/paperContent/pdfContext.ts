@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 import {
   callEmbeddings,
   EmbeddingUnsupportedError,
@@ -216,7 +217,7 @@ async function readLocalTextFile(source: string | nsIFile): Promise<string> {
       const text = decodeFileContents(data);
       if (text) return text;
     } catch (error) {
-      ztoolkit.log(
+      appLogger.debug(
         "LLM: Zotero.File text read failed; trying lower-level readers:",
         formatErrorForLog(error),
       );
@@ -272,7 +273,7 @@ async function readZoteroFulltextCache(item: Zotero.Item): Promise<string> {
     }
     return sanitizePdfText(await readLocalTextFile(cacheFile));
   } catch (error) {
-    ztoolkit.log(
+    appLogger.debug(
       "LLM: Zotero full-text cache read failed:",
       formatErrorForLog(error),
     );
@@ -396,7 +397,7 @@ async function cacheTextAttachment(
       });
     }
   } catch (error) {
-    ztoolkit.log("Error caching text attachment:", error);
+    appLogger.warn("Error caching text attachment:", error);
     pdfTextCache.set(item.id, {
       title,
       chunks: [],
@@ -450,7 +451,7 @@ async function cachePDFText(
       try {
         await ensureMineruRuntimeCacheForAttachment(pdfItem);
       } catch (error) {
-        ztoolkit.log("LLM: MinerU sync restore failed", error);
+        appLogger.warn("LLM: MinerU sync restore failed", error);
       }
     }
     const cachedMd =
@@ -481,7 +482,7 @@ async function cachePDFText(
             : undefined;
         }
       } catch (e) {
-        ztoolkit.log("PDF extraction failed:", e);
+        appLogger.warn("PDF extraction failed:", e);
       }
     }
 
@@ -507,15 +508,18 @@ async function cachePDFText(
             typeof manifest.totalChars === "number" &&
             manifest.totalChars !== cachedMd.length
           ) {
-            ztoolkit.log("LLM: MinerU manifest length mismatch; rebuilding", {
-              attachmentId: item.id,
-              manifestTotalChars: manifest.totalChars,
-              mdLength: cachedMd.length,
-            });
+            appLogger.debug(
+              "LLM: MinerU manifest length mismatch; rebuilding",
+              {
+                attachmentId: item.id,
+                manifestTotalChars: manifest.totalChars,
+                mdLength: cachedMd.length,
+              },
+            );
             manifest = await buildAndWriteManifest(item.id);
           }
         } catch (e) {
-          ztoolkit.log(
+          appLogger.debug(
             "LLM: MinerU manifest unavailable; using markdown chunks",
             formatErrorForLog(e),
           );
@@ -566,7 +570,7 @@ async function cachePDFText(
             if (synthetic.length > 2)
               return chunkBySections(cachedMd, synthetic);
           } catch (e) {
-            ztoolkit.log(
+            appLogger.debug(
               "LLM: MinerU heading fallback failed; using flat markdown chunks",
               { attachmentId: item.id, error: formatErrorForLog(e) },
             );
@@ -589,7 +593,7 @@ async function cachePDFText(
             manifest.sections,
           ));
         } catch (e) {
-          ztoolkit.log(
+          appLogger.debug(
             "LLM: MinerU manifest chunking failed; using markdown headings",
             {
               attachmentId: item.id,
@@ -634,7 +638,7 @@ async function cachePDFText(
       });
     }
   } catch (e) {
-    ztoolkit.log("Error caching PDF:", formatErrorForLog(e), e);
+    appLogger.warn("Error caching PDF:", formatErrorForLog(e), e);
     pdfTextCache.set(item.id, {
       title: "",
       chunks: [],
@@ -716,7 +720,7 @@ async function cacheNoteText(item: Zotero.Item) {
       });
     }
   } catch (e) {
-    ztoolkit.log("Error caching note:", e);
+    appLogger.warn("Error caching note:", e);
     pdfTextCache.set(item.id, {
       title: "",
       chunks: [],
@@ -772,7 +776,7 @@ export function invalidateCachedContextText(itemId: number): void {
   // this function is called right after writeMineruCacheFiles(), so deleting
   // the MinerU directory would destroy the freshly written content.
   void clearEmbeddingCache(normalizedItemId).catch((error) => {
-    ztoolkit.log("Embedding cache invalidation failed:", error);
+    appLogger.warn("Embedding cache invalidation failed:", error);
   });
 }
 
@@ -1869,12 +1873,12 @@ async function ensureEmbeddings(
       return await embedTexts(pdfContext.chunks);
     } catch (err) {
       if (err instanceof EmbeddingUnsupportedError) {
-        ztoolkit.log(
+        appLogger.info(
           `[Semantic Search] Provider "${(err as EmbeddingUnsupportedError).providerLabel}" does not support embeddings. ` +
             "Configure a separate embedding provider in Settings → Customization. Falling back to keyword search.",
         );
       } else {
-        ztoolkit.log("[Semantic Search] Embedding generation failed:", err);
+        appLogger.warn("[Semantic Search] Embedding generation failed:", err);
       }
       return null;
     }
@@ -1903,7 +1907,7 @@ async function ensureEmbeddings(
         dims,
         result,
       ).catch((err) =>
-        ztoolkit.log("[Semantic Search] Embedding cache write failed:", err),
+        appLogger.debug("[Semantic Search] Embedding cache write failed:", err),
       );
     }
     return result.length === chunkCount;
@@ -1950,7 +1954,7 @@ export function preGenerateEmbeddings(
 
   ensureEmbeddings(pdfContext, itemId).catch((err) => {
     if (typeof ztoolkit !== "undefined") {
-      ztoolkit.log(
+      appLogger.debug(
         "[Semantic Search] Background embedding pre-generation failed:",
         err,
       );
@@ -2194,7 +2198,7 @@ function shouldTryEmbeddings(): boolean {
     // unavailable; under auto there is simply nothing to reuse.
     const reason = getEmbeddingUnavailableReason();
     if (reason) {
-      ztoolkit.log(`[Semantic Search] Embeddings unavailable: ${reason}`);
+      appLogger.info(`[Semantic Search] Embeddings unavailable: ${reason}`);
     }
   }
   return state.enabled;
@@ -2707,7 +2711,7 @@ export async function buildPaperRetrievalCandidates(
           });
         }
       } catch (err) {
-        ztoolkit.log("Query embedding failed:", err);
+        appLogger.warn("Query embedding failed:", err);
       }
     }
   }

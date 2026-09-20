@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import { config } from "../../package.json";
 import { joinLocalPath } from "./localPath";
 import {
@@ -104,7 +105,7 @@ function migrateLegacyPrefs(): void {
 
   Zotero.Prefs.set(PREF_MIGRATION_MARKER_KEY, true, true);
   if (migrated > 0) {
-    ztoolkit.log(`LLM: Migrated ${migrated} legacy preference value(s).`);
+    appLogger.info(`LLM: Migrated ${migrated} legacy preference value(s).`);
   }
 }
 
@@ -164,7 +165,7 @@ async function migrateMineruManifestBuild(): Promise<void> {
       }
     }
     if (built > 0) {
-      ztoolkit.log(
+      appLogger.info(
         `LLM: Built manifest.json for ${built} existing MinerU cached paper(s).`,
       );
     }
@@ -202,7 +203,7 @@ function migrateNickname(): void {
       "Obsidian",
       true,
     );
-    ztoolkit.log(
+    appLogger.info(
       "LLM: Auto-set notes directory nickname to 'Obsidian' for existing Obsidian user.",
     );
   }
@@ -262,7 +263,7 @@ function migrateAttachmentsVaultRelative(): void {
         migrated,
         true,
       );
-      ztoolkit.log(
+      appLogger.info(
         `LLM: Migrated attachments folder to vault-relative: "${af}" → "${migrated}"`,
       );
     }

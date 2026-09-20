@@ -1,3 +1,4 @@
+import { appLogger } from "../core/logging";
 import { version as addonVersion } from "../../package.json";
 import {
   describeMineruZipInspectionFailure,
@@ -363,7 +364,7 @@ async function downloadViaCurl(url: string): Promise<Uint8Array | null> {
     )?.getService?.(Ci.nsIProperties as unknown);
     const tempDir = dirService?.get?.("TmpD", Ci.nsIFile as unknown);
     if (!tempDir?.path) {
-      ztoolkit.log("MinerU download [curl]: cannot resolve temp directory");
+      appLogger.warn("MinerU download [curl]: cannot resolve temp directory");
       return null;
     }
 
@@ -381,11 +382,11 @@ async function downloadViaCurl(url: string): Promise<Uint8Array | null> {
     ]);
 
     if (exitCode !== 0) {
-      ztoolkit.log(`MinerU download [curl]: failed exit=${exitCode}`);
+      appLogger.warn(`MinerU download [curl]: failed exit=${exitCode}`);
       return null;
     }
 
-    ztoolkit.log("MinerU download [curl]: success");
+    appLogger.debug("MinerU download [curl]: success");
     // Read the temp file using IOUtils or OS.File
     try {
       const io = getIOUtils();
@@ -417,7 +418,7 @@ async function downloadViaCurl(url: string): Promise<Uint8Array | null> {
     }
     return null;
   } catch (e) {
-    ztoolkit.log(`MinerU download [curl] threw: ${(e as Error).message}`);
+    appLogger.warn(`MinerU download [curl] threw: ${(e as Error).message}`);
     return null;
   }
 }
@@ -507,7 +508,9 @@ function logMineruZipFailure(
     zipError:
       zipInspection && !zipInspection.ok ? (zipInspection.error ?? null) : null,
   };
-  ztoolkit.log(`MinerU ZIP debug: ${JSON.stringify(payload)}`);
+  if (appLogger.isEnabled("debug")) {
+    appLogger.debug(`MinerU ZIP debug: ${JSON.stringify(payload)}`);
+  }
 }
 
 async function downloadViaCurlWithMetadata(
@@ -621,7 +624,7 @@ async function readPdfBytes(pdfPath: string): Promise<Uint8Array | null> {
       }
       return new Uint8Array(data as ArrayBuffer);
     } catch (e) {
-      ztoolkit.log("MinerU: IOUtils.read failed:", e);
+      appLogger.warn("MinerU: IOUtils.read failed:", e);
     }
   }
   const osFile = getOSFile();
@@ -631,7 +634,7 @@ async function readPdfBytes(pdfPath: string): Promise<Uint8Array | null> {
       if (data instanceof Uint8Array) return data;
       return new Uint8Array(data as ArrayBuffer);
     } catch (e) {
-      ztoolkit.log("MinerU: OS.File.read failed:", e);
+      appLogger.warn("MinerU: OS.File.read failed:", e);
     }
   }
   return null;
@@ -1253,7 +1256,7 @@ async function runCurl(args: string[], timeoutMs = 300000): Promise<number> {
       }
       return race;
     } catch (e) {
-      ztoolkit.log(
+      appLogger.debug(
         `runCurl Subprocess.call failed: ${(e as Error).message}, falling back to nsIProcess`,
       );
     }
@@ -1318,7 +1321,9 @@ async function runCurl(args: string[], timeoutMs = 300000): Promise<number> {
       process.runAsync!(args, args.length, observer);
     });
   } catch (e) {
-    ztoolkit.log(`runCurl nsIProcess fallback failed: ${(e as Error).message}`);
+    appLogger.warn(
+      `runCurl nsIProcess fallback failed: ${(e as Error).message}`,
+    );
     return -1;
   }
 }
@@ -1347,7 +1352,7 @@ async function uploadViaCurl(
     globalThis as { Components?: { interfaces?: Record<string, unknown> } }
   ).Components?.interfaces;
   if (!Cc || !Ci) {
-    ztoolkit.log("MinerU upload [curl]: Components unavailable");
+    appLogger.warn("MinerU upload [curl]: Components unavailable");
     return { status: 0 };
   }
 
@@ -1389,7 +1394,7 @@ async function uploadViaCurl(
       }
     }
   } catch (e) {
-    ztoolkit.log(
+    appLogger.warn(
       `MinerU upload [curl]: temp file write failed: ${(e as Error).message}, using original path`,
     );
   }
@@ -1416,10 +1421,10 @@ async function uploadViaCurl(
   cleanupTemp();
 
   if (exitCode === 0) {
-    ztoolkit.log("MinerU upload [curl]: success (exit=0)");
+    appLogger.debug("MinerU upload [curl]: success (exit=0)");
     return { status: 200 };
   }
-  ztoolkit.log(`MinerU upload [curl]: failed exit=${exitCode}`);
+  appLogger.warn(`MinerU upload [curl]: failed exit=${exitCode}`);
   return { status: 0 };
 }
 
@@ -1472,13 +1477,13 @@ async function httpPutBinary(
       signal: fetchSignal,
     });
     if (timer) clearTimeout(timer);
-    ztoolkit.log(
+    appLogger.debug(
       `MinerU upload [fetch]: status=${resp.status} host=${urlHost}`,
     );
     return { status: resp.status };
   } catch (e) {
     if (signal?.aborted) throw new MineruCancelledError();
-    ztoolkit.log(
+    appLogger.warn(
       `MinerU upload [fetch] threw: ${(e as Error).message} host=${urlHost}`,
     );
   }
@@ -1494,13 +1499,13 @@ async function httpPutBinary(
       timeout: REQUEST_TIMEOUT_MS * 2,
       errorDelayMax: 0,
     });
-    ztoolkit.log(
+    appLogger.debug(
       `MinerU upload [Zotero.HTTP]: status=${xhr.status} host=${urlHost}`,
     );
     if (xhr.status > 0) return { status: xhr.status };
   } catch (e) {
     if (signal?.aborted) throw new MineruCancelledError();
-    ztoolkit.log(
+    appLogger.warn(
       `MinerU upload [Zotero.HTTP] threw: ${(e as Error).message} host=${urlHost}`,
     );
   }
@@ -1650,7 +1655,7 @@ async function parsePdfViaUpload(
     );
 
     if (pollResult.status < 200 || pollResult.status >= 300) {
-      ztoolkit.log(`MinerU: poll HTTP ${pollResult.status}`);
+      appLogger.debug(`MinerU: poll HTTP ${pollResult.status}`);
       continue;
     }
 
@@ -1668,7 +1673,7 @@ async function parsePdfViaUpload(
     } | null;
     const extractResult = pollData?.data?.extract_result?.[0];
     if (!extractResult) {
-      ztoolkit.log(
+      appLogger.warn(
         `MinerU: poll response has no extract_result: ${JSON.stringify(pollResult.data).slice(0, 200)}`,
       );
       report(t("Waiting for MinerU status… (%ss)").replace("%s", `${elapsed}`));
@@ -1677,7 +1682,7 @@ async function parsePdfViaUpload(
 
     const state = normalizeMineruCloudState(extractResult.state);
     if (!state) {
-      ztoolkit.log(
+      appLogger.warn(
         `MinerU: poll response has empty state: ${JSON.stringify(pollResult.data).slice(0, 200)}`,
       );
       report(t("Waiting for MinerU status… (%ss)").replace("%s", `${elapsed}`));
@@ -1689,7 +1694,7 @@ async function parsePdfViaUpload(
       activeStartedAtMs = pollTimeMs;
     }
 
-    ztoolkit.log(`MinerU: poll state="${state}"`);
+    appLogger.debug(`MinerU: poll state="${state}"`);
 
     if (state === "done") {
       if (!extractResult.full_zip_url) {
@@ -1756,7 +1761,7 @@ export async function parsePdfWithMineruCloud(
   forceOcr = DEFAULT_MINERU_FORCE_OCR,
 ): Promise<MinerUResult> {
   const report = (stage: string) => {
-    ztoolkit.log(`MinerU: ${stage}`);
+    appLogger.debug(`MinerU: ${stage}`);
     onProgress?.(stage);
   };
   try {
@@ -1789,7 +1794,7 @@ export async function parsePdfWithMineruLocal(
   forceOcr = DEFAULT_MINERU_FORCE_OCR,
 ): Promise<MinerUResult> {
   const report = (stage: string) => {
-    ztoolkit.log(`MinerU local: ${stage}`);
+    appLogger.debug(`MinerU local: ${stage}`);
     onProgress?.(stage);
   };
   try {

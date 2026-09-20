@@ -2,6 +2,7 @@ import type { GeneratedChatImage } from "../../shared/types";
 import { normalizeGeneratedChatImages } from "../../shared/generatedImages";
 import { fileUrlToPath } from "../../utils/localPath";
 import { escapeNoteHtml } from "../../utils/textSanitization";
+import { appLogger } from "../../core/logging";
 import {
   isEmbeddableGeneratedImage,
   resolveGeneratedImageAsset,
@@ -94,7 +95,7 @@ export async function importNoteImageAsset(
     });
     return attachment?.key ? { key: String(attachment.key) } : null;
   } catch (error) {
-    Zotero.debug?.(
+    appLogger.warn(
       `[llm-for-zotero] importNoteImageAsset failed: ${error instanceof Error ? error.message : String(error)}`,
     );
     return null;
@@ -211,7 +212,7 @@ export async function buildGeneratedImagesHtmlForNote(
         `<p><img data-attachment-key="${escapeNoteHtml(imported.key)}" alt="${escapeNoteHtml(alt)}" /></p>`,
       );
     } catch (error) {
-      Zotero.debug?.(
+      appLogger.warn(
         `[llm-for-zotero] Generated image note import failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }

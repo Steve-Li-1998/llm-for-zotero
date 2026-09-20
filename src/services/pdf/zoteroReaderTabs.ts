@@ -1,3 +1,4 @@
+import { appLogger } from "../../core/logging";
 export type ZoteroTabsState = {
   selectedID?: string | number;
   selectedType?: string;
@@ -149,10 +150,12 @@ export function selectZoteroTab(tabId: string | number): boolean {
   if (typeof tabsAny.select === "function") {
     try {
       tabsAny.select(tabId);
-      ztoolkit.log(`[LLM] selectZoteroTab: selected "${tabId}" via ${source}`);
+      appLogger.debug(
+        `[LLM] selectZoteroTab: selected "${tabId}" via ${source}`,
+      );
       return true;
     } catch (err) {
-      ztoolkit.log(
+      appLogger.warn(
         `[LLM] selectZoteroTab: error selecting "${tabId}" via ${source} — ${err}`,
       );
     }

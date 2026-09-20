@@ -223,6 +223,11 @@ import type {
 import { resolveTargetedAssistantRerenders } from "./targetedRerender";
 import { withConversationWriteLock } from "../../shared/conversationWriteFence";
 import {
+  createTurnUsageRecorder,
+  type TurnUsageRecorder,
+  type UsageTurnFlushReason,
+} from "../../utils/usageTurnRecorder";
+import {
   chatHistory,
   conversationForkLinks,
   loadedConversationKeys,
@@ -3691,6 +3696,12 @@ function createStreamUsageHandler(params: {
   contextCache: Parameters<typeof recordContextCacheTelemetry>[0];
   fallbackContextWindow: number;
   fallbackInputLimitSource: ModelInputTokenLimitSource;
+  /**
+   * Local usage ledger for this turn. Providers report cumulatively, so the
+   * recorder folds every callback into one row that the pipeline flushes when
+   * the turn settles.
+   */
+  usageRecorder?: TurnUsageRecorder;
 }): (usage: UsageStats) => void {
   return (usage) => {
     if (
@@ -3703,6 +3714,7 @@ function createStreamUsageHandler(params: {
     ) {
       return;
     }
+    params.usageRecorder?.record(usage);
     recordContextCacheTelemetry(params.contextCache, usage);
     const snapshot = updateContextUsageSnapshotFromProvider({
       conversationKey: params.conversationKey,
@@ -6543,6 +6555,17 @@ export async function retryLatestAssistantResponse(
   });
   let streamedReasoningSummary: string | undefined;
   let streamedReasoningDetails: string | undefined;
+  // Local usage ledger for this retry. A retry's tokens are real and are
+  // recorded, but the question was already counted when it was first asked.
+  let usageFlushReason: UsageTurnFlushReason = "complete";
+  const usageRecorder = createTurnUsageRecorder({
+    conversationKey,
+    conversationGeneration,
+    countsAsQuestion: false,
+    runtime: isCodexNativeTurn ? "codex" : "chat",
+    model: effectiveRequestConfig.model,
+    provider: effectiveRequestConfig.modelProviderLabel,
+  });
 
   const restoreOriginalTurn = () => {
     streamingResponse.rollback();
@@ -6859,6 +6882,7 @@ export async function retryLatestAssistantResponse(
       contextCache: contextPlan.contextCache,
       fallbackContextWindow: finalPrepared.inputCap.limitTokens,
       fallbackInputLimitSource: finalPrepared.inputCap.limitSource,
+      usageRecorder,
     });
     const codexScope = isCodexNativeTurn
       ? await enrichCodexNativeConversationScopeWithMineruCache(
@@ -6918,6 +6942,9 @@ export async function retryLatestAssistantResponse(
       )
     )
       return;
+    // The request is going out: from here the provider bills whatever it
+    // produces, including on abort, so the turn owes a usage row.
+    usageRecorder.markDispatched();
     const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
       ? await (async () => {
           const result = await runCodexAppServerNativeTurn({
@@ -6999,6 +7026,7 @@ export async function retryLatestAssistantResponse(
       getCancelledRequestId(conversationKey) >= thisRequestId ||
       Boolean(getAbortController(conversationKey)?.signal.aborted)
     ) {
+      usageFlushReason = "abort";
       await finalizeCancelledAssistant();
       return;
     }
@@ -7091,6 +7119,7 @@ export async function retryLatestAssistantResponse(
       getCancelledRequestId(conversationKey) >= thisRequestId ||
       Boolean(getAbortController(conversationKey)?.signal.aborted) ||
       (err as { name?: string }).name === "AbortError";
+    usageFlushReason = isCancelled ? "abort" : "error";
     if (isCancelled) {
       await finalizeCancelledAssistant();
       return;
@@ -7174,6 +7203,10 @@ export async function retryLatestAssistantResponse(
     // interrupted and failed ones: the trace controller must stop here or a
     // buffered flush lands on a message that was already persisted.
     codexActivityTrace?.dispose();
+    // Every path through this flow -- completion, error, abort -- ends here,
+    // so this is where the one usage row for the turn is written. It never
+    // throws and is deliberately not awaited: usage must not delay the turn.
+    void usageRecorder.flush(usageFlushReason);
     releaseRequest();
   }
 }
@@ -9675,6 +9708,16 @@ export async function sendQuestion(
     return;
   }
 
+  // Local usage ledger for this turn: one question, one row.
+  const usageRecorder = createTurnUsageRecorder({
+    conversationKey,
+    conversationGeneration,
+    runtime: isCodexNativeTurn ? "codex" : "chat",
+    model: effectiveRequestConfig.model,
+    provider: effectiveRequestConfig.modelProviderLabel,
+  });
+  let usageFlushReason: UsageTurnFlushReason = "complete";
+
   try {
     const rawLLMHistory = buildLLMHistoryMessages(historyForLLM);
     // Apply auto-summary compression when the history grows long.
@@ -9842,6 +9885,7 @@ export async function sendQuestion(
       contextCache: contextPlan.contextCache,
       fallbackContextWindow: finalPrepared.inputCap.limitTokens,
       fallbackInputLimitSource: finalPrepared.inputCap.limitSource,
+      usageRecorder,
     });
     const codexScope = isCodexNativeTurn
       ? await enrichCodexNativeConversationScopeWithMineruCache(
@@ -9900,6 +9944,9 @@ export async function sendQuestion(
     ) {
       return;
     }
+    // The request is going out: from here the provider bills whatever it
+    // produces, including on abort, so the turn owes a usage row.
+    usageRecorder.markDispatched();
     const modelOutcome: ModelTurnOutcome = isCodexNativeTurn
       ? await (async () => {
           const result = await runCodexAppServerNativeTurn({
@@ -9984,6 +10031,7 @@ export async function sendQuestion(
       getCancelledRequestId(conversationKey) >= thisRequestId ||
       Boolean(getAbortController(conversationKey)?.signal.aborted)
     ) {
+      usageFlushReason = "abort";
       await markCancelled();
       return;
     }
@@ -10071,6 +10119,7 @@ export async function sendQuestion(
       getCancelledRequestId(conversationKey) >= thisRequestId ||
       Boolean(getAbortController(conversationKey)?.signal.aborted) ||
       (err as { name?: string }).name === "AbortError";
+    usageFlushReason = isCancelled ? "abort" : "error";
     if (isCancelled) {
       await markCancelled();
       return;
@@ -10105,6 +10154,10 @@ export async function sendQuestion(
     // Same end of life as the retry flow: stop the trace controller before
     // the request UI goes idle, so nothing it buffered can arrive later.
     codexActivityTrace?.dispose();
+    // Every path through this flow -- completion, error, abort -- ends here,
+    // so this is where the one usage row for the turn is written. It never
+    // throws and is deliberately not awaited: usage must not delay the turn.
+    void usageRecorder.flush(usageFlushReason);
     if (
       clearPendingRequestIdAndSync(conversationKey, body, item, thisRequestId)
     ) {

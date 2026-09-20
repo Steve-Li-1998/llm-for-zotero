@@ -1069,6 +1069,110 @@ const zhCN: Record<string, string> = {
   "Comma-separated patterns. Matching filenames are skipped by your rule. Wrap in /slashes/ for regex.":
     "使用逗号分隔多个模式。匹配文件名会按规则跳过。用 /斜杠/ 包裹可表示正则表达式。",
 
+  // ── Usage statistics tab ────────────────────────────────────────────────
+  // English pluralises and Chinese does not, so every English arity is its own
+  // key and the singular and the plural map to the one Chinese sentence.
+  Usage: "用量",
+  Overview: "概览",
+  "7d": "7 天",
+  "30d": "30 天",
+  All: "全部",
+  Questions: "问题",
+  Tokens: "Token",
+  Conversations: "对话",
+  Activity: "活跃度",
+  "Tokens per day": "每日 Token",
+  Models: "模型",
+  "Papers you asked about most": "提问最多的论文",
+  "Heaviest conversations": "Token 消耗最多的对话",
+  Less: "少",
+  More: "多",
+  "Loading usage…": "正在加载用量…",
+  "No usage recorded yet": "尚未记录任何用量",
+  "Ask a question in paper chat or library chat and this tab will start counting your questions and tokens. Everything stays in your own Zotero database — nothing is sent anywhere.":
+    "在论文对话或文献库对话中提问，本标签页就会开始统计你的提问次数和 Token 用量。所有数据都保存在你自己的 Zotero 数据库中 — 不会发送到任何地方。",
+  "No questions in the last 7 days. Pick a wider range to see your history.":
+    "最近 7 天没有提问。请选择更大的时间范围查看历史。",
+  "No questions in the last 30 days. Pick a wider range to see your history.":
+    "最近 30 天没有提问。请选择更大的时间范围查看历史。",
+  "No questions yet. Pick a wider range to see your history.":
+    "尚无提问。请选择更大的时间范围查看历史。",
+  "questions · {count} paper": "问题 · {count} 篇论文",
+  "questions · {count} papers": "问题 · {count} 篇论文",
+  "questions · {count} conversation": "问题 · {count} 个对话",
+  "questions · {count} conversations": "问题 · {count} 个对话",
+  "in {count} conversation": "分布在 {count} 个对话中",
+  "in {count} conversations": "分布在 {count} 个对话中",
+  "asked about in this range": "此时间范围内提问过",
+  "asked in library chat": "在文献库对话中提出",
+  "with a question in this range": "此时间范围内有提问",
+  "No model recorded a turn in this range.":
+    "此时间范围内没有模型记录任何对话。",
+  "No paper chat questions in this range.": "此时间范围内没有论文对话提问。",
+  "No library chat questions in this range.":
+    "此时间范围内没有文献库对话提问。",
+  "Unnamed model": "未命名模型",
+  "tokens not reported": "未报告 Token",
+  "unknown source": "来源未知",
+  "Untitled conversation": "未命名对话",
+  "Paper no longer in your library": "论文已不在文献库中",
+  "{count} question": "{count} 个问题",
+  "{count} questions": "{count} 个问题",
+  "{count} paper": "{count} 篇论文",
+  "{count} papers": "{count} 篇论文",
+  "{tokens} tokens": "{tokens} Token",
+  "{tokens} tokens · removed from your library":
+    "{tokens} Token · 已从文献库中移除",
+  "{tokens} tokens · input-only estimate": "{tokens} Token · 仅输入的估算值",
+  "Tokens not reported": "Token 未报告",
+  "No activity": "没有活动",
+  "{count} question across {days} active day":
+    "{count} 个问题，跨 {days} 个活跃日",
+  "{count} question across {days} active days":
+    "{count} 个问题，跨 {days} 个活跃日",
+  "{count} questions across {days} active day":
+    "{count} 个问题，跨 {days} 个活跃日",
+  "{count} questions across {days} active days":
+    "{count} 个问题，跨 {days} 个活跃日",
+  "{count} distinct paper across {days} active day":
+    "{count} 篇不同论文，跨 {days} 个活跃日",
+  "{count} distinct paper across {days} active days":
+    "{count} 篇不同论文，跨 {days} 个活跃日",
+  "{count} distinct papers across {days} active day":
+    "{count} 篇不同论文，跨 {days} 个活跃日",
+  "{count} distinct papers across {days} active days":
+    "{count} 篇不同论文，跨 {days} 个活跃日",
+  "{prompt} in · {completion} out": "输入 {prompt} · 输出 {completion}",
+  "{split} · {count} unreported": "{split} · {count} 条未报告",
+  "not reported by the provider": "服务商未报告",
+  "no tokens recorded in this range": "此时间范围内没有 Token 记录",
+  "no usage in this range": "此时间范围内没有用量",
+  "Includes {count} turn from before this tab existed: input tokens are estimated and output was never recorded.":
+    "包含 {count} 轮本标签页出现之前的对话：输入 Token 为估算值，输出 Token 从未记录。",
+  "Includes {count} turns from before this tab existed: input tokens are estimated and output was never recorded.":
+    "包含 {count} 轮本标签页出现之前的对话：输入 Token 为估算值，输出 Token 从未记录。",
+  "Export CSV": "导出 CSV",
+  "Reset statistics": "重置统计",
+  "Export usage statistics": "导出用量统计",
+  "Preparing export…": "正在准备导出…",
+  "Could not open a save dialog.": "无法打开保存对话框。",
+  "Exported {count} row.": "已导出 {count} 行。",
+  "Exported {count} rows.": "已导出 {count} 行。",
+  "Export failed.": "导出失败。",
+  "Could not clear the usage statistics.": "无法清除用量统计。",
+  "Reset usage statistics?": "重置用量统计？",
+  "Delete usage statistics": "删除用量统计",
+  "This deletes the {count} recorded usage row from your local database: every question count and token total in this tab goes back to zero.":
+    "这将删除本地数据库中的 {count} 条用量记录：本标签页中的所有提问次数和 Token 总数都将归零。",
+  "This deletes all {count} recorded usage rows from your local database: every question count and token total in this tab goes back to zero.":
+    "这将删除本地数据库中全部 {count} 条用量记录：本标签页中的所有提问次数和 Token 总数都将归零。",
+  "This includes the {count} turn reconstructed from your earlier conversations; it will not be rebuilt.":
+    "其中包含根据你以往对话重建的 {count} 轮记录；重置后不会再次重建。",
+  "This includes the {count} turns reconstructed from your earlier conversations; they will not be rebuilt.":
+    "其中包含根据你以往对话重建的 {count} 轮记录；重置后不会再次重建。",
+  "Your conversations, notes and papers are not touched, and this cannot be undone.":
+    "你的对话、笔记和论文不会受到影响，此操作无法撤销。",
+
   // ── Language setting ────────────────────────────────────────────────────
   Language: "语言",
   "Auto (follow Zotero)": "自动（跟随 Zotero）",

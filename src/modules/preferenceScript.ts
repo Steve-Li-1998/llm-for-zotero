@@ -63,6 +63,7 @@ import {
   createProviderModelSectionBlueprint,
 } from "../utils/providerCardModelSection";
 import { describeProviderRow } from "./preferences/providerCards/providerRowHeader";
+import { registerUsagePreferencePanel } from "./preferences/usagePanel";
 import {
   getModelCapabilities,
   getModelCatalogStatus,
@@ -5624,5 +5625,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   );
   if (mineruMgrSidebar && _window) {
     void registerMineruManagerScript(_window, config.addonRef);
+  }
+
+  // ── Usage tab ────────────────────────────────────────────────────
+  // Registration only wires the tab; the ledger is read the first time the
+  // tab is opened, so the preferences window still opens immediately.
+  if (_window) {
+    registerUsagePreferencePanel(_window);
   }
 }

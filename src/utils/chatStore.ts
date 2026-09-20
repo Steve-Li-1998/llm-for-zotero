@@ -118,6 +118,10 @@ import {
   refreshStoreConversationSearchIndex,
 } from "../shared/conversationStore/searchIndex";
 import { clearPersistedAgentConversationRowsInTransaction } from "../modules/contextPanel/agentConversationCleanup";
+import {
+  deleteUsageEventsForConversation,
+  deleteUsageEventsForConversationInTransaction,
+} from "./usageStore";
 import { clearOwnerAttachmentRefsInTransaction } from "./attachmentRefStore";
 import {
   areConversationWritesFrozen,
@@ -3591,6 +3595,9 @@ export async function deletePaperConversation(
     [normalizedKey],
   );
   await deleteUpstreamConversationSearchIndex(normalizedKey);
+  // Legacy pre-ledger deletion path: cascade the usage ledger here too, so no
+  // entry point can leave usage rows for a conversation the user deleted.
+  await deleteUsageEventsForConversation(normalizedKey);
 }
 
 export async function touchEmptyPaperConversation(
@@ -4066,6 +4073,9 @@ export async function deleteGlobalConversation(
     [normalizedKey],
   );
   await deleteUpstreamConversationSearchIndex(normalizedKey);
+  // Legacy pre-ledger deletion path: cascade the usage ledger here too, so no
+  // entry point can leave usage rows for a conversation the user deleted.
+  await deleteUsageEventsForConversation(normalizedKey);
 }
 
 export async function preflightDeleteUpstreamConversationLocalRows(
@@ -4201,6 +4211,9 @@ export async function deleteUpstreamConversationLocalRows(
     );
     await clearPersistedAgentConversationRowsInTransaction(normalizedKey);
     await clearOwnerAttachmentRefsInTransaction("conversation", normalizedKey);
+    // A deleted conversation leaves no usage rows behind: the local usage
+    // ledger is scoped to conversations the user can still see.
+    await deleteUsageEventsForConversationInTransaction(normalizedKey);
     await Zotero.DB.queryAsync(
       `DELETE FROM ${catalogTable}
        WHERE conversation_key = ?

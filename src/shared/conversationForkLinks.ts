@@ -163,6 +163,14 @@ function rowToForkLink(row: Record<string, unknown> | undefined | null) {
   } satisfies ConversationForkLink;
 }
 
+/**
+ * Drop the cached schema pass so a test that swaps in a fresh database gets
+ * its tables created again. Production code never calls this.
+ */
+export function resetConversationForkLinksStoreInitForTests(): void {
+  initPromise = null;
+}
+
 export async function initConversationForkLinksStore(): Promise<void> {
   if (initPromise) {
     await initPromise;

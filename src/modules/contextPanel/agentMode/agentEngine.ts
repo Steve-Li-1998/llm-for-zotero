@@ -2372,6 +2372,9 @@ export async function retryAgentTurn(
     const outcome = await agentRuntime.runTurn({
       request: runtimeRequest,
       signal: deps.currentAbortController(conversationKey)?.signal,
+      // A retry re-answers a question the usage ledger already counted; its
+      // tokens are recorded, the question tally is not moved again.
+      usageCountsAsQuestion: false,
       onStart: async (runId) => {
         assistantMessage.agentRunId = runId;
         retryPair.userMessage.agentRunId = runId;

@@ -24,10 +24,16 @@
     defines --stroke-secondary, so the borders those tabs used to draw fell back
     to a light #c8c8c8 on a dark pane. */ #__addonRef__-prefs {
     --llm-pref-surface: #f4f4f4; --llm-pref-head: #ffffff; --llm-pref-field:
-    #ffffff; --llm-pref-stroke: #dadada; } @media (prefers-color-scheme: dark) {
-    #__addonRef__-prefs { --llm-pref-surface: #3a3a3a; --llm-pref-head: #282828;
-    --llm-pref-field: #282828; --llm-pref-stroke: #4f4f4f; } }
-    #__addonRef__-prefs .llm-pref-fields :is(textarea, select,
+    #ffffff; --llm-pref-stroke: #dadada; } /* The Usage tab's one subtle
+    surface: metric cards, active segmented-control segments, list tracks and
+    the heatmap's empty-day cells all share it, so a day with no activity reads
+    as background rather than as the lightest ramp stop. currentColor against
+    Field follows the light/dark scheme on its own. */ #__addonRef__-prefs {
+    --llm-usage-subtle: color-mix(in srgb, currentColor 8%, Field); } @media
+    (prefers-color-scheme: dark) { #__addonRef__-prefs { --llm-pref-surface:
+    #3a3a3a; --llm-pref-head: #282828; --llm-pref-field: #282828;
+    --llm-pref-stroke: #4f4f4f; } } #__addonRef__-prefs .llm-pref-fields
+    :is(textarea, select,
     input:not([type="checkbox"]):not([type="radio"]):not([type="range"])) {
     background: var(--llm-pref-field); color: FieldText; border: 1px solid
     var(--llm-pref-stroke); } #__addonRef__-prefs { -moz-user-select: text;
@@ -372,6 +378,25 @@
             justify-content: center;
           "
           >MinerU</html:button
+        >
+        <html:button
+          data-pref-tab="usage"
+          type="button"
+          style="
+            flex: 1;
+            padding: 6px 0;
+            font-size: 12px;
+            font-weight: 500;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--fill-secondary, #888);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          "
+          >Usage</html:button
         >
       </html:div>
 
@@ -2790,6 +2815,24 @@
             </html:div>
           </html:div>
         </html:div>
+      </html:div>
+
+      <!-- ═══ Tab 5: Usage ═══ -->
+      <html:div
+        id="__addonRef__-pref-panel-usage"
+        class="llm-pref-fields llm-pref-panel"
+        data-pref-panel="usage"
+        style="display: none; flex-direction: column; gap: 18px"
+      >
+        <html:div
+          id="__addonRef__-usage-root"
+          style="
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 10px 12px;
+          "
+        ></html:div>
       </html:div>
     </html:div>
   </groupbox>

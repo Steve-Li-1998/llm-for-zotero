@@ -28,6 +28,7 @@ import type {
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
 import { buildAgentModelCapabilities } from "./contentCapabilities";
+import { extractContextCacheUsage } from "../../contextCache/manager";
 import { resolveAgentOutputRequestPolicy } from "./limits";
 import {
   buildAgentRecoveryInstruction,
@@ -58,7 +59,43 @@ type GeminiResponse = {
       parts?: GeminiPart[];
     };
   }>;
+  usageMetadata?: GeminiUsageMetadata;
 };
+
+/** Gemini repeats CUMULATIVE counters on every streamed chunk. */
+type GeminiUsageMetadata = {
+  promptTokenCount?: unknown;
+  candidatesTokenCount?: unknown;
+  totalTokenCount?: unknown;
+  cachedContentTokenCount?: unknown;
+};
+
+function geminiTokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : 0;
+}
+
+async function reportGeminiUsage(
+  usageMetadata: GeminiUsageMetadata | undefined,
+  onUsage: AgentStepParams["onUsage"],
+): Promise<void> {
+  if (!onUsage || !usageMetadata) return;
+  const promptTokens = geminiTokenCount(usageMetadata.promptTokenCount);
+  const completionTokens = geminiTokenCount(usageMetadata.candidatesTokenCount);
+  const totalTokens =
+    geminiTokenCount(usageMetadata.totalTokenCount) ||
+    promptTokens + completionTokens;
+  if (totalTokens <= 0) return;
+  await onUsage({
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    ...extractContextCacheUsage(usageMetadata),
+    contextTokens: promptTokens,
+    contextWindowIsAuthoritative: promptTokens > 0,
+  });
+}
 
 function chooseGeminiSchemaType(typeValue: unknown): string | null {
   const normalize = (value: string): string | null => {
@@ -597,6 +634,7 @@ async function parseGeminiStepStream(
     summary?: string;
     details?: string;
   }) => void | Promise<void>,
+  onUsage?: AgentStepParams["onUsage"],
 ): Promise<{
   text: string;
   toolCalls: AgentToolCall[];
@@ -619,6 +657,7 @@ async function parseGeminiStepStream(
   const handlePayload = async (payload: string) => {
     if (!payload || payload === "[DONE]") return;
     const parsed = JSON.parse(payload) as GeminiResponse;
+    await reportGeminiUsage(parsed.usageMetadata, onUsage);
     const normalized = normalizeGeminiResponse(parsed);
     completion = normalized.completion;
     allParts.push(...normalized.responseParts);
@@ -815,22 +854,28 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
       return response;
     };
     const response = await fetchGemini(true);
-    let normalized = response.body
-      ? await parseGeminiStepStream(
-          response.body,
-          params.onTextDelta,
-          params.onReasoning,
-        )
-      : normalizeGeminiResponse((await response.json()) as GeminiResponse);
+    let normalized: Awaited<ReturnType<typeof parseGeminiStepStream>>;
+    if (response.body) {
+      normalized = await parseGeminiStepStream(
+        response.body,
+        params.onTextDelta,
+        params.onReasoning,
+        params.onUsage,
+      );
+    } else {
+      const data = (await response.json()) as GeminiResponse;
+      normalized = normalizeGeminiResponse(data);
+      await reportGeminiUsage(data.usageMetadata, params.onUsage);
+    }
     if (
       normalized.completion.status === "complete" &&
       !normalized.text &&
       !normalized.toolCalls.length
     ) {
       const fallbackResponse = await fetchGemini(false);
-      normalized = normalizeGeminiResponse(
-        (await fallbackResponse.json()) as GeminiResponse,
-      );
+      const fallbackData = (await fallbackResponse.json()) as GeminiResponse;
+      normalized = normalizeGeminiResponse(fallbackData);
+      await reportGeminiUsage(fallbackData.usageMetadata, params.onUsage);
     }
     const recoveryReason = resolveAgentRecoverableCompletion(
       normalized.completion,

@@ -19,6 +19,7 @@ import { resolveActiveLibraryID } from "./utils/zoteroLibraryScope";
 import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
 import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
 import { initChatStore } from "./utils/chatStore";
+import { initUsageStore } from "./utils/usageStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
 import { pendingDeletionStore } from "./core/conversations/pendingDeletionStore";
@@ -129,6 +130,13 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
     ztoolkit.log("LLM: Failed to initialize chat store", err);
   }
   try {
+    // The local usage ledger is a reporting surface, never a gate: a failure
+    // here must not hold back conversation readiness.
+    await measureStartupPhase("usage store", initUsageStore);
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to initialize usage store", err);
+  }
+  try {
     await measureStartupPhase("Claude Code store", initClaudeCodeStore);
     readiness.claudeStoreReady = true;
   } catch (err) {
@@ -186,6 +194,21 @@ function scheduleConversationMaintenance(
       await import("./shared/conversationSchemaMigrations");
     await repairConversationCatalogSummaries();
     await markConversationIDTransitionMigrationApplied();
+  });
+
+  // The ledger only started recording when the Usage tab shipped, so rebuild
+  // the part of the history the database can still prove. Deferred and
+  // marker-guarded: it runs once per profile, never delays readiness, and a
+  // failure leaves the marker unwritten so the next start can retry.
+  runDeferredStartupTask("usage history backfill", async () => {
+    const { backfillUsageHistory } =
+      await import("./utils/usageHistoryBackfill");
+    const result = await backfillUsageHistory();
+    if (result.applied) {
+      ztoolkit.log(
+        `LLM: Usage ledger backfilled ${result.rows} estimated turn(s) from ${result.conversations} conversation(s)`,
+      );
+    }
   });
 
   runDeferredStartupTask("conversation search index refresh", async () => {

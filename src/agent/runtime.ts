@@ -11,6 +11,9 @@ import {
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
 import { getNotesDirectoryConfig } from "../utils/notesDirectoryConfig";
+import { createTurnUsageRecorder } from "../utils/usageTurnRecorder";
+import type { UsageEventRuntime } from "../utils/usageStore";
+import { classifyConversationKey } from "../shared/conversationKeySpace";
 import type { WebAttributionAssessment } from "../webAccess/attribution";
 import { clearWebSourcesForRun } from "../webAccess/runSources";
 import {
@@ -359,6 +362,11 @@ export class AgentRuntime {
     onEvent?: (event: AgentEvent) => void | Promise<void>;
     onStart?: (runId: string) => void | Promise<void>;
     signal?: AbortSignal;
+    /**
+     * False when this run replays a question the local usage ledger already
+     * counted (a retry). The tokens it burns are still recorded.
+     */
+    usageCountsAsQuestion?: boolean;
   }): Promise<AgentRuntimeOutcome> {
     const request = resolveAgentRuntimeRequest(params.request, {
       resolvePaperContext: this.paperContextResolver,
@@ -375,6 +383,26 @@ export class AgentRuntime {
           request.conversationKey,
           request.conversationGeneration,
         ));
+    // Local usage ledger for this turn. The adapter reports usage per round
+    // and cumulatively within a round, so the recorder folds every callback
+    // into the one row written when the run settles below.
+    const usageConversationSystem = classifyConversationKey(
+      request.conversationKey,
+    )?.system;
+    const usageRuntime: UsageEventRuntime =
+      usageConversationSystem === "claude_code"
+        ? "claude-code"
+        : usageConversationSystem === "codex"
+          ? "codex"
+          : "agent";
+    const usageRecorder = createTurnUsageRecorder({
+      conversationKey: request.conversationKey,
+      conversationGeneration: request.conversationGeneration,
+      countsAsQuestion: params.usageCountsAsQuestion !== false,
+      runtime: usageRuntime,
+      model: request.model,
+      provider: request.modelProviderLabel,
+    });
     const persistIfLive = async <T>(
       task: () => Promise<T>,
     ): Promise<T | undefined> => {
@@ -1559,6 +1587,9 @@ export class AgentRuntime {
           });
         }
         const modelInput = continuationSession.inputForNextStep();
+        // The provider bills from here on, abort included, so the turn owes a
+        // usage row even if this round never finishes.
+        usageRecorder.markDispatched();
         const step = await adapter.runStep({
           request: resolveNoteEditModelRequest(request),
           messages: modelInput.messages,
@@ -1585,6 +1616,10 @@ export class AgentRuntime {
             });
           },
           onUsage: async (usage) => {
+            // One agent round is one provider request: its counters are
+            // cumulative within the round, and each round is billed on top of
+            // the previous one.
+            usageRecorder.record(usage, { segment: round });
             const usageRecord = usage as unknown as Record<string, unknown>;
             const totalTokens = Math.max(0, usage.totalTokens || 0);
             const promptTokens = Math.max(0, usage.promptTokens || 0);
@@ -2461,6 +2496,10 @@ export class AgentRuntime {
       }
       throw error;
     } finally {
+      // Completion, provider failure, and abort all land here: write the one
+      // usage row for this turn. It never throws, and it is not awaited so a
+      // slow database cannot delay the turn's teardown.
+      void usageRecorder.flush(params.signal?.aborted ? "abort" : "complete");
       if (webSourceRunId) clearWebSourcesForRun(webSourceRunId);
       pathLease.release();
     }

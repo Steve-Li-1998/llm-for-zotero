@@ -38,6 +38,7 @@ import {
   groupToolContinuationMessages,
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
+import { extractContextCacheUsage } from "../../contextCache/manager";
 import type { AnthropicPromptCacheControl } from "../../contextCache/manager";
 import { createMalformedToolArgumentsDiagnostic } from "../toolArgumentDiagnostics";
 
@@ -60,7 +61,26 @@ type AnthropicResponse = {
   id?: unknown;
   content?: unknown[];
   stop_reason?: unknown;
+  usage?: AnthropicUsagePayload;
 };
+
+/**
+ * Anthropic reports the prompt once on `message_start` and a CUMULATIVE
+ * output count on every `message_delta`; the non-streaming response carries
+ * both at the top level.
+ */
+type AnthropicUsagePayload = {
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  cache_creation_input_tokens?: unknown;
+  cache_read_input_tokens?: unknown;
+};
+
+function anthropicTokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : 0;
+}
 
 type AnthropicNormalizedResponse = {
   text: string;
@@ -475,6 +495,7 @@ async function parseAnthropicStepStream(
     summary?: string;
     details?: string;
   }) => void | Promise<void>,
+  onUsage?: AgentStepParams["onUsage"],
 ): Promise<AnthropicNormalizedResponse> {
   const reader = stream.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const decoder = new TextDecoder();
@@ -501,7 +522,8 @@ async function parseAnthropicStepStream(
         partial_json?: unknown;
         stop_reason?: unknown;
       };
-      message?: { stop_reason?: unknown };
+      usage?: AnthropicUsagePayload;
+      message?: { stop_reason?: unknown; usage?: AnthropicUsagePayload };
     };
     const eventType =
       typeof parsed.type === "string" ? parsed.type.toLowerCase() : "";
@@ -512,6 +534,37 @@ async function parseAnthropicStepStream(
     const stopReason = parsed.delta?.stop_reason ?? parsed.message?.stop_reason;
     if (typeof stopReason === "string") {
       completion = normalizeProviderCompletion(stopReason);
+    }
+    if (onUsage && eventType === "message_start" && parsed.message?.usage) {
+      const inputTokens = anthropicTokenCount(
+        parsed.message.usage.input_tokens,
+      );
+      const outputTokens = anthropicTokenCount(
+        parsed.message.usage.output_tokens,
+      );
+      const totalTokens = inputTokens + outputTokens;
+      if (totalTokens > 0) {
+        await onUsage({
+          promptTokens: inputTokens,
+          completionTokens: outputTokens,
+          totalTokens,
+          ...extractContextCacheUsage(parsed.message.usage),
+          contextTokens: inputTokens,
+          contextWindowIsAuthoritative: inputTokens > 0,
+        });
+      }
+    }
+    if (onUsage && eventType === "message_delta" && parsed.usage) {
+      // Cumulative output so far; the prompt is not repeated here.
+      const outputTokens = anthropicTokenCount(parsed.usage.output_tokens);
+      if (outputTokens > 0) {
+        await onUsage({
+          promptTokens: 0,
+          completionTokens: outputTokens,
+          totalTokens: outputTokens,
+          ...extractContextCacheUsage(parsed.usage),
+        });
+      }
     }
     if (eventType === "message_stop") {
       receivedTerminal = true;
@@ -662,6 +715,25 @@ async function parseAnthropicStepStream(
     ...normalized,
     text: normalized.text || text,
   };
+}
+
+async function reportAnthropicResponseUsage(
+  data: AnthropicResponse,
+  onUsage: AgentStepParams["onUsage"],
+): Promise<void> {
+  if (!onUsage || !data?.usage) return;
+  const inputTokens = anthropicTokenCount(data.usage.input_tokens);
+  const outputTokens = anthropicTokenCount(data.usage.output_tokens);
+  const totalTokens = inputTokens + outputTokens;
+  if (totalTokens <= 0) return;
+  await onUsage({
+    promptTokens: inputTokens,
+    completionTokens: outputTokens,
+    totalTokens,
+    ...extractContextCacheUsage(data.usage),
+    contextTokens: inputTokens,
+    contextWindowIsAuthoritative: inputTokens > 0,
+  });
 }
 
 function buildAssistantConversationMessage(step: {
@@ -823,15 +895,19 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
         `${response.status} ${response.statusText} - ${await response.text()}`,
       );
     }
-    const normalized = response.body
-      ? await parseAnthropicStepStream(
-          response.body,
-          params.onTextDelta,
-          params.onReasoning,
-        )
-      : normalizeAnthropicResponse(
-          (await response.json()) as AnthropicResponse,
-        );
+    let normalized: AnthropicNormalizedResponse;
+    if (response.body) {
+      normalized = await parseAnthropicStepStream(
+        response.body,
+        params.onTextDelta,
+        params.onReasoning,
+        params.onUsage,
+      );
+    } else {
+      const data = (await response.json()) as AnthropicResponse;
+      normalized = normalizeAnthropicResponse(data);
+      await reportAnthropicResponseUsage(data, params.onUsage);
+    }
     const recoveryReason = resolveAgentRecoverableCompletion(
       normalized.completion,
     );

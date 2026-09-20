@@ -54,7 +54,7 @@ describe("MinerU preferences", function () {
     const selector = preferences.match(
       /<html:select\s+id="__addonRef__-mineru-max-auto-pages-preset"[\s\S]*?<\/html:select>/,
     )?.[0];
-    assert.include(prefs, 'pref("mineruMaxAutoPages", 0);');
+    assert.include(prefs, 'pref("mineruMaxAutoPages", 200);');
     assert.isString(selector);
     for (const value of ["100", "200", "500", "1000", "0", "custom"]) {
       assert.include(selector!, `value="${value}"`);

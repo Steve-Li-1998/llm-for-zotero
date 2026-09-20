@@ -16,9 +16,9 @@ import {
 } from "../src/utils/mineruConfig";
 
 describe("mineruConfig", function () {
-  it("defaults to Unlimited when no page limit is saved", function () {
-    assert.equal(DEFAULT_MINERU_MAX_AUTO_PAGES, 0);
-    assert.equal(normalizeMineruMaxAutoPages(undefined), 0);
+  it("defaults to 200 pages when no page limit is saved", function () {
+    assert.equal(DEFAULT_MINERU_MAX_AUTO_PAGES, 200);
+    assert.equal(normalizeMineruMaxAutoPages(undefined), 200);
   });
 
   describe("normalizeMineruMode", function () {

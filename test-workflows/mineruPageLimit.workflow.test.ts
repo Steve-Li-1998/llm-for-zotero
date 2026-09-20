@@ -88,10 +88,10 @@ describe("workflow: MinerU page-limit selection", function () {
       win = await openPreferences();
       assert.equal(
         controls(win).preset.value,
-        "0",
-        "fresh settings default to Unlimited",
+        "200",
+        "fresh settings default to 200 pages",
       );
-      assert.equal(Zotero.Prefs.get(key, true), 0);
+      assert.equal(Zotero.Prefs.get(key, true), 200);
       await closePreferences(win);
       Zotero.Prefs.set(key, 350, true);
       win = await openPreferences();

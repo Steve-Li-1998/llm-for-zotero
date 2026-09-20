@@ -80,5 +80,5 @@ pref("mineruForceOcr", false);
 pref("mineruAutoWatchCollections", "");
 pref("mineruGlobalAutoParse", false);
 pref("mineruSyncEnabled", false);
-pref("mineruMaxAutoPages", 0);
+pref("mineruMaxAutoPages", 200);
 pref("mineruExcludePatterns", "");

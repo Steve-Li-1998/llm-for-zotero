@@ -15,7 +15,6 @@ import {
 } from "../retrieval/embeddingCache";
 import {
   CHUNK_OVERLAP,
-  EMBEDDING_BATCH_SIZE,
   CHUNK_TARGET_LENGTH,
   RETRIEVAL_TOP_K_PER_PAPER,
   RRF_K,
@@ -1796,16 +1795,6 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-async function embedTexts(texts: string[]): Promise<number[][]> {
-  const all: number[][] = [];
-  for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
-    const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-    const batchEmbeddings = await callEmbeddings(batch);
-    all.push(...batchEmbeddings);
-  }
-  return all;
-}
-
 async function ensureEmbeddings(
   pdfContext: PdfContext,
   itemId?: number,
@@ -1870,7 +1859,8 @@ async function ensureEmbeddings(
 
     // Layer 3: API call
     try {
-      return await embedTexts(pdfContext.chunks);
+      // The client batches by the configured limits (16 per request by default).
+      return await callEmbeddings(pdfContext.chunks);
     } catch (err) {
       if (err instanceof EmbeddingUnsupportedError) {
         appLogger.info(

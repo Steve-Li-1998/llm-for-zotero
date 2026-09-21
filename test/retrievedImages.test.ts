@@ -54,6 +54,23 @@ describe("retrieved image delivery", function () {
     assert.deepEqual(persisted, [["C:/cache/11/a.png", "dynamics-p12-a.png"]]);
   });
 
+  it("titles a MinerU figure as a figure", async function () {
+    const delivery = await buildRetrievedImageDelivery(
+      [image({ source: "mineru" })],
+      {
+        persistFromPath: async () => ({
+          storedPath: "blob/x.jpg",
+          contentHash: "h",
+        }),
+      },
+    );
+    assert.equal(delivery.entries[0].kind, "figure");
+    assert.equal(
+      (delivery.artifacts[0] as { title?: string }).title,
+      "(Dynamics, n.d.) — p. 12 figure — Figure 3",
+    );
+  });
+
   it("titles rendered vector regions as figure regions", async function () {
     const delivery = await buildRetrievedImageDelivery(
       [image({ source: "vector", label: undefined })],

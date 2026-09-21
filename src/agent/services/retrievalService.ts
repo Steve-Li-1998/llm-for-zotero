@@ -73,7 +73,7 @@ export type RetrievalImageResult = {
   why: ImageSelectionReason;
   imagePath: string;
   mimeType: string;
-  source: "embedded" | "vector";
+  source: "embedded" | "vector" | "mineru";
 };
 
 type PaperSource = Awaited<ReturnType<PdfService["ensurePaperContext"]>>;

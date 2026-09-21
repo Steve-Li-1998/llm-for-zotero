@@ -11,11 +11,21 @@ import {
   getResolvedEmbeddingConfig,
   isImageEmbeddingEnabled,
 } from "../../utils/llmClient";
+import { extractEmbeddedImages } from "../pdf/embeddedImages/extractor";
 import {
-  extractEmbeddedImages,
-  type ExtractedImageCandidate,
-} from "../pdf/embeddedImages/extractor";
-import { filterExtractedImages } from "../pdf/embeddedImages/filters";
+  readPdfFigureCropCacheFromDir,
+  type PdfFigureCropCache,
+} from "../pdf/pdfFigureCropCache";
+import {
+  getMineruItemDir,
+  readManifest,
+  type MineruManifest,
+} from "../mineru/mineruCache";
+import {
+  resolvePaperImageSource,
+  type PaperImageSource,
+  type PaperImageSourceDeps,
+} from "./paperImageSource";
 import {
   IMAGE_EXTRACTION_ALGORITHM_VERSION,
   IMAGE_MANIFEST_VERSION,
@@ -36,12 +46,11 @@ type EmbeddingKeys = { cacheKey: string; attemptKey: string };
 export type ImageIndexDeps = {
   isEnabled: () => boolean;
   getEmbeddingKeys: () => EmbeddingKeys | null;
-  resolveAttachmentPath: (attachmentId: number) => Promise<string | null>;
-  statFile: (
-    path: string,
-  ) => Promise<{ size: number; lastModified: number } | null>;
-  readFile: (path: string) => Promise<Uint8Array | null>;
-  extract: (bytes: Uint8Array) => Promise<ExtractedImageCandidate[]>;
+  /** MinerU-backed papers use MinerU's figures; the rest use pdf.js. */
+  resolveSource: (
+    attachmentId: number,
+    useMineru: boolean,
+  ) => Promise<PaperImageSource | null>;
   compress: (dataUrl: string) => Promise<string>;
   loadManifest: (attachmentId: number) => Promise<EmbeddedImageManifest | null>;
   saveManifest: (
@@ -94,13 +103,12 @@ export function createImageIndex(deps: ImageIndexDeps) {
 
   async function runExtraction(
     attachmentId: number,
+    useMineru: boolean,
     force: boolean,
   ): Promise<EmbeddedImageRecord[] | null> {
-    const path = await deps.resolveAttachmentPath(attachmentId);
-    if (!path) return null;
-    const stat = await deps.statFile(path);
-    if (!stat) return null;
-    const pdfFingerprint = `${stat.size}:${stat.lastModified}`;
+    const source = await deps.resolveSource(attachmentId, useMineru);
+    if (!source) return null;
+    const pdfFingerprint = source.fingerprint;
     const cached = force ? null : await deps.loadManifest(attachmentId);
     if (
       cached &&
@@ -109,13 +117,10 @@ export function createImageIndex(deps: ImageIndexDeps) {
     ) {
       return cached.images;
     }
-    const bytes = await deps.readFile(path);
-    if (!bytes) return null;
     const started = Date.now();
-    const candidates = await deps.extract(bytes);
+    const candidates = await source.collect();
     const records: EmbeddedImageRecord[] = [];
-    for (const candidate of filterExtractedImages(candidates)) {
-      if (!candidate.dataUrl) continue;
+    for (const candidate of candidates) {
       try {
         const parsed = parseDataUrl(await deps.compress(candidate.dataUrl));
         if (!parsed) continue;
@@ -128,9 +133,11 @@ export function createImageIndex(deps: ImageIndexDeps) {
         records.push({
           imageId: candidate.contentHash,
           pageIndex: candidate.pageIndex,
-          rect: candidate.rect,
-          width: candidate.width,
-          height: candidate.height,
+          ...(candidate.rect ? { rect: candidate.rect } : {}),
+          ...(candidate.width !== undefined ? { width: candidate.width } : {}),
+          ...(candidate.height !== undefined
+            ? { height: candidate.height }
+            : {}),
           ...(candidate.label ? { label: candidate.label } : {}),
           ...(candidate.caption ? { caption: candidate.caption } : {}),
           fileName,
@@ -149,6 +156,7 @@ export function createImageIndex(deps: ImageIndexDeps) {
     });
     appLogger.debug("[Embedded images] Extracted", {
       attachmentId,
+      from: source.kind,
       candidates: candidates.length,
       kept: records.length,
       ms: Date.now() - started,
@@ -161,7 +169,11 @@ export function createImageIndex(deps: ImageIndexDeps) {
     attachmentId: number,
     force: boolean,
   ): void {
-    const extraction = runExtraction(attachmentId, force).catch((error) => {
+    const extraction = runExtraction(
+      attachmentId,
+      ctx.sourceType === "mineru",
+      force,
+    ).catch((error) => {
       appLogger.warn("[Embedded images] Extraction failed", error);
       return null;
     });
@@ -349,18 +361,35 @@ export function createImageIndex(deps: ImageIndexDeps) {
 
 export type ImageIndex = ReturnType<typeof createImageIndex>;
 
-export const imageIndex = createImageIndex({
-  isEnabled: isImageEmbeddingEnabled,
-  getEmbeddingKeys: () => {
+async function readBytes(path: string): Promise<Uint8Array | null> {
+  try {
+    return await IOUtils.read(path);
+  } catch {
+    return null;
+  }
+}
+
+const DEFAULT_SOURCE_DEPS: PaperImageSourceDeps = {
+  loadMineruManifest: (attachmentId): Promise<MineruManifest | null> =>
+    readManifest(attachmentId).catch(() => null),
+  mineruItemDir: getMineruItemDir,
+  fileExists: async (path) => {
     try {
-      const { cacheKey, attemptKey } = getResolvedEmbeddingConfig();
-      return { cacheKey, attemptKey };
+      return await IOUtils.exists(path);
     } catch {
-      return null;
+      return false;
     }
   },
+  readCropCache: (itemDir): Promise<PdfFigureCropCache | null> =>
+    readPdfFigureCropCacheFromDir(itemDir).catch(() => null),
+  readImageAsDataUrl: async (path) => {
+    const bytes = await readBytes(path);
+    if (!bytes) return null;
+    const mimeType = /\.png$/i.test(path) ? "image/png" : "image/jpeg";
+    return `data:${mimeType};base64,${encodeBytesBase64(bytes)}`;
+  },
   // Notes and text attachments share the retrieval path; only PDFs have images.
-  resolveAttachmentPath: async (attachmentId) => {
+  resolvePdfPath: async (attachmentId) => {
     const item = Zotero.Items.get(attachmentId);
     if (!isPdfContextAttachment(item)) return null;
     return (await item.getFilePathAsync()) || null;
@@ -376,18 +405,30 @@ export const imageIndex = createImageIndex({
       return null;
     }
   },
-  readFile: async (path) => {
-    try {
-      return await IOUtils.read(path);
-    } catch {
-      return null;
-    }
-  },
-  extract: (bytes) => {
+  readFile: readBytes,
+  extractFromPdf: (bytes) => {
     const doc = Zotero.getMainWindow()?.document;
     if (!doc) throw new Error("Zotero main window is unavailable");
     return extractEmbeddedImages({ bytes, doc });
   },
+};
+
+export const imageIndex = createImageIndex({
+  isEnabled: isImageEmbeddingEnabled,
+  getEmbeddingKeys: () => {
+    try {
+      const { cacheKey, attemptKey } = getResolvedEmbeddingConfig();
+      return { cacheKey, attemptKey };
+    } catch {
+      return null;
+    }
+  },
+  resolveSource: (attachmentId, useMineru) =>
+    resolvePaperImageSource({
+      attachmentId,
+      useMineru,
+      deps: DEFAULT_SOURCE_DEPS,
+    }),
   compress: async (dataUrl) => {
     const win = Zotero.getMainWindow() as unknown as Window | null;
     return win

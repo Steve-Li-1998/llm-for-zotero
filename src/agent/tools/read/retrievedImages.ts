@@ -3,11 +3,18 @@ import { ensureAttachmentBlobFromPath } from "../../../services/attachmentStorag
 import type { RetrievalImageResult } from "../../services/retrievalService";
 import type { AgentToolArtifact } from "../../types";
 
+/** What produced the image, in words the model can repeat. */
+const IMAGE_KINDS = {
+  mineru: "figure",
+  vector: "figure region",
+  embedded: "embedded image",
+} as const;
+
 export type RetrievedImageEntry = {
   displayLabel: string;
   /** 1-based. */
   page: number;
-  kind: "embedded image" | "figure region";
+  kind: (typeof IMAGE_KINDS)[keyof typeof IMAGE_KINDS];
   label?: string;
   caption?: string;
   similarity: number;
@@ -50,7 +57,7 @@ export async function buildRetrievedImageDelivery(
   const artifacts: AgentToolArtifact[] = [];
   for (const image of images) {
     const page = image.pageIndex + 1;
-    const kind = image.source === "vector" ? "figure region" : "embedded image";
+    const kind = IMAGE_KINDS[image.source] ?? IMAGE_KINDS.embedded;
     const extension = image.mimeType === "image/jpeg" ? "jpg" : "png";
     let persisted: { storedPath: string; contentHash: string };
     try {

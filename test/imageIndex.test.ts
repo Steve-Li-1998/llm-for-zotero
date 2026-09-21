@@ -37,6 +37,16 @@ function candidate(pageIndex: number, hash: string) {
   };
 }
 
+function mineruCandidate(pageIndex: number, hash: string) {
+  return {
+    source: "mineru" as const,
+    pageIndex,
+    contentHash: hash,
+    dataUrl: PNG,
+    label: "Figure 1",
+  };
+}
+
 function freshManifest(pdfFingerprint: string): EmbeddedImageManifest {
   return {
     version: IMAGE_MANIFEST_VERSION,
@@ -56,16 +66,26 @@ function makeDeps(overrides: Partial<ImageIndexDeps> = {}) {
       vectors: number[][];
     } | null,
   };
-  const calls = { extract: 0, embed: [] as MultimodalItem[][] };
+  const calls = {
+    extract: 0,
+    embed: [] as MultimodalItem[][],
+    useMineru: [] as boolean[],
+  };
   const deps: ImageIndexDeps = {
     isEnabled: () => true,
     getEmbeddingKeys: () => ({ cacheKey: "key-1", attemptKey: "attempt-1" }),
-    resolveAttachmentPath: async () => "C:/paper.pdf",
-    statFile: async () => ({ size: 100, lastModified: 5 }),
-    readFile: async () => new Uint8Array([1]),
-    extract: async () => {
-      calls.extract += 1;
-      return [candidate(1, "h1"), candidate(3, "h2")];
+    resolveSource: async (_attachmentId, useMineru) => {
+      calls.useMineru.push(useMineru);
+      return {
+        kind: useMineru ? "mineru" : "pdf",
+        fingerprint: useMineru ? "mineru:abc" : "pdf:100:5",
+        collect: async () => {
+          calls.extract += 1;
+          return useMineru
+            ? [mineruCandidate(1, "h1"), mineruCandidate(3, "h2")]
+            : [candidate(1, "h1"), candidate(3, "h2")];
+        },
+      };
     },
     compress: async (dataUrl) => dataUrl,
     loadManifest: async () => store.manifest,
@@ -119,13 +139,13 @@ describe("image index", function () {
         ["h2", 3, "embedded"],
       ],
     );
-    assert.equal(store.manifest?.pdfFingerprint, "100:5");
+    assert.equal(store.manifest?.pdfFingerprint, "pdf:100:5");
     assert.equal(store.files.size, 2);
   });
 
   it("reuses a fresh manifest without extracting again", async function () {
     const { deps, store, calls } = makeDeps();
-    store.manifest = freshManifest("100:5");
+    store.manifest = freshManifest("pdf:100:5");
     await createImageIndex(deps).ensureImageSet(context(), 7);
     assert.equal(calls.extract, 0);
   });
@@ -209,11 +229,23 @@ describe("image index", function () {
     assert.lengthOf(result!.vectors, 2);
   });
 
-  it("returns no pending images when there is no local file", async function () {
-    const { deps } = makeDeps({ resolveAttachmentPath: async () => null });
+  it("returns no pending images when the paper has no image source", async function () {
+    const { deps } = makeDeps({ resolveSource: async () => null });
     assert.lengthOf(
       await createImageIndex(deps).pendingImageInputs(context(), 7),
       0,
     );
+  });
+
+  it("asks for MinerU figures only for a MinerU-backed context", async function () {
+    const { deps, calls } = makeDeps();
+    const index = createImageIndex(deps);
+    await index.ensureImageSet(context(), 7);
+    const mineruContext = { ...context(), sourceType: "mineru" as const };
+    const records = await index.ensureImageSet(mineruContext, 7);
+    assert.deepEqual(calls.useMineru, [false, true]);
+    assert.equal(records![0].source, "mineru");
+    assert.equal(records![0].label, "Figure 1");
+    assert.isUndefined(records![0].rect);
   });
 });

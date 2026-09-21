@@ -9,22 +9,24 @@ import {
 
 export const IMAGE_MANIFEST_VERSION = 1;
 /** Bump when extraction output changes so stale manifests are rebuilt. */
-export const IMAGE_EXTRACTION_ALGORITHM_VERSION = 1;
+export const IMAGE_EXTRACTION_ALGORITHM_VERSION = 2;
 export const IMAGE_VECTORS_VERSION = 1;
 
 export type EmbeddedImageRecord = {
   imageId: string;
+  /** 0-based. */
   pageIndex: number;
-  /** pdf.js order: [minX, minY, maxX, maxY] in PDF points. */
-  rect: [number, number, number, number];
-  width: number;
-  height: number;
   label?: string;
   caption?: string;
   fileName: string;
   mimeType: string;
   /** Absent means "embedded" (a raster image object). */
-  source?: "embedded" | "vector";
+  source?: "embedded" | "vector" | "mineru";
+  /** pdf.js order: [minX, minY, maxX, maxY] in PDF points; pdf.js only. */
+  rect?: [number, number, number, number];
+  /** Pixel size of the extracted image; pdf.js only. */
+  width?: number;
+  height?: number;
 };
 
 export type EmbeddedImageManifest = {
@@ -62,18 +64,20 @@ function isRecord(value: unknown): value is EmbeddedImageRecord {
     row &&
     typeof row.imageId === "string" &&
     isFiniteNumber(row.pageIndex) &&
-    Array.isArray(row.rect) &&
-    row.rect.length === 4 &&
-    row.rect.every(isFiniteNumber) &&
-    isFiniteNumber(row.width) &&
-    isFiniteNumber(row.height) &&
+    (row.rect === undefined ||
+      (Array.isArray(row.rect) &&
+        row.rect.length === 4 &&
+        row.rect.every(isFiniteNumber))) &&
+    (row.width === undefined || isFiniteNumber(row.width)) &&
+    (row.height === undefined || isFiniteNumber(row.height)) &&
     typeof row.fileName === "string" &&
     typeof row.mimeType === "string" &&
     (row.label === undefined || typeof row.label === "string") &&
     (row.caption === undefined || typeof row.caption === "string") &&
     (row.source === undefined ||
       row.source === "embedded" ||
-      row.source === "vector"),
+      row.source === "vector" ||
+      row.source === "mineru"),
   );
 }
 

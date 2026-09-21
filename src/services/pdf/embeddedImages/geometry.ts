@@ -8,7 +8,7 @@ type Transform = [number, number, number, number, number, number];
 /** The pdf.js geometry helpers used here; the loaded module's `Util`. */
 export type PdfjsUtil = Pick<
   typeof Util,
-  "transform" | "axialAlignedBoundingBox" | "rectBoundingBox"
+  "transform" | "axialAlignedBoundingBox" | "rectBoundingBox" | "intersect"
 >;
 
 export type OperatorCodes = Pick<

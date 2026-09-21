@@ -202,7 +202,7 @@ export async function runPdfImageSpike(
           structFigures,
           textItems: text.items.length,
           sampleText: text.items
-            .map((item) => item.str || "")
+            .map((item) => ("str" in item ? item.str : ""))
             .filter(Boolean)
             .slice(0, 3),
         };

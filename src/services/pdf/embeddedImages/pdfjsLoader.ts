@@ -1,55 +1,34 @@
+import type * as PdfjsNamespace from "pdfjs-dist";
+import type { PDFPageProxy } from "pdfjs-dist";
 import { appLogger } from "../../../core/logging";
 
 export const PDFJS_MODULE_URL = "resource://zotero/reader/pdf/build/pdf.mjs";
 export const PDFJS_WORKER_URL =
   "resource://zotero/reader/pdf/build/pdf.worker.mjs";
+const PDFJS_WEB_URL = "resource://zotero/reader/pdf/web/";
 
-export type PdfjsObjectPool = {
-  has?: (id: string) => boolean;
-  get: (id: string) => unknown;
-};
-
-export type PdfjsTextItem = {
-  str?: string;
-  transform?: ArrayLike<number>;
-  width?: number;
-  height?: number;
-};
-
-export type PdfjsPage = {
-  getOperatorList: () => Promise<{ fnArray: number[]; argsArray: unknown[][] }>;
-  getTextContent: () => Promise<{ items: PdfjsTextItem[] }>;
-  objs: PdfjsObjectPool;
-  commonObjs: PdfjsObjectPool;
-  cleanup?: () => void;
-};
-
-export type PdfjsDocument = {
-  numPages: number;
-  getPage: (pageNumber: number) => Promise<PdfjsPage>;
-  destroy?: () => Promise<void>;
-};
-
-export type PdfjsModule = {
-  version?: string;
-  OPS: Record<string, number>;
-  GlobalWorkerOptions: { workerSrc: string };
-  getDocument: (source: Record<string, unknown>) => {
-    promise: Promise<PdfjsDocument>;
-  };
-};
+/** The pdf.js module Zotero bundles; typed by the matching pdfjs-dist. */
+export type PdfjsModule = typeof PdfjsNamespace;
 
 export type PdfjsLoadStrategy = "main-window-import" | "chrome-utils";
 
 export type LoadedPdfjs = { pdfjs: PdfjsModule; strategy: PdfjsLoadStrategy };
 
-/** Options that keep pdf.js from touching fonts or OffscreenCanvas. */
+/**
+ * Keeps pdf.js off font faces and OffscreenCanvas (raw pixel data comes back
+ * for images) and points it at Zotero's bundled CMaps, fonts and decoders.
+ */
 export const PDFJS_DOCUMENT_OPTIONS = {
   isOffscreenCanvasSupported: false,
   isImageDecoderSupported: false,
   disableFontFace: true,
   isEvalSupported: false,
   useWorkerFetch: false,
+  cMapUrl: `${PDFJS_WEB_URL}cmaps/`,
+  cMapPacked: true,
+  standardFontDataUrl: `${PDFJS_WEB_URL}standard_fonts/`,
+  wasmUrl: `${PDFJS_WEB_URL}wasm/`,
+  iccUrl: `${PDFJS_WEB_URL}iccs/`,
 };
 
 let loading: Promise<LoadedPdfjs> | null = null;
@@ -60,6 +39,7 @@ function isPdfjsModule(value: unknown): value is PdfjsModule {
     mod &&
     typeof mod.getDocument === "function" &&
     mod.OPS &&
+    mod.Util &&
     mod.GlobalWorkerOptions,
   );
 }
@@ -103,7 +83,8 @@ export async function tryPdfjsStrategies(): Promise<{
     try {
       const mod = await load();
       if (!isPdfjsModule(mod)) {
-        errors[strategy] = "module lacks getDocument/OPS/GlobalWorkerOptions";
+        errors[strategy] =
+          "module lacks getDocument/OPS/Util/GlobalWorkerOptions";
         continue;
       }
       mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
@@ -132,7 +113,7 @@ export function loadPdfjs(): Promise<LoadedPdfjs> {
 
 /** Looks an image object up in the page pool, then the shared pool. */
 export function resolvePdfjsImageObject(
-  page: PdfjsPage,
+  page: PDFPageProxy,
   objId: string,
 ): unknown {
   const pools = objId.startsWith("g_")
@@ -140,8 +121,7 @@ export function resolvePdfjsImageObject(
     : [page.objs, page.commonObjs];
   for (const pool of pools) {
     try {
-      if (!pool) continue;
-      if (typeof pool.has === "function" && !pool.has(objId)) continue;
+      if (!pool || !pool.has(objId)) continue;
       const value = pool.get(objId);
       if (value) return value;
     } catch {

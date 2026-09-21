@@ -242,3 +242,61 @@ export function readMultimodalEmbeddingSettings(params: {
     batch: readEmbeddingBatchPrefs(),
   });
 }
+
+export const RETRIEVAL_PREF_KEYS = {
+  textTopK: "retrievalTextTopK",
+  imageTopK: "retrievalImageTopK",
+  imageOutstandingPercent: "retrievalImageOutstandingPercent",
+} as const;
+
+export type RetrievalSettings = {
+  textTopK: number;
+  imageTopK: number;
+  imageOutstandingPercent: number;
+};
+
+export const RETRIEVAL_DEFAULTS: RetrievalSettings = {
+  textTopK: 4,
+  imageTopK: 2,
+  imageOutstandingPercent: 80,
+};
+
+const RETRIEVAL_RANGES: Record<
+  keyof RetrievalSettings,
+  { min: number; max: number }
+> = {
+  textTopK: { min: 1, max: 24 },
+  imageTopK: { min: 0, max: 6 },
+  imageOutstandingPercent: { min: 0, max: 200 },
+};
+
+function parseNonNegativeInt(raw: string): number | null {
+  const trimmed = String(raw ?? "").trim();
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : null;
+}
+
+export function resolveRetrievalSettings(
+  raw: Record<keyof RetrievalSettings, string>,
+): RetrievalSettings {
+  const pick = (key: keyof RetrievalSettings): number => {
+    const range = RETRIEVAL_RANGES[key];
+    const parsed = parseNonNegativeInt(raw[key]);
+    if (parsed === null || parsed < range.min) return RETRIEVAL_DEFAULTS[key];
+    return Math.min(range.max, parsed);
+  };
+  return {
+    textTopK: pick("textTopK"),
+    imageTopK: pick("imageTopK"),
+    imageOutstandingPercent: pick("imageOutstandingPercent"),
+  };
+}
+
+export function readRetrievalSettings(): RetrievalSettings {
+  return resolveRetrievalSettings({
+    textTopK: readEmbeddingPref(RETRIEVAL_PREF_KEYS.textTopK),
+    imageTopK: readEmbeddingPref(RETRIEVAL_PREF_KEYS.imageTopK),
+    imageOutstandingPercent: readEmbeddingPref(
+      RETRIEVAL_PREF_KEYS.imageOutstandingPercent,
+    ),
+  });
+}

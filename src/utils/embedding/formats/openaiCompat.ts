@@ -1,13 +1,12 @@
-import {
-  EMBEDDINGS_ENDPOINT,
-  resolveEndpoint,
-} from "../../../utils/apiHelpers";
-import { EMBEDDING_BATCH_SIZE } from "../../retrieval/constants";
+import { EMBEDDINGS_ENDPOINT, resolveEndpoint } from "../../apiHelpers";
 import {
   MAX_EMBEDDING_BATCH_ITEMS,
   type EmbeddingFormatAdapter,
 } from "../types";
 import { orderEmbeddingRows } from "./rows";
+
+/** Inputs per request before batching became configurable. */
+const EMBEDDING_BATCH_SIZE = 16;
 
 /**
  * OpenAI-compatible /embeddings. Text inputs stay plain strings so a

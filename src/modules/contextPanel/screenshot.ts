@@ -1,6 +1,6 @@
 import { appLogger } from "../../core/logging";
 import { HTML_NS } from "../../utils/domHelpers";
-import { optimizeImageDataUrl } from "../../services/images/imageOptimization";
+import { optimizeImageDataUrl } from "../../utils/imageOptimization";
 
 /**
  * Screenshot selection overlay for capturing regions from the PDF reader

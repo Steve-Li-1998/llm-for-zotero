@@ -4,14 +4,14 @@ import {
   parseDetectionRecord,
   serializeDetectionRecord,
   type EmbeddingCapabilityRecord,
-} from "../src/services/embedding/detectionRecord";
+} from "../src/utils/embedding/detectionRecord";
 import {
   isDashscopeNativeApiBase,
   resolveCandidateFormat,
   resolveEmbeddingBatchLimits,
   resolveMultimodalEmbeddingSettings,
   type MultimodalSettingsInput,
-} from "../src/services/embedding/settings";
+} from "../src/utils/embedding/settings";
 
 const API_BASE = "https://api.siliconflow.cn/v1";
 const MODEL = "Qwen/Qwen3-VL-Embedding-8B";

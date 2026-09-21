@@ -146,19 +146,19 @@ import {
   resolveTransmittedOutputPolicy,
   type OutputRequestPolicy,
 } from "./outputTokenPolicy";
-import { embedItemsWithConfig } from "../services/embedding/client";
+import { embedItemsWithConfig } from "./embedding/client";
 import {
   readEmbeddingBatchPrefs,
   readMultimodalEmbeddingSettings,
   resolveEmbeddingBatchLimits,
   type MultimodalEmbeddingSettings,
-} from "../services/embedding/settings";
+} from "./embedding/settings";
 import type {
   EmbeddingBatchLimits,
   EmbeddingRequestFormat,
   MultimodalItem,
-} from "../services/embedding/types";
-import { optimizeImageDataUrl } from "../services/images/imageOptimization";
+} from "./embedding/types";
+import { optimizeImageDataUrl } from "./imageOptimization";
 
 // =============================================================================
 // Types

@@ -1,4 +1,4 @@
-import { appLogger } from "../../core/logging";
+import { appLogger } from "../core/logging";
 
 export function estimateDataUrlByteLength(dataUrl: string): number {
   const commaIndex = dataUrl.indexOf(",");

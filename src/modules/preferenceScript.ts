@@ -121,12 +121,12 @@ import {
   EMBEDDING_PREF_KEYS,
   readMultimodalEmbeddingSettings,
   resolveCandidateFormat,
-} from "../services/embedding/settings";
+} from "../utils/embedding/settings";
 import {
   parseDetectionRecord,
   serializeDetectionRecord,
-} from "../services/embedding/detectionRecord";
-import { runEmbeddingCapabilityTest } from "../services/embedding/detection";
+} from "../utils/embedding/detectionRecord";
+import { runEmbeddingCapabilityTest } from "../utils/embedding/detection";
 import {
   createEmbeddingMultimodalSection,
   describeCapabilityTestOutcome,

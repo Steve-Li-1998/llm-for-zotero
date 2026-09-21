@@ -1,7 +1,4 @@
-import {
-  EMBEDDINGS_ENDPOINT,
-  resolveEndpoint,
-} from "../../../utils/apiHelpers";
+import { EMBEDDINGS_ENDPOINT, resolveEndpoint } from "../../apiHelpers";
 import type { EmbeddingFormatAdapter } from "../types";
 import { orderEmbeddingRows } from "./rows";
 

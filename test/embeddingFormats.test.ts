@@ -1,8 +1,8 @@
 import { assert } from "chai";
-import { getEmbeddingFormatAdapter } from "../src/services/embedding/formats";
-import { resolveDashscopeEmbeddingUrl } from "../src/services/embedding/formats/dashscope";
-import { VLLM_EMBEDDING_INSTRUCTION } from "../src/services/embedding/formats/vllmMessages";
-import type { MultimodalItem } from "../src/services/embedding/types";
+import { getEmbeddingFormatAdapter } from "../src/utils/embedding/formats";
+import { resolveDashscopeEmbeddingUrl } from "../src/utils/embedding/formats/dashscope";
+import { VLLM_EMBEDDING_INSTRUCTION } from "../src/utils/embedding/formats/vllmMessages";
+import type { MultimodalItem } from "../src/utils/embedding/types";
 
 const PNG = "data:image/png;base64,AAAA";
 const text = (value: string): MultimodalItem => ({ kind: "text", text: value });

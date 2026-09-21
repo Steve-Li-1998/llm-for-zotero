@@ -4,12 +4,12 @@ import {
   embedItemsWithConfig,
   type EmbeddingClientDeps,
   type EmbeddingRequestConfig,
-} from "../src/services/embedding/client";
+} from "../src/utils/embedding/client";
 import {
   EmbeddingImageError,
   EmbeddingRequestError,
   type MultimodalItem,
-} from "../src/services/embedding/types";
+} from "../src/utils/embedding/types";
 
 type Call = {
   url: string;

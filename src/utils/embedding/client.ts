@@ -1,4 +1,4 @@
-import { estimateDataUrlByteLength } from "../images/imageOptimization";
+import { estimateDataUrlByteLength } from "../imageOptimization";
 import { planEmbeddingBatches } from "./batching";
 import { getEmbeddingFormatAdapter } from "./formats";
 import {

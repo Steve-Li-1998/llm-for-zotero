@@ -2,7 +2,7 @@ import { assert } from "chai";
 import {
   IMAGE_OPTIMIZATION_PROFILES,
   estimateDataUrlByteLength,
-} from "../src/services/images/imageOptimization";
+} from "../src/utils/imageOptimization";
 
 describe("image optimization", function () {
   it("estimates the decoded byte length of a base64 data URL", function () {

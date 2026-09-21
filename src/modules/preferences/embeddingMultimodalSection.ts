@@ -1,17 +1,17 @@
 import { HTML_NS, el } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
-import type { EmbeddingCapabilityTestOutcome } from "../../services/embedding/detection";
-import { getEmbeddingFormatAdapter } from "../../services/embedding/formats";
+import type { EmbeddingCapabilityTestOutcome } from "../../utils/embedding/detection";
+import { getEmbeddingFormatAdapter } from "../../utils/embedding/formats";
 import {
   EMBEDDING_BATCH_PREF_KEYS,
   EMBEDDING_PREF_KEYS,
   type EmbeddingImagesPref,
   type MultimodalEmbeddingSettings,
-} from "../../services/embedding/settings";
+} from "../../utils/embedding/settings";
 import {
   EMBEDDING_REQUEST_FORMATS,
   type EmbeddingRequestFormat,
-} from "../../services/embedding/types";
+} from "../../utils/embedding/types";
 
 const FORMAT_LABELS: Record<EmbeddingRequestFormat, string> = {
   openai_compat: "OpenAI-compatible (SiliconFlow, etc.)",

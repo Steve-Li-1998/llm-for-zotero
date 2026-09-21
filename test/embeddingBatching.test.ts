@@ -1,6 +1,6 @@
 import { assert } from "chai";
-import { planEmbeddingBatches } from "../src/services/embedding/batching";
-import type { MultimodalItem } from "../src/services/embedding/types";
+import { planEmbeddingBatches } from "../src/utils/embedding/batching";
+import type { MultimodalItem } from "../src/utils/embedding/types";
 
 const text = (value: string): MultimodalItem => ({ kind: "text", text: value });
 const image = (id: string): MultimodalItem => ({

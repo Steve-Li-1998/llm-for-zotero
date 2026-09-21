@@ -4,13 +4,13 @@ import {
   extractModelDeclaration,
   runEmbeddingCapabilityTest,
   type EmbeddingCapabilityTestDeps,
-} from "../src/services/embedding/detection";
-import { buildDetectionIdentity } from "../src/services/embedding/detectionRecord";
+} from "../src/utils/embedding/detection";
+import { buildDetectionIdentity } from "../src/utils/embedding/detectionRecord";
 import {
   EmbeddingRequestError,
   type EmbeddingRequestFormat,
   type MultimodalItem,
-} from "../src/services/embedding/types";
+} from "../src/utils/embedding/types";
 import type { DiscoveredModel } from "../src/modelCapabilities/types";
 
 const API_BASE = "https://api.siliconflow.cn/v1";

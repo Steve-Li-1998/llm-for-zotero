@@ -5,8 +5,12 @@ import { getEmbeddingFormatAdapter } from "../../utils/embedding/formats";
 import {
   EMBEDDING_BATCH_PREF_KEYS,
   EMBEDDING_PREF_KEYS,
+  RETRIEVAL_DEFAULTS,
+  RETRIEVAL_PREF_KEYS,
+  RETRIEVAL_RANGES,
   type EmbeddingImagesPref,
   type MultimodalEmbeddingSettings,
+  type RetrievalSettings,
 } from "../../utils/embedding/settings";
 import {
   EMBEDDING_REQUEST_FORMATS,
@@ -70,6 +74,7 @@ export function createEmbeddingMultimodalSection(
     "display: flex; flex-direction: column; gap: 10px;",
   );
   let advancedOpen = false;
+  let retrievalOpen = false;
 
   // Defer so Gecko finishes the change event before the control is removed.
   const scheduleRender = () => {
@@ -172,6 +177,7 @@ export function createEmbeddingMultimodalSection(
     labelText: string,
     defaultValue: number,
     cappedAt?: number,
+    options: { min?: number; max?: number; helper?: string } = {},
   ) => {
     const wrap = el(doc, "div", "display: flex; flex-direction: column;");
     wrap.appendChild(el(doc, "label", deps.styles.label, labelText));
@@ -183,13 +189,18 @@ export function createEmbeddingMultimodalSection(
     input.value = deps.readPref(key);
     input.addEventListener("change", () => {
       const value = input.value.trim();
+      const valid = /^\d+$/.test(value) && Number(value) >= (options.min ?? 1);
+      // Over-range values are stored clamped so the field shows what applies.
       deps.writePref(
         key,
-        /^\d+$/.test(value) && Number(value) >= 1 ? value : "",
+        valid ? String(Math.min(options.max ?? Infinity, Number(value))) : "",
       );
       scheduleRender();
     });
     wrap.appendChild(input);
+    if (options.helper) {
+      wrap.appendChild(el(doc, "span", deps.styles.helper, options.helper));
+    }
     if (cappedAt !== undefined) {
       wrap.appendChild(
         el(
@@ -263,6 +274,69 @@ export function createEmbeddingMultimodalSection(
     return details;
   };
 
+  const retrievalField = (
+    key: keyof RetrievalSettings,
+    labelText: string,
+    helper?: string,
+  ) =>
+    numberField(
+      RETRIEVAL_PREF_KEYS[key],
+      labelText,
+      RETRIEVAL_DEFAULTS[key],
+      undefined,
+      { ...RETRIEVAL_RANGES[key], helper },
+    );
+
+  const renderRetrieval = (settings: MultimodalEmbeddingSettings) => {
+    const details = el(doc, "details");
+    details.open = retrievalOpen;
+    details.addEventListener("toggle", () => {
+      retrievalOpen = details.open;
+    });
+    details.appendChild(
+      el(
+        doc,
+        "summary",
+        "cursor: pointer; font-size: 12px; font-weight: 600;",
+        t("Retrieval results"),
+      ),
+    );
+    const body = el(
+      doc,
+      "div",
+      "display: flex; flex-direction: column; gap: 8px; margin-top: 8px;",
+    );
+    body.appendChild(
+      retrievalField("textTopK", t("Text chunks returned per paper")),
+    );
+    if (settings.imagesEnabled) {
+      body.appendChild(
+        retrievalField("imageTopK", t("Images returned per paper")),
+      );
+      body.appendChild(
+        retrievalField(
+          "imageOutstandingPercent",
+          t(
+            "Outstanding image threshold (% of the lowest hit-chunk similarity)",
+          ),
+          t(
+            "An image whose similarity reaches this percentage of the lowest hit-chunk similarity is returned even without a page or figure-label match. 0 turns this off.",
+          ),
+        ),
+      );
+    }
+    body.appendChild(
+      linkButton(t("Restore defaults"), () => {
+        for (const key of Object.values(RETRIEVAL_PREF_KEYS)) {
+          deps.writePref(key, "");
+        }
+        scheduleRender();
+      }),
+    );
+    details.appendChild(body);
+    return details;
+  };
+
   const render = () => {
     element.innerHTML = "";
     const settings = deps.getSettings();
@@ -271,6 +345,7 @@ export function createEmbeddingMultimodalSection(
       element.appendChild(renderFormatRow(settings));
     }
     element.appendChild(renderAdvanced(settings));
+    element.appendChild(renderRetrieval(settings));
   };
 
   render();

@@ -261,7 +261,7 @@ export const RETRIEVAL_DEFAULTS: RetrievalSettings = {
   imageOutstandingPercent: 80,
 };
 
-const RETRIEVAL_RANGES: Record<
+export const RETRIEVAL_RANGES: Record<
   keyof RetrievalSettings,
   { min: number; max: number }
 > = {

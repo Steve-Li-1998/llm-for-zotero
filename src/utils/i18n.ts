@@ -1084,6 +1084,13 @@ const zhCN: Record<string, string> = {
     "✗ 图像输入失败（请关闭图像输入或换用 VL 模型）：{error}",
   "✗ Image check failed; auto result not updated: {error}":
     "✗ 图像检测失败，自动结果未更新：{error}",
+  "Retrieval results": "检索结果",
+  "Text chunks returned per paper": "每篇论文返回的文字块数",
+  "Images returned per paper": "每篇论文返回的图片数",
+  "Outstanding image threshold (% of the lowest hit-chunk similarity)":
+    "图片突出阈值（相对命中文字最低相似度的百分比）",
+  "An image whose similarity reaches this percentage of the lowest hit-chunk similarity is returned even without a page or figure-label match. 0 turns this off.":
+    "图片相似度达到命中文字最低相似度的这个百分比时，即使没有页码或图号互证也会返回。填 0 关闭。",
 
   // MinerU preference filters
   "Sync existing MinerU caches now": "立即同步已有 MinerU 缓存",

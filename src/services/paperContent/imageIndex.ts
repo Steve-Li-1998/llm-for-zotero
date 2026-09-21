@@ -28,6 +28,7 @@ import {
   type EmbeddedImageManifest,
   type EmbeddedImageRecord,
 } from "../retrieval/imageStore";
+import { isPdfContextAttachment } from "./contextAttachmentSupport";
 import type { PdfContext } from "./types";
 
 type EmbeddingKeys = { cacheKey: string; attemptKey: string };
@@ -358,11 +359,11 @@ export const imageIndex = createImageIndex({
       return null;
     }
   },
+  // Notes and text attachments share the retrieval path; only PDFs have images.
   resolveAttachmentPath: async (attachmentId) => {
-    const item = Zotero.Items.get(attachmentId) as unknown as {
-      getFilePathAsync?: () => Promise<string | false>;
-    } | null;
-    return (await item?.getFilePathAsync?.()) || null;
+    const item = Zotero.Items.get(attachmentId);
+    if (!isPdfContextAttachment(item)) return null;
+    return (await item.getFilePathAsync()) || null;
   },
   statFile: async (path) => {
     try {

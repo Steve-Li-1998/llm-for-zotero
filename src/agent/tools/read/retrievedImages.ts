@@ -1,5 +1,6 @@
 import { appLogger } from "../../../core/logging";
 import { ensureAttachmentBlobFromPath } from "../../../services/attachmentStorage";
+import { buildZoteroOpenPdfUri } from "../../documents/citationService";
 import type { RetrievalImageResult } from "../../services/retrievalService";
 import type { AgentToolArtifact } from "../../types";
 
@@ -19,6 +20,8 @@ export type RetrievedImageEntry = {
   caption?: string;
   similarity: number;
   why: RetrievalImageResult["why"];
+  /** zotero://open-pdf URI of the image's page, for Markdown links. */
+  link?: string;
 };
 
 type DeliveryDeps = {
@@ -26,10 +29,20 @@ type DeliveryDeps = {
     sourcePath: string,
     fileName: string,
   ) => Promise<{ storedPath: string; contentHash: string }>;
+  /** 0-based page; null when the attachment cannot be resolved. */
+  pageLink?: (contextItemId: number, pageIndex: number) => string | null;
 };
+
+function zoteroPageLink(contextItemId: number, pageIndex: number) {
+  const item = Zotero.Items.get(contextItemId);
+  return item?.key
+    ? buildZoteroOpenPdfUri(item.libraryID, item.key, pageIndex)
+    : null;
+}
 
 const DEFAULT_DEPS: DeliveryDeps = {
   persistFromPath: ensureAttachmentBlobFromPath,
+  pageLink: zoteroPageLink,
 };
 
 function slug(value: string): string {
@@ -69,6 +82,10 @@ export async function buildRetrievedImageDelivery(
       appLogger.debug("[Embedded images] Could not deliver an image", error);
       continue;
     }
+    const link = deps.pageLink?.(
+      image.paperContext.contextItemId,
+      image.pageIndex,
+    );
     entries.push({
       displayLabel: image.sourceLabel,
       page,
@@ -77,6 +94,7 @@ export async function buildRetrievedImageDelivery(
       ...(image.caption ? { caption: image.caption } : {}),
       similarity: Math.round(image.score * 1000) / 1000,
       why: image.why,
+      ...(link ? { link } : {}),
     });
     artifacts.push({
       kind: "image",

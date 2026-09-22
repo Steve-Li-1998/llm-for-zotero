@@ -1141,7 +1141,11 @@ export function createPaperReadTool(
               "Optional explicit paper targets. Provide target or targets, never both; omit both to use the current turn's paper scope.",
             items: PAPER_TARGET_SELECTOR_SCHEMA,
           },
-          query: { type: "string" },
+          query: {
+            type: "string",
+            description:
+              "Search text only: the concepts, terms or formula to find. Every word is matched against the paper's text and figures, so do not put instructions or requests in it.",
+          },
           figureLabels: {
             type: "array",
             items: { type: "string" },

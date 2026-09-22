@@ -42,7 +42,7 @@ export function createSearchPaperTool(
         "Search for specific evidence within papers using a question. " +
         "Returns the most relevant passages ranked by relevance. " +
         "Supports up to 10 papers per call. Automatically indexes PDFs if needed. For ordinary summaries, section reads, and targeted paper Q&A, use paper_read; use search_paper only for targeted evidence search that paper_read did not already answer. " +
-        "When image embedding is enabled, results may also include relevant figures from the papers as images; to point the user to an image's page, write a Markdown link whose target is that image's `link`.",
+        "When image embedding is enabled, results may also include relevant figures from the papers as images; when referring to an image's page, copy its `pageLink` into the answer unchanged.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -215,7 +215,11 @@ export function createSearchPaperTool(
       const delivery = await buildRetrievedImageDelivery(images);
       if (!delivery.entries.length) return { results };
       return {
-        content: { results, images: delivery.entries },
+        content: {
+          results,
+          images: delivery.entries,
+          ...(delivery.note ? { imageLinkNote: delivery.note } : {}),
+        },
         artifacts: delivery.artifacts,
       };
     },

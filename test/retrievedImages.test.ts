@@ -54,34 +54,37 @@ describe("retrieved image delivery", function () {
     assert.deepEqual(persisted, [["C:/cache/11/a.png", "dynamics-p12-a.png"]]);
   });
 
-  it("gives each entry a link that opens the image's page", async function () {
+  it("gives each entry a ready-made Markdown link to the image's page", async function () {
     const requested: Array<[number, number]> = [];
     const delivery = await buildRetrievedImageDelivery([image()], {
       persistFromPath: async () => ({
         storedPath: "blob/x.png",
         contentHash: "h",
       }),
-      pageLink: (contextItemId, pageIndex) => {
+      pageUri: (contextItemId, pageIndex) => {
         requested.push([contextItemId, pageIndex]);
         return "zotero://open-pdf/library/items/ABCD1234?page=12";
       },
     });
     assert.deepEqual(requested, [[11, 11]]);
     assert.equal(
-      delivery.entries[0].link,
-      "zotero://open-pdf/library/items/ABCD1234?page=12",
+      delivery.entries[0].pageLink,
+      "[p. 12](zotero://open-pdf/library/items/ABCD1234?page=12)",
     );
+    assert.isString(delivery.note);
+    assert.include(delivery.note!, "pageLink");
   });
 
-  it("omits the link when the attachment cannot be resolved", async function () {
+  it("omits the link and its note when the attachment cannot be resolved", async function () {
     const delivery = await buildRetrievedImageDelivery([image()], {
       persistFromPath: async () => ({
         storedPath: "blob/x.png",
         contentHash: "h",
       }),
-      pageLink: () => null,
+      pageUri: () => null,
     });
-    assert.notProperty(delivery.entries[0], "link");
+    assert.notProperty(delivery.entries[0], "pageLink");
+    assert.isUndefined(delivery.note);
   });
 
   it("titles a MinerU figure as a figure", async function () {

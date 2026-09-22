@@ -310,7 +310,7 @@ export function renderTurnContextEnvelopeForModel(
   });
   if (hasPdfLink) {
     lines.push(
-      "To link a PDF page in the answer, write a Markdown link to that paper's pdfLink with ?page=N appended, where N is the physical page: its 1-based position in the PDF file. Tool results' pageIndex, pageStart and pageEnd are 0-based, so N is that value plus 1; an image's page is already 1-based.",
+      "Whenever the answer mentions a PDF page, write it as a Markdown link to that paper's pdfLink with ?page=N appended, where N is the physical page: its 1-based position in the PDF file. Tool results' pageIndex, pageStart and pageEnd are 0-based, so N is that value plus 1; an image's page is already 1-based.",
     );
   }
 

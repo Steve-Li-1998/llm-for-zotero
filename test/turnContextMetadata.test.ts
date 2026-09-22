@@ -146,6 +146,8 @@ describe("Agent turn Zotero metadata context", function () {
     );
     assert.include(rendered, "?page=N");
     assert.include(rendered, "0-based");
+    // Every page mention becomes a link.
+    assert.include(rendered, "Whenever the answer mentions a PDF page");
   });
 
   it("gives no PDF link to a paper whose content is not a PDF", function () {

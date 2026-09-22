@@ -1099,7 +1099,7 @@ export function createPaperReadTool(
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections for known section names or query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page. When image embedding is enabled, targeted reads may also return relevant figures from the paper as images.",
+        "Read content from the active or targeted paper through one semantic tool. Provide target or targets, never both; omit both to use the current turn's paper scope. Use mode:'overview' for bounded summaries, mode:'targeted' with sections for known section names or query for specific textual evidence, mode:'outline' when section ids or chunk ranges are needed, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page. When image embedding is enabled, targeted reads may also return relevant figures from the paper as images; to point the user to an image's page, write a Markdown link whose target is that image's `link`.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

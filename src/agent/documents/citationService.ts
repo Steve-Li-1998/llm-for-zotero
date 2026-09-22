@@ -65,13 +65,14 @@ export function buildZoteroItemUri(libraryID: number, itemKey: string): string {
   return `zotero://select/${libraryPath(libraryID)}/items/${itemKey}`;
 }
 
-/** Opens the attachment's PDF at a 0-based page in Zotero's reader. */
+/** Opens the attachment's PDF in Zotero's reader, at a 0-based page if given. */
 export function buildZoteroOpenPdfUri(
   libraryID: number,
   attachmentItemKey: string,
-  pageIndex: number,
+  pageIndex?: number,
 ): string {
-  return `zotero://open-pdf/${libraryPath(libraryID)}/items/${attachmentItemKey}?page=${pageIndex + 1}`;
+  const base = `zotero://open-pdf/${libraryPath(libraryID)}/items/${attachmentItemKey}`;
+  return pageIndex === undefined ? base : `${base}?page=${pageIndex + 1}`;
 }
 
 export function buildPlanCitationSourceUri(source: PlanCitationSource): string {

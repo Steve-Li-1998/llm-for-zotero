@@ -20,8 +20,8 @@ export type RetrievedImageEntry = {
   caption?: string;
   similarity: number;
   why: RetrievalImageResult["why"];
-  /** zotero://open-pdf URI of the image's page, for Markdown links. */
-  link?: string;
+  /** Ready-made Markdown link that opens the image's page for the reader. */
+  pageLink?: string;
 };
 
 type DeliveryDeps = {
@@ -30,10 +30,14 @@ type DeliveryDeps = {
     fileName: string,
   ) => Promise<{ storedPath: string; contentHash: string }>;
   /** 0-based page; null when the attachment cannot be resolved. */
-  pageLink?: (contextItemId: number, pageIndex: number) => string | null;
+  pageUri?: (contextItemId: number, pageIndex: number) => string | null;
 };
 
-function zoteroPageLink(contextItemId: number, pageIndex: number) {
+/** Sits next to the images, where the model reads while it answers. */
+const PAGE_LINK_NOTE =
+  "When the answer refers to one of these images or its page, copy that image's pageLink into the answer unchanged; it opens the page for the reader.";
+
+function zoteroPageUri(contextItemId: number, pageIndex: number) {
   const item = Zotero.Items.get(contextItemId);
   return item?.key
     ? buildZoteroOpenPdfUri(item.libraryID, item.key, pageIndex)
@@ -42,7 +46,7 @@ function zoteroPageLink(contextItemId: number, pageIndex: number) {
 
 const DEFAULT_DEPS: DeliveryDeps = {
   persistFromPath: ensureAttachmentBlobFromPath,
-  pageLink: zoteroPageLink,
+  pageUri: zoteroPageUri,
 };
 
 function slug(value: string): string {
@@ -65,6 +69,8 @@ export async function buildRetrievedImageDelivery(
 ): Promise<{
   entries: RetrievedImageEntry[];
   artifacts: AgentToolArtifact[];
+  /** How to use the entries' page links; absent when none has one. */
+  note?: string;
 }> {
   const entries: RetrievedImageEntry[] = [];
   const artifacts: AgentToolArtifact[] = [];
@@ -82,7 +88,7 @@ export async function buildRetrievedImageDelivery(
       appLogger.debug("[Embedded images] Could not deliver an image", error);
       continue;
     }
-    const link = deps.pageLink?.(
+    const uri = deps.pageUri?.(
       image.paperContext.contextItemId,
       image.pageIndex,
     );
@@ -94,7 +100,7 @@ export async function buildRetrievedImageDelivery(
       ...(image.caption ? { caption: image.caption } : {}),
       similarity: Math.round(image.score * 1000) / 1000,
       why: image.why,
-      ...(link ? { link } : {}),
+      ...(uri ? { pageLink: `[p. ${page}](${uri})` } : {}),
     });
     artifacts.push({
       kind: "image",
@@ -107,5 +113,7 @@ export async function buildRetrievedImageDelivery(
       paperContext: image.paperContext,
     });
   }
-  return { entries, artifacts };
+  return entries.some((entry) => entry.pageLink)
+    ? { entries, artifacts, note: PAGE_LINK_NOTE }
+    : { entries, artifacts };
 }

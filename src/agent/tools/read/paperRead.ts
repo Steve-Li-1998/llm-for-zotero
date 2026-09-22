@@ -53,6 +53,8 @@ import {
   resolveDefaultTargets,
 } from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
+import { buildArtifactFollowupMessage } from "../../model/toolArtifactDelivery";
+import { resolveRequestContentInputs } from "../../model/messageBuilder";
 import { buildRetrievedImageDelivery } from "./retrievedImages";
 import { createViewPdfPagesTool } from "./viewPdfPages";
 import {
@@ -1867,7 +1869,10 @@ export function createPaperReadTool(
         artifacts: delivery.artifacts,
       };
     },
-    async buildFollowupMessage(result: AgentToolResult) {
+    async buildFollowupMessage(
+      result: AgentToolResult,
+      context: AgentToolContext,
+    ) {
       const content =
         result.content && typeof result.content === "object"
           ? (result.content as { capturedPageIndex?: unknown })
@@ -1875,7 +1880,13 @@ export function createPaperReadTool(
       if (content?.capturedPageIndex !== undefined) {
         return buildCaptureFollowupMessage(result);
       }
-      return null;
+      // Figure crops, retrieved images and rendered pages travel as artifacts.
+      // A tool-defined follow-up replaces the runtime's default delivery, so
+      // without this the model would get their captions but never the images.
+      return buildArtifactFollowupMessage(result, {
+        contentInputs: resolveRequestContentInputs(context.request),
+        modelName: context.request.model,
+      });
     },
   };
 }

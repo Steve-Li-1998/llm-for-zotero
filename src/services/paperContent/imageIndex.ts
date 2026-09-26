@@ -266,17 +266,6 @@ export function createImageIndex(deps: ImageIndexDeps) {
     return { records, keys, vectors: loaded };
   }
 
-  /** Images still lacking vectors, for the joint text+image embedding call. */
-  async function pendingImageInputs(
-    ctx: PdfContext,
-    attachmentId: number,
-  ): Promise<PendingImageInput[]> {
-    const current = await loadCurrent(ctx, attachmentId);
-    if (!current || current.vectors) return [];
-    if (ctx.imageIndex?.failureKey === current.keys.attemptKey) return [];
-    return readItemsOrRebuild(ctx, attachmentId, current.records);
-  }
-
   async function storeImageVectors(
     ctx: PdfContext,
     attachmentId: number,
@@ -352,9 +341,6 @@ export function createImageIndex(deps: ImageIndexDeps) {
   return {
     startExtraction,
     ensureImageSet,
-    pendingImageInputs,
-    storeImageVectors,
-    markFailure,
     ensureImageVectors,
   };
 }

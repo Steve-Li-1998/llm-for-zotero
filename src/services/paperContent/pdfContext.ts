@@ -1,7 +1,6 @@
 import { appLogger } from "../../core/logging";
 import {
   callEmbeddings,
-  embedItems,
   EmbeddingUnsupportedError,
   getResolvedEmbeddingConfig,
   getEmbeddingUnavailableReason,
@@ -1848,6 +1847,11 @@ async function ensureEmbeddings(
   const chunkHash = computeChunkHash(pdfContext.chunks);
   const chunkCount = pdfContext.chunks.length;
   const promise = (async () => {
+    // Image extraction and embedding run alongside the text; retrieval joins
+    // that run when it needs the image vectors.
+    if (itemId != null) {
+      void imageIndex.ensureImageVectors(pdfContext, itemId).catch(() => null);
+    }
     // Layer 2: Disk cache — check before calling the API
     if (itemId != null) {
       try {
@@ -1863,39 +1867,8 @@ async function ensureEmbeddings(
       }
     }
 
-    // Layer 3: API call. Images that still lack vectors go in the same
-    // embedItems call as the chunks; an image failure never costs the text.
+    // Layer 3: API call, text only.
     try {
-      const pendingImages =
-        itemId != null
-          ? await imageIndex
-              .pendingImageInputs(pdfContext, itemId)
-              .catch(() => [])
-          : [];
-      if (itemId != null && pendingImages.length) {
-        try {
-          const vectors = await embedItems([
-            ...pdfContext.chunks.map((text) => ({
-              kind: "text" as const,
-              text,
-            })),
-            ...pendingImages.map((entry) => entry.item),
-          ]);
-          await imageIndex.storeImageVectors(
-            pdfContext,
-            itemId,
-            pendingImages,
-            vectors.slice(chunkCount),
-          );
-          return vectors.slice(0, chunkCount);
-        } catch (jointError) {
-          appLogger.warn(
-            "[Semantic Search] Joint text+image embedding failed; retrying text only:",
-            jointError,
-          );
-          imageIndex.markFailure(pdfContext);
-        }
-      }
       // The client batches by the configured limits (16 per request by default).
       return await callEmbeddings(pdfContext.chunks);
     } catch (err) {

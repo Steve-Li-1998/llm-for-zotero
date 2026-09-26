@@ -203,19 +203,17 @@ describe("image index", function () {
     assert.equal(attempts, 1);
   });
 
-  it("hands pending images to a joint call and stores their vectors", async function () {
-    const { deps, store } = makeDeps();
+  it("shares one run between concurrent callers", async function () {
+    const { deps, calls } = makeDeps();
     const index = createImageIndex(deps);
     const ctx = context();
-    const pending = await index.pendingImageInputs(ctx, 7);
-    assert.lengthOf(pending, 2);
-    assert.match(
-      (pending[0].item as { dataUrl: string }).dataUrl,
-      /^data:image\/png;base64,/,
-    );
-    await index.storeImageVectors(ctx, 7, pending, [[5], [6]]);
-    assert.deepEqual(store.vectors?.vectors, [[5], [6]]);
-    assert.lengthOf(await index.pendingImageInputs(ctx, 7), 0);
+    const [background, retrieval] = await Promise.all([
+      index.ensureImageVectors(ctx, 7),
+      index.ensureImageVectors(ctx, 7),
+    ]);
+    assert.strictEqual(background, retrieval);
+    assert.equal(calls.extract, 1);
+    assert.lengthOf(calls.embed, 1);
   });
 
   it("extracts again when a cached image file is missing", async function () {
@@ -229,12 +227,12 @@ describe("image index", function () {
     assert.lengthOf(result!.vectors, 2);
   });
 
-  it("returns no pending images when the paper has no image source", async function () {
-    const { deps } = makeDeps({ resolveSource: async () => null });
-    assert.lengthOf(
-      await createImageIndex(deps).pendingImageInputs(context(), 7),
-      0,
+  it("returns no vectors when the paper has no image source", async function () {
+    const { deps, calls } = makeDeps({ resolveSource: async () => null });
+    assert.isNull(
+      await createImageIndex(deps).ensureImageVectors(context(), 7),
     );
+    assert.lengthOf(calls.embed, 0);
   });
 
   it("asks for MinerU figures only for a MinerU-backed context", async function () {

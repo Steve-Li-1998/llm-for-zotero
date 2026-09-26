@@ -58,11 +58,11 @@ describe("embedding format adapters", function () {
       assert.deepEqual(adapter.parseResponse({}), []);
     });
 
-    it("defaults to the legacy batch size and sequential requests", function () {
+    it("defaults to the legacy batch size, four requests at a time", function () {
       assert.deepEqual(adapter.defaults, {
         maxItems: 16,
         maxImages: 4,
-        concurrency: 1,
+        concurrency: 4,
       });
     });
   });
@@ -117,6 +117,14 @@ describe("embedding format adapters", function () {
 
     it("uses the documented 20-input / 5-image limits", function () {
       assert.deepEqual(adapter.hardLimits, { maxItems: 20, maxImages: 5 });
+    });
+
+    it("defaults to full batches, four requests at a time", function () {
+      assert.deepEqual(adapter.defaults, {
+        maxItems: 20,
+        maxImages: 5,
+        concurrency: 4,
+      });
     });
   });
 

@@ -27,11 +27,17 @@ function okJson(body: unknown): Response {
   } as unknown as Response;
 }
 
-function httpError(status: number, statusText: string, text: string): Response {
+function httpError(
+  status: number,
+  statusText: string,
+  text: string,
+  headers: Record<string, string> = {},
+): Response {
   return {
     ok: false,
     status,
     statusText,
+    headers: new Headers(headers),
     json: async () => ({}),
     text: async () => text,
   } as unknown as Response;
@@ -83,6 +89,7 @@ function deps(
     }),
     normalizeImage: async (dataUrl) => dataUrl,
     createAbortController: () => new AbortController(),
+    sleep: async () => {},
     ...overrides,
   };
 }
@@ -161,7 +168,7 @@ describe("embedding client", function () {
     let count = 0;
     const fetchFn = async () => {
       count += 1;
-      return httpError(500, "Server Error", "boom");
+      return httpError(400, "Bad Request", "boom");
     };
     try {
       await embedItemsWithConfig(
@@ -181,7 +188,7 @@ describe("embedding client", function () {
     const fetchFn = async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: string[] };
       if (init?.signal) signals.push(init.signal);
-      if (body.input[0] === "1") return httpError(500, "Server Error", "boom");
+      if (body.input[0] === "1") return httpError(400, "Bad Request", "boom");
       await new Promise((resolve) => setTimeout(resolve, 20));
       return okJson({ data: [{ index: 0, embedding: [2] }] });
     };
@@ -197,6 +204,81 @@ describe("embedding client", function () {
     }
     assert.lengthOf(signals, 2);
     assert.isTrue(signals.every((signal) => signal.aborted));
+  });
+
+  it("retries a rate-limited batch after the server's Retry-After", async function () {
+    const delays: number[] = [];
+    let count = 0;
+    const fetchFn = async () => {
+      count += 1;
+      if (count === 1) {
+        return httpError(429, "Too Many Requests", "slow down", {
+          "Retry-After": "2",
+        });
+      }
+      return okJson({ data: [{ index: 0, embedding: [1] }] });
+    };
+    const vectors = await embedItemsWithConfig(
+      [text("1")],
+      config(),
+      deps(fetchFn, { sleep: async (ms) => void delays.push(ms) }),
+    );
+    assert.deepEqual(vectors, [[1]]);
+    assert.equal(count, 2);
+    assert.deepEqual(delays, [2000]);
+  });
+
+  it("backs off exponentially on server errors, then gives up", async function () {
+    const delays: number[] = [];
+    let count = 0;
+    const fetchFn = async () => {
+      count += 1;
+      return httpError(503, "Service Unavailable", "busy");
+    };
+    try {
+      await embedItemsWithConfig(
+        [text("1")],
+        config(),
+        deps(fetchFn, { sleep: async (ms) => void delays.push(ms) }),
+      );
+      assert.fail("expected rejection");
+    } catch (error) {
+      assert.instanceOf(error, EmbeddingRequestError);
+      assert.equal((error as EmbeddingRequestError).status, 503);
+    }
+    assert.equal(count, 3);
+    assert.deepEqual(delays, [500, 1000]);
+  });
+
+  it("retries a network failure", async function () {
+    let count = 0;
+    const fetchFn = async () => {
+      count += 1;
+      if (count === 1) throw new TypeError("NetworkError");
+      return okJson({ data: [{ index: 0, embedding: [1] }] });
+    };
+    const vectors = await embedItemsWithConfig(
+      [text("1")],
+      config(),
+      deps(fetchFn),
+    );
+    assert.deepEqual(vectors, [[1]]);
+    assert.equal(count, 2);
+  });
+
+  it("does not retry a client error", async function () {
+    let count = 0;
+    const fetchFn = async () => {
+      count += 1;
+      return httpError(401, "Unauthorized", "bad key");
+    };
+    try {
+      await embedItemsWithConfig([text("1")], config(), deps(fetchFn));
+      assert.fail("expected rejection");
+    } catch (error) {
+      assert.instanceOf(error, EmbeddingRequestError);
+    }
+    assert.equal(count, 1);
   });
 
   it("rejects a response whose vector count does not match the batch", async function () {

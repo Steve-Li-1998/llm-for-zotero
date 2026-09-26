@@ -24,7 +24,7 @@ export function resolveDashscopeEmbeddingUrl(apiBase: string): string {
  */
 export const dashscopeAdapter: EmbeddingFormatAdapter = {
   format: "dashscope",
-  defaults: { maxItems: 20, maxImages: 5, concurrency: 1 },
+  defaults: { maxItems: 20, maxImages: 5, concurrency: 4 },
   hardLimits: { maxItems: 20, maxImages: 5 },
   resolveUrl: resolveDashscopeEmbeddingUrl,
   buildBody: (model, items) => ({

@@ -12,6 +12,12 @@ import {
 /** DashScope caps an image at 5 MB; stay below it after compression. */
 export const MAX_EMBEDDING_IMAGE_BYTES = 4 * 1024 * 1024;
 const ERROR_BODY_LIMIT = 500;
+/** Attempts per batch: the first request plus two retries. */
+const MAX_BATCH_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 500;
+const MAX_RETRY_AFTER_MS = 10_000;
+/** Rate limits and transient server failures; other statuses fail at once. */
+const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
 
 export type EmbeddingRequestConfig = {
@@ -29,7 +35,25 @@ export type EmbeddingClientDeps = {
   buildHeaders: (apiKey: string) => Record<string, string>;
   normalizeImage: (dataUrl: string) => Promise<string>;
   createAbortController?: () => AbortController | undefined;
+  /** Waits between retries; injectable so tests do not sleep. */
+  sleep?: (ms: number) => Promise<void>;
 };
+
+const defaultSleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** The server's Retry-After in ms, when it sends a usable one. */
+function retryAfterMs(res: Response): number | undefined {
+  const value = res.headers?.get?.("retry-after");
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+  }
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return undefined;
+  return Math.min(Math.max(0, date - Date.now()), MAX_RETRY_AFTER_MS);
+}
 
 async function prepareItems(
   items: MultimodalItem[],
@@ -91,27 +115,60 @@ export async function embedItemsWithConfig(
   let firstError: unknown = null;
   let nextBatch = 0;
 
-  const runBatch = async (indexes: number[]) => {
-    const res = await deps.fetchFn(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(
-        adapter.buildBody(
-          config.model,
-          indexes.map((index) => prepared[index]),
-        ),
+  const sleep = deps.sleep ?? defaultSleep;
+
+  /** One batch's response, retrying rate limits and transient failures. */
+  const fetchBatch = async (indexes: number[]): Promise<Response> => {
+    const payload = JSON.stringify(
+      adapter.buildBody(
+        config.model,
+        indexes.map((index) => prepared[index]),
       ),
-      ...(controller ? { signal: controller.signal } : {}),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new EmbeddingRequestError({
-        format: config.format,
-        status: res.status,
-        statusText: res.statusText,
-        body: text.slice(0, ERROR_BODY_LIMIT),
-      });
+    );
+    for (let attempt = 1; ; attempt += 1) {
+      // Another batch failed while this one waited: the call is already lost.
+      if (attempt > 1 && firstError) throw firstError;
+      let res: Response;
+      try {
+        res = await deps.fetchFn(url, {
+          method: "POST",
+          headers,
+          body: payload,
+          ...(controller ? { signal: controller.signal } : {}),
+        });
+      } catch (error) {
+        // A network failure is transient; an abort means another batch failed.
+        if (
+          controller?.signal.aborted ||
+          (error as { name?: string })?.name === "AbortError" ||
+          attempt >= MAX_BATCH_ATTEMPTS
+        ) {
+          throw error;
+        }
+        await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+        continue;
+      }
+      if (res.ok) return res;
+      if (
+        !RETRYABLE_STATUSES.has(res.status) ||
+        attempt >= MAX_BATCH_ATTEMPTS
+      ) {
+        const text = await res.text();
+        throw new EmbeddingRequestError({
+          format: config.format,
+          status: res.status,
+          statusText: res.statusText,
+          body: text.slice(0, ERROR_BODY_LIMIT),
+        });
+      }
+      await sleep(
+        retryAfterMs(res) ?? RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+      );
     }
+  };
+
+  const runBatch = async (indexes: number[]) => {
+    const res = await fetchBatch(indexes);
     const vectors = adapter.parseResponse(await res.json());
     if (vectors.length !== indexes.length) {
       throw new Error(

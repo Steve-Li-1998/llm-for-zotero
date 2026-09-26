@@ -93,7 +93,7 @@ describe("embedding settings resolution", function () {
     assert.deepEqual(settings.limits, {
       maxItems: 16,
       maxImages: 4,
-      concurrency: 1,
+      concurrency: 4,
     });
   });
 
@@ -240,11 +240,11 @@ describe("embedding batch limits", function () {
   it("uses each format's defaults for empty fields", function () {
     assert.deepEqual(
       resolveEmbeddingBatchLimits("openai_compat", EMPTY_BATCH).limits,
-      { maxItems: 16, maxImages: 4, concurrency: 1 },
+      { maxItems: 16, maxImages: 4, concurrency: 4 },
     );
     assert.deepEqual(
       resolveEmbeddingBatchLimits("dashscope", EMPTY_BATCH).limits,
-      { maxItems: 20, maxImages: 5, concurrency: 1 },
+      { maxItems: 20, maxImages: 5, concurrency: 4 },
     );
     assert.deepEqual(
       resolveEmbeddingBatchLimits("vllm_messages", EMPTY_BATCH).limits,
@@ -258,7 +258,7 @@ describe("embedding batch limits", function () {
       maxImages: "abc",
       concurrency: "0",
     });
-    assert.deepEqual(limits, { maxItems: 32, maxImages: 4, concurrency: 1 });
+    assert.deepEqual(limits, { maxItems: 32, maxImages: 4, concurrency: 4 });
   });
 
   it("clamps to the global ranges", function () {
@@ -280,7 +280,7 @@ describe("embedding batch limits", function () {
     assert.deepEqual(result.limits, {
       maxItems: 20,
       maxImages: 5,
-      concurrency: 1,
+      concurrency: 4,
     });
     assert.deepEqual(result.capped, { maxItems: 20, maxImages: 5 });
   });

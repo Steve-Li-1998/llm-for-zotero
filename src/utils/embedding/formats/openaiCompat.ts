@@ -15,7 +15,7 @@ const EMBEDDING_BATCH_SIZE = 16;
  */
 export const openaiCompatAdapter: EmbeddingFormatAdapter = {
   format: "openai_compat",
-  defaults: { maxItems: EMBEDDING_BATCH_SIZE, maxImages: 4, concurrency: 1 },
+  defaults: { maxItems: EMBEDDING_BATCH_SIZE, maxImages: 4, concurrency: 4 },
   hardLimits: {
     maxItems: MAX_EMBEDDING_BATCH_ITEMS,
     maxImages: MAX_EMBEDDING_BATCH_ITEMS,
